@@ -2143,9 +2143,23 @@ var _pageData = window._pageData || {};
             toolbar.classList.toggle('d-none', !selected);
             toolbar.style.display = selected ? 'flex' : 'none';
         }
+        // Hide the Link/Align actions while a selection is active so the bulk
+        // bar owns the header's right side (contextual swap).
+        const linkAlign = document.getElementById('albumHeaderLinkAlign');
+        if (linkAlign) linkAlign.classList.toggle('d-none', selected);
         // Give the last track clearance above the floating bar when active.
         document.body.classList.toggle('bulk-actions-visible', selected);
         if (countSpan) countSpan.textContent = checkboxes.length;
+    }
+
+    /** Filter the tracklist to rows missing a MusicBrainz Recording ID. */
+    function toggleMissingMbidFilter() {
+        const tbody = document.getElementById('albumTracksTbody');
+        const badge = document.getElementById('albumMissingMbidBadge');
+        if (!tbody || !badge) return;
+        const active = tbody.classList.toggle('filter-missing-mbid');
+        badge.classList.toggle('active', active);
+        badge.setAttribute('aria-pressed', String(active));
     }
     
     function toggleSelectAll(checkbox) {
@@ -3115,6 +3129,24 @@ var _pageData = window._pageData || {};
         } catch (err) {
             alert('❌ Network error: ' + err.message);
         }
+    }
+
+    /** Bulk-rescan every selected track with a single confirmation. */
+    async function rescanSelectedTracks() {
+        const ids = getSelectedTracks();
+        if (!ids.length) return;
+        if (!confirm(`Rescan ${ids.length} selected track(s) from MusicBrainz / metadata sources?`)) return;
+        let ok = 0, failed = 0;
+        for (const id of ids) {
+            try {
+                const resp = await fetch(`/api/track/${id}/rescan-single`, { method: 'POST' });
+                const data = await resp.json().catch(() => ({}));
+                if (data && data.success) ok += 1; else failed += 1;
+            } catch (err) {
+                failed += 1;
+            }
+        }
+        alert(`✅ Rescanned ${ok} track(s).${failed ? ` ${failed} failed.` : ''}`);
     }
 
     function deleteTrack(trackId) {

@@ -1282,6 +1282,55 @@ html {
     }
 }
 
+/* ── Album tracklist: row icon buttons + Missing-MBID filter ──────────── */
+/* Borderless, dark icon buttons for the play / actions / queued-remove
+   controls — replaces the floating outlined squares at the row end. */
+.row-icon-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-tertiary, #a0a0a0);
+    font-size: 1rem;
+    line-height: 1;
+    padding: 0.3rem 0.5rem;
+    border-radius: 6px;
+}
+
+.row-icon-btn:hover {
+    color: var(--text-primary, #ffffff);
+    background: var(--tertiary-bg, #282828);
+}
+
+.row-icon-btn.text-success {
+    color: var(--spotify-green, #1db954);
+}
+
+.row-icon-btn.text-success:hover {
+    color: var(--spotify-green-hover, #1ed760);
+    background: var(--tertiary-bg, #282828);
+}
+
+.row-icon-btn.text-danger:hover {
+    color: #ff6b6b;
+    background: var(--tertiary-bg, #282828);
+}
+
+/* Clickable Missing-MBIDs summary badge */
+.missing-mbid-badge {
+    cursor: pointer;
+    user-select: none;
+}
+
+.missing-mbid-badge.active {
+    outline: 1px solid currentColor;
+    filter: brightness(1.15);
+}
+
+/* Missing-MBID filter: hide every track row (and its MB diff rows) that is
+   not flagged data-missing-mbid="1". */
+#albumTracksTbody.filter-missing-mbid tr[data-track-id]:not([data-missing-mbid="1"]) {
+    display: none;
+}
+
 /* Tap-to-open search pills (navbar + dashboard) — the pill is the live
    search entry: clicking focuses it and drops the result flyout below. */
 #navSearchInput,

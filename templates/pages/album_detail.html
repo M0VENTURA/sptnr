@@ -575,6 +575,7 @@
             <div class="d-flex align-items-center flex-wrap gap-2">
                 <h5 class="card-title mb-0">
                     <i class="bi bi-music-note-list"></i> Tracks
+                    <span class="text-muted small fw-normal">(<span id="albumTrackCount">{{ tracks|length }}</span>)</span>
                     <span id="albumMissingHeaderBadge" class="badge bg-warning text-dark ms-1 d-none" title="Tracks on the MusicBrainz release that are missing from the library"></span>
                 </h5>
                 {% set ns_mbid = namespace(total=0, missing=0) %}
@@ -583,34 +584,31 @@
                   {% if not (_t.get('musicbrainz_trackid') or _t.get('recording_mbid')) %}{% set ns_mbid.missing = ns_mbid.missing + 1 %}{% endif %}
                 {% endfor %}
                 {% if ns_mbid.missing > 0 %}
-                <span class="badge bg-warning-subtle text-warning border border-warning-subtle" style="font-size:0.65rem;" title="Linking improves single detection, ListenBrainz scoring and cover matching">💡 {{ ns_mbid.missing }} Missing MBIDs</span>
+                <button type="button" id="albumMissingMbidBadge" class="badge bg-warning-subtle text-warning border border-warning-subtle missing-mbid-badge" style="font-size:0.65rem;" onclick="toggleMissingMbidFilter()" title="Show only tracks missing a MusicBrainz Recording ID — click again to clear the filter" aria-pressed="false">💡 {{ ns_mbid.missing }} Missing MBIDs</button>
+                {% endif %}
+            </div>
+            <div class="d-flex align-items-center gap-2 flex-wrap" id="albumHeaderLinkAlign">
+                {% if ns_mbid.missing > 0 %}
                 <button type="button" id="albumAutoLinkBtn" class="btn btn-sm btn-outline-info py-0 px-2" onclick="autoLinkAllMbids()" title="Look up each unlinked track on MusicBrainz and save its Recording ID"><i class="bi bi-link-45deg"></i> Link</button>
                 <button type="button" class="btn btn-sm btn-outline-warning py-0 px-2" onclick="alignTracklist()" title="Fetch the official MusicBrainz tracklist for comparison"><i class="bi bi-list-check"></i> Align</button>
                 {% endif %}
             </div>
-            <div class="d-flex gap-2 flex-wrap d-none" id="bulkActionsToolbar">
-                <button class="btn btn-sm btn-outline-secondary" onclick="selectAllTracks()">
-                    <i class="bi bi-check2-square"></i> Select All
-                </button>
-                <button class="btn btn-sm btn-outline-secondary" onclick="clearAllTracks()">
-                    <i class="bi bi-square"></i> Clear
-                </button>
-                <button class="btn btn-sm btn-info" onclick="openBulkGenreTaggerModal()">
-                    <i class="bi bi-tags"></i> <span id="selectedCount">0</span> Add Tags
-                </button>
-                <button class="btn btn-sm btn-warning" onclick="confirmBulkRenameTracks()">
-                    <i class="bi bi-pencil-square"></i> Rename Selected
-                </button>
-                <button class="btn btn-sm btn-danger" onclick="confirmBulkDeleteTracks()">
-                    <i class="bi bi-trash"></i> Delete Selected
-                </button>
+            <div class="d-flex gap-2 flex-wrap align-items-center d-none" id="bulkActionsToolbar">
+                <span class="fw-semibold text-light small text-nowrap"><i class="bi bi-check2-square"></i> <span id="selectedCount">0</span> Selected</span>
+                <button class="btn btn-sm btn-danger" onclick="confirmBulkDeleteTracks()"><i class="bi bi-trash"></i> Delete Selected</button>
+                <button class="btn btn-sm btn-outline-secondary" onclick="rescanSelectedTracks()"><i class="bi bi-lightning"></i> Rescan Selected</button>
+                <button class="btn btn-sm btn-outline-secondary" onclick="clearAllTracks()"><i class="bi bi-x-lg"></i> Clear Selection</button>
+                <span class="border-start border-secondary opacity-50 align-self-stretch"></span>
+                <button class="btn btn-sm btn-outline-secondary" onclick="selectAllTracks()"><i class="bi bi-check2-all"></i> Select All</button>
+                <button class="btn btn-sm btn-info" onclick="openBulkGenreTaggerModal()"><i class="bi bi-tags"></i> Add Tags</button>
+                <button class="btn btn-sm btn-warning" onclick="confirmBulkRenameTracks()"><i class="bi bi-pencil-square"></i> Rename Selected</button>
             </div>
         </div>
         <div class="table-responsive">
             {# ── Track actions dropdown (shared by mobile + desktop cells) ── #}
             {% macro track_actions_dropdown(track) %}
             <div class="dropdown">
-                <button class="btn btn-sm btn-outline-light" data-bs-toggle="dropdown" aria-label="Track actions">
+                <button class="btn btn-sm row-icon-btn text-muted" data-bs-toggle="dropdown" aria-label="Track actions">
                     <i class="bi bi-three-dots-vertical"></i>
                 </button>
                 <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end">
@@ -633,7 +631,8 @@
                inline by JS at their Disc#/Track# position). #}
             {% macro track_row(track, row_index) %}
             {% set _queued = track.file_path and '__queued_for_download__' in track.file_path %}
-            <tr class="album-track-mobile-row d-flex flex-column d-md-table-row{% if _queued %} table-secondary opacity-75{% endif %}" data-track-id="{{ track.id }}" data-disc-number="{{ track.disc_number or 1 }}" data-track-number="{{ track.track_number or row_index }}">
+            {% set _has_mbid = track.musicbrainz_trackid or track.recording_mbid %}
+            <tr class="album-track-mobile-row d-flex flex-column d-md-table-row{% if _queued %} table-secondary opacity-75{% endif %}" data-track-id="{{ track.id }}" data-disc-number="{{ track.disc_number or 1 }}" data-track-number="{{ track.track_number or row_index }}"{% if not _has_mbid %} data-missing-mbid="1"{% endif %}>
                 {# ── Mobile two-line cell ── #}
                 <td class="d-md-none" colspan="7" style="padding: 0.5rem 0.75rem; border: none;">
                     <div class="d-flex align-items-center gap-2">
@@ -650,16 +649,19 @@
                             {% if track.duration %}{% set mins = (track.duration / 60)|int %}{% set secs = (track.duration % 60)|int %}{{ mins }}:{{ "%02d"|format(secs) }}{% else %}—{% endif %}
                         </span>
                     </div>
+                    {% if track.file_path and not _queued %}
+                    <div class="small text-truncate mt-1 ps-5" style="color:#888888; max-width: 100%;" title="{{ track.file_path }}">{{ track.file_path|replace('\\', '/')|split('/')|last }}</div>
+                    {% endif %}
                     <div class="d-flex align-items-center gap-2 mt-1 ps-2">
                         <span class="text-warning text-nowrap" style="font-size: 0.85rem;">{% if track.stars %}{% for i in range(track.stars) %}★{% endfor %}{% else %}<span class="text-muted">—</span>{% endif %}</span>
                         <span class="ms-auto d-flex align-items-center gap-1">
                             {% if _queued %}
                             {% set _fp = track.file_path or '' %}
                             {% set _qid = _fp.split('queue_id_')[-1] if 'queue_id_' in _fp else '' %}
-                            <button class="btn btn-sm btn-outline-danger delete-queued-track-btn" data-track-id="{{ track.id }}" data-queue-id="{{ _qid }}" onclick="deleteQueuedTrackOnAlbumPage(this)" title="Remove from download queue"><i class="bi bi-x-circle"></i></button>
+                            <button class="btn btn-sm row-icon-btn text-danger delete-queued-track-btn" data-track-id="{{ track.id }}" data-queue-id="{{ _qid }}" onclick="deleteQueuedTrackOnAlbumPage(this)" title="Remove from download queue"><i class="bi bi-x-circle"></i></button>
                             {% else %}
                             {% if track.file_path %}
-                            <button class="btn btn-sm btn-outline-success player-play-btn" data-track-id="{{ track.id }}" data-title="{{ track.title|escapejs }}" data-artist="{{ (track.artist or artist_name)|escapejs }}" data-art="/api/album/{{ artist_name|path_segment }}/{{ album_name|path_segment }}/art" onclick="playTrackFromAlbum(this)" title="Play this track"><i class="bi bi-play-fill"></i></button>
+                            <button class="btn btn-sm row-icon-btn text-success player-play-btn" data-track-id="{{ track.id }}" data-title="{{ track.title|escapejs }}" data-artist="{{ (track.artist or artist_name)|escapejs }}" data-art="/api/album/{{ artist_name|path_segment }}/{{ album_name|path_segment }}/art" onclick="playTrackFromAlbum(this)" title="Play this track"><i class="bi bi-play-fill"></i></button>
                             {% endif %}
                             {{ track_actions_dropdown(track) }}
                             {% endif %}
@@ -678,6 +680,9 @@
                     <a href="{{ url_for('ui.track_detail', track_id=track.id) }}" class="fw-bold text-light text-decoration-none track-title-link">{{ track.title }}</a>
                     {% if track._mb_is_extra %}
                     <span class="badge bg-secondary ms-1 mb-extra-badge" title="This track was not found in the MusicBrainz metadata for this album">Extra</span>
+                    {% endif %}
+                    {% if track.file_path and not _queued %}
+                    <div class="small text-truncate" style="color:#888888; max-width: 100%;" title="{{ track.file_path }}">{{ track.file_path|replace('\\', '/')|split('/')|last }}</div>
                     {% endif %}
                     {% endif %}
                 </td>
@@ -711,10 +716,10 @@
                     {% if _queued %}
                     {% set _fp = track.file_path or '' %}
                     {% set _qid = _fp.split('queue_id_')[-1] if 'queue_id_' in _fp else '' %}
-                    <button class="btn btn-sm btn-outline-danger delete-queued-track-btn" data-track-id="{{ track.id }}" data-queue-id="{{ _qid }}" onclick="deleteQueuedTrackOnAlbumPage(this)" title="Remove from download queue"><i class="bi bi-x-circle"></i></button>
+                    <button class="btn btn-sm row-icon-btn text-danger delete-queued-track-btn" data-track-id="{{ track.id }}" data-queue-id="{{ _qid }}" onclick="deleteQueuedTrackOnAlbumPage(this)" title="Remove from download queue"><i class="bi bi-x-circle"></i></button>
                     {% else %}
                     {% if track.file_path %}
-                    <button class="btn btn-sm btn-outline-success player-play-btn" data-track-id="{{ track.id }}" data-title="{{ track.title|escapejs }}" data-artist="{{ (track.artist or artist_name)|escapejs }}" data-art="/api/album/{{ artist_name|path_segment }}/{{ album_name|path_segment }}/art" onclick="playTrackFromAlbum(this)" title="Play this track"><i class="bi bi-play-fill"></i></button>
+                    <button class="btn btn-sm row-icon-btn text-success player-play-btn" data-track-id="{{ track.id }}" data-title="{{ track.title|escapejs }}" data-artist="{{ (track.artist or artist_name)|escapejs }}" data-art="/api/album/{{ artist_name|path_segment }}/{{ album_name|path_segment }}/art" onclick="playTrackFromAlbum(this)" title="Play this track"><i class="bi bi-play-fill"></i></button>
                     {% endif %}
                     {{ track_actions_dropdown(track) }}
                     {% endif %}
@@ -748,12 +753,12 @@
             {% endmacro %}
             <table class="table table-hover mb-0">
                 <thead class="d-none d-md-table-header-group">
-                    <tr>
+                    <tr class="text-muted small fw-normal">
                         <th style="width: 2rem;">
                             <input type="checkbox" class="form-check-input" id="selectAllCheckbox" onchange="toggleSelectAll(this)">
                         </th>
                         <th style="width: 3rem;" title="Track Number">#</th>
-                        <th>Track Title</th>
+                        <th>Title / File</th>
                         <th class="d-none d-md-table-cell text-center" style="width: 7rem;" title="Track Duration">Duration</th>
                         <th class="text-center" style="width: 7rem;" title="Star Rating">Rating</th>
                         <th style="width: 9rem;" title="Is this track in the library?">Status</th>
