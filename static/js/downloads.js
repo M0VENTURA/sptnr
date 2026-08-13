@@ -1768,27 +1768,37 @@ function buildQueueGroups(items) {
 // Render a single (ungrouped) queue item row.
 function renderQueueItemRow(item, kind) {
   const st = item.status || 'queued';
-  const badgeCls = st === 'failed' ? 'danger' : st === 'downloading' ? 'primary' : st === 'completed' ? 'success' : 'info';
+
+  // Status pill sits on the LEFT, inline with the meta chips — the right
+  // edge stays free for the borderless action icons.
+  const pillCls = st === 'failed' ? 'failed'
+    : (st === 'downloading' || st === 'searching' || st === 'processing') ? 'downloading'
+    : (st === 'completed' || st === 'moving' || st === 'imported' || st === 'in_collection') ? 'complete'
+    : (st === 'pending_release' || st === 'unmatched') ? 'pending'
+    : 'queued';
+  let pillLabel = st.charAt(0).toUpperCase() + st.slice(1).replace(/_/g, ' ');
+  if (st === 'downloading' && item.progress != null && Number(item.progress) > 0) {
+    pillLabel = 'Downloading ' + Math.round(Math.max(0, Math.min(100, Number(item.progress)))) + '%';
+  }
+  const statusPill = '<span class="badge status-pill status-' + pillCls + '">' + escapeHtml(pillLabel) + '</span>';
 
   // Per-item detail chips: album, MusicBrainz ID, and track length.
   const chips = [];
   if (item.album && item.album !== item.title) {
-    chips.push('<span class="badge bg-secondary-subtle text-dark"><i class="bi bi-disc me-1"></i>' + escapeHtml(item.album) + '</span>');
+    chips.push('<span class="meta-pill"><i class="bi bi-disc"></i>' + escapeHtml(item.album) + '</span>');
   }
   const mbid = item.release_mbid || item.release_id || item.recording_mbid || '';
   if (mbid) {
     const shortMbid = String(mbid).slice(0, 8);
-    chips.push('<span class="badge bg-secondary-subtle text-dark" title="' + escapeHtml(mbid) + '"><i class="bi bi-fingerprint me-1"></i>' + escapeHtml(shortMbid) + '</span>');
+    chips.push('<span class="meta-pill" title="' + escapeHtml(mbid) + '"><i class="bi bi-fingerprint"></i>' + escapeHtml(shortMbid) + '</span>');
   }
   if (item.duration) {
-    chips.push('<span class="badge bg-secondary-subtle text-dark"><i class="bi bi-clock me-1"></i>' + formatDuration(item.duration) + '</span>');
+    chips.push('<span class="meta-pill"><i class="bi bi-clock"></i>' + formatDuration(item.duration) + '</span>');
   }
   if (item.track_number) {
-    chips.push('<span class="badge bg-secondary-subtle text-dark"><i class="bi bi-music-note me-1"></i>Track ' + escapeHtml(String(item.track_number)) + '</span>');
+    chips.push('<span class="meta-pill"><i class="bi bi-music-note"></i>Track ' + escapeHtml(String(item.track_number)) + '</span>');
   }
-  const detailLine = chips.length
-    ? '<div class="d-flex flex-wrap gap-1 mt-1">' + chips.join('') + '</div>'
-    : '';
+  const metaLine = '<div class="d-flex align-items-center gap-1 flex-wrap mt-1">' + statusPill + chips.join('') + '</div>';
 
   // Progress bar for in-flight downloads when progress data is available.
   let progressHtml = '';
@@ -1799,28 +1809,31 @@ function renderQueueItemRow(item, kind) {
       '</div>';
   }
 
+  // Borderless icon actions (row-icon-btn) keep the right edge light.
   let actions = '';
   if (kind === 'active') {
     if (st === 'downloading' || st === 'searching' || st === 'processing') {
-      actions += '<button class="btn btn-sm btn-outline-danger" title="Cancel download" onclick="cancelQueueItem(' + item.id + ')"><i class="bi bi-x-circle"></i></button>';
+      actions += '<button class="row-icon-btn text-danger" title="Cancel download" onclick="cancelQueueItem(' + item.id + ')"><i class="bi bi-x-circle"></i></button>';
     }
   }
   if (kind === 'failed' || st === 'failed') {
-    actions += '<button class="btn btn-sm btn-outline-warning" title="Retry" onclick="retryQueueItem(' + item.id + ')"><i class="bi bi-arrow-clockwise"></i></button>';
+    actions += '<button class="row-icon-btn text-warning" title="Retry" onclick="retryQueueItem(' + item.id + ')"><i class="bi bi-arrow-clockwise"></i></button>';
   }
   if (kind === 'completed') {
-    actions += '<button class="btn btn-sm btn-outline-primary" title="Copy to library" onclick="organizeFile(' + item.id + ')"><i class="bi bi-folder-plus"></i></button>';
+    actions += '<button class="row-icon-btn text-success" title="Copy to library" onclick="organizeFile(' + item.id + ')"><i class="bi bi-folder-plus"></i></button>';
   }
-  actions += '<button class="btn btn-sm btn-outline-danger" title="Remove" onclick="deleteQueueItem(' + item.id + ', false)"><i class="bi bi-trash"></i></button>';
+  actions += '<button class="row-icon-btn text-danger" title="Remove" onclick="deleteQueueItem(' + item.id + ', false)"><i class="bi bi-trash"></i></button>';
 
   return '<div class="list-group-item"><div class="d-flex justify-content-between align-items-center gap-2">' +
-    '<div class="text-truncate"><strong>' + escapeHtml(item.title || item.album || 'Unknown') + '</strong>' +
-    (item.artist ? '<br><small class="text-muted">' + escapeHtml(item.artist) + (item.album && item.album !== item.title ? ' - ' + escapeHtml(item.album) : '') + '</small>' : '') +
-    detailLine + progressHtml +
-    (kind === 'failed' && item.failure_reason ? '<br><small class="text-danger"><i class="bi bi-exclamation-triangle"></i> ' + escapeHtml(item.failure_reason) + '</small>' : '') +
-    '</div><div class="d-flex align-items-center gap-2 flex-shrink-0">' +
-    '<span class="badge bg-' + badgeCls + '">' + escapeHtml(st) + '</span>' + actions +
-    '</div></div></div>';
+    '<div style="min-width:0;">' +
+      '<div class="text-truncate"><strong>' + escapeHtml(item.title || item.album || 'Unknown') + '</strong>' +
+      (item.artist ? '<br><small class="text-muted">' + escapeHtml(item.artist) + (item.album && item.album !== item.title ? ' - ' + escapeHtml(item.album) : '') + '</small>' : '') +
+      '</div>' +
+      metaLine + progressHtml +
+      (kind === 'failed' && item.failure_reason ? '<div class="small text-danger mt-1"><i class="bi bi-exclamation-triangle"></i> ' + escapeHtml(item.failure_reason) + '</div>' : '') +
+    '</div>' +
+    '<div class="d-flex align-items-center gap-1 flex-shrink-0">' + actions + '</div>' +
+    '</div></div>';
 }
 
 // Render an album folder header with its tracks as child queue items.
@@ -1849,16 +1862,16 @@ function renderQueueGroupRow(group, kind, index) {
       return i.status === 'downloading' || i.status === 'searching' || i.status === 'processing';
     });
     if (hasActive) {
-      actions += '<button class="btn btn-sm btn-outline-danger" title="Cancel all active downloads" onclick="cancelGroup(' + index + ')"><i class="bi bi-x-circle"></i> Cancel</button>';
+      actions += '<button class="row-icon-btn text-danger" title="Cancel all active downloads" onclick="cancelGroup(' + index + ')"><i class="bi bi-x-circle"></i></button>';
     }
   }
   if (kind === 'completed') {
-    actions += '<button class="btn btn-sm btn-outline-success" title="Copy all tracks to music library" onclick="organizeGroup(' + index + ')"><i class="bi bi-folder-check"></i> Copy All</button>';
+    actions += '<button class="row-icon-btn text-success" title="Copy all tracks to music library" onclick="organizeGroup(' + index + ')"><i class="bi bi-folder-check"></i></button>';
   }
   if (kind === 'failed') {
-    actions += '<button class="btn btn-sm btn-outline-warning" title="Retry all failed tracks" onclick="retryGroup(' + index + ')"><i class="bi bi-arrow-clockwise"></i> Retry</button>';
+    actions += '<button class="row-icon-btn text-warning" title="Retry all failed tracks" onclick="retryGroup(' + index + ')"><i class="bi bi-arrow-clockwise"></i></button>';
   }
-  actions += '<button class="btn btn-sm btn-outline-danger" title="Remove all tracks in this album" onclick="deleteGroup(' + index + ')"><i class="bi bi-trash"></i></button>';
+  actions += '<button class="row-icon-btn text-danger" title="Remove all tracks in this album" onclick="deleteGroup(' + index + ')"><i class="bi bi-trash"></i></button>';
 
   const children = items.map(function(item) {
     return renderQueueItemRow(item, kind);

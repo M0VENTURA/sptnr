@@ -552,6 +552,47 @@
     </div>
   </div>
 
+  <!-- Search Quality & Scoring (Soulseek search floor + fallback) -->
+  <div class="card shadow-sm mb-3" id="search-quality">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-sliders"></i> Search Quality &amp; Scoring</h5>
+      <small class="text-muted">Controls how Soulseek search results are filtered and scored before a download is requested.</small>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12 col-md-4">
+          <label class="form-label">Quality Floor (kbps)</label>
+          <input type="number" class="form-control" id="downloads_search_min_bitrate" min="96" max="320" step="16" value="{{ config.get('downloads', {}).get('quality', {}).get('min_bitrate', 192) }}">
+          <div class="form-text">Hard minimum bitrate for the first search pass. Lossless files (FLAC/WAV) are always accepted regardless of bitrate.</div>
+        </div>
+        <div class="col-12 col-md-4">
+          <div class="form-check form-switch mb-2">
+            <input class="form-check-input" type="checkbox" id="downloads_search_quality_fallback" {% if config.get('downloads', {}).get('quality', {}).get('allow_low_quality_fallback', False) %}checked{% endif %}>
+            <label class="form-check-label" for="downloads_search_quality_fallback"><strong>Low-Quality Fallback</strong></label>
+            <small class="d-block text-muted">If no result meets the floor after all query variants, re-search down to the fallback bitrate — "better than nothing" for rare releases.</small>
+          </div>
+        </div>
+        <div class="col-12 col-md-4">
+          <label class="form-label">Fallback Minimum (kbps)</label>
+          <input type="number" class="form-control" id="downloads_search_fallback_bitrate" min="96" max="320" step="16" value="{{ config.get('downloads', {}).get('quality', {}).get('fallback_min_bitrate', 128) }}">
+          <div class="form-text">Lowest acceptable bitrate for the fallback pass (e.g. 128 for old MP3s).</div>
+        </div>
+        <div class="col-12">
+          <div class="alert alert-secondary mb-0 py-2">
+            <small>
+              <strong>How search results are scored (0–100):</strong> artist in filename <strong>+30</strong> ·
+              title <strong>+25</strong> · album <strong>+20</strong> · duration within 10% <strong>+15</strong> ·
+              lossless <strong>+10</strong> / 320kbps <strong>+5</strong> / below floor <strong>−10</strong> ·
+              24-bit <strong>+3</strong> · free upload slot <strong>+3</strong> · queue length &amp; speed bonuses.
+              A match needs <strong>≥30 points</strong> and the artist must be evidenced in the file path.
+              Below-floor files score lower automatically and only win when nothing better exists.
+            </small>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Watcher Service Section (download-import pipeline) -->
   <div class="card shadow-sm mb-3" id="watcher">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
@@ -694,6 +735,132 @@
             <input class="form-check-input" type="checkbox" id="queue_cleanup_scheduler_enabled" {% if config.get('features', {}).get('download_queue_cleanup_scheduler', {}).get('enabled', True) %}checked{% endif %}>
             <label class="form-check-label" for="queue_cleanup_scheduler_enabled"><strong>Enable Auto Queue Cleanup</strong></label>
             <small class="d-block text-muted">Starts automatically with the app and follows the configured interval</small>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Upcoming & Recent Releases Automation Section (consolidated) -->
+  <div class="card shadow-sm mb-3" id="upcoming-releases-automation">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-calendar-event"></i> Upcoming &amp; Recent Releases Automation</h5>
+      <small class="text-muted">Scheduled release discovery: the daily Wikipedia scrape, the weekly MusicBrainz refresh and the daily MusicBrainz artist scan</small>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12">
+          <h6 class="mb-2"><i class="bi bi-calendar2-week"></i> Scheduled Upcoming-Releases Pipeline</h6>
+          <p class="text-muted small mb-2">Runs the daily Wikipedia scrape (03:00) and the weekly MusicBrainz release-group refresh for collection artists (Sunday 04:00). Manual buttons on the Upcoming Releases page always work regardless of this toggle.</p>
+          <div class="form-check form-switch mb-2">
+            <input class="form-check-input" type="checkbox" id="upcoming_releases_scan_enabled" {% if config.get('features', {}).get('upcoming_releases_scan_enabled', True) %}checked{% endif %}>
+            <label class="form-check-label" for="upcoming_releases_scan_enabled"><strong>Enable Automatic Upcoming Releases Scans</strong></label>
+          </div>
+        </div>
+        <div class="col-12 col-md-3">
+          <label class="form-label">Stale Purge (days)</label>
+          <input type="number" class="form-control" id="upcoming_releases_purge_days" placeholder="30" value="{{ config.get('features', {}).get('upcoming_releases_purge_days', 30) }}" min="1" max="365">
+          <div class="form-text">Releases older than this are removed each daily cycle unless bookmarked, queued or imported.</div>
+        </div>
+        <div class="col-12"><hr class="my-2"></div>
+        <div class="col-12">
+          <h6 class="mb-2"><i class="bi bi-calendar2-week"></i> Daily MusicBrainz Artist Release Refresh</h6>
+          <p class="text-muted small mb-2">Once per daily scheduler cycle, search MusicBrainz for newly announced/recent releases for artists in your collection and add them to Dashboard upcoming/recent cards.</p>
+          <div class="form-check form-switch mb-2">
+            <input class="form-check-input" type="checkbox" id="daily_musicbrainz_release_scan_enabled" {% if config.get('features', {}).get('daily_musicbrainz_release_scan_enabled', True) %}checked{% endif %}>
+            <label class="form-check-label" for="daily_musicbrainz_release_scan_enabled"><strong>Enable Daily MusicBrainz Artist Release Refresh</strong></label>
+          </div>
+        </div>
+        <div class="col-12 col-md-3">
+          <label class="form-label">Lookback (days)</label>
+          <input type="number" class="form-control" id="daily_musicbrainz_release_lookback_days" placeholder="42" value="{{ config.get('features', {}).get('daily_musicbrainz_release_lookback_days', 42) }}" min="1" max="365">
+          <div class="form-text">How far back to look for recently released albums when building "recent" dashboard cards.</div>
+        </div>
+        <div class="col-12 col-md-3">
+          <label class="form-label">Lookahead (days)</label>
+          <input type="number" class="form-control" id="daily_musicbrainz_release_lookahead_days" placeholder="120" value="{{ config.get('features', {}).get('daily_musicbrainz_release_lookahead_days', 120) }}" min="1" max="365">
+          <div class="form-text">How far ahead to look for announced/upcoming releases when building "upcoming" dashboard cards.</div>
+        </div>
+        <div class="col-12 col-md-3">
+          <label class="form-label">Max Artists / Run</label>
+          <input type="number" class="form-control" id="daily_musicbrainz_release_max_artists" placeholder="500" value="{{ config.get('features', {}).get('daily_musicbrainz_release_max_artists', 500) }}" min="1" max="5000">
+          <div class="form-text">Cap on how many artists are queried per daily cycle — raise for large libraries, lower to save API quota.</div>
+        </div>
+        <div class="col-12 col-md-3">
+          <label class="form-label">Releases / Artist</label>
+          <input type="number" class="form-control" id="daily_musicbrainz_release_per_artist_limit" placeholder="100" value="{{ config.get('features', {}).get('daily_musicbrainz_release_per_artist_limit', 100) }}" min="10" max="250">
+          <div class="form-text">Max releases fetched per artist per run.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Upcoming Releases Sources Section -->
+  <div class="card shadow-sm mb-3" id="upcoming-releases-sources">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <div class="d-flex justify-content-between align-items-center">
+        <div>
+          <h5 class="mb-0"><i class="bi bi-calendar-event"></i> Upcoming Releases Sources</h5>
+          <small class="text-muted">Wikipedia pages scraped for upcoming album release data</small>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="alert alert-info mb-3">
+        <i class="bi bi-info-circle"></i>
+        <strong>How it works:</strong> Each Wikipedia page is a release schedule table.
+        The <strong>column order</strong> tells the scraper which table columns map to
+        <em>day</em>, <em>artist</em>, and <em>album</em>. Use <code>genre</code> to mark
+        a column that should be skipped. The <strong>source key</strong> must include a
+        4-digit year (e.g. <code>2026_rock</code>) so dates are parsed for the correct year.
+        <br class="mt-1">
+        Common column layouts: &nbsp;
+        <code>day, artist, album</code> &nbsp;|&nbsp;
+        <code>day, album, artist</code> &nbsp;|&nbsp;
+        <code>day, artist, album, genre</code>
+      </div>
+
+      <!-- Source list -->
+      <div id="upcomingSourcesList" class="mb-3"></div>
+
+      <!-- Add new source button -->
+      <button type="button" class="btn btn-outline-primary btn-sm" onclick="toggleAddUpcomingSourceForm()">
+        <i class="bi bi-plus-circle"></i> Add Source
+      </button>
+
+      <!-- Add new source form (hidden by default) -->
+      <div id="addUpcomingSourceForm" class="card border-primary mt-3 d-none">
+        <div class="card-header bg-primary bg-opacity-10">
+          <strong><i class="bi bi-plus-circle"></i> New Wikipedia Source</strong>
+        </div>
+        <div class="card-body">
+          <div class="row g-3">
+            <div class="col-12 col-md-4">
+              <label class="form-label fw-bold">Source Key <span class="text-danger">*</span></label>
+              <input type="text" class="form-control" id="newSrcKey" placeholder="e.g. 2026_jazz" autocomplete="off">
+              <div class="form-text">Must include a 4-digit year for date parsing (e.g. <code>2026_jazz</code>)</div>
+            </div>
+            <div class="col-12 col-md-4">
+              <label class="form-label fw-bold">Display Name <span class="text-danger">*</span></label>
+              <input type="text" class="form-control" id="newSrcName" placeholder="e.g. Jazz Music 2026" autocomplete="off">
+            </div>
+            <div class="col-12 col-md-4">
+              <label class="form-label fw-bold">Column Order <span class="text-danger">*</span></label>
+              <div id="newSrcColumns"></div>
+              <div class="form-text">Pick the table column for each position (day, artist, album, genre). Genre columns are skipped during parsing.</div>
+            </div>
+            <div class="col-12">
+              <label class="form-label fw-bold">Wikipedia URL <span class="text-danger">*</span></label>
+              <input type="url" class="form-control" id="newSrcUrl" placeholder="https://en.wikipedia.org/wiki/..." autocomplete="off">
+            </div>
+          </div>
+          <div class="mt-3 d-flex gap-2">
+            <button type="button" class="btn btn-primary btn-sm" onclick="addUpcomingSource()">
+              <i class="bi bi-check-circle"></i> Add Source
+            </button>
+            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="toggleAddUpcomingSourceForm()">
+              Cancel
+            </button>
           </div>
         </div>
       </div>
@@ -1624,132 +1791,6 @@
               <input type="number" step="0.01" min="0" max="1" class="form-control form-control-sm" id="solid_era_min_ratio" placeholder="0.40" value="{{ scaling.get('solid_era_min_ratio', 0.40) }}">
               <small class="form-text text-muted">Popularity ratio required for a Solid Era album. Albums below this threshold are marked Minor. Default: <strong>0.40</strong></small>
             </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Upcoming & Recent Releases Automation Section (consolidated) -->
-  <div class="card shadow-sm mb-3" id="upcoming-releases-automation">
-    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
-      <h5 class="mb-0"><i class="bi bi-calendar-event"></i> Upcoming &amp; Recent Releases Automation</h5>
-      <small class="text-muted">Scheduled release discovery: the daily Wikipedia scrape, the weekly MusicBrainz refresh and the daily MusicBrainz artist scan</small>
-    </div>
-    <div class="card-body">
-      <div class="row g-3">
-        <div class="col-12">
-          <h6 class="mb-2"><i class="bi bi-calendar2-week"></i> Scheduled Upcoming-Releases Pipeline</h6>
-          <p class="text-muted small mb-2">Runs the daily Wikipedia scrape (03:00) and the weekly MusicBrainz release-group refresh for collection artists (Sunday 04:00). Manual buttons on the Upcoming Releases page always work regardless of this toggle.</p>
-          <div class="form-check form-switch mb-2">
-            <input class="form-check-input" type="checkbox" id="upcoming_releases_scan_enabled" {% if config.get('features', {}).get('upcoming_releases_scan_enabled', True) %}checked{% endif %}>
-            <label class="form-check-label" for="upcoming_releases_scan_enabled"><strong>Enable Automatic Upcoming Releases Scans</strong></label>
-          </div>
-        </div>
-        <div class="col-12 col-md-3">
-          <label class="form-label">Stale Purge (days)</label>
-          <input type="number" class="form-control" id="upcoming_releases_purge_days" placeholder="30" value="{{ config.get('features', {}).get('upcoming_releases_purge_days', 30) }}" min="1" max="365">
-          <div class="form-text">Releases older than this are removed each daily cycle unless bookmarked, queued or imported.</div>
-        </div>
-        <div class="col-12"><hr class="my-2"></div>
-        <div class="col-12">
-          <h6 class="mb-2"><i class="bi bi-calendar2-week"></i> Daily MusicBrainz Artist Release Refresh</h6>
-          <p class="text-muted small mb-2">Once per daily scheduler cycle, search MusicBrainz for newly announced/recent releases for artists in your collection and add them to Dashboard upcoming/recent cards.</p>
-          <div class="form-check form-switch mb-2">
-            <input class="form-check-input" type="checkbox" id="daily_musicbrainz_release_scan_enabled" {% if config.get('features', {}).get('daily_musicbrainz_release_scan_enabled', True) %}checked{% endif %}>
-            <label class="form-check-label" for="daily_musicbrainz_release_scan_enabled"><strong>Enable Daily MusicBrainz Artist Release Refresh</strong></label>
-          </div>
-        </div>
-        <div class="col-12 col-md-3">
-          <label class="form-label">Lookback (days)</label>
-          <input type="number" class="form-control" id="daily_musicbrainz_release_lookback_days" placeholder="42" value="{{ config.get('features', {}).get('daily_musicbrainz_release_lookback_days', 42) }}" min="1" max="365">
-          <div class="form-text">How far back to look for recently released albums when building "recent" dashboard cards.</div>
-        </div>
-        <div class="col-12 col-md-3">
-          <label class="form-label">Lookahead (days)</label>
-          <input type="number" class="form-control" id="daily_musicbrainz_release_lookahead_days" placeholder="120" value="{{ config.get('features', {}).get('daily_musicbrainz_release_lookahead_days', 120) }}" min="1" max="365">
-          <div class="form-text">How far ahead to look for announced/upcoming releases when building "upcoming" dashboard cards.</div>
-        </div>
-        <div class="col-12 col-md-3">
-          <label class="form-label">Max Artists / Run</label>
-          <input type="number" class="form-control" id="daily_musicbrainz_release_max_artists" placeholder="500" value="{{ config.get('features', {}).get('daily_musicbrainz_release_max_artists', 500) }}" min="1" max="5000">
-          <div class="form-text">Cap on how many artists are queried per daily cycle — raise for large libraries, lower to save API quota.</div>
-        </div>
-        <div class="col-12 col-md-3">
-          <label class="form-label">Releases / Artist</label>
-          <input type="number" class="form-control" id="daily_musicbrainz_release_per_artist_limit" placeholder="100" value="{{ config.get('features', {}).get('daily_musicbrainz_release_per_artist_limit', 100) }}" min="10" max="250">
-          <div class="form-text">Max releases fetched per artist per run.</div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Upcoming Releases Sources Section -->
-  <div class="card shadow-sm mb-3" id="upcoming-releases-sources">
-    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
-      <div class="d-flex justify-content-between align-items-center">
-        <div>
-          <h5 class="mb-0"><i class="bi bi-calendar-event"></i> Upcoming Releases Sources</h5>
-          <small class="text-muted">Wikipedia pages scraped for upcoming album release data</small>
-        </div>
-      </div>
-    </div>
-    <div class="card-body">
-      <div class="alert alert-info mb-3">
-        <i class="bi bi-info-circle"></i>
-        <strong>How it works:</strong> Each Wikipedia page is a release schedule table.
-        The <strong>column order</strong> tells the scraper which table columns map to
-        <em>day</em>, <em>artist</em>, and <em>album</em>. Use <code>genre</code> to mark
-        a column that should be skipped. The <strong>source key</strong> must include a
-        4-digit year (e.g. <code>2026_rock</code>) so dates are parsed for the correct year.
-        <br class="mt-1">
-        Common column layouts: &nbsp;
-        <code>day, artist, album</code> &nbsp;|&nbsp;
-        <code>day, album, artist</code> &nbsp;|&nbsp;
-        <code>day, artist, album, genre</code>
-      </div>
-
-      <!-- Source list -->
-      <div id="upcomingSourcesList" class="mb-3"></div>
-
-      <!-- Add new source button -->
-      <button type="button" class="btn btn-outline-primary btn-sm" onclick="toggleAddUpcomingSourceForm()">
-        <i class="bi bi-plus-circle"></i> Add Source
-      </button>
-
-      <!-- Add new source form (hidden by default) -->
-      <div id="addUpcomingSourceForm" class="card border-primary mt-3 d-none">
-        <div class="card-header bg-primary bg-opacity-10">
-          <strong><i class="bi bi-plus-circle"></i> New Wikipedia Source</strong>
-        </div>
-        <div class="card-body">
-          <div class="row g-3">
-            <div class="col-12 col-md-4">
-              <label class="form-label fw-bold">Source Key <span class="text-danger">*</span></label>
-              <input type="text" class="form-control" id="newSrcKey" placeholder="e.g. 2026_jazz" autocomplete="off">
-              <div class="form-text">Must include a 4-digit year for date parsing (e.g. <code>2026_jazz</code>)</div>
-            </div>
-            <div class="col-12 col-md-4">
-              <label class="form-label fw-bold">Display Name <span class="text-danger">*</span></label>
-              <input type="text" class="form-control" id="newSrcName" placeholder="e.g. Jazz Music 2026" autocomplete="off">
-            </div>
-            <div class="col-12 col-md-4">
-              <label class="form-label fw-bold">Column Order <span class="text-danger">*</span></label>
-              <div id="newSrcColumns"></div>
-              <div class="form-text">Pick the table column for each position (day, artist, album, genre). Genre columns are skipped during parsing.</div>
-            </div>
-            <div class="col-12">
-              <label class="form-label fw-bold">Wikipedia URL <span class="text-danger">*</span></label>
-              <input type="url" class="form-control" id="newSrcUrl" placeholder="https://en.wikipedia.org/wiki/..." autocomplete="off">
-            </div>
-          </div>
-          <div class="mt-3 d-flex gap-2">
-            <button type="button" class="btn btn-primary btn-sm" onclick="addUpcomingSource()">
-              <i class="bi bi-check-circle"></i> Add Source
-            </button>
-            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="toggleAddUpcomingSourceForm()">
-              Cancel
-            </button>
           </div>
         </div>
       </div>

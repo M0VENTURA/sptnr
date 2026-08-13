@@ -1440,19 +1440,24 @@ def get_search_quality_config() -> dict[str, Any]:
 
     Returns:
         Dict with keys ``min_bitrate``, ``min_sample_rate``,
-        ``min_length_seconds``.
+        ``min_length_seconds``, ``allow_low_quality_fallback``,
+        ``fallback_min_bitrate``.
 
     Default Values:
-        - min_bitrate: 320
+        - min_bitrate: 192
         - min_sample_rate: 44100
         - min_length_seconds: 30
+        - allow_low_quality_fallback: False
+        - fallback_min_bitrate: 128
     """
     cfg = get_config()
     quality = cfg.get("downloads", {}).get("quality", {})
     return {
-        "min_bitrate": int(quality.get("min_bitrate", 320)),
+        "min_bitrate": int(quality.get("min_bitrate", 192)),
         "min_sample_rate": int(quality.get("min_sample_rate", 44100)),
         "min_length_seconds": int(quality.get("min_length_seconds", 30)),
+        "allow_low_quality_fallback": bool(quality.get("allow_low_quality_fallback", False)),
+        "fallback_min_bitrate": int(quality.get("fallback_min_bitrate", 128)),
     }
 
 

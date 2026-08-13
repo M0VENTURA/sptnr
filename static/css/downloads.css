@@ -51,16 +51,27 @@
 
 /* Readable meta chips + subtext inside queue rows (dark theme) — the chips
    were rendering near-invisible dark-on-dark; scope to .queue-item-meta so
-   the coloured .status-pill badges keep their own styling. */
+   the coloured .status-pill badges keep their own styling.  ``#2a2a2a`` sits
+   just above the card background (#1e1e1e/#121212) so ``#a0a0a0`` text
+   clears the contrast bar without competing with the track title. */
 .queue-item .queue-item-meta .badge,
-.queue-item .meta-pill {
-    background-color: rgba(255, 255, 255, 0.08) !important;
-    color: #d0d0d0 !important;
-    border: 1px solid rgba(255, 255, 255, 0.12);
+.meta-pill {
+    color: #a0a0a0;
+    background-color: #2a2a2a !important;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.78rem;
+    font-weight: 400;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
     opacity: 1;
 }
-.queue-item .queue-item-meta .badge i {
-    color: var(--spotify-green, #1db954);
+.queue-item .queue-item-meta .badge i,
+.meta-pill i {
+    color: #a0a0a0;
 }
 .queue-item .text-muted {
     color: #a0a0a0 !important;

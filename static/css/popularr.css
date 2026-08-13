@@ -460,9 +460,16 @@ option:checked { background-color: var(--spotify-green); color: #000; }
 @media (max-width: 991.98px) {
   .navbar-nav { flex-direction: column !important; width: 100%; }
   .navbar-nav .nav-link { padding: 0.875rem 1.25rem !important; min-height: 48px; }
-  /* Header search — revealed inside the mobile hamburger menu */
-  li.nav-nav-search { display: block !important; width: 100%; padding: 0.5rem 1.25rem 0.25rem; }
-  li.nav-nav-search .input-group { max-width: none !important; }
+
+  /* Expanded hamburger menu must scroll on short screens: the flex app
+     shell locks ``body`` to the viewport (overflow hidden) and the navbar
+     is fixed, so an expanded menu taller than the viewport clips its
+     bottom items (Logs/Help/Config) with no way to reach them. */
+  .navbar-collapse.show {
+    max-height: calc(100dvh - var(--navbar-height, 112px) - 0.5rem);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
 }
 
 /* ── Artist category sections: empty state (hidden but kept in the DOM) ── */

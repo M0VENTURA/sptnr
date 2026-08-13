@@ -185,6 +185,14 @@
     letter-spacing: 0.5px;
   }
   
+  /* Mobile docs menu: collapsed to a compact sticky bar by default so the
+     document content is visible immediately after navigation (the old
+     layout stacked the full menu above the content, pushing the document
+     below the fold — "tap a link, nothing happened"). */
+  .help-mobile-toggle {
+    display: none;
+  }
+
   @media (max-width: 768px) {
     .help-container {
       flex-direction: column;
@@ -195,6 +203,46 @@
       position: relative;
       height: auto;
       top: 0;
+    }
+
+    .help-mobile-toggle {
+      display: flex;
+      align-items: center;
+      width: 100%;
+      padding: 10px 15px;
+      background: var(--secondary-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      color: var(--text-primary);
+      font-weight: 600;
+      margin-bottom: 10px;
+      position: sticky;
+      top: 0;
+      z-index: 20;
+    }
+
+    .help-mobile-current {
+      color: var(--spotify-green);
+      font-weight: 500;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .help-toggle-chevron {
+      transition: transform 0.2s ease;
+    }
+
+    .help-sidebar.open .help-toggle-chevron {
+      transform: rotate(180deg);
+    }
+
+    .help-sidebar-body {
+      display: none;
+    }
+
+    .help-sidebar.open .help-sidebar-body {
+      display: block;
     }
   }
 </style>
@@ -208,7 +256,16 @@
   
   <div class="help-container">
     <!-- Sidebar Navigation -->
-    <div class="help-sidebar">
+    <div class="help-sidebar" id="helpSidebar">
+      <!-- Mobile: collapsed to a compact bar by default so the document
+           content sits directly below; tap to expand the categories. -->
+      <button type="button" class="help-mobile-toggle" id="helpMobileToggle" aria-expanded="false">
+        <i class="bi bi-list"></i>
+        <span class="ms-2">Documentation</span>
+        {% if doc_title %}<span class="help-mobile-current">· {{ doc_title }}</span>{% endif %}
+        <i class="bi bi-chevron-down ms-auto help-toggle-chevron"></i>
+      </button>
+      <div class="help-sidebar-body" id="helpSidebarBody">
       <div class="help-search">
         <input type="text" id="docSearch" placeholder="Search documentation..." class="form-control">
       </div>
@@ -262,6 +319,7 @@
           {% endfor %}
         </ul>
       </div>
+      </div><!-- /help-sidebar-body -->
     </div>
     
     <!-- Main Content -->
@@ -299,5 +357,17 @@
       }
     });
   });
+
+  // Mobile: the docs menu starts collapsed (content-first). Tapping the bar
+  // expands the categories; selecting a document is a full page load, so the
+  // menu resets to collapsed and the new document is visible immediately.
+  const helpSidebar = document.getElementById('helpSidebar');
+  const helpToggle = document.getElementById('helpMobileToggle');
+  if (helpSidebar && helpToggle) {
+    helpToggle.addEventListener('click', function () {
+      const open = helpSidebar.classList.toggle('open');
+      helpToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+  }
 </script>
 {% endblock %}

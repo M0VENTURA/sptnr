@@ -2608,11 +2608,11 @@ function renderFailedQueue(failed) {
             </div>
           </div>
           <div class="d-flex gap-1 flex-wrap align-items-start">
-            <button class="btn btn-sm btn-outline-warning" onclick="retryQueueItem(${item.id})" title="Re-queue now">
-              <i class="bi bi-arrow-counterclockwise"></i> Retry
+            <button class="row-icon-btn text-warning" onclick="retryQueueItem(${item.id})" title="Re-queue now">
+              <i class="bi bi-arrow-counterclockwise"></i>
             </button>
             <div class="dropdown">
-              <button class="btn btn-sm btn-outline-danger dropdown-toggle" data-bs-toggle="dropdown" title="Delete options">
+              <button class="row-icon-btn text-danger dropdown-toggle" data-bs-toggle="dropdown" title="Delete options">
                 <i class="bi bi-trash"></i>
               </button>
               <ul class="dropdown-menu dropdown-menu-end">
@@ -2640,14 +2640,20 @@ function renderQueueItem(item, statusColor) {
   if (!(item.title || '').trim() && !(item.artist || '').trim() && !(item.album || '').trim()) return '';
   const statusLabel = (queueStatusConfig[item.status] || {}).label || item.status;
 
-  const statusBg = {
-    'primary': 'bg-primary',
-    'warning': 'bg-warning text-dark',
-    'info': 'bg-info text-dark',
-    'success': 'bg-success',
-    'danger': 'bg-danger',
-    'secondary': 'bg-secondary'
-  }[statusColor] || 'bg-primary';
+  // Slim outlined status pill (matches the monitor page's status-pill set).
+  const statusPillCls = {
+    failed: 'failed',
+    downloading: 'downloading',
+    searching: 'downloading',
+    processing: 'downloading',
+    queued: 'queued',
+    completed: 'complete',
+    moving: 'complete',
+    imported: 'complete',
+    in_collection: 'complete',
+    pending_release: 'pending',
+    unmatched: 'pending'
+  }[item.status] || 'queued';
 
   // File hint when matched
   const fileHint = item.found_filename
@@ -2675,17 +2681,17 @@ function renderQueueItem(item, statusColor) {
   const isMoving = item.status === 'moving';
   const isActiveTransfer = ['downloading', 'searching', 'processing'].includes(item.status);
   const copyBtn = isMoving
-    ? `<button class="btn btn-sm btn-warning" onclick="resetMovingItem(${item.id})" title="Stuck in moving — reset so it can be transferred again">
-         <i class="bi bi-arrow-counterclockwise"></i> Reset
+    ? `<button class="row-icon-btn text-warning" onclick="resetMovingItem(${item.id})" title="Stuck in moving — reset so it can be transferred again">
+         <i class="bi bi-arrow-counterclockwise"></i>
        </button>`
     : (!item.copied_individually
-        ? `<button class="btn btn-sm btn-outline-success" onclick="organizeFile(${item.id})"
+        ? `<button class="row-icon-btn text-success" onclick="organizeFile(${item.id})"
                   title="${hasFile ? 'Copy to music library' : 'Find file in downloads folder and transfer to library'}">
              <i class="bi bi-${hasFile ? 'folder-check' : 'search'}"></i>
            </button>`
         : '');
   const cancelBtn = isActiveTransfer
-    ? `<button class="btn btn-sm btn-outline-danger" onclick="cancelQueueItem(${item.id})" title="Cancel download">
+    ? `<button class="row-icon-btn text-danger" onclick="cancelQueueItem(${item.id})" title="Cancel download">
          <i class="bi bi-x-circle"></i>
        </button>`
     : '';
@@ -2693,7 +2699,7 @@ function renderQueueItem(item, statusColor) {
   // Force Start: bypass retry/backoff timers for queued/failed items.
   const canForceStart = ['queued', 'failed', 'backed_off', 'pending_release'].includes(item.status);
   const forceStartBtn = canForceStart
-    ? `<button class="btn btn-sm btn-outline-warning" onclick="forceStartQueueItem(${item.id})" title="Force immediate search/download now — bypasses retry timers">
+    ? `<button class="row-icon-btn text-warning" onclick="forceStartQueueItem(${item.id})" title="Force immediate search/download now — bypasses retry timers">
          <i class="bi bi-arrow-clockwise"></i>
        </button>`
     : '';
@@ -2706,7 +2712,7 @@ function renderQueueItem(item, statusColor) {
     || item.status === 'unmatched'
     || item.status === 'possible_duplicate';
   const matchBtn = (hasFile && isOrphan)
-    ? `<button class="btn btn-sm btn-outline-info" onclick="openManualMatchFlyout(${item.id})" title="Manually link this file to a track in your library">
+    ? `<button class="row-icon-btn text-info" onclick="openManualMatchFlyout(${item.id})" title="Manually link this file to a track in your library">
          <i class="bi bi-link-45deg"></i>
        </button>`
     : '';
@@ -2732,30 +2738,28 @@ function renderQueueItem(item, statusColor) {
 
   return `
     <div class="list-group-item queue-item">
-      <div class="d-flex justify-content-between align-items-start">
-        <div class="flex-grow-1 me-2">
+      <div class="d-flex justify-content-between align-items-start gap-2">
+        <div class="flex-grow-1" style="min-width:0;">
           <h6 class="mb-1">${escapeHtml(item.title)}</h6>
           <p class="text-muted small mb-1">${escapeHtml(item.artist)}${item.album ? ' · ' + escapeHtml(item.album) : ''}</p>
+          <div class="d-flex align-items-center gap-1 flex-wrap mb-1">
+            <span class="badge status-pill status-${statusPillCls}">${statusLabel}</span>
+            <span class="queue-item-meta d-flex gap-1 align-items-center flex-wrap">${sourceBadge}${priBadge}${yearBadge}${tnBadge}</span>
+          </div>
           ${item.search_query ? `<small class="text-muted d-block">Search: ${escapeHtml(item.search_query)}</small>` : ''}
           ${retryNote}
           ${releaseBadge}
           ${fileHint}
           ${progressBar}
         </div>
-        <div class="d-flex flex-column align-items-end gap-1">
-          <div class="d-flex gap-1 align-items-center flex-wrap justify-content-end">
-            <span class="badge ${statusBg}">${statusLabel}</span>
-            <span class="queue-item-meta d-flex gap-1 align-items-center flex-wrap">${sourceBadge}${priBadge}${yearBadge}${tnBadge}</span>
-          </div>
-          <div class="d-flex gap-1 mt-1">
-            ${cancelBtn}
-            ${forceStartBtn}
-            ${matchBtn}
-            ${copyBtn}
-            <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${item.id})" title="Remove from queue">
-              <i class="bi bi-x"></i>
-            </button>
-          </div>
+        <div class="d-flex align-items-center gap-1 flex-shrink-0">
+          ${cancelBtn}
+          ${forceStartBtn}
+          ${matchBtn}
+          ${copyBtn}
+          <button class="row-icon-btn text-danger" onclick="deleteQueueItem(${item.id})" title="Remove from queue">
+            <i class="bi bi-x"></i>
+          </button>
         </div>
       </div>
     </div>

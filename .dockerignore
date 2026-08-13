@@ -2,11 +2,12 @@
 .github/
 .gitignore
 .vscode/
-documentation/
 tests/
 __pycache__/
 *.pyc
 *.pyo
 *.md
+!documentation/
+!documentation/**
 popularr.env
 popularr-queue-worker.service

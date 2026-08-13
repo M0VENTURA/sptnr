@@ -692,34 +692,62 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
             queue_id,
         )
 
-        # ✅ search (allow lower bitrates since scoring handles quality).
-        # Legacy parity: try the primary query first, then fallback queries
-        # (bracket-stripped, album-artist, feat.-stripped, first-word,
-        # title-only) until one yields a qualifying match.  The manual scan
-        # matches on the same broad query variants, so without these the
-        # automatic lookup fails even when results exist on the network.
-        from helpers.config_helpers import _SLSKD_FALLBACK_SEARCH_MAX_WAIT_SECONDS
+        # ✅ search.  Legacy parity: try the primary query first, then
+        # fallback queries (bracket-stripped, album-artist, feat.-stripped,
+        # first-word, title-only) until one yields a qualifying match.  The
+        # manual scan matches on the same broad query variants, so without
+        # these the automatic lookup fails even when results exist.
+        #
+        # Bitrate tiers: the first pass hard-filters at the configured
+        # quality floor (default 192 kbps).  When nothing qualifies AND the
+        # option is enabled, a second pass re-runs the same queries with a
+        # lower floor (default 128 kbps) so rare/old releases that only
+        # exist as low-bitrate MP3s are still grabbed — the scorer's −10
+        # low-bitrate penalty keeps them below any better option, so they
+        # only win when nothing better exists.
+        from helpers.config_helpers import (
+            _SLSKD_FALLBACK_SEARCH_MAX_WAIT_SECONDS,
+            get_search_quality_config,
+        )
+
+        _quality_cfg = get_search_quality_config()
+        floor_bitrate = int(_quality_cfg.get("min_bitrate") or 192)
+        fallback_bitrate = int(_quality_cfg.get("fallback_min_bitrate") or 128)
+        allow_low_quality_fallback = bool(_quality_cfg.get("allow_low_quality_fallback", False))
 
         best = None
         all_results: list[dict[str, Any]] = []
         searched_queries: list[str] = []
+        used_low_quality_fallback = False
+        results: list[dict[str, Any]] = []
 
-        for idx, q in enumerate([query] + fallback_queries):
-            searched_queries.append(q)
-            wait_seconds = None if idx == 0 else _SLSKD_FALLBACK_SEARCH_MAX_WAIT_SECONDS
-            results = slskd.search_and_filter(q, min_bitrate=192, wait_seconds=wait_seconds)
-            # Skip peers that recently rejected/failed this file so a retry picks
-            # a different peer instead of failing on the same one repeatedly.
-            results = _filter_blocked_peers(results)
-            all_results.extend(results)
+        # Bitrate tiers: primary floor first, then (when enabled and lower)
+        # the fallback floor — the same query ladder runs per tier.
+        bitrate_tiers: list[tuple[int, bool]] = [(floor_bitrate, True)]
+        if allow_low_quality_fallback and fallback_bitrate < floor_bitrate:
+            bitrate_tiers.append((fallback_bitrate, False))
 
-            best = _select_best_result(
-                results,
-                expected_artist=expected_artist,
-                expected_title=expected_title,
-                expected_album=expected_album,
-                expected_duration=expected_duration,
-            )
+        for tier_index, (tier_bitrate, long_first_wait) in enumerate(bitrate_tiers):
+            for idx, q in enumerate([query] + fallback_queries):
+                searched_queries.append(q)
+                wait_seconds = None if (idx == 0 and long_first_wait) else _SLSKD_FALLBACK_SEARCH_MAX_WAIT_SECONDS
+                results = slskd.search_and_filter(q, min_bitrate=tier_bitrate, wait_seconds=wait_seconds)
+                # Skip peers that recently rejected/failed this file so a
+                # retry picks a different peer instead of failing on the
+                # same one repeatedly.
+                results = _filter_blocked_peers(results)
+                all_results.extend(results)
+
+                best = _select_best_result(
+                    results,
+                    expected_artist=expected_artist,
+                    expected_title=expected_title,
+                    expected_album=expected_album,
+                    expected_duration=expected_duration,
+                )
+                if best:
+                    used_low_quality_fallback = tier_index > 0
+                    break
             if best:
                 break
 
@@ -873,9 +901,10 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
             found_filename=chosen["filename"],
             status="downloading",
         )
+        _fallback_note = " (low-quality fallback)" if used_low_quality_fallback else ""
         log_unified(
             f"[QUEUE] {expected_artist} - {expected_title} → downloading from {chosen.get('username')} "
-            f"({chosen.get('filename') or ''})"
+            f"({chosen.get('filename') or ''}){_fallback_note}"
         )
         _log_search_event(
             search_type="automatic",
@@ -884,13 +913,13 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
             item=item,
             result_count=len(results),
             duration_seconds=elapsed,
-            notes="download_started",
+            notes="download_started" + (" (low-quality fallback)" if used_low_quality_fallback else ""),
             selected_result=chosen or best,
             results=results,
         )
         _log_queue_event(
             "downloading",
-            f"{expected_artist} - {expected_title} → downloading from {chosen.get('username')} ({chosen.get('filename') or ''})",
+            f"{expected_artist} - {expected_title} → downloading from {chosen.get('username')} ({chosen.get('filename') or ''}){_fallback_note}",
             queue_id,
         )
 

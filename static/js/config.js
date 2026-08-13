@@ -304,6 +304,19 @@ function buildConfigObject() {
           priorities: priorities
         };
       })(),
+      // Soulseek search quality: bitrate floor for the first pass + optional
+      // low-quality fallback tier (rare releases only exist as 128kbps MP3s).
+      quality: Object.assign(
+        {},
+        (window.pageConfig && window.pageConfig.downloads && window.pageConfig.downloads.quality) || {},
+        {
+          min_bitrate: parseInt(getValue('downloads_search_min_bitrate', '192')) || 192,
+          min_sample_rate: parseInt(getValue('downloads_search_min_sample_rate', '44100')) || 44100,
+          min_length_seconds: parseInt(getValue('downloads_search_min_length', '30')) || 30,
+          allow_low_quality_fallback: getChecked('downloads_search_quality_fallback'),
+          fallback_min_bitrate: parseInt(getValue('downloads_search_fallback_bitrate', '128')) || 128
+        }
+      ),
       conversion: {
         enabled: getChecked('downloads_conversion_enabled'),
         mode: getValue('downloads_conversion_mode', 'flac_to_mp3'),

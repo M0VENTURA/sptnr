@@ -2745,25 +2745,73 @@ async def help_page(doc_name=None):
     except Exception:
         pass
 
+    # Legacy feature-page aliases → real docs.  old_system shipped
+    # FEATURES_*.md / MULTI_USER_CONFIG_GUIDE.md files that were never
+    # migrated into the reorganized documentation folder; the end-user and
+    # configuration guides cover the same ground, so old links (and the "?"
+    # help buttons on downloads/playlists/config pages) land on real
+    # content instead of a dead end.
+    _DOC_ALIASES = {
+        "FEATURES_DOWNLOADS": "USER_GUIDE.md#11-downloads",
+        "FEATURES_PLAYLISTS": "USER_GUIDE.md#10-playlists",
+        "FEATURES_LIBRARY": "USER_GUIDE.md",
+        "MULTI_USER_CONFIG_GUIDE": "Services/CONFIGURATION_GUIDE.md",
+    }
+
+    def _doc_url(rel_path: str) -> str:
+        """Build a /help/<doc> URL (optionally with #anchor) for a docs path."""
+        anchor = ""
+        if "#" in rel_path:
+            rel_path, _, anchor = rel_path.partition("#")
+        url = "/help/" + rel_path.replace(".md", "").replace("\\", "/")
+        return url + (f"#{anchor}" if anchor else "")
+
     content = ""
     doc_title = "Help"
-    # Bare /help lands on the end-user guide so the Help link never shows an
-    # empty page.
-    if not doc_name and os.path.exists(os.path.join(doc_root, "USER_GUIDE.md")):
-        doc_name = "USER_GUIDE.md"
+    # Bare /help lands on the end-user guide (falling back to the docs index
+    # when the guide is missing) so the Help link never shows an empty page.
+    if not doc_name:
+        for candidate in ("USER_GUIDE.md", "README.md"):
+            if os.path.exists(os.path.join(doc_root, candidate)):
+                doc_name = candidate
+                break
     if doc_name:
         doc_name = os.path.normpath(str(doc_name)).replace("\\", "/")
         full_path = os.path.realpath(os.path.join(doc_root, doc_name))
         # Path-traversal guard: the resolved file must stay inside the docs
         # folder (a basename-only lookup would break subfolder docs).
         if os.path.commonpath([doc_root, full_path]) != doc_root or not os.path.isfile(full_path):
-            content = (
-                "# Document Not Found\n\n"
-                f"The document **{os.path.basename(doc_name)}** does not exist in the\n"
-                "documentation folder.\n\n"
-                "- [📘 User Guide](/help/USER_GUIDE) — how the app works, scoring and settings\n"
-                "- [📖 Documentation Index](/help/README) — all available documents\n"
-            )
+            # 1) Legacy alias (FEATURES_* / MULTI_USER_CONFIG_GUIDE).
+            alias = _DOC_ALIASES.get(os.path.basename(doc_name).replace(".md", ""))
+            if alias:
+                alias_file = alias.partition("#")[0]
+                if os.path.isfile(os.path.join(doc_root, alias_file)):
+                    return redirect(_doc_url(alias))
+            # 2) Anything else missing falls back to the user guide, then the
+            #    docs index, so stale links never dead-end.
+            for fallback in ("USER_GUIDE.md", "README.md"):
+                if os.path.isfile(os.path.join(doc_root, fallback)):
+                    return redirect(_doc_url(fallback))
+            # 3) Last resort: list what actually exists instead of linking to
+            #    documents that may not be present.
+            if doc_files:
+                available = "\n".join(
+                    f"- [{d}]({_doc_url(d)})" for d in doc_files[:15]
+                )
+                content = (
+                    "# Document Not Found\n\n"
+                    f"The document **{os.path.basename(doc_name)}** does not exist in the\n"
+                    "documentation folder.\n\n"
+                    "### Available documents\n\n" + available
+                )
+            else:
+                content = (
+                    "# Document Not Found\n\n"
+                    f"The document **{os.path.basename(doc_name)}** does not exist in the\n"
+                    "documentation folder.\n\n"
+                    "- [📘 User Guide](/help/USER_GUIDE) — how the app works, scoring and settings\n"
+                    "- [📖 Documentation Index](/help/README) — all available documents\n"
+                )
         else:
             with open(full_path, encoding="utf-8") as f:
                 md_content = f.read()
