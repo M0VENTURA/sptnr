@@ -2377,6 +2377,19 @@ function renderCompletedQueue(completed) {
       groups[key].artist = item.artist;
     }
   }
+
+  // Order tracks within each album/playlist group by track number so the
+  // queue list under an album folder shows the album's tracks in order.
+  for (const group of Object.values(groups)) {
+    group.items.sort((a, b) => {
+      const na = parseInt(a.track_number, 10);
+      const nb = parseInt(b.track_number, 10);
+      if (!isNaN(na) && !isNaN(nb)) return na - nb;
+      if (!isNaN(na)) return -1;
+      if (!isNaN(nb)) return 1;
+      return 0;
+    });
+  }
   
   // Get type icons and labels
   const typeInfo = {

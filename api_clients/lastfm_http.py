@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import logging
 import random
-import time
 from typing import Any, Callable
 
 import httpx
@@ -32,52 +31,86 @@ LASTFM_DEFAULTS = {
 }
 
 
+class _RateLimited(Exception):
+    """Marker raised when Last.fm answers 429 so tenacity can wait + retry."""
+
+    def __init__(self, response: httpx.Response):
+        super().__init__("Last.fm rate limited (429)")
+        self.response = response
+
+
 def retry_with_backoff(
     func: Callable,
     max_retries: int = LASTFM_DEFAULTS["MAX_RETRIES"],
     backoff_factor: float = LASTFM_DEFAULTS["RETRY_BACKOFF"],
     rate_limit_delay: float = LASTFM_DEFAULTS["RATE_LIMIT_DELAY"],
 ):
-    """Retry a callable returning an httpx.Response with exponential backoff."""
-    for attempt in range(max_retries):
-        try:
-            # The per-provider limiter (1 req/s, lock-based) already paces the
-            # FIRST attempt — the fixed pre-sleep must not run before it (it
-            # cost 0.5 s on EVERY Last.fm request, dwarfing API latency).  It
-            # still delays RETRIES as an extra safety gap between attempts.
-            if attempt > 0:
-                time.sleep(rate_limit_delay)
-            result = func()
+    """Retry a callable returning an httpx.Response with exponential backoff.
 
-            if hasattr(result, "status_code") and result.status_code == 429:
-                if attempt == max_retries - 1:
-                    result.raise_for_status()
-                retry_after = result.headers.get("Retry-After")
-                try:
-                    wait_time = float(retry_after) if retry_after else (backoff_factor ** attempt) * 2
-                except ValueError:
-                    wait_time = (backoff_factor ** attempt) * 2
-                logger.warning("Last.fm rate limited; waiting %.2fs", wait_time)
-                time.sleep(wait_time)
-                continue
+    The retry/backoff loop is driven by ``tenacity`` (the previous version
+    hand-rolled the attempt counter).  Semantics are preserved: transient
+    connection errors and HTTP 5xx retry, 429 honours ``Retry-After`` (or the
+    exponential fallback) and raises ``HTTPStatusError`` once retries are
+    exhausted, and every retry sleeps an extra ``rate_limit_delay``.
+    """
+    from tenacity import (
+        Retrying,
+        retry_if_exception,
+        stop_after_attempt,
+    )
 
-            return result
-
-        except (httpx.ConnectError, ConnectionResetError, httpx.TimeoutException, httpx.RequestError) as exc:
-            if attempt == max_retries - 1:
-                raise
-            wait_time = (backoff_factor ** attempt) + random.uniform(0, 1)
-            logger.debug("Last.fm retry %s/%s after %.2fs: %s", attempt + 1, max_retries, wait_time, exc)
-            time.sleep(wait_time)
-
-        except httpx.HTTPStatusError as exc:
+    def _is_retryable(exc: BaseException) -> bool:
+        if isinstance(exc, _RateLimited):
+            return True
+        if isinstance(
+            exc,
+            (httpx.ConnectError, ConnectionResetError, httpx.TimeoutException, httpx.RequestError),
+        ):
+            return True
+        if isinstance(exc, httpx.HTTPStatusError):
             response = getattr(exc, "response", None)
             status_code = getattr(response, "status_code", None)
-            if status_code and status_code >= 500 and attempt < max_retries - 1:
-                wait_time = (backoff_factor ** attempt) + random.uniform(0, 1)
-                time.sleep(wait_time)
-                continue
-            raise
+            return bool(status_code and status_code >= 500)
+        return False
+
+    def _wait(retry_state):
+        # ``attempt_number`` is 1-based (1 = the first failed attempt).
+        n = retry_state.attempt_number
+        exc = retry_state.outcome.exception()
+        if isinstance(exc, _RateLimited):
+            retry_after = exc.response.headers.get("Retry-After")
+            try:
+                base = float(retry_after) if retry_after else (backoff_factor ** (n - 1)) * 2
+            except ValueError:
+                base = (backoff_factor ** (n - 1)) * 2
+        else:
+            base = (backoff_factor ** (n - 1)) + random.uniform(0, 1)
+        # The first retry only waits the fixed rate-limit delay (legacy
+        # parity); later retries add the backoff wait on top.
+        return rate_limit_delay if n == 1 else rate_limit_delay + base
+
+    retrying = Retrying(
+        stop=stop_after_attempt(max_retries),
+        wait=_wait,
+        retry=retry_if_exception(_is_retryable),
+        reraise=True,
+    )
+
+    for attempt in retrying:
+        with attempt:
+            try:
+                result = func()
+
+                if hasattr(result, "status_code") and result.status_code == 429:
+                    raise _RateLimited(result)
+
+                return result
+            except _RateLimited as exc:
+                # Retries exhausted on a 429 — surface the real HTTPStatusError
+                # (legacy behaviour) instead of the marker.
+                if attempt.retry_state.attempt_number >= max_retries:
+                    exc.response.raise_for_status()
+                raise
 
     return None
 

@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from typing import Any
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -54,29 +53,39 @@ class ResilientSQLAlchemyJobStore(SQLAlchemyJobStore):
     _RETRY_DELAY = 1.0
 
     def _execute(self, fn, *args, **kwargs):
-        last_error: Exception | None = None
-        for attempt in range(self._RETRIES):
+        # tenacity drives the retry/backoff loop that used to be hand-rolled
+        # here; the engine pool is disposed before each retry so the next
+        # attempt checks out a fresh connection after a PostgreSQL restart.
+        from tenacity import (
+            Retrying,
+            retry_if_exception,
+            stop_after_attempt,
+            wait_exponential,
+        )
+
+        def _call():
+            return fn(*args, **kwargs)
+
+        def _before_retry(retry_state):
+            logger.warning(
+                "[scheduler] Transient DB error in jobstore (attempt %s): %s",
+                retry_state.attempt_number,
+                retry_state.outcome.exception() if retry_state.outcome else None,
+            )
             try:
-                return fn(*args, **kwargs)
-            except Exception as exc:
-                last_error = exc
-                if not self._is_transient(exc):
-                    raise
-                logger.warning(
-                    "[scheduler] Transient DB error in jobstore (attempt %s/%s): %s",
-                    attempt + 1,
-                    self._RETRIES,
-                    exc,
-                )
-                try:
-                    self.engine.dispose()
-                except Exception:
-                    pass
-                if attempt < self._RETRIES - 1:
-                    time.sleep(self._RETRY_DELAY * (attempt + 1))
-        if last_error is not None:
-            raise last_error
-        return None
+                self.engine.dispose()
+            except Exception:
+                pass
+
+        return Retrying(
+            stop=stop_after_attempt(self._RETRIES),
+            wait=wait_exponential(
+                multiplier=1.0, exp_base=2, min=self._RETRY_DELAY, max=5.0
+            ),
+            retry=retry_if_exception(self._is_transient),
+            reraise=True,
+            before_sleep=_before_retry,
+        )(_call)
 
     @staticmethod
     def _is_transient(exc: Exception) -> bool:
@@ -267,7 +276,7 @@ def _register_default_jobs(scheduler: BackgroundScheduler, cfg: dict[str, Any]) 
         except Exception as exc:
             logger.warning("APScheduler: failed to register library_sync: %s", exc)
     else:
-        _remove_job(scheduler, "library_sync")
+        _remove_job("library_sync")
 
     # ── Popularity scan ───────────────────────────────────────────────────
     # The "Auto Popularity Scan" toggle gates the daily recalculation job.
@@ -282,7 +291,7 @@ def _register_default_jobs(scheduler: BackgroundScheduler, cfg: dict[str, Any]) 
         except Exception as exc:
             logger.warning("APScheduler: failed to register popularity_scan: %s", exc)
     else:
-        _remove_job(scheduler, "popularity_scan")
+        _remove_job("popularity_scan")
 
     # ── Download queue processor ──────────────────────────────────────────
     # The "Downloads Watcher" toggle maps to the queue processor (the
@@ -311,7 +320,7 @@ def _register_default_jobs(scheduler: BackgroundScheduler, cfg: dict[str, Any]) 
         except Exception as exc:
             logger.warning("APScheduler: failed to register download_queue_processor: %s", exc)
     else:
-        _remove_job(scheduler, "download_queue_processor")
+        _remove_job("download_queue_processor")
 
     # ── Missing releases scan ─────────────────────────────────────────────
     # Legacy daily behaviour: refresh the missing_releases cache so the
@@ -329,7 +338,7 @@ def _register_default_jobs(scheduler: BackgroundScheduler, cfg: dict[str, Any]) 
                 func=start_missing_release_scan,
             )
         else:
-            _remove_job(scheduler, "missing_releases_scan")
+            _remove_job("missing_releases_scan")
     except Exception as exc:
         logger.warning("APScheduler: failed to register missing_releases_scan: %s", exc)
 
@@ -368,8 +377,8 @@ def _register_default_jobs(scheduler: BackgroundScheduler, cfg: dict[str, Any]) 
         except Exception as exc:
             logger.warning("APScheduler: failed to register upcoming_musicbrainz_scan: %s", exc)
     else:
-        _remove_job(scheduler, "upcoming_wikipedia_scrape")
-        _remove_job(scheduler, "upcoming_musicbrainz_scan")
+        _remove_job("upcoming_wikipedia_scrape")
+        _remove_job("upcoming_musicbrainz_scan")
 
 
 def reschedule_jobs_from_config() -> dict[str, Any]:

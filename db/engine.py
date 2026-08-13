@@ -1,7 +1,7 @@
 """SQLAlchemy engine, session factory, and helper utilities.
 
 Provides both synchronous (``Session`` / ``db_session``) and asynchronous
-(``AsyncSession`` / ``async_session_factory``) session management for the
+(``AsyncSession`` / ``async_db_session``) session management for the
 Popularr database.
 
 Usage (sync — existing Flask routes)::
@@ -11,12 +11,15 @@ Usage (sync — existing Flask routes)::
     with db_session() as session:
         tracks = session.query(Track).all()
 
-Usage (async — future Quart/FastAPI routes)::
+Usage (async — Quart routes)::
 
-    from db.engine import async_session_factory
+    from db.engine import async_db_session
 
-    async with async_session_factory() as session:
-        tracks = await session.execute(select(Track))
+    async with async_db_session() as session:
+        result = await session.execute(select(Track))
+
+The async session runs on the ``asyncpg`` driver (proper asyncpg adoption)
+so async handlers never block the event loop on DB work.
 
 Environment variables:
     DATABASE_URL  – Full connection string (overrides all PG_* vars)
@@ -31,7 +34,7 @@ from __future__ import annotations
 
 import logging
 import os
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from typing import Any, Iterator
 
 from sqlalchemy import create_engine, event
@@ -84,6 +87,22 @@ def _resolve_database_url() -> str:
         "PostgreSQL configuration missing: set DATABASE_URL or PG_HOST "
         "(plus PG_PORT/PG_USER/PG_PASSWORD/PG_DATABASE as needed)"
     )
+
+
+def _resolve_async_database_url() -> str:
+    """Derive the asyncpg connection URL from the resolved sync URL.
+
+    The same ``DATABASE_URL`` / ``PG_*`` config drives both engines; only the
+    driver changes (``psycopg2`` → ``asyncpg``).  SQLite test URLs are passed
+    through unchanged (asyncpg cannot serve SQLite — async sessions are only
+    used against PostgreSQL in production).
+    """
+    url = _resolve_database_url()
+    if url.startswith("postgresql+psycopg2://"):
+        return url.replace("postgresql+psycopg2://", "postgresql+asyncpg://", 1)
+    if url.startswith("postgresql://"):
+        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    return url
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +180,114 @@ def get_session_factory() -> sessionmaker[Session]:
 
 
 # ---------------------------------------------------------------------------
+# Asynchronous engine / sessions (asyncpg)
+# ---------------------------------------------------------------------------
+# Proper asyncpg adoption: a dedicated async engine + async session factory
+# backed by the ``postgresql+asyncpg`` driver.  Async Quart routes should use
+# ``async_db_session()`` (mirrors ``db_session()`` with commit/rollback) so
+# their DB work never blocks the event loop.  The async engine shares the
+# ``PG_*`` / ``DATABASE_URL`` config with the sync engine (only the driver
+# differs) and keeps its own connection pool.
+
+_ASYNC_ENGINE: Any = None
+_ASYNC_SESSION_FACTORY: Any = None
+
+
+def get_async_engine() -> Any:
+    """Return the singleton async (asyncpg) SQLAlchemy engine."""
+    global _ASYNC_ENGINE
+    if _ASYNC_ENGINE is not None:
+        return _ASYNC_ENGINE
+
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    url = _resolve_async_database_url()
+    kwargs: dict[str, Any] = {
+        "echo": os.environ.get("SQLALCHEMY_ECHO", "0") == "1",
+        "future": True,
+    }
+    if not url.startswith("sqlite:"):
+        kwargs["pool_size"] = int(os.environ.get("DB_POOL_SIZE", "5"))
+        kwargs["max_overflow"] = int(os.environ.get("DB_POOL_OVERFLOW", "10"))
+        kwargs["pool_pre_ping"] = True
+
+    _ASYNC_ENGINE = create_async_engine(url, **kwargs)
+    logger.info("Async (asyncpg) SQLAlchemy engine created")
+    return _ASYNC_ENGINE
+
+
+def get_async_session_factory() -> Any:
+    """Return the singleton async session factory (``async_sessionmaker``)."""
+    global _ASYNC_SESSION_FACTORY
+    if _ASYNC_SESSION_FACTORY is None:
+        from sqlalchemy.ext.asyncio import async_sessionmaker
+        _ASYNC_SESSION_FACTORY = async_sessionmaker(
+            bind=get_async_engine(), expire_on_commit=False
+        )
+    return _ASYNC_SESSION_FACTORY
+
+
+@asynccontextmanager
+async def async_db_session(retries: int = 2):
+    """Async context manager yielding an ``AsyncSession`` (asyncpg).
+
+    Commits on success, rolls back on exception, and retries session
+    acquisition (not the caller's block) on transient connection failures —
+    the async counterpart of ``db_session`` for asyncpg adoption.
+
+    Usage::
+
+        from db.engine import async_db_session
+
+        async with async_db_session() as session:
+            result = await session.execute(text("SELECT 1"))
+    """
+    retries = max(1, int(retries))
+
+    # Retry only session acquisition — the caller's block cannot be re-run.
+    from tenacity import (
+        AsyncRetrying,
+        retry_if_exception,
+        stop_after_attempt,
+        wait_exponential,
+    )
+
+    async def _acquire_session():
+        return get_async_session_factory()()
+
+    def _dispose_before_retry(retry_state: Any) -> None:
+        try:
+            _ASYNC_ENGINE and _ASYNC_ENGINE.dispose()
+        except Exception:
+            pass
+
+    session = await AsyncRetrying(
+        stop=stop_after_attempt(retries),
+        wait=wait_exponential(multiplier=0.2, exp_base=2, min=0.2, max=2.0),
+        retry=retry_if_exception(_is_transient_db_error),
+        reraise=True,
+        before_sleep=_dispose_before_retry,
+    )(_acquire_session)
+
+    try:
+        yield session
+        await session.commit()
+    except Exception as exc:
+        try:
+            await session.rollback()
+        except Exception:
+            pass
+        if _is_transient_db_error(exc):
+            try:
+                _ASYNC_ENGINE and _ASYNC_ENGINE.dispose()
+            except Exception:
+                pass
+        raise
+    finally:
+        await session.close()
+
+
+# ---------------------------------------------------------------------------
 # Synchronous session context manager
 # ---------------------------------------------------------------------------
 
@@ -209,26 +336,39 @@ def db_session(retries: int = 2) -> Iterator[Session]:
             track = session.query(Track).filter(Track.id == "123").first()
     """
     retries = max(1, int(retries))
-    last_error: Exception | None = None
 
     # Retry only session acquisition — the caller's block cannot be re-run.
-    session: Session | None = None
-    for attempt in range(retries):
+    # tenacity drives the retry/backoff (``db_session`` used to hand-roll the
+    # loop); the pool is disposed before each retry so the next attempt checks
+    # out a live connection after a Postgres restart / idle timeout.
+    from tenacity import (
+        Retrying,
+        retry_if_exception,
+        stop_after_attempt,
+        wait_exponential,
+    )
+
+    def _acquire_session() -> Session:
+        return get_session_factory()()
+
+    def _dispose_before_retry(retry_state: Any) -> None:
         try:
-            session = get_session_factory()()
-            break
-        except Exception as exc:
-            last_error = exc
-            if not _is_transient_db_error(exc) or attempt >= retries - 1:
-                raise
-            try:
-                _ENGINE and _ENGINE.dispose()
-            except Exception:
-                pass
-    if session is None:
-        if last_error is not None:
-            raise last_error
-        raise RuntimeError("db_session: could not acquire a session")
+            _ENGINE and _ENGINE.dispose()
+        except Exception:
+            pass
+        logger.warning(
+            "[db] Transient error acquiring session (attempt %s) — retrying: %s",
+            retry_state.attempt_number,
+            retry_state.outcome.exception() if retry_state.outcome else None,
+        )
+
+    session = Retrying(
+        stop=stop_after_attempt(retries),
+        wait=wait_exponential(multiplier=0.2, exp_base=2, min=0.2, max=2.0),
+        retry=retry_if_exception(_is_transient_db_error),
+        reraise=True,
+        before_sleep=_dispose_before_retry,
+    )(_acquire_session)
 
     try:
         yield session

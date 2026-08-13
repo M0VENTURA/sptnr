@@ -24,7 +24,9 @@ class _RetryTransport(httpx.BaseTransport):
     """Transport wrapper that adds retry logic on top of httpx's HTTPTransport.
 
     Retries on transient errors (connection drops, DNS failures, timeouts)
-    and configurable HTTP status codes using exponential backoff.
+    and configurable HTTP status codes using exponential backoff.  The retry
+    loop is driven by ``tenacity`` (``stop_after_attempt`` +
+    ``wait_exponential``) instead of a hand-rolled counter.
     """
 
     def __init__(
@@ -43,34 +45,62 @@ class _RetryTransport(httpx.BaseTransport):
         self,
         request: httpx.Request,
     ) -> httpx.Response:
-        last_exc: Exception | None = None
+        from tenacity import (
+            Retrying,
+            retry_if_exception,
+            stop_after_attempt,
+            wait_exponential,
+        )
 
-        for attempt in range(self._retries + 1):
-            try:
-                response = self._transport.handle_request(request)
+        class _RetryableStatus(Exception):
+            """Marker raised when the peer returned a retryable status code."""
 
-                if (
-                    response.status_code in self._status_forcelist
-                    and attempt < self._retries
-                ):
-                    import time
-                    wait = self._backoff * (2 ** attempt)
-                    time.sleep(wait)
-                    continue
+            def __init__(self, response: httpx.Response):
+                super().__init__(f"Retryable HTTP status {response.status_code}")
+                self.response = response
 
-                return response
+        def _is_retryable(exc: BaseException) -> bool:
+            if isinstance(exc, _RetryableStatus):
+                return True
+            return isinstance(
+                exc,
+                (httpx.ConnectError, httpx.RemoteProtocolError, httpx.TimeoutException),
+            )
 
-            except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.TimeoutException) as exc:
-                last_exc = exc
-                if attempt < self._retries:
-                    import time
-                    wait = self._backoff * (2 ** attempt)
-                    time.sleep(wait)
-                    continue
-                raise
+        # The last retryable status is returned as-is (legacy behaviour) — a
+        # peer that keeps answering 503/429 should surface the final response
+        # instead of a synthetic exception.
+        last_status_response: httpx.Response | None = None
 
-        # Should not be reached, but satisfy the return type
-        raise last_exc or httpx.TransportError("Maximum retries exceeded")
+        def _attempt() -> httpx.Response:
+            nonlocal last_status_response
+            response = self._transport.handle_request(request)
+            if response.status_code in self._status_forcelist:
+                last_status_response = response
+                raise _RetryableStatus(response)
+            return response
+
+        retrying = Retrying(
+            stop=stop_after_attempt(self._retries + 1),
+            wait=wait_exponential(
+                multiplier=self._backoff,
+                exp_base=2,
+                min=self._backoff,
+                max=60.0,
+            ),
+            retry=retry_if_exception(_is_retryable),
+            reraise=True,
+        )
+
+        try:
+            for attempt in retrying:
+                with attempt:
+                    return _attempt()
+        except _RetryableStatus:
+            if last_status_response is not None:
+                return last_status_response
+            raise
+        raise httpx.TransportError("Maximum retries exceeded")
 
     def close(self) -> None:
         self._transport.close()

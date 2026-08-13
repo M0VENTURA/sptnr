@@ -74,7 +74,7 @@ def apply_mbid_match_batch(
         with db_session() as session:
             first_row = session.execute(
                 text("SELECT artist, album FROM download_queue WHERE id = :qid"),
-                {"qid": first_queue_id},
+                {"qid": queue_ids[0]},
             ).fetchone()
 
             if not first_row:

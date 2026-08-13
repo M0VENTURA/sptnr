@@ -1748,9 +1748,10 @@ def process_track(
 
     # ── Consolidated per-track log line ───────────────────────────────────
     # One line per track in the unified log: title, popularity score with
-    # provider counts, ISRC, and the single verdict with source chips.  The
-    # metadata pre-pass (Pass 1 of a combined scan) logs at DEBUG only so the
-    # scan output is not printed twice for every track.
+    # provider counts, stored rating, single verdict with the matched source
+    # chips (Discogs/MB/Video/Last.fm/Radio).  The metadata pre-pass (Pass 1
+    # of a combined scan) logs at DEBUG only so the scan output is not
+    # printed twice for every track.
     if not _single_summary:
         _stored_conf = str(
             update_payload.get("single_confidence")
@@ -1758,13 +1759,42 @@ def process_track(
             or "low"
         ).upper()
         _single_summary = f"Single: {_stored_conf} (stored)"
+    # Surface the STORED rating as an approximation of the final star rating
+    # (the final rating is assigned by the finaliser once the whole album's
+    # distribution is known).
+    try:
+        _stored_stars = int(track.get("stars") or track.get("star_rating") or 0)
+    except (TypeError, ValueError):
+        _stored_stars = 0
+    _stars_part = (
+        f" | Stars: {'★' * _stored_stars}" if 1 <= _stored_stars <= 5 else ""
+    )
+    # Single-detection evidence: the raw matched source names (from
+    # ``single_sources``) alongside the confidence verdict + chips.
+    _src_names: list[str] = []
+    try:
+        _src_raw = update_payload.get("single_sources") or track.get("single_sources") or ""
+        if isinstance(_src_raw, str):
+            _src_parsed = json.loads(_src_raw) if _src_raw.strip() else []
+        else:
+            _src_parsed = _src_raw
+        _src_names = [
+            str(s.get("source") or "").replace("_", " ")
+            for s in (_src_parsed or [])
+            if isinstance(s, dict) and bool(s.get("matched"))
+        ]
+    except Exception:
+        _src_names = []
     _isrc_part = f" | ISRC: {_isrc_found}" if _isrc_found else ""
     _consolidated = (
         f"[TRACK] 🎵 \"{str(track_title or '').strip()}\""
         f" | {_pop_summary or 'Score: —'}"
+        f"{_stars_part}"
         f"{_isrc_part}"
         f" | {_single_summary}"
     )
+    if _src_names:
+        _consolidated += f" | Matched: {', '.join(_src_names)}"
     if metadata_only:
         logger.debug("[TRACK_STAGE] %s", _consolidated)
     else:

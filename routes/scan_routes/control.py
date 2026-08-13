@@ -13,6 +13,7 @@ from services.scanning.runtime_state import (
     scan_lock,
     is_runtime_running,
     clear_runtime,
+    set_runtime,
 )
 
 from services.scanning.scan_state import (
@@ -63,11 +64,23 @@ async def scan_start():
     # Full/library scan
     # -------------------------------------------------
     if scan_type in {"full", "force"}:
-        result = start_library_scan(
-            artist_filter=None,
-            resume=True,
-            force=(scan_type == "force"),
-        )
+        with scan_lock:
+            if is_runtime_running("library"):
+                await flash("A scan is already running", "warning")
+                return redirect(url_for("ui.dashboard"))
+
+            def _full_scan_worker():
+                try:
+                    start_library_scan(
+                        artist_filter=None,
+                        resume=True,
+                        force=(scan_type == "force"),
+                    )
+                finally:
+                    clear_runtime("library")
+
+            thread = run_async(_full_scan_worker)
+            set_runtime("library", {"thread": thread, "type": "library"})
 
         await flash(f"Scan started: {scan_type}", "success")
         return redirect(url_for("ui.dashboard"))
