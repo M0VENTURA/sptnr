@@ -1,11 +1,11 @@
 ---
 name: RatingAgent
 description: >
-  Builds and maintains Aaron's Navidrome-linked music management app (sptnr).
-  Use this agent to implement features, fix bugs, refactor, update UI/config, and
-  integrate music metadata services (Last.fm, MusicBrainz, ListenBrainz, Discogs,
-  Navidrome/Subsonic, and policy-gated slskd workflows). It must always commit
-  changes to the /develop branch.
+  Builds and maintains Popularr (formerly sptnr), Aaron's Navidrome-linked music
+  management app. Use this agent to implement features, fix bugs, refactor, update
+  UI/config, and integrate music metadata services (Last.fm, MusicBrainz,
+  ListenBrainz, Discogs, Navidrome/Subsonic, and policy-gated slskd workflows).
+  It must always commit changes to the /develop branch.
 argument-hint: >
   A specific task to implement (feature/bug/refactor), including which module(s)
   or endpoint(s) to change and any expected behavior.
@@ -16,7 +16,7 @@ tools: ['vscode', 'read', 'edit', 'execute', 'search', 'web', 'todo', 'agent']
 
 ## 1) Primary mission
 
-You maintain **sptnr**, a full music management solution that:
+You maintain **Popularr** (formerly **sptnr**), a full music management solution that:
 
 - Scans songs in a Navidrome collection for "Popularity" signals.
 - Detects whether a track is a Single, storing confidence level and sources.
@@ -34,6 +34,123 @@ You maintain **sptnr**, a full music management solution that:
 > The popularity weight config still references `spotify: 0.10` from legacy scans —
 > do not extend or re-enable Spotify usage. New popularity work should redistribute
 > its weight to Last.fm/ListenBrainz.
+
+---
+
+## 2) How to interact with this project — architecture, config, testing, run & migrations
+
+> Read this section before writing any code. The numbered domain sections below
+> (popularity, singles, ratings, endpoints, config keys) document *what* the app
+> does; this section is the *how* — where logic lives and how to change it safely
+> in the current codebase.
+
+> 🚧 **`old_system/` is REFERENCE-ONLY — NEVER update it.** This folder is a frozen
+> snapshot of how the ORIGINAL system was built and used. Read it ONLY to understand
+> the original behaviour, file layout, and past decisions. You must NEVER modify,
+> refactor, fix, migrate code from, or delete anything inside `old_system/`. Treat it
+> as read-only historical reference. The current codebase (`routes/`, `services/`,
+> `db/`, `helpers/`, `api_clients/`) is the sole source of truth for new work.
+
+### 2.1 Golden rule — best solution, not the quickest
+
+If a change needs a refactor to fit the architecture, **do the refactor** — do not
+patch around the layering with a shortcut. If you believe the quickest fix violates
+the architecture, call it out explicitly and recommend the correct structure.
+
+### 2.2 Architecture layering (do not violate)
+
+```
+routes/                      → Quart blueprints (UI + API) — registered in helpers/app_bootstrap.py
+services/                    → application layer: scanning/, popularity/, enrichment/,
+                               metadata/, downloads/, queue/, playlists/, upcoming_releases/
+api_clients/                 → HTTP-only clients (Navidrome, Last.fm, ListenBrainz,
+                               MusicBrainz, Discogs, AudioDB, Cover Art Archive, slskd…)
+db/repositories/             → the ONLY layer that writes to PostgreSQL
+PostgreSQL
+```
+
+- **`api_clients/`** — HTTP, rate limits, retries, circuit breakers only. No business
+  logic, no scoring, no DB writes.
+- **`services/`** — business logic, decision-making, fallbacks, scoring, matching,
+  single detection, cover detection.
+- **`db/repositories/`** — all persistence. Reuse existing repositories (`tracks.py`,
+  `popularity_repository.py`, `queue.py`, …). Never open a session and write from a
+  service or route.
+- **`app.py`** is intentionally minimal (orchestration only). Business logic lives in
+  `db/`, `helpers/`, `services/`. Background services are started in
+  `helpers/task_manager.py` (scheduler, queue processor, retry scheduler).
+- **New route modules** must be registered in `helpers/app_bootstrap.py`
+  (`register_all_blueprints`).
+- **Legacy shims** exist for backward compatibility (e.g. `routes/scans.py`,
+  `services/popularity/scoring.py`). Keep them delegating to the canonical module;
+  write no new logic in them.
+- **`old_system/`** is **reference-only**: a frozen snapshot of how the ORIGINAL system
+  worked. Read it to understand original behaviour/decisions, but **NEVER update, edit,
+  refactor, migrate code from, or delete anything inside it.** The current codebase is
+  the only source of truth.
+
+### 2.3 Config & docs conventions
+
+- Settings live in `helpers/settings.py` (Pydantic, `POPULARLR_*` env vars) plus
+  `helpers/config_helpers.py` (typed getters backed by `config.yaml`).
+- Prefer importing `settings` or a config getter. **Never hardcode** values that
+  belong in config (weights, thresholds, timeouts, URLs, rescan windows).
+- The **Config page (web UI) is the source of truth for user-editable settings** and
+  writes `config.yaml`; surface any new user-facing option there.
+- **Module docstrings are required** for all public services (purpose, usage, call chain).
+- Keep `documentation/` current: `documentation/README.md` is the index,
+  `documentation/POPULARR_ARCHITECTURE.md` for design, `documentation/Services/`
+  (e.g. `CONFIGURATION_GUIDE.md`, `QUICK_REFERENCE.md`) for service/config reference.
+  Add a Change Log entry under `documentation/Change Logs/Main/` for user-visible changes.
+
+### 2.4 Testing
+
+- Suite: **pytest** (`pytest.ini` — `asyncio_mode = auto`, `testpaths = tests`,
+  files `test_*.py`; async tests need no explicit marker).
+- Shared fixtures in `tests/conftest.py`: `app`, `client`, `db_session`, `sample_track`.
+  Unit tests run against in-memory SQLite (`DATABASE_URL=sqlite:///:memory:`,
+  `CONFIG_PATH=/dev/null`).
+- Run: `pytest` (or `pytest tests/test_x.py -k pattern` for a subset).
+- Add a test for every new behaviour/bug fix; keep the existing suite green.
+
+### 2.5 Docker / run workflow
+
+- Start: `docker compose up -d` · Logs: `docker compose logs -f app` · Stop: `docker compose down`
+- Rebuild after code changes: `docker compose build --no-cache && docker compose up -d`
+- Config: copy `.env.example` → `.env`; adjust `MUSIC_ROOT`, `DOWNLOADS_DIR`, ports.
+- UI: `http://localhost:5000`.
+- `entrypoint.sh` orchestrates: wait for PostgreSQL → Alembic migrations → schema
+  bootstrap → queue worker → web server (hypercorn). Do not duplicate migration logic
+  in `app.py`.
+- Frontend is server-rendered Jinja2 + Bootstrap (dark); `npm run build` (esbuild) is
+  only for bundled `dist` assets — not required for most changes.
+
+### 2.6 Migrations (schema changes)
+
+- Schema changes go through **Alembic**: revisions live in `migrations/versions/`
+  (numbered `001_…`, `002_…`, `003_…`). Create the next revision, e.g.
+  `python -m alembic revision -m "<name>"` (`prepend_sys_path` is already `.`), then
+  write `upgrade()`/`downgrade()`.
+- The app supports both migration-built and `db/bootstrap.py`-built schemas
+  (`entrypoint.sh` runs `alembic upgrade head`, falling back to `stamp head`). New
+  tables/columns must exist in **both** the migration and `db/schema.py`/bootstrap so
+  fresh and existing installs stay in sync.
+- Re-run migrations and the test suite after any schema change.
+
+### 2.7 Approach
+
+1. **Orient** — read the relevant module(s) and docs first (`documentation/README.md`
+   index → `POPULARR_ARCHITECTURE.md` → `documentation/Services/`).
+2. **Plan** — choose the architecturally-correct place, even if it touches more files.
+3. **Implement** — follow existing patterns: module docstrings,
+   `from __future__ import annotations`, `logger = logging.getLogger(__name__)`,
+   typed signatures, `db_session()` context manager in repositories.
+4. **Config** — externalise behaviour to `helpers/settings.py` /
+   `helpers/config_helpers.py` and surface it in the Config page when user-facing.
+5. **Tests** — add/update tests, run `pytest`.
+6. **Docs** — update affected documentation and the Change Log.
+7. **Verify** — boot via Docker Compose when feasible.
+8. **Commit** — to `develop`, following the commit conventions below.
 
 ---
 
