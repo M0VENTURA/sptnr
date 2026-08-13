@@ -1032,11 +1032,156 @@ def fetch_release_metadata(release_id: str):
         return None
 
 
+def _mb_artist_credit_name(artist_credit) -> str:
+    """Return the primary artist name from a MusicBrainz artist-credit."""
+    if isinstance(artist_credit, list) and artist_credit:
+        first = artist_credit[0]
+        if isinstance(first, dict):
+            return str(first.get("name") or "")
+    elif isinstance(artist_credit, str):
+        return artist_credit
+    return ""
+
+
+def _cover_art_url(rg_id: str, release_id: str = "") -> str:
+    """CoverArtArchive URL for a release-group (falls back to release art).
+
+    Mirrors the legacy album lookup: release-group art is preferred because it
+    is more reliably available than art for a specific pressing/reissue MBID.
+    """
+    if rg_id:
+        return f"https://coverartarchive.org/release-group/{rg_id}/front-250"
+    if release_id:
+        return f"https://coverartarchive.org/release/{release_id}/front-250"
+    return ""
+
+
+def _lookup_existing_mbid(existing_mbid: str, artist: str, album: str) -> dict | None:
+    """Direct lookup of the stored MBID — release first, then release-group.
+
+    Returns a result dict shaped for the album-page JS (``mbid``, ``artist``,
+    ``primary_type``, ``secondary_types``, ``first_release_date``,
+    ``cover_art_url``, ``confidence``, ``is_stored_mbid``, ``mbid_type``) or
+    ``None`` when neither resolves.  This is the legacy behaviour: the stored
+    release is surfaced so the user can compare it against text-search hits.
+    """
+    if not existing_mbid:
+        return None
+    client = get_shared_mb_client()
+
+    # Try as a release MBID first (musicbrainz_album_mbid stores a release).
+    try:
+        rel_data = client.get_release(existing_mbid, inc="artist-credits+release-groups")
+        if rel_data:
+            rel_artist = build_artist_credit_string(rel_data.get("artist-credit") or []) or artist
+            rg = rel_data.get("release-group") or {}
+            rg_id = rg.get("id", "")
+            primary_type = rg.get("primary-type", "Album")
+            secondary_types = _parse_secondary_types(rg.get("secondary-types"))
+            display_date = rg.get("first-release-date", "") or rel_data.get("date", "")
+            return {
+                "mbid": existing_mbid,
+                "title": rel_data.get("title", album),
+                "artist": rel_artist,
+                "primary_type": primary_type,
+                "secondary_types": secondary_types,
+                "first_release_date": display_date,
+                "cover_art_url": _cover_art_url(rg_id, existing_mbid),
+                "confidence": 1.0,
+                "source": "musicbrainz",
+                "is_stored_mbid": True,
+                "mbid_type": "release",
+            }
+    except Exception as exc:
+        logger.debug("[MB] Stored release lookup failed for %s: %s", existing_mbid, exc)
+
+    # Fall back to a release-group MBID.
+    try:
+        rg_data = client.get_release_group(existing_mbid, inc="artist-credits")
+        if rg_data:
+            rg_artist = _mb_artist_credit_name(rg_data.get("artist-credit") or []) or artist
+            return {
+                "mbid": existing_mbid,
+                "title": rg_data.get("title", album),
+                "artist": rg_artist,
+                "primary_type": rg_data.get("primary-type", "Album"),
+                "secondary_types": _parse_secondary_types(rg_data.get("secondary-types")),
+                "first_release_date": rg_data.get("first-release-date", ""),
+                "cover_art_url": _cover_art_url(existing_mbid),
+                "confidence": 1.0,
+                "source": "musicbrainz",
+                "is_stored_mbid": True,
+                "mbid_type": "release-group",
+            }
+    except Exception as exc:
+        logger.debug("[MB] Stored release-group lookup failed for %s: %s", existing_mbid, exc)
+    return None
+
+
 def lookup_musicbrainz_album(artist: str, album: str, existing_mbid: str = "") -> dict:
-    """Look up an album on MusicBrainz and return release candidates."""
-    svc = _get_service()
-    matches = svc.search_releasegroup_matches(artist, album)
-    return {"success": True, "candidates": matches, "existing_mbid": existing_mbid}
+    """Look up an album on MusicBrainz and return release candidates.
+
+    Legacy-compatible contract (the album-page JS consumes it):
+    - The stored MBID (when present) is resolved directly — release first,
+      then release-group — and surfaced first as ``is_stored_mbid``.
+    - A text search for release groups follows, scored with a title/artist
+      similarity confidence.
+
+    Returns ``{"results": [...]}`` so the album page's
+    ``displayAlbumResults(data.results, 'musicbrainz')`` renders matches.
+    """
+    results: list[dict[str, Any]] = []
+
+    # 1. Direct lookup of the currently stored MBID (release → release-group).
+    if existing_mbid:
+        stored = _lookup_existing_mbid(existing_mbid, artist, album)
+        if stored:
+            results.append(stored)
+            logger.info("[MB_LOOKUP] Found stored %s MBID %s: %s by %s",
+                        stored["mbid_type"], existing_mbid, stored["title"], stored["artist"])
+
+    # 2. Text search for release groups (mirrors the legacy query).
+    query = f'release:"{escape_lucene_special_chars(album)}" AND artist:"{escape_lucene_special_chars(artist)}"'
+    try:
+        groups = get_shared_mb_client().search_release_groups(query, limit=10)
+    except Exception as exc:
+        logger.warning("[MB_LOOKUP] MusicBrainz album search unavailable: %s", exc)
+        groups = []
+
+    seen_mbids = {r["mbid"] for r in results}
+    for rg in groups or []:
+        rg_id = rg.get("id", "")
+        if not rg_id or rg_id in seen_mbids:
+            continue
+        rg_title = rg.get("title", "")
+        primary_type = rg.get("primary-type", "Album")
+        secondary_types = _parse_secondary_types(rg.get("secondary-types"))
+        first_release = rg.get("first-release-date", "")
+        rg_artist = _mb_artist_credit_name(rg.get("artist-credit") or [])
+        confidence = calculate_match_score(rg_title, rg.get("artist-credit") or [], album, artist)
+        results.append({
+            "mbid": rg_id,
+            "title": rg_title,
+            "artist": rg_artist,
+            "primary_type": primary_type,
+            "secondary_types": secondary_types,
+            "first_release_date": first_release,
+            "cover_art_url": _cover_art_url(rg_id),
+            "confidence": round(confidence, 3),
+            "source": "musicbrainz",
+            "is_stored_mbid": False,
+            "mbid_type": "release-group",
+        })
+        seen_mbids.add(rg_id)
+
+    # Stored MBID first, then by confidence desc.
+    stored = [r for r in results if r.get("is_stored_mbid")]
+    others = sorted(
+        [r for r in results if not r.get("is_stored_mbid")],
+        key=lambda r: r.get("confidence") or 0.0,
+        reverse=True,
+    )
+    return {"results": (stored + others)[:11]}
 
 
 def get_release_group_releases(rg_mbid: str, include_track_counts: bool = False) -> dict:
