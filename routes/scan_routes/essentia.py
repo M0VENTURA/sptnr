@@ -77,8 +77,7 @@ async def scan_essentia_mood():
     elif artist_filter and album_filter:
         redirect_target = url_for(
             "ui.album_detail",
-            artist=artist_filter,
-            album=album_filter,
+            album_path=f"{artist_filter}/{album_filter}",
         )
     elif artist_filter:
         redirect_target = url_for("ui.artist_detail", name=artist_filter)

@@ -122,8 +122,17 @@ def _apply_env_overrides(cfg: dict) -> None:
 
 
 def _pop_env(suffix: str) -> str | None:
-    """Read and remove a ``POPULARLR_<suffix>`` env var, or return None."""
-    val = os.environ.pop(f"{_POPULARLR_PREFIX}{suffix}", "").strip()
+    """Read a ``POPULARLR_<suffix>`` env var, or return None.
+
+    Reads WITHOUT removing the variable: ``os.environ.pop`` previously
+    consumed the value on the first config load, so any later
+    ``clear_config_cache()`` (config save from another path, partial saves,
+    runtime reloads) silently lost the env overrides and fell back to the
+    file's values.  Env overrides are now deterministic — they win on every
+    load until the variable is unset, matching how the rest of the app
+    treats environment configuration.
+    """
+    val = os.environ.get(f"{_POPULARLR_PREFIX}{suffix}", "").strip()
     return val if val else None
 
 

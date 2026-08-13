@@ -631,7 +631,9 @@ def process_queue_item(item: dict[str, Any]) -> dict[str, Any]:
         update_queue_item(queue_id, status="unmatched", notes="Pipeline unavailable")
         return {"success": True, "skipped": True, "queue_id": queue_id, "reason": "pipeline_unavailable"}
     except Exception as exc:
-        logger.error("Queue item %s processing failed: %s", queue_id, exc)
+        # exc_info=True so the log shows the full traceback — a bare message
+        # like "name 'query' is not defined" gives no clue which frame raised.
+        logger.error("Queue item %s processing failed: %s", queue_id, exc, exc_info=True)
         return {"success": False, "error": str(exc), "queue_id": queue_id}
 
 

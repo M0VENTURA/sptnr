@@ -1238,9 +1238,17 @@ def run_scan(
         # ── Per-artist progress checkpoint ───────────────────────────────
         # Mirrors the legacy scanner: persist an in-progress checkpoint once
         # per artist so an interrupted scan can resume from this point.
+        # The percent is persisted with the row (not just the in-memory
+        # tracker) so EVERY web worker's footer poll reads the real value —
+        # the tracker lives only in the worker that owns the scan; the other
+        # hypercorn workers would otherwise fall back to a row with no
+        # percent_complete and pin the footer at 0%.
         # NOTE: the progress write must NOT include stop_requested=False —
         # that would wipe a dashboard stop request before the loop's next
         # stop check ever runs.
+        progress = 5 + int((album_index / total_albums) * 90)
+        current_item = f"{artist} - {album}"
+
         if effective_stop_file and artist and artist != last_checkpoint_artist:
             try:
                 write_progress_with_current_artist(
@@ -1248,7 +1256,7 @@ def run_scan(
                     "popularity_scan",
                     True,
                     current_artist=artist,
-                    extra={"status": "running"},
+                    extra={"status": "running", "percent_complete": progress, "current_item": current_item},
                 )
                 # Only full-library scans persist resume checkpoints —
                 # targeted artist/album scans must not move the resume point.
@@ -1274,13 +1282,11 @@ def run_scan(
                 artist_lf_context_cache[artist] = {"mean": 0, "stdev": 0, "total": 0, "values": []}
         artist_lf_context = artist_lf_context_cache.get(artist) or {}
 
-        progress = 5 + int((album_index / total_albums) * 90)
-
         update(
             stage="album",
             progress=progress,
-            message=f"Preparing {artist} - {album}",
-            current_item=f"{artist} - {album}",
+            message=f"Preparing {current_item}",
+            current_item=current_item,
             processed=album_index,
             total_items=total_albums,
         )

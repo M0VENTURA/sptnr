@@ -7,6 +7,24 @@ Current filters:
 Called once during app factory setup.
 """
 
+
+def encode_path_segment(value) -> str:
+    """Percent-encode a value for use as a single URL path segment.
+
+    Encodes TWICE: the ASGI server (hypercorn) fully decodes ``%2F`` back to
+    a real ``/`` before routing, so a single-encoded slash splits the
+    segment and a name like ``AC/DC`` arrives as artist="AC" +
+    album="DC/...".  With double-encoding the server decode leaves ``%2F``
+    intact, the route keeps it as one segment, and the route's own
+    ``unquote()`` restores the raw name.  Unlike ``urlencode`` (which turns
+    spaces into ``+``), spaces stay ``%20``.
+    """
+    from urllib.parse import quote
+    if value is None:
+        return ""
+    return quote(quote(str(value), safe=""), safe="")
+
+
 def register_filters(app):
     """Register all Jinja2 template filters and context processors."""
 
@@ -74,14 +92,11 @@ def register_filters(app):
     def path_segment(value):
         """Percent-encode a value for use as a single URL path segment.
 
-        Unlike ``|urlencode`` (which turns spaces into ``+`` and is meant for
-        query strings), this keeps spaces as ``%20`` and encodes slashes as
-        ``%2F`` so names like ``AC/DC`` survive routing as one segment.
+        See :func:`encode_path_segment` — the double encoding is required so
+        names containing slashes (``AC/DC``) survive the ASGI server's path
+        decode as one route segment.
         """
-        from urllib.parse import quote
-        if value is None:
-            return ""
-        return quote(str(value), safe="")
+        return encode_path_segment(value)
 
     @app.template_filter('escapejs')
     def escapejs(value):

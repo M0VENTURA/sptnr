@@ -69,17 +69,6 @@ def fetch_album_art_blob(conn: Any = None, artist: str = "", album: str = ""):
         return (row[0], row[1] or "image/jpeg")
 
 
-def fetch_album_art_urls(conn: Any = None, artist: str = "", album: str = "") -> list[str]:
-    with db_session() as session:
-        result = session.execute(text("""
-            SELECT url
-            FROM album_art_urls
-            WHERE LOWER(artist_name) = LOWER(:artist)
-              AND LOWER(album_name) = LOWER(:album)
-        """), {"artist": artist, "album": album})
-        return [str(row[0]) for row in result.fetchall() or []]
-
-
 def save_album_art_db(conn: Any = None, artist: str = "", album: str = "",
                       image_data: bytes | None = None, mime: str = "", source: str = "") -> None:
     with db_session() as session:

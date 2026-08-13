@@ -538,6 +538,21 @@ def _move_and_import(item: dict, abs_path: str, match_source: str) -> dict[str, 
         )
         from db.repositories.queue import update_queue_item
 
+        # ── Pre-copy source check ──────────────────────────────────────
+        # The file was matched earlier in this cycle but can vanish in the
+        # seconds between matching and moving (the watcher claiming it,
+        # another worker cycle, manual cleanup).  Never tag or move a
+        # missing/empty source — reset to downloading so the normal transfer
+        # reconciliation / stale checks decide what happens next, with the
+        # row still active for a retry.
+        if not abs_path or not os.path.isfile(abs_path) or os.path.getsize(abs_path) == 0:
+            logger.warning(
+                "[COMPLETE] Queue %s: source file missing before copy (%s) — resetting to downloading",
+                queue_id, abs_path,
+            )
+            _reset_to_downloading(f"source file missing before copy: {abs_path}")
+            return {"success": False, "error": "source_file_missing"}
+
         # Apply the stored MusicBrainz metadata to the file before moving so
         # the copy in /music arrives with the corrected name and information.
         _apply_stored_metadata(item, abs_path)
@@ -586,7 +601,14 @@ def _move_and_import(item: dict, abs_path: str, match_source: str) -> dict[str, 
                     pass
 
         verify_result = verify_file_in_music(queue_id, target_path)
-        file_exists = bool(target_path) and os.path.isfile(target_path)
+        # "In the right place before leaving the queue": the library copy must
+        # exist AND be non-empty — a zero-byte or missing target must never
+        # be imported (the row stays active so the retry path re-downloads).
+        file_exists = (
+            bool(target_path)
+            and os.path.isfile(target_path)
+            and os.path.getsize(target_path) > 0
+        )
 
         if verify_result.get("success") or file_exists:
             try:

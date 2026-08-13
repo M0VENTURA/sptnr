@@ -77,16 +77,17 @@ run_queue_startup_schema() {
 
 run_alembic_migrations() {
     if [ -f alembic.ini ] && [ -d migrations/versions ]; then
-        # Stamp the current head so Alembic knows the schema is up-to-date.
-        # This avoids DDL conflicts when db.bootstrap has already created the
-        # tables (which it always does at startup).
-        if python3 -m alembic stamp head 2>/dev/null; then
-            ok2 "Alembic schema stamped (head)"
+        # Try to APPLY migrations first — a fresh database (or one whose
+        # schema bootstrap has not run yet) gets the full DDL from the
+        # revision chain.  Stamping is only a fallback for databases that
+        # db.bootstrap already built in full (CREATE TABLE against existing
+        # tables fails, so migrations cannot be "applied" there) — stamping
+        # tells Alembic those tables are already at head.
+        if python3 -m alembic upgrade head 2>/dev/null; then
+            ok2 "Alembic migrations applied"
         else
-            # If stamping fails (e.g. first run, no alembic_version table yet),
-            # try a fresh upgrade instead.
-            if python3 -m alembic upgrade head 2>/dev/null; then
-                ok2 "Alembic migrations applied"
+            if python3 -m alembic stamp head 2>/dev/null; then
+                ok2 "Alembic schema stamped (head) — bootstrap-built schema"
             else
                 warn "Alembic skipped — schema bootstrap handles table creation"
             fi

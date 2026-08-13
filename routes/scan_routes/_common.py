@@ -62,5 +62,5 @@ def redirect_for_artist(artist: str):
 def redirect_for_album(artist: str, album: str):
     """Redirect to an album page, falling back to the artist/dashboard page."""
     if artist and album:
-        return redirect(url_for("ui.album_detail", artist=artist, album=album))
+        return redirect(url_for("ui.album_detail", album_path=f"{artist}/{album}"))
     return redirect_for_artist(artist)

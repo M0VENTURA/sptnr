@@ -1,36 +1,9 @@
-"""Managed download repository.
+"""Managed download repository — REMOVED.
 
-Provides DB queries for the managed-download tracking table.
-Tracks release downloads by their release ID and status progression.
-
-Responsibilities:
-- ``get_managed_download`` – Lookup a download by its local ID.
-- ``update_download_status`` – Update a download's status and optional method.
+Superseded by the Soulseek download_queue pipeline (services/downloads/*).
+The original implementation queried a ``managed_downloads`` table that was
+never created in the live schema, and the placeholder SQL ("SELECT
+release_id, ...") could never execute. No code imports this module — it is
+kept as an inert stub so stray imports fail loudly instead of running SQL
+against a non-existent table.
 """
-
-from sqlalchemy import text
-
-from db.engine import db_session
-
-
-def get_managed_download(download_id: int):
-    with db_session() as session:
-        result = session.execute(
-            text("SELECT release_id, ... FROM managed_downloads WHERE id = :id"),
-            {"id": download_id},
-        )
-        return result.fetchone()
-
-
-def update_download_status(download_id: int, status: str, method: str | None = None):
-    with db_session() as session:
-        if method:
-            session.execute(
-                text("UPDATE managed_downloads SET status = :status, method = :method WHERE id = :id"),
-                {"status": status, "method": method, "id": download_id},
-            )
-        else:
-            session.execute(
-                text("UPDATE managed_downloads SET status = :status WHERE id = :id"),
-                {"status": status, "id": download_id},
-            )

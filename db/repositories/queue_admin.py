@@ -43,8 +43,9 @@ def clear_queue(filters: Optional[dict] = None) -> dict:
             if filters and "status" in filters:
                 result = session.execute(text("DELETE FROM download_queue WHERE status = :status"), {"status": filters["status"]})
                 return {"success": True, "queue_items_deleted": result.rowcount}
-            session.execute(text("DELETE FROM folder_track_matches"))
-            session.execute(text("DELETE FROM folder_album_matches"))
+            # Legacy folder_track_matches / folder_album_matches tables were
+            # never created in the live schema — their DELETEs crashed the
+            # unfiltered clear with a runtime 500.
             session.execute(text("DELETE FROM download_queue"))
             # Release tracking drives the monitor page's folder groups — a
             # cleared queue must not leave orphaned groups behind.

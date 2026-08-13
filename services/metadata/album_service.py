@@ -20,7 +20,6 @@ from db.repositories.metadata import (
     album_is_favourite,
     set_album_favourite_db,
     fetch_album_art_blob,
-    fetch_album_art_urls,
     fetch_album_tracklist,
     fetch_album_queue_track_stubs,
     fetch_queue_status,

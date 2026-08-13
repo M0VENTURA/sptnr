@@ -574,7 +574,7 @@ async def artists():
     )
 
 
-@ui_bp.route("/artist/<string:name>")
+@ui_bp.route("/artist/<path:name>")
 async def artist_detail(name: str):
     name = unquote(name or "").strip()
     cfg = get_config()
@@ -1250,8 +1250,18 @@ def _values_equal(a: Any, b: Any) -> bool:
     return a == b
 
 
-@ui_bp.route("/album/<path:artist>/<path:album>", methods=["GET", "POST"])
-async def album_detail(artist: str, album: str):
+@ui_bp.route("/album/<path:album_path>", methods=["GET", "POST"])
+async def album_detail(album_path: str):
+    # The ASGI server decodes %2F into a real slash BEFORE routing, so a
+    # slashed artist ("AC/DC") arrives as part of the path.  Split on the
+    # LAST slash: everything before it is the artist, the final segment is
+    # the album.  Each part is still percent-encoded once at this point
+    # (double-encoded links survive the server decode) — unquote restores
+    # the raw names.
+    raw_path = str(album_path or "")
+    artist, sep, album = raw_path.rpartition("/")
+    if not sep:
+        artist, album = raw_path, ""
     artist_name = unquote(artist or "").strip()
     album_name = unquote(album or "").strip()
     cfg = get_config()
@@ -1432,7 +1442,7 @@ async def album_detail(artist: str, album: str):
         # Redirect to the new album name if changed
         redirect_artist = new_artist or artist_name
         redirect_album = new_title or album_name
-        return redirect(url_for("ui.album_detail", artist=redirect_artist, album=redirect_album))
+        return redirect(url_for("ui.album_detail", album_path=f"{redirect_artist}/{redirect_album}"))
 
     first_track = tracks[0] if tracks else {}
 
