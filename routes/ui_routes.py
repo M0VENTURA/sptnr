@@ -206,6 +206,7 @@ async def setup():
         "sync_ratings_to_all_users": features_cfg.get("sync_ratings_to_all_users", False),
         "essential_playlists_enabled": playlists_cfg.get("essential_playlists_enabled", True),
         "genre_playlists_enabled": playlists_cfg.get("genre_playlists_enabled", True),
+        "new_music_playlist_enabled": playlists_cfg.get("new_music_playlist_enabled", True),
         "write_tags_to_file": tagging_cfg.get("write_tags_to_file", True),
         "quality_filter_enabled": bool((dl.get("quality_filter") or {}).get("enabled", False)),
     }
@@ -419,9 +420,35 @@ async def dashboard():
         except Exception:
             stats = {"tc": 0, "ac": 0, "artists_c": 0, "avg_stars": None}
 
+        # Recently added albums — tracks added to Navidrome within the last 14
+        # days (tracks.updated_at is set once at import and never bumped by
+        # scans), most recently added first.
+        try:
+            with db_session() as session:
+                result = session.execute(text("""
+                    SELECT
+                        COALESCE(NULLIF(album_artist, ''), artist) AS artist,
+                        album,
+                        MAX(updated_at) AS added_at,
+                        COUNT(*) AS track_count,
+                        MAX(COALESCE(NULLIF(musicbrainz_albumtype, ''),
+                                     NULLIF(spotify_album_type, ''))) AS album_type
+                    FROM tracks
+                    WHERE updated_at >= CURRENT_TIMESTAMP - INTERVAL '14 days'
+                      AND album IS NOT NULL AND TRIM(album) <> ''
+                      AND file_path IS NOT NULL AND TRIM(file_path) <> ''
+                    GROUP BY COALESCE(NULLIF(album_artist, ''), artist), album
+                    ORDER BY added_at DESC
+                    LIMIT 12
+                """))
+                recent_albums = [dict(r._mapping) for r in result.fetchall()]
+        except Exception:
+            recent_albums = []
+
         return await render_template(
             "pages/dashboard.html",
             recent_scans=recent_scans,
+            recent_albums=recent_albums,
             nav_users=nav_users,
             stats=stats,
             scan_running=False,
@@ -432,7 +459,7 @@ async def dashboard():
         )
     except Exception as exc:
         logger.error("Dashboard error: %s", exc, exc_info=True)
-        return await render_template("pages/dashboard.html", recent_scans=[], nav_users=[], stats={}, error=str(exc))
+        return await render_template("pages/dashboard.html", recent_scans=[], recent_albums=[], nav_users=[], stats={}, error=str(exc))
 
 
 @ui_bp.route("/artists")

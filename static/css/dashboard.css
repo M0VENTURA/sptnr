@@ -70,11 +70,8 @@
 }
 
 /* ─── Sticky one-line scan status bar ───────────────────────────────────
-   Markup lives in base.html (global) — styles moved to popularr.css. */
-
-body {
-    padding-bottom: 3.2rem;
-}
+   Markup lives in base.html (global) — styles moved to popularr.css.
+   (No body padding needed: the flex app shell reserves the footer stack.) */
 
 /* ─── Library stats tiles (right rail) ────────────────────────────────── */
 .stat-tile-value {
@@ -95,13 +92,16 @@ body {
 /* ─── Desktop (xl) viewport-fill layout ─────────────────────────────────
    On big screens the dashboard used to end after ~half the viewport,
    leaving a huge dead band above the bottom status bar.  The row now
-   stretches to fill the space between the navbar and the status bar; the
-   Upcoming Releases table and the Recent Scans list scroll INSIDE their
-   cards (sticky headers keep the column titles visible).  Mobile/tablet
-   keep the natural document flow. */
+   stretches to fill the space between the navbar and the footer stack
+   (scan status bar + music player when visible); the Upcoming Releases
+   table and the Recent Scans list scroll INSIDE their cards (sticky
+   headers keep the column titles visible).  Mobile/tablet keep the
+   natural document flow. */
 @media (min-width: 1200px) {
     #dashboardRow {
-        min-height: calc(100vh - var(--navbar-height, 112px) - 5.2rem);
+        /* dvh with a vh fallback for older browsers */
+        min-height: calc(100vh - var(--navbar-height, 112px) - var(--footer-stack-height, 2.4rem) - 5.2rem);
+        min-height: calc(100dvh - var(--navbar-height, 112px) - var(--footer-stack-height, 2.4rem) - 5.2rem);
         align-items: stretch !important;
     }
 

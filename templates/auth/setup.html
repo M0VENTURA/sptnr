@@ -277,6 +277,13 @@
         </div>
         <div class="col-md-6">
           <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" id="setup_new_music_playlist"{% if defaults.get('new_music_playlist_enabled', True) %} checked{% endif %}>
+            <label class="form-check-label" for="setup_new_music_playlist"><strong>New Music Playlist</strong></label>
+          </div>
+          <small class="text-muted d-block mt-1">Rolling "New Music.m3u" of your most recently added 4★/5★ tracks — created once 100 qualify, newest additions push older ones out.</small>
+        </div>
+        <div class="col-md-6">
+          <div class="form-check form-switch">
             <input class="form-check-input" type="checkbox" id="setup_write_tags"{% if defaults.get('write_tags_to_file', True) %} checked{% endif %}>
             <label class="form-check-label" for="setup_write_tags"><strong>Write Tags to Audio Files</strong></label>
           </div>
@@ -357,7 +364,7 @@ function buildSetupConfig() {
   config.downloads={file_name_format:document.getElementById('setupFileNameFormat').value.trim()||'{album_artist}/{year} - {album}/{track_number}. {artist} - {title}',conversion:{enabled:document.getElementById('setupConversionEnabled').checked,mode:document.getElementById('setupConversionMode').value,mp3_bitrate_kbps:parseInt(document.getElementById('setupConversionBitrate').value)||320,original_handling:'move_to_original',original_subfolder:'Original'},quality_filter:{enabled:document.getElementById('setup_quality_filter').checked,reject_others:true,bitrate_tolerance:5,priorities:[{format:'flac',bitrate_kbps:null},{format:'mp3',bitrate_kbps:320}]}};
   config.watcher={auto_import_enabled:document.getElementById('setup_auto_import').checked,auto_popularity_scan:document.getElementById('setup_auto_popularity').checked,downloads_watcher_enabled:document.getElementById('setup_downloads_watcher').checked};
   config.features={cover_detection_enabled:document.getElementById('setup_cover_detection').checked,upcoming_releases_scan_enabled:document.getElementById('setup_upcoming_scans').checked,sync_ratings_to_all_users:document.getElementById('setup_sync_all_users').checked};
-  config.playlists={essential_playlists_enabled:document.getElementById('setup_essential_playlists').checked,genre_playlists_enabled:document.getElementById('setup_genre_playlists').checked};
+  config.playlists={essential_playlists_enabled:document.getElementById('setup_essential_playlists').checked,genre_playlists_enabled:document.getElementById('setup_genre_playlists').checked,new_music_playlist_enabled:document.getElementById('setup_new_music_playlist').checked};
   config.tagging={write_tags_to_file:document.getElementById('setup_write_tags').checked};
   return config;
 }
@@ -417,6 +424,7 @@ function updateSummary() {
   if(document.getElementById('setup_upcoming_scans').checked) automation.push('Upcoming Releases');
   if(document.getElementById('setup_essential_playlists').checked) automation.push('Essential Playlists');
   if(document.getElementById('setup_genre_playlists').checked) automation.push('Genre Playlists');
+  if(document.getElementById('setup_new_music_playlist').checked) automation.push('New Music Playlist');
   if(document.getElementById('setup_write_tags').checked) automation.push('Tag Writing');
   if(document.getElementById('setup_sync_all_users').checked) automation.push('Sync All Users');
   if(document.getElementById('setup_quality_filter').checked) automation.push('Quality Filter');

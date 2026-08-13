@@ -14,8 +14,8 @@
     width: 280px;
     flex-shrink: 0;
     position: sticky;
-    top: 80px;
-    height: calc(100vh - 100px);
+    top: 0; /* sticks to main's scrollport — the navbar sits above it */
+    height: calc(100dvh - var(--navbar-height, 112px) - var(--footer-stack-height, 2.4rem) - 2rem);
     overflow-y: auto;
   }
   

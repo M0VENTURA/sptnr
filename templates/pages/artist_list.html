@@ -6,13 +6,14 @@
 <style>
     /* Letter sections: keep jump targets clear of the fixed navbar */
     [id^="section-"] {
-        scroll-margin-top: calc(var(--navbar-height, 112px) + 0.5rem);
+        scroll-margin-top: 0.5rem;
     }
 
-    /* Metro section headers stick below the fixed navbar */
+    /* Metro section headers stick to the top of main's scrollport (main
+       already starts below the fixed navbar — flex app shell). */
     .metro-section-header {
         position: sticky;
-        top: calc(var(--navbar-height, 112px) - 1px);
+        top: 0;
         z-index: 10;
         background: var(--secondary-bg, #1e1e1e);
     }

@@ -35,7 +35,7 @@
   <!-- Vertical Tab Navigation -->
   <div class="row mt-3">
     <div class="col-12 col-md-3 col-xl-2 mb-4">
-      <div class="nav flex-column nav-pills sticky-top" style="top:5rem;z-index:100;" id="configTabs" role="tablist" aria-orientation="vertical">
+      <div class="nav flex-column nav-pills sticky-top" style="top:0;z-index:100;" id="configTabs" role="tablist" aria-orientation="vertical">
         <button class="nav-link active text-start" data-bs-toggle="pill" data-bs-target="#tab-system" type="button" role="tab">
           <i class="bi bi-pc-display"></i> System & Users
         </button>
@@ -53,6 +53,9 @@
         </button>
         <button class="nav-link text-start" data-bs-toggle="pill" data-bs-target="#tab-analytics" type="button" role="tab">
           <i class="bi bi-graph-up"></i> Analytics & Scoring
+        </button>
+        <button class="nav-link text-start" data-bs-toggle="pill" data-bs-target="#tab-playlists" type="button" role="tab">
+          <i class="bi bi-music-note-beamed"></i> Playlists
         </button>
       </div>
     </div>
@@ -574,58 +577,6 @@
           <label class="form-label form-label-sm">Musician Terms</label>
           <input type="text" class="form-control form-control-sm" id="wikidata_musician_terms" placeholder="singer, musician, band, rapper, composer, ..." value="{{ config.get('wikidata', {}).get('musician_terms', [])|join(', ') }}">
           <small class="form-text text-muted">Comma-separated occupation/description terms used to identify musical artists in Wikidata lookups.</small>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Last.fm Advanced Settings Section (NEW) -->
-  <div class="card shadow-sm mb-3" id="lastfm-advanced">
-    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
-      <h5 class="mb-0"><i class="bi bi-database-fill-gear"></i> Last.fm Advanced</h5>
-      <small class="text-muted">Fine-tune Last.fm API interaction behaviour</small>
-    </div>
-    <div class="card-body">
-      <div class="row g-3">
-        <div class="col-6 col-md-3">
-          <label class="form-label form-label-sm">Min Artist Plays</label>
-          <input type="number" min="1" max="1000" class="form-control form-control-sm" id="lastfm_min_artist_plays" placeholder="20" value="{{ config.get('lastfm', {}).get('min_artist_plays', 20) }}">
-          <small class="form-text text-muted">Minimum playcount for an artist to be included in similar-artist recommendations. Higher = fewer, more established recommendations.</small>
-        </div>
-        <div class="col-6 col-md-3">
-          <label class="form-label form-label-sm">Min Similarity Score</label>
-          <input type="number" step="0.01" min="0" max="1" class="form-control form-control-sm" id="lastfm_min_similarity" placeholder="0.46" value="{{ config.get('lastfm', {}).get('min_similarity_score', 0.46) }}">
-          <small class="form-text text-muted">Only recommend similar artists with a Last.fm similarity score at or above this value (0-1). Lower = more (but looser) recommendations.</small>
-        </div>
-        <div class="col-6 col-md-3">
-          <label class="form-label form-label-sm">Max Similar / Artist</label>
-          <input type="number" min="1" max="50" class="form-control form-control-sm" id="lastfm_max_similar" placeholder="5" value="{{ config.get('lastfm', {}).get('max_similar_per_artist', 5) }}">
-          <small class="form-text text-muted">How many similar artists are fetched per source artist for recommendations.</small>
-        </div>
-        <div class="col-6 col-md-3">
-          <label class="form-label form-label-sm">Max Albums / Artist</label>
-          <input type="number" min="1" max="50" class="form-control form-control-sm" id="lastfm_max_albums" placeholder="5" value="{{ config.get('lastfm', {}).get('max_albums_per_artist', 5) }}">
-          <small class="form-text text-muted">Top albums fetched per artist when building artist/album pages.</small>
-        </div>
-        <div class="col-6 col-md-3">
-          <label class="form-label form-label-sm">Recent Months</label>
-          <input type="number" min="1" max="24" class="form-control form-control-sm" id="lastfm_recent_months" placeholder="3" value="{{ config.get('lastfm', {}).get('recent_months', 3) }}">
-          <small class="form-text text-muted">Look-back window (months) used for recent-listens-based features such as recent-album recommendations.</small>
-        </div>
-        <div class="col-6 col-md-3">
-          <label class="form-label form-label-sm">Cache TTL (hours)</label>
-          <input type="number" min="1" max="720" class="form-control form-control-sm" id="lastfm_cache_ttl" placeholder="24" value="{{ config.get('lastfm', {}).get('cache_ttl_hours', 24) }}">
-          <small class="form-text text-muted">How long Last.fm API responses are cached. Lower TTL = fresher data but more API calls.</small>
-        </div>
-        <div class="col-6 col-md-3">
-          <label class="form-label form-label-sm">Max Retries</label>
-          <input type="number" min="0" max="10" class="form-control form-control-sm" id="lastfm_max_retries" placeholder="3" value="{{ config.get('lastfm', {}).get('max_retries', 3) }}">
-          <small class="form-text text-muted">Times a failed Last.fm request is retried before giving up.</small>
-        </div>
-        <div class="col-6 col-md-3">
-          <label class="form-label form-label-sm">Rate Limit Delay (s)</label>
-          <input type="number" step="0.1" min="0" max="10" class="form-control form-control-sm" id="lastfm_rate_limit" placeholder="0.5" value="{{ config.get('lastfm', {}).get('rate_limit_delay', 0.5) }}">
-          <small class="form-text text-muted">Delay between Last.fm API calls to respect rate limits. Increase if you hit 429 errors during scans.</small>
         </div>
       </div>
     </div>
@@ -1310,6 +1261,58 @@
     </div>
   </div>
 
+  <!-- Last.fm Advanced Settings Section (moved from Integrations) -->
+  <div class="card shadow-sm mb-3" id="lastfm-advanced">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-database-fill-gear"></i> Last.fm Advanced</h5>
+      <small class="text-muted">Fine-tune Last.fm API interaction behaviour</small>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-6 col-md-3">
+          <label class="form-label form-label-sm">Min Artist Plays</label>
+          <input type="number" min="1" max="1000" class="form-control form-control-sm" id="lastfm_min_artist_plays" placeholder="20" value="{{ config.get('lastfm', {}).get('min_artist_plays', 20) }}">
+          <small class="form-text text-muted">Minimum playcount for an artist to be included in similar-artist recommendations. Higher = fewer, more established recommendations.</small>
+        </div>
+        <div class="col-6 col-md-3">
+          <label class="form-label form-label-sm">Min Similarity Score</label>
+          <input type="number" step="0.01" min="0" max="1" class="form-control form-control-sm" id="lastfm_min_similarity" placeholder="0.46" value="{{ config.get('lastfm', {}).get('min_similarity_score', 0.46) }}">
+          <small class="form-text text-muted">Only recommend similar artists with a Last.fm similarity score at or above this value (0-1). Lower = more (but looser) recommendations.</small>
+        </div>
+        <div class="col-6 col-md-3">
+          <label class="form-label form-label-sm">Max Similar / Artist</label>
+          <input type="number" min="1" max="50" class="form-control form-control-sm" id="lastfm_max_similar" placeholder="5" value="{{ config.get('lastfm', {}).get('max_similar_per_artist', 5) }}">
+          <small class="form-text text-muted">How many similar artists are fetched per source artist for recommendations.</small>
+        </div>
+        <div class="col-6 col-md-3">
+          <label class="form-label form-label-sm">Max Albums / Artist</label>
+          <input type="number" min="1" max="50" class="form-control form-control-sm" id="lastfm_max_albums" placeholder="5" value="{{ config.get('lastfm', {}).get('max_albums_per_artist', 5) }}">
+          <small class="form-text text-muted">Top albums fetched per artist when building artist/album pages.</small>
+        </div>
+        <div class="col-6 col-md-3">
+          <label class="form-label form-label-sm">Recent Months</label>
+          <input type="number" min="1" max="24" class="form-control form-control-sm" id="lastfm_recent_months" placeholder="3" value="{{ config.get('lastfm', {}).get('recent_months', 3) }}">
+          <small class="form-text text-muted">Look-back window (months) used for recent-listens-based features such as recent-album recommendations.</small>
+        </div>
+        <div class="col-6 col-md-3">
+          <label class="form-label form-label-sm">Cache TTL (hours)</label>
+          <input type="number" min="1" max="720" class="form-control form-control-sm" id="lastfm_cache_ttl" placeholder="24" value="{{ config.get('lastfm', {}).get('cache_ttl_hours', 24) }}">
+          <small class="form-text text-muted">How long Last.fm API responses are cached. Lower TTL = fresher data but more API calls.</small>
+        </div>
+        <div class="col-6 col-md-3">
+          <label class="form-label form-label-sm">Max Retries</label>
+          <input type="number" min="0" max="10" class="form-control form-control-sm" id="lastfm_max_retries" placeholder="3" value="{{ config.get('lastfm', {}).get('max_retries', 3) }}">
+          <small class="form-text text-muted">Times a failed Last.fm request is retried before giving up.</small>
+        </div>
+        <div class="col-6 col-md-3">
+          <label class="form-label form-label-sm">Rate Limit Delay (s)</label>
+          <input type="number" step="0.1" min="0" max="10" class="form-control form-control-sm" id="lastfm_rate_limit" placeholder="0.5" value="{{ config.get('lastfm', {}).get('rate_limit_delay', 0.5) }}">
+          <small class="form-text text-muted">Delay between Last.fm API calls to respect rate limits. Increase if you hit 429 errors during scans.</small>
+        </div>
+      </div>
+    </div>
+  </div>
+
         </div><!-- /tab-matching -->
 
         <!-- ===== TAB 5: ANALYTICS & ADVANCED ===== -->
@@ -1567,88 +1570,6 @@
     </div>
   </div>
 
-  <!-- Essential Playlists Section -->
-  <div class="card shadow-sm mb-3" id="playlists">
-    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
-      <h5 class="mb-0"><i class="bi bi-music-note-beamed"></i> Essential Playlists</h5>
-      <small class="text-muted">Auto-generated per-artist highlight playlists written into the Playlists folder during popularity scans</small>
-    </div>
-    <div class="card-body">
-      <div class="form-check form-switch mb-3">
-        <input class="form-check-input" type="checkbox" id="playlists_essential_enabled" {% if config.get('playlists', {}).get('essential_playlists_enabled', True) %}checked{% endif %}>
-        <label class="form-check-label" for="playlists_essential_enabled"><strong>Create Essential Playlists During Scans</strong></label>
-      </div>
-      <div class="form-check form-switch mb-3">
-        <input class="form-check-input" type="checkbox" id="playlists_essential_include_featured" {% if config.get('playlists', {}).get('essential_include_featured', True) %}checked{% endif %}>
-        <label class="form-check-label" for="playlists_essential_include_featured"><strong>Include Featured Appearances</strong></label>
-        <small class="form-text text-muted">A 4★/5★ track like "Powerwolf feat. Unleash The Archers" also lands on Unleash The Archers' Essential Collection (in addition to Powerwolf's).</small>
-      </div>
-      <hr class="my-3">
-      <div class="form-check form-switch mb-2">
-        <input class="form-check-input" type="checkbox" id="playlists_genre_playlists_enabled" {% if config.get('playlists', {}).get('genre_playlists_enabled', True) %}checked{% endif %}>
-        <label class="form-check-label" for="playlists_genre_playlists_enabled"><strong>Create Genre Top-Tracks Playlists</strong></label>
-        <small class="form-text text-muted">Library-wide <code>{Genre} - Top Tracks.m3u</code> playlists generated once per scan: every track at or above the Minimum Stars is assigned its top weighted genres, each genre pool is sorted by stars then final score and capped at the Top N, and a playlist is only created when the genre clears the Create Threshold.</small>
-      </div>
-      <div class="form-check form-switch mb-2">
-        <input class="form-check-input" type="checkbox" id="playlists_genre_delete_enabled" {% if config.get('playlists', {}).get('genre_playlists_delete_enabled', True) %}checked{% endif %}>
-        <label class="form-check-label" for="playlists_genre_delete_enabled"><strong>Delete Genre Playlists Below Threshold</strong></label>
-        <small class="form-text text-muted">Removes a genre playlist once its qualifying track count drops below the Delete Threshold (and cleans up stale files from name-template changes).</small>
-      </div>
-      <div class="row g-3 mb-3">
-        <div class="col-6 col-sm-4 col-lg-2">
-          <label class="form-label form-label-sm">Create Threshold</label>
-          <input type="number" step="1" min="1" max="5000" class="form-control form-control-sm" id="playlists_genre_create_threshold" placeholder="100" value="{{ config.get('playlists', {}).get('genre_playlists_create_threshold', 100) }}">
-          <small class="form-text text-muted">Create/refresh a genre playlist only when it has more than this many qualifying tracks. Default: <strong>100</strong></small>
-        </div>
-        <div class="col-6 col-sm-4 col-lg-2">
-          <label class="form-label form-label-sm">Delete Threshold</label>
-          <input type="number" step="1" min="1" max="5000" class="form-control form-control-sm" id="playlists_genre_delete_threshold" placeholder="80" value="{{ config.get('playlists', {}).get('genre_playlists_delete_threshold', 80) }}">
-          <small class="form-text text-muted">Delete a genre playlist when it drops below this many qualifying tracks. Default: <strong>80</strong></small>
-        </div>
-        <div class="col-6 col-sm-4 col-lg-2">
-          <label class="form-label form-label-sm">Top N Tracks</label>
-          <input type="number" step="50" min="10" max="5000" class="form-control form-control-sm" id="playlists_genre_top_n" placeholder="500" value="{{ config.get('playlists', {}).get('genre_playlists_top_n', 500) }}">
-          <small class="form-text text-muted">Max tracks per genre playlist. Default: <strong>500</strong></small>
-        </div>
-        <div class="col-6 col-sm-4 col-lg-2">
-          <label class="form-label form-label-sm">Minimum Stars</label>
-          <input type="number" step="1" min="1" max="5" class="form-control form-control-sm" id="playlists_genre_min_stars" placeholder="4" value="{{ config.get('playlists', {}).get('genre_playlists_min_stars', 4) }}">
-          <small class="form-text text-muted">Only tracks rated at least this many stars qualify. Default: <strong>4</strong></small>
-        </div>
-        <div class="col-6 col-sm-4 col-lg-2">
-          <label class="form-label form-label-sm">Genres Per Track</label>
-          <input type="number" step="1" min="1" max="10" class="form-control form-control-sm" id="playlists_genre_max_genres" placeholder="3" value="{{ config.get('playlists', {}).get('genre_playlists_max_genres', 3) }}">
-          <small class="form-text text-muted">How many top weighted genres each track may appear in. Default: <strong>3</strong></small>
-        </div>
-        <div class="col-12 col-sm-8 col-lg-6">
-          <label class="form-label form-label-sm">Genre Playlist Name Template</label>
-          <input type="text" class="form-control form-control-sm" id="playlists_genre_name_template" placeholder="{genre} - Top Tracks" value="{{ config.get('playlists', {}).get('genre_playlists_name_template', '{genre} - Top Tracks') }}">
-          <small class="form-text text-muted">Supports the <code>{genre}</code> placeholder. Default: <strong>{genre} - Top Tracks</strong></small>
-        </div>
-      </div>
-      <div class="alert alert-secondary mb-3 py-2">
-        <small class="text-muted">
-          <strong>How it works:</strong> after each popularity scan, every artist with more than
-          <strong>12 unique 4★/5★ tracks</strong> gets an <code>{name}.m3u</code> written to
-          <code>{MUSIC_FOLDER}/Playlists</code> — Navidrome picks it up on its next scan. Genre
-          playlists follow the Create/Delete thresholds above (create above <code>Create Threshold</code>,
-          remove below <code>Delete Threshold</code>, leave untouched in between). Tracks are
-          deduplicated by normalized title (the studio version wins over live / compilation duplicates),
-          and compilation, "Various Artists" and soundtrack buckets are skipped. Featured appearances
-          are included in the featured artist's collection. Changing the name
-          template automatically cleans up stale files from older scans.
-        </small>
-      </div>
-      <div class="row g-3">
-        <div class="col-12 col-sm-6 col-lg-4">
-          <label class="form-label form-label-sm">Playlist Name Template</label>
-          <input type="text" class="form-control form-control-sm" id="playlists_essential_name_template" placeholder="{artist} - Essential Collection" value="{{ config.get('playlists', {}).get('essential_name_template', '{artist} - Essential Collection') }}">
-          <small class="form-text text-muted">Supports the <code>{artist}</code> placeholder. Default: <strong>{artist} - Essential Collection</strong></small>
-        </div>
-      </div>
-    </div>
-  </div>
-
   <!-- Album Scaling (Era 5★ Caps) Section -->
   <div class="card shadow-sm mb-3" id="album-scaling">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
@@ -1789,6 +1710,98 @@
   </div>
 
         </div><!-- /tab-analytics -->
+
+        <!-- ===== TAB: PLAYLISTS ===== -->
+        <div class="tab-pane fade" id="tab-playlists" role="tabpanel">
+
+  <!-- Essential Playlists Section -->
+  <div class="card shadow-sm mb-3" id="playlists">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-music-note-beamed"></i> Essential Playlists</h5>
+      <small class="text-muted">Auto-generated per-artist highlight playlists written into the Playlists folder during popularity scans</small>
+    </div>
+    <div class="card-body">
+      <div class="form-check form-switch mb-3">
+        <input class="form-check-input" type="checkbox" id="playlists_essential_enabled" {% if config.get('playlists', {}).get('essential_playlists_enabled', True) %}checked{% endif %}>
+        <label class="form-check-label" for="playlists_essential_enabled"><strong>Create Essential Playlists During Scans</strong></label>
+      </div>
+      <div class="form-check form-switch mb-3">
+        <input class="form-check-input" type="checkbox" id="playlists_essential_include_featured" {% if config.get('playlists', {}).get('essential_include_featured', True) %}checked{% endif %}>
+        <label class="form-check-label" for="playlists_essential_include_featured"><strong>Include Featured Appearances</strong></label>
+        <small class="form-text text-muted">A 4★/5★ track like "Powerwolf feat. Unleash The Archers" also lands on Unleash The Archers' Essential Collection (in addition to Powerwolf's).</small>
+      </div>
+      <hr class="my-3">
+      <div class="form-check form-switch mb-2">
+        <input class="form-check-input" type="checkbox" id="playlists_genre_playlists_enabled" {% if config.get('playlists', {}).get('genre_playlists_enabled', True) %}checked{% endif %}>
+        <label class="form-check-label" for="playlists_genre_playlists_enabled"><strong>Create Genre Top-Tracks Playlists</strong></label>
+        <small class="form-text text-muted">Library-wide <code>{Genre} - Top Tracks.m3u</code> playlists generated once per scan: every track at or above the Minimum Stars is assigned its top weighted genres, each genre pool is sorted by stars then final score and capped at the Top N, and a playlist is only created when the genre clears the Create Threshold.</small>
+      </div>
+      <div class="form-check form-switch mb-2">
+        <input class="form-check-input" type="checkbox" id="playlists_new_music_enabled" {% if config.get('playlists', {}).get('new_music_playlist_enabled', True) %}checked{% endif %}>
+        <label class="form-check-label" for="playlists_new_music_enabled"><strong>Create New Music Playlist</strong></label>
+        <small class="form-text text-muted">Rolling library-wide <code>New Music.m3u</code>: the most recently added 4★/5★ tracks (added to Navidrome, not recently rated), newest first, capped at 100 — created once 100 tracks qualify, with newer additions pushing older ones out on each scan.</small>
+      </div>
+      <div class="form-check form-switch mb-2">
+        <input class="form-check-input" type="checkbox" id="playlists_genre_delete_enabled" {% if config.get('playlists', {}).get('genre_playlists_delete_enabled', True) %}checked{% endif %}>
+        <label class="form-check-label" for="playlists_genre_delete_enabled"><strong>Delete Genre Playlists Below Threshold</strong></label>
+        <small class="form-text text-muted">Removes a genre playlist once its qualifying track count drops below the Delete Threshold (and cleans up stale files from name-template changes).</small>
+      </div>
+      <div class="row g-3 mb-3">
+        <div class="col-6 col-sm-4 col-lg-2">
+          <label class="form-label form-label-sm">Create Threshold</label>
+          <input type="number" step="1" min="1" max="5000" class="form-control form-control-sm" id="playlists_genre_create_threshold" placeholder="100" value="{{ config.get('playlists', {}).get('genre_playlists_create_threshold', 100) }}">
+          <small class="form-text text-muted">Create/refresh a genre playlist only when it has more than this many qualifying tracks. Default: <strong>100</strong></small>
+        </div>
+        <div class="col-6 col-sm-4 col-lg-2">
+          <label class="form-label form-label-sm">Delete Threshold</label>
+          <input type="number" step="1" min="1" max="5000" class="form-control form-control-sm" id="playlists_genre_delete_threshold" placeholder="80" value="{{ config.get('playlists', {}).get('genre_playlists_delete_threshold', 80) }}">
+          <small class="form-text text-muted">Delete a genre playlist when it drops below this many qualifying tracks. Default: <strong>80</strong></small>
+        </div>
+        <div class="col-6 col-sm-4 col-lg-2">
+          <label class="form-label form-label-sm">Top N Tracks</label>
+          <input type="number" step="50" min="10" max="5000" class="form-control form-control-sm" id="playlists_genre_top_n" placeholder="500" value="{{ config.get('playlists', {}).get('genre_playlists_top_n', 500) }}">
+          <small class="form-text text-muted">Max tracks per genre playlist. Default: <strong>500</strong></small>
+        </div>
+        <div class="col-6 col-sm-4 col-lg-2">
+          <label class="form-label form-label-sm">Minimum Stars</label>
+          <input type="number" step="1" min="1" max="5" class="form-control form-control-sm" id="playlists_genre_min_stars" placeholder="4" value="{{ config.get('playlists', {}).get('genre_playlists_min_stars', 4) }}">
+          <small class="form-text text-muted">Only tracks rated at least this many stars qualify. Default: <strong>4</strong></small>
+        </div>
+        <div class="col-6 col-sm-4 col-lg-2">
+          <label class="form-label form-label-sm">Genres Per Track</label>
+          <input type="number" step="1" min="1" max="10" class="form-control form-control-sm" id="playlists_genre_max_genres" placeholder="3" value="{{ config.get('playlists', {}).get('genre_playlists_max_genres', 3) }}">
+          <small class="form-text text-muted">How many top weighted genres each track may appear in. Default: <strong>3</strong></small>
+        </div>
+        <div class="col-12 col-sm-8 col-lg-6">
+          <label class="form-label form-label-sm">Genre Playlist Name Template</label>
+          <input type="text" class="form-control form-control-sm" id="playlists_genre_name_template" placeholder="{genre} - Top Tracks" value="{{ config.get('playlists', {}).get('genre_playlists_name_template', '{genre} - Top Tracks') }}">
+          <small class="form-text text-muted">Supports the <code>{genre}</code> placeholder. Default: <strong>{genre} - Top Tracks</strong></small>
+        </div>
+      </div>
+      <div class="alert alert-secondary mb-3 py-2">
+        <small class="text-muted">
+          <strong>How it works:</strong> after each popularity scan, every artist with more than
+          <strong>12 unique 4★/5★ tracks</strong> gets an <code>{name}.m3u</code> written to
+          <code>{MUSIC_FOLDER}/Playlists</code> — Navidrome picks it up on its next scan. Genre
+          playlists follow the Create/Delete thresholds above (create above <code>Create Threshold</code>,
+          remove below <code>Delete Threshold</code>, leave untouched in between). Tracks are
+          deduplicated by normalized title (the studio version wins over live / compilation duplicates),
+          and compilation, "Various Artists" and soundtrack buckets are skipped. Featured appearances
+          are included in the featured artist's collection. Changing the name
+          template automatically cleans up stale files from older scans.
+        </small>
+      </div>
+      <div class="row g-3">
+        <div class="col-12 col-sm-6 col-lg-4">
+          <label class="form-label form-label-sm">Playlist Name Template</label>
+          <input type="text" class="form-control form-control-sm" id="playlists_essential_name_template" placeholder="{artist} - Essential Collection" value="{{ config.get('playlists', {}).get('essential_name_template', '{artist} - Essential Collection') }}">
+          <small class="form-text text-muted">Supports the <code>{artist}</code> placeholder. Default: <strong>{artist} - Essential Collection</strong></small>
+        </div>
+      </div>
+    </div>
+  </div>
+
+        </div><!-- /tab-playlists -->
       </div><!-- /tab-content -->
 
       <!-- Save Button (inside the form) — sticky bottom bar -->

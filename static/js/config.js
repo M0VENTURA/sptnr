@@ -273,6 +273,7 @@ function buildConfigObject() {
       essential_include_featured: getChecked('playlists_essential_include_featured', true),
       essential_name_template: getValue('playlists_essential_name_template', '{artist} - Essential Collection'),
       genre_playlists_enabled: getChecked('playlists_genre_playlists_enabled', true),
+      new_music_playlist_enabled: getChecked('playlists_new_music_enabled', true),
       genre_playlists_delete_enabled: getChecked('playlists_genre_delete_enabled', true),
       genre_playlists_create_threshold: parseInt(getValue('playlists_genre_create_threshold', '100'), 10) || 100,
       genre_playlists_delete_threshold: parseInt(getValue('playlists_genre_delete_threshold', '80'), 10) || 80,

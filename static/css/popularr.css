@@ -29,6 +29,11 @@
        the measured height by main.js (syncNavbarHeight). */
     --navbar-height: 112px;
     --player-bar-height: 64px;
+
+    /* Footer stack (flex app shell): the scan status bar is always present;
+       the music player adds its height on top when visible. */
+    --status-bar-height: 2.4rem;
+    --footer-stack-height: var(--status-bar-height);
 }
 
 /* ── Header search flyout ──────────────────────────────────────────────── */
@@ -55,8 +60,29 @@
 }
 
 /* Keep fixed bottom audio player from covering page content when visible */
-body:has(#globalPlayerBar:not(.d-none)) main.container-fluid {
-    padding-bottom: calc(var(--player-bar-height) + 1rem);
+/* (Legacy padding hack — superseded by the flex app shell below: the player
+   and status bar are in-flow flex items, so main resizes automatically.) */
+
+/* ── Flex app shell ──────────────────────────────────────────────────────
+   The whole page is a flex column locked to the viewport: the fixed navbar
+   sits on top, the footer stack (music player + scan status bar) sits on the
+   bottom, and ONLY ``main`` scrolls in between.  Hiding/showing the player
+   or growing the status bar resizes main in real time — no z-index fights,
+   no padding-bottom math. */
+html,
+body {
+    height: 100%;
+}
+
+body {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    overflow: hidden;
+}
+
+body.player-visible {
+    --footer-stack-height: calc(var(--status-bar-height) + var(--player-bar-height));
 }
 
 /* ── Modern card aesthetics ─────────────────────────────────────────────── */
@@ -179,15 +205,21 @@ html {
 body {
   background-color: var(--primary-bg, #121212) !important;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen", "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue", sans-serif;
-  overflow-x: hidden;
+  overflow: hidden; /* page scroll lives inside main (flex app shell) */
 }
 
 /* Single navbar clearance: main only (body used to double it up, producing
    the ~160px top gap every page had).  ``--navbar-height`` is 56px, so this
    lands at 68px — a clean gap with a little breathing room under the
-   fixed-top navbar. */
+   fixed-top navbar.  ``main`` is the ONLY scrollable region: it claims all
+   remaining vertical space between the fixed navbar and the footer stack. */
 main.container-fluid {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding-top: calc(var(--navbar-height, 56px) + 0.75rem);
+  padding-bottom: 1rem;
 }
 
 /* ── Card & Table dark overrides ───────────────────────────────────────── */
@@ -695,16 +727,14 @@ html {
 }
 
 /* ── Global sticky scan status bar (base.html, every page) ────────────── */
+/* In-flow flex item at the bottom of the app shell — main ends exactly
+   where this bar begins (no overlap, no clearance hacks). */
 #scanStatusBar {
-    position: fixed;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 2040;
+    flex-shrink: 0;
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    height: 2.4rem;
+    height: var(--status-bar-height, 2.4rem);
     padding: 0.25rem 0.75rem;
     background: rgba(18, 18, 18, 0.97);
     border-top: 1px solid var(--border-color);
@@ -744,21 +774,14 @@ html {
     50% { opacity: 0.45; }
 }
 
-/* When the global player bar is visible, the two fixed bars stack into ONE
-   unified footer: scan/queue status + Log on the bottom row, player controls
-   directly above it (no gap, no separate floating elements). */
-body.player-visible #scanStatusBar {
-    bottom: 0;
+/* Global player bar — in-flow flex item stacked directly above the scan
+   status bar; hiding it (d-none) frees its space instantly. */
+#globalPlayerBar {
+    flex-shrink: 0;
+    position: static;
+    z-index: auto;
 }
 
-body.player-visible #globalPlayerBar {
-    bottom: 2.4rem;
-}
-
-/* Footer height when the player is stacked above the status bar. */
-body.player-visible {
-    --player-bar-height: calc(64px + 2.4rem);
-}
 
 /* Queue summary segment inside the scan-status bar (right of the icon). */
 .scan-queue-summary {
@@ -806,15 +829,14 @@ body.player-visible {
     background: rgba(34, 197, 94, 0.12);
     color: var(--spotify-green);
 }
-/* Keep the log stream clear of the fixed player bar underneath it. */
-body.player-visible #unifiedLogModal .modal-body {
-    padding-bottom: calc(var(--player-bar-height) + 0.75rem);
-}
 
 /* ── Sticky save bar (dirty-form tracking) ─────────────────────────────── */
+/* Fixed overlay that floats ABOVE the in-flow footer stack (scan status
+   bar + music player) — the footer-stack variable tracks its height, so
+   no per-state bottom offsets are needed. */
 .sticky-save-bar {
     position: fixed;
-    bottom: 0;
+    bottom: var(--footer-stack-height, 2.4rem);
     left: 0;
     right: 0;
     z-index: 2020;
@@ -833,11 +855,10 @@ body.player-visible #unifiedLogModal .modal-body {
     gap: 0.75rem;
     flex-wrap: wrap;
 }
-body:has(#globalPlayerBar:not(.d-none)) .sticky-save-bar {
-    bottom: var(--player-bar-height);
-}
 
 /* ── Config page: sticky save bar + switch alignment ───────────────────── */
+/* Sticky to the bottom of main's scrollport — main already ends above the
+   footer stack, so no clearance offset is needed. */
 .config-save-bar {
     position: sticky;
     bottom: 0;
@@ -848,9 +869,6 @@ body:has(#globalPlayerBar:not(.d-none)) .sticky-save-bar {
     padding: 0.6rem 1rem;
     margin-bottom: 0;
     border-radius: 0.5rem 0.5rem 0 0;
-}
-body:has(#globalPlayerBar:not(.d-none)) .config-save-bar {
-    bottom: var(--player-bar-height);
 }
 
 /* Toggle switches: label left, switch right on the same row.  Bootstrap's

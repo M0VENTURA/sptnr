@@ -822,6 +822,115 @@ def _essential_playlists_enabled(options: dict) -> bool:
         return True
 
 
+# Rolling "New Music" playlist: only written once this many 4★/5★ tracks
+# qualify, and capped at this many (newer additions push older out).
+_NEW_MUSIC_MIN_TRACKS = 100
+_NEW_MUSIC_MAX_TRACKS = 100
+
+
+def _new_music_playlist_enabled() -> bool:
+    """Whether the library-wide ``New Music.m3u`` generation is on.
+
+    Config key ``playlists.new_music_playlist_enabled`` (default true): a
+    rolling playlist of the most recently ADDED (to Navidrome) 4★/5★ tracks.
+    """
+    try:
+        from helpers.config_helpers import get_config
+        cfg = (get_config() or {}).get("playlists") or {}
+        return bool(cfg.get("new_music_playlist_enabled", True))
+    except Exception:
+        return True
+
+
+def _create_new_music_playlist() -> int:
+    """Build/refresh the library-wide ``New Music.m3u`` playlist.
+
+    Rolling "recently added" playlist: the 4★/5★ tracks most recently added
+    to Navidrome (``tracks.updated_at`` — set once at import, never bumped by
+    scans), newest first, deduplicated by normalized title (the newest copy
+    wins).  The playlist is only written once at least
+    ``_NEW_MUSIC_MIN_TRACKS`` qualify and is capped at
+    ``_NEW_MUSIC_MAX_TRACKS``, so every scan a newer addition pushes the
+    oldest entry out.  Below the threshold any existing file is removed.
+
+    Returns the number of tracks written (0 when skipped/removed).
+    """
+    from sqlalchemy import text as _text
+    from db.engine import db_session as _db_session
+
+    playlists_dir = _essential_playlists_dir()
+    file_path = os.path.join(playlists_dir, f"{_sanitize_name('New Music')}.m3u")
+
+    rows: list[Any] = []
+    try:
+        with _db_session() as session:
+            result = session.execute(
+                _text("""
+                    SELECT id, title, file_path, duration,
+                           COALESCE(NULLIF(album_artist, ''), artist) AS artist,
+                           COALESCE(stars, star_rating) AS stars,
+                           updated_at
+                    FROM tracks
+                    WHERE COALESCE(stars, star_rating) >= 4
+                      AND file_path IS NOT NULL AND TRIM(file_path) <> ''
+                    ORDER BY updated_at DESC NULLS LAST
+                    LIMIT :max_rows
+                """),
+                # Headroom so the dedupe below can't starve the cap.
+                {"max_rows": _NEW_MUSIC_MAX_TRACKS * 5},
+            )
+            rows = [dict(r._mapping) for r in result.fetchall() or []]
+    except Exception as exc:
+        logger.debug("[finalise_stage] New Music fetch failed: %s", exc)
+        return 0
+
+    # Dedupe by (artist, normalized title) — rows are newest-first, so the
+    # first copy per key is the newest one and wins.
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in rows:
+        key = (
+            str(row.get("artist") or "").strip().casefold(),
+            _normalise_essential_title(str(row.get("title") or "")),
+        )
+        if not key[1]:
+            continue
+        grouped.setdefault(key, []).append(row)
+    winners = [group[0] for group in grouped.values()]
+
+    if len(winners) < _NEW_MUSIC_MIN_TRACKS:
+        # Not enough qualifying tracks yet — remove any stale playlist.
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                logger.info(
+                    "[finalise_stage] Removed New Music playlist (only %d qualifying tracks)",
+                    len(winners),
+                )
+        except Exception as exc:
+            logger.debug("[finalise_stage] New Music removal failed: %s", exc)
+        return 0
+
+    winners = winners[:_NEW_MUSIC_MAX_TRACKS]
+    os.makedirs(playlists_dir, exist_ok=True)
+    lines = ["#EXTM3U"]
+    for row in winners:
+        try:
+            duration = int(float(row.get("duration") or 0) or 0)
+        except (TypeError, ValueError):
+            duration = 0
+        lines.append(f"#EXTINF:{duration},{row.get('artist')} - {row.get('title')}")
+        lines.append(str(row.get("file_path") or row.get("title") or ""))
+    try:
+        with open(file_path, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(lines) + "\n")
+        logger.info("[finalise_stage] New Music playlist written (%d tracks)", len(winners))
+        log_unified(f"📄 Playlist: Generated 'New Music.m3u' ({len(winners)} tracks)")
+        return len(winners)
+    except Exception as exc:
+        logger.warning("[finalise_stage] New Music playlist write failed: %s", exc)
+        return 0
+
+
 def _essential_include_featured_enabled() -> bool:
     """Whether featured-appearance tracks join other artists' essentials.
 
@@ -2067,6 +2176,16 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
                     )
         except Exception as exc:
             logger.debug("[finalise_stage] Genre playlist generation failed: %s", exc)
+
+        # ── New Music playlist (library-wide, once per scan) ──────────────
+        # Rolling "recently added" playlist: the most recently added (to
+        # Navidrome) 4★/5★ tracks, newest first, created once 100 qualify and
+        # capped at 100 — newer additions push older entries out each scan.
+        try:
+            if _new_music_playlist_enabled():
+                _create_new_music_playlist()
+        except Exception as exc:
+            logger.debug("[finalise_stage] New Music playlist generation failed: %s", exc)
 
     except Exception as exc:
         logger.error("[finalise_stage] Finalisation failed: %s", exc)
