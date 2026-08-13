@@ -458,7 +458,7 @@ def _build_fallback_search_queries(item: dict, primary_query: str) -> list[str]:
     # ``_strip_query_punctuation_for_slskd``): "Where's the Love" →
     # "Wheres the Love".  Some peers share filenames that Soulseek's
     # tokenizer simply cannot match while the punctuation-free form works.
-    stripped_all = _strip_all_query_punctuation_for_slskd(query)
+    stripped_all = _strip_all_query_punctuation_for_slskd(primary_query)
     if stripped_all:
         _add(stripped_all)
 
