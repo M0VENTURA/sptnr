@@ -62,7 +62,9 @@ def _persist_match_result(release_id: int, result: dict[str, Any]) -> None:
         if status == "matched":
             best = result["candidates"][0]
             release_date = (best.get("first_release_date") or "")[:10]
-            primary_type = str(best.get("primary_type") or "")
+            primary_type = str(
+                best.get("primary-type") or best.get("primary_type") or best.get("category") or ""
+            )
             session.execute(
                 text("""UPDATE upcoming_releases SET
                         release_group_mbid = :mbid,
@@ -589,6 +591,111 @@ def api_clear_upcoming_releases():
         return jsonify({"success": True})
     except Exception as exc:
         logger.error("Failed to clear upcoming releases: %s", exc, exc_info=True)
+        return jsonify({"error": str(exc)}), 500
+
+
+@upcoming_bp.route("/add", methods=["POST"])
+async def api_add_upcoming_release():
+    """Add a release found in the MusicBrainz search modal to the upcoming list.
+
+    Body: {artist, album (or title), release_date (or date),
+           release_group_mbid (or mbid), primary_type}.
+
+    Merges into an existing row (case/punctuation-insensitive artist+album
+    match) keeping the earlier release date and filling missing MBID/type,
+    matching the daily-scan upsert precedence.
+    """
+    try:
+        data = (await request.get_json(silent=True)) or {}
+    except Exception:
+        return jsonify({"error": "Invalid JSON body"}), 400
+
+    artist = str(data.get("artist") or "").strip()
+    album = str(data.get("album") or data.get("title") or "").strip()
+    if not artist or not album:
+        return jsonify({"error": "artist and album are required"}), 400
+
+    release_date = str(data.get("release_date") or data.get("date") or "").strip()[:10]
+    mbid = str(data.get("release_group_mbid") or data.get("mbid") or "").strip()
+    primary_type = str(data.get("primary_type") or "").strip()
+    release_year = int(release_date[:4]) if len(release_date) >= 4 and release_date[:4].isdigit() else None
+    now = datetime.now().isoformat()
+
+    try:
+        with db_session() as session:
+            dup = session.execute(
+                text("""
+                    SELECT id FROM upcoming_releases
+                    WHERE LOWER(REGEXP_REPLACE(artist_name, '[^a-zA-Z0-9]', '', 'g'))
+                          = LOWER(REGEXP_REPLACE(:artist, '[^a-zA-Z0-9]', '', 'g'))
+                      AND LOWER(REGEXP_REPLACE(album_name, '[^a-zA-Z0-9]', '', 'g'))
+                          = LOWER(REGEXP_REPLACE(:album, '[^a-zA-Z0-9]', '', 'g'))
+                    LIMIT 1
+                """),
+                {"artist": artist, "album": album},
+            ).fetchone()
+
+            if dup:
+                session.execute(
+                    text("""
+                        UPDATE upcoming_releases SET
+                            last_seen_at = CURRENT_TIMESTAMP,
+                            release_date = CASE
+                                WHEN upcoming_releases.release_date IS NULL
+                                     OR :date IS NULL
+                                    THEN COALESCE(:date, upcoming_releases.release_date)
+                                WHEN :date < upcoming_releases.release_date
+                                    THEN :date
+                                ELSE upcoming_releases.release_date
+                            END,
+                            release_year = COALESCE(:year, upcoming_releases.release_year),
+                            release_group_mbid = COALESCE(:mbid, upcoming_releases.release_group_mbid),
+                            primary_type = COALESCE(:ptype, upcoming_releases.primary_type)
+                        WHERE id = :id
+                    """),
+                    {"id": dup[0], "date": release_date or None, "year": release_year,
+                     "mbid": mbid or None, "ptype": primary_type or None},
+                )
+                return jsonify({"success": True, "merged": True, "id": dup[0]})
+
+            result = session.execute(
+                text("""
+                    INSERT INTO upcoming_releases (
+                        artist_name, album_name, release_date, release_year, source,
+                        primary_type, release_group_mbid, mbid_match_status, mbid_source,
+                        mbid_confidence, mbid_match_score, mbid_last_checked_at, status,
+                        last_seen_at, updated_at
+                    ) VALUES (
+                        :artist, :album, :date, :year, 'Manual (MusicBrainz search)',
+                        :ptype, :mbid, 'matched', 'manual_search', 'high',
+                        1.0, :checked, 'discovered',
+                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                    )
+                    ON CONFLICT (artist_name, album_name) DO UPDATE SET
+                        last_seen_at = CURRENT_TIMESTAMP,
+                        release_date = CASE
+                            WHEN upcoming_releases.release_date IS NULL
+                                 OR EXCLUDED.release_date IS NULL
+                                THEN COALESCE(EXCLUDED.release_date, upcoming_releases.release_date)
+                            WHEN EXCLUDED.release_date < upcoming_releases.release_date
+                                THEN EXCLUDED.release_date
+                            ELSE upcoming_releases.release_date
+                        END,
+                        release_year = COALESCE(EXCLUDED.release_year, upcoming_releases.release_year),
+                        release_group_mbid = COALESCE(EXCLUDED.release_group_mbid, upcoming_releases.release_group_mbid),
+                        primary_type = COALESCE(EXCLUDED.primary_type, upcoming_releases.primary_type)
+                    RETURNING id
+                """),
+                {
+                    "artist": artist, "album": album, "date": release_date or None,
+                    "year": release_year, "ptype": primary_type or None,
+                    "mbid": mbid or None, "checked": now,
+                },
+            )
+            row = result.fetchone()
+            return jsonify({"success": True, "merged": False, "id": row[0] if row else None})
+    except Exception as exc:
+        logger.error("Failed to add upcoming release: %s", exc, exc_info=True)
         return jsonify({"error": str(exc)}), 500
 
 

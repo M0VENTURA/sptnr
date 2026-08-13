@@ -17,22 +17,92 @@ Config keys (under ``playlists``):
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 
 import pytest
+from sqlalchemy import create_engine, text as sa_text
 
 from services.popularity.stages import finalise_stage as fs
 
 
-class FakeCursor:
-    def __init__(self, rows):
-        self.rows = rows
-        self.executed = []
+_GENRE_COLUMNS = (
+    "id", "title", "file_path", "duration", "artist", "album_artist",
+    "stars", "popularity_score", "is_live", "is_compilation",
+    "lastfm_tags", "listenbrainz_genres", "discogs_genres",
+    "musicbrainz_genres", "spotify_genres",
+    "essentia_genres", "manual_genres", "navidrome_genres",
+)
 
-    def execute(self, sql, params=None):
-        self.executed.append((sql, params))
+
+def _make_rows(rows_data: list[dict]) -> list:
+    """Real SQLAlchemy ``Row`` objects shaped like the genre-playlist SELECT."""
+    engine = create_engine("sqlite://")
+    with engine.connect() as conn:
+        conn.execute(sa_text(
+            "CREATE TABLE t (id TEXT, title TEXT, file_path TEXT, duration INT, "
+            "artist TEXT, album_artist TEXT, stars INT, popularity_score REAL, "
+            "is_live INT, is_compilation INT, lastfm_tags TEXT, "
+            "listenbrainz_genres TEXT, discogs_genres TEXT, musicbrainz_genres TEXT, "
+            "spotify_genres TEXT, essentia_genres TEXT, manual_genres TEXT, "
+            "navidrome_genres TEXT)"
+        ))
+        for r in rows_data:
+            conn.execute(
+                sa_text(
+                    "INSERT INTO t (id, title, file_path, duration, artist, album_artist, "
+                    "stars, popularity_score, is_live, is_compilation, lastfm_tags, "
+                    "listenbrainz_genres, discogs_genres, musicbrainz_genres, "
+                    "spotify_genres, essentia_genres, manual_genres, navidrome_genres) "
+                    "VALUES (:id, :title, :fp, :dur, :artist, :aa, :stars, :score, "
+                    ":live, :comp, :lf, :lb, :discogs, :mb, :spotify, :essentia, "
+                    ":manual, :nav)"
+                ),
+                {col: r.get(col) for col in _GENRE_COLUMNS},
+            )
+        return list(conn.execute(
+            sa_text(f"SELECT {', '.join(_GENRE_COLUMNS)} FROM t")
+        ).fetchall())
+
+
+class _FakeResult:
+    def __init__(self, rows):
+        self._rows = rows
 
     def fetchall(self):
-        return self.rows
+        return self._rows
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+
+class _FakeSession:
+    def __init__(self, rows_by_execute):
+        self._results = list(rows_by_execute)
+        self._index = 0
+
+    def execute(self, *args, **kwargs):
+        rows = self._results[self._index] if self._index < len(self._results) else []
+        self._index += 1
+        return _FakeResult(rows)
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
+
+
+@contextmanager
+def _fake_db_session(session):
+    yield session
+
+
+def _session_factory(session):
+    @contextmanager
+    def _cm():
+        yield session
+
+    return _cm
 
 
 def make_row(title, stars=5, genre="Rock", artist="Artist", file_path=None):
@@ -84,9 +154,11 @@ def run_genre_playlists(tmp_path, monkeypatch):
 
     def _run(rows, cfg=None):
         from helpers import config_helpers
+        import db.engine as db_engine
         monkeypatch.setattr(config_helpers, "get_config", lambda: cfg or make_cfg())
-        cursor = FakeCursor(rows)
-        written = fs._create_genre_top_track_playlists(cursor)
+        session = _FakeSession([_make_rows(rows), []])
+        monkeypatch.setattr(db_engine, "db_session", _session_factory(session))
+        written = fs._create_genre_top_track_playlists()
         return written, playlists_dir
 
     return _run
@@ -249,15 +321,21 @@ class TestEdgeCases:
         assert written == 0
         assert not _path(d, "Rock - Top Tracks.m3u").exists()
 
-    def test_db_fetch_failure_is_graceful(self, run_genre_playlists):
-        class BoomCursor:
+    def test_db_fetch_failure_is_graceful(self, monkeypatch):
+        import db.engine as db_engine
+
+        class BoomSession:
             def execute(self, sql, params=None):
                 raise RuntimeError("db down")
 
-            def fetchall(self):
-                raise AssertionError("should not be reached")
+            def commit(self):
+                pass
 
-        written = fs._create_genre_top_track_playlists(BoomCursor())
+            def rollback(self):
+                pass
+
+        monkeypatch.setattr(db_engine, "db_session", _session_factory(BoomSession()))
+        written = fs._create_genre_top_track_playlists()
         assert written == 0
 
     def test_multi_genre_pools(self, run_genre_playlists):

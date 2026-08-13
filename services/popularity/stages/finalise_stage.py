@@ -22,7 +22,7 @@ from typing import Any
 
 from sqlalchemy import text
 from db.engine import db_session
-from db.utils import get_db_connection, row_get
+from db.utils import row_get
 from services.popularity.popularity_math import (
     age_skew_multiplier,
     apply_album_relative_popularity,
@@ -189,7 +189,7 @@ def _star_epsilon_z(spread: float, epsilon: float | None = None) -> float:
     return epsilon / spread
 
 
-def _resolve_navidrome_artist_id(cursor, artist: str) -> str | None:
+def _resolve_navidrome_artist_id(artist: str) -> str | None:
     """Return the real Navidrome artist id for ``artist``, or None.
 
     ``artist_stats.artist_id`` is the PRIMARY KEY — writing the artist NAME
@@ -199,33 +199,40 @@ def _resolve_navidrome_artist_id(cursor, artist: str) -> str | None:
     import.  Prefer an existing real id (a name-keyed row is never a real id),
     then fall back to the tracks table's stored Navidrome id.
     """
+    from sqlalchemy import text as _text
+    from db.engine import db_session as _db_session
+
     try:
-        cursor.execute(
-            "SELECT artist_id FROM artist_stats "
-            "WHERE LOWER(artist_name) = LOWER(%s) "
-            "  AND LOWER(artist_id) <> LOWER(%s) "
-            "LIMIT 1",
-            (artist, artist),
-        )
-        row = cursor.fetchone()
-        found = row_get(row, "artist_id") if row else None
-        if found and str(found).strip() and str(found).casefold() != str(artist).casefold():
-            return str(found).strip()
+        with _db_session() as session:
+            row = session.execute(
+                _text(
+                    "SELECT artist_id FROM artist_stats "
+                    "WHERE LOWER(artist_name) = LOWER(:artist) "
+                    "  AND LOWER(artist_id) <> LOWER(:artist) "
+                    "LIMIT 1"
+                ),
+                {"artist": artist},
+            ).fetchone()
+            found = row_get(row, "artist_id") if row else None
+            if found and str(found).strip() and str(found).casefold() != str(artist).casefold():
+                return str(found).strip()
     except Exception as exc:
         logger.debug("[finalise_stage] artist_stats id lookup failed for %s: %s", artist, exc)
     try:
-        cursor.execute(
-            "SELECT artist_id FROM tracks "
-            "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s "
-            "  AND artist_id IS NOT NULL AND artist_id <> '' "
-            "  AND LOWER(artist_id) <> LOWER(%s) "
-            "LIMIT 1",
-            (artist, artist),
-        )
-        row = cursor.fetchone()
-        found = row_get(row, "artist_id") if row else None
-        if found and str(found).strip() and str(found).casefold() != str(artist).casefold():
-            return str(found).strip()
+        with _db_session() as session:
+            row = session.execute(
+                _text(
+                    "SELECT artist_id FROM tracks "
+                    "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
+                    "  AND artist_id IS NOT NULL AND artist_id <> '' "
+                    "  AND LOWER(artist_id) <> LOWER(:artist) "
+                    "LIMIT 1"
+                ),
+                {"artist": artist},
+            ).fetchone()
+            found = row_get(row, "artist_id") if row else None
+            if found and str(found).strip() and str(found).casefold() != str(artist).casefold():
+                return str(found).strip()
     except Exception as exc:
         logger.debug("[finalise_stage] tracks id lookup failed for %s: %s", artist, exc)
     return None
@@ -350,7 +357,6 @@ def _build_album_model(
     artist: str,
     album_results: list[dict[str, Any]],
     artist_scores: list[float],
-    cursor,
 ) -> dict[str, Any]:
     """3-step scaling model context for ONE album.
 
@@ -367,17 +373,21 @@ def _build_album_model(
     scores) — the caller then keeps the legacy single-→-5★ behaviour.
     """
     try:
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
         current_album = str(album_results[0].get("album") or "")
         scanned_titles = {
             str(r.get("title") or "").strip().lower() for r in album_results
         }
 
-        cursor.execute(
-            "SELECT title, album, final_score, year FROM tracks "
-            "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND final_score > 0",
-            (artist,),
-        )
-        rows = cursor.fetchall()
+        with _db_session() as session:
+            rows = session.execute(
+                _text(
+                    "SELECT title, album, final_score, year FROM tracks "
+                    "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND final_score > 0"
+                ),
+                {"artist": artist},
+            ).fetchall() or []
 
         by_album: dict[str, list[float]] = {}
         album_years: dict[str, int] = {}
@@ -849,7 +859,7 @@ def _track_has_featured_artist(artist_field: str, target_artist: str) -> bool:
     )
 
 
-def _create_essential_m3u(artist: str, cursor) -> None:
+def _create_essential_m3u(artist: str) -> None:
     """Create/refresh or delete the artist's Essential Collection .m3u.
 
     Evaluated against the artist's FULL track history in the DB (not just the
@@ -875,6 +885,9 @@ def _create_essential_m3u(artist: str, cursor) -> None:
     Archers") join the featured artist's collection too — the track then
     appears on both bands' essential playlists.
     """
+    from sqlalchemy import text as _text
+    from db.engine import db_session as _db_session
+
     if _is_excluded_essential_artist(artist):
         return
 
@@ -884,21 +897,22 @@ def _create_essential_m3u(artist: str, cursor) -> None:
 
     rows: list[Any] = []
     try:
-        cursor.execute(
-            """
-            SELECT id, title, file_path, duration,
-                   COALESCE(stars, star_rating) AS stars,
-                   COALESCE(is_live, 0) AS is_live,
-                   COALESCE(is_compilation, 0) AS is_compilation,
-                   COALESCE(popularity, final_score, 0) AS popularity_score,
-                   year, release_year, artist
-            FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-              AND COALESCE(stars, star_rating) >= 4
-            """,
-            (artist,),
-        )
-        rows = cursor.fetchall() or []
+        with _db_session() as session:
+            result = session.execute(
+                _text("""
+                    SELECT id, title, file_path, duration,
+                           COALESCE(stars, star_rating) AS stars,
+                           COALESCE(is_live, 0) AS is_live,
+                           COALESCE(is_compilation, 0) AS is_compilation,
+                           COALESCE(popularity, final_score, 0) AS popularity_score,
+                           year, release_year, artist
+                    FROM tracks
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+                      AND COALESCE(stars, star_rating) >= 4
+                """),
+                {"artist": artist},
+            )
+            rows = [dict(r._mapping) for r in result.fetchall() or []]
     except Exception as exc:
         logger.debug("[finalise_stage] Essential collection fetch failed for %s: %s", artist, exc)
 
@@ -909,28 +923,30 @@ def _create_essential_m3u(artist: str, cursor) -> None:
     # below handles any overlap with the artist's own query).
     if _essential_include_featured_enabled():
         try:
-            cursor.execute(
-                """
-                SELECT id, title, file_path, duration,
-                       COALESCE(stars, star_rating) AS stars,
-                       COALESCE(is_live, 0) AS is_live,
-                       COALESCE(is_compilation, 0) AS is_compilation,
-                       COALESCE(popularity, final_score, 0) AS popularity_score,
-                       year, release_year, artist
-                FROM tracks
-                WHERE COALESCE(stars, star_rating) >= 4
-                  AND COALESCE(NULLIF(album_artist, ''), artist) <> %s
-                  AND (
-                      artist ILIKE '% feat %' OR artist ILIKE '% feat.%'
-                      OR artist ILIKE '%feat.%' OR artist ILIKE '%featuring%'
-                      OR artist ILIKE '% ft %' OR artist ILIKE '% ft.%'
-                  )
-                """,
-                (artist,),
-            )
-            for row in (cursor.fetchall() or []):
-                if _track_has_featured_artist(row.get("artist") or "", artist):
-                    rows.append(row)
+            with _db_session() as session:
+                result = session.execute(
+                    _text("""
+                        SELECT id, title, file_path, duration,
+                               COALESCE(stars, star_rating) AS stars,
+                               COALESCE(is_live, 0) AS is_live,
+                               COALESCE(is_compilation, 0) AS is_compilation,
+                               COALESCE(popularity, final_score, 0) AS popularity_score,
+                               year, release_year, artist
+                        FROM tracks
+                        WHERE COALESCE(stars, star_rating) >= 4
+                          AND COALESCE(NULLIF(album_artist, ''), artist) <> :artist
+                          AND (
+                              artist ILIKE '% feat %' OR artist ILIKE '% feat.%'
+                              OR artist ILIKE '%feat.%' OR artist ILIKE '%featuring%'
+                              OR artist ILIKE '% ft %' OR artist ILIKE '% ft.%'
+                          )
+                    """),
+                    {"artist": artist},
+                )
+                for row in (result.fetchall() or []):
+                    row_dict = dict(row._mapping)
+                    if _track_has_featured_artist(row_dict.get("artist") or "", artist):
+                        rows.append(row_dict)
         except Exception as exc:
             logger.debug(
                 "[finalise_stage] Featured-track fetch failed for %s: %s", artist, exc
@@ -1111,7 +1127,7 @@ def _display_genre(genre: str) -> str:
     )
 
 
-def _create_genre_top_track_playlists(cursor) -> int:
+def _create_genre_top_track_playlists() -> int:
     """Build ``{Genre} - Top Tracks.m3u`` playlists for the whole library.
 
     Library-wide (unlike the per-artist essential collections): every track
@@ -1137,6 +1153,9 @@ def _create_genre_top_track_playlists(cursor) -> int:
     """
     from collections import defaultdict
 
+    from sqlalchemy import text as _text
+    from db.engine import db_session as _db_session
+
     try:
         from helpers.config_helpers import get_config
         cfg = (get_config() or {}).get("playlists") or {}
@@ -1152,22 +1171,23 @@ def _create_genre_top_track_playlists(cursor) -> int:
 
     rows: list[Any] = []
     try:
-        cursor.execute(
-            """
-            SELECT id, title, file_path, duration, artist, album_artist,
-                   COALESCE(stars, star_rating) AS stars,
-                   COALESCE(popularity, final_score, 0) AS popularity_score,
-                   COALESCE(is_live, 0) AS is_live,
-                   COALESCE(is_compilation, 0) AS is_compilation,
-                   lastfm_tags, listenbrainz_genres, discogs_genres,
-                   musicbrainz_genres, spotify_genres,
-                   essentia_genres, manual_genres, navidrome_genres
-            FROM tracks
-            WHERE COALESCE(stars, star_rating) >= %s
-            """,
-            (min_stars,),
-        )
-        rows = cursor.fetchall() or []
+        with _db_session() as session:
+            result = session.execute(
+                _text("""
+                    SELECT id, title, file_path, duration, artist, album_artist,
+                           COALESCE(stars, star_rating) AS stars,
+                           COALESCE(popularity, final_score, 0) AS popularity_score,
+                           COALESCE(is_live, 0) AS is_live,
+                           COALESCE(is_compilation, 0) AS is_compilation,
+                           lastfm_tags, listenbrainz_genres, discogs_genres,
+                           musicbrainz_genres, spotify_genres,
+                           essentia_genres, manual_genres, navidrome_genres
+                    FROM tracks
+                    WHERE COALESCE(stars, star_rating) >= :min_stars
+                """),
+                {"min_stars": min_stars},
+            )
+            rows = [dict(r._mapping) for r in result.fetchall() or []]
     except Exception as exc:
         logger.debug("[finalise_stage] Genre playlist fetch failed: %s", exc)
         return 0
@@ -1329,8 +1349,6 @@ def _create_genre_top_track_playlists(cursor) -> int:
 def compute_artist_scores(
     artist: str,
     scan_scores: list[float],
-    conn,
-    cursor,
     scanned_titles: set[str] | None = None,
 ) -> list[float]:
     """Artist-wide score distribution = scan results so far + existing DB scores.
@@ -1357,18 +1375,23 @@ def compute_artist_scores(
     artist_scores = [float(s) for s in scan_scores if float(s or 0) > 0]
     db_rows: list[tuple[str, str]] = []
     try:
-        cursor.execute(
-            "SELECT title, album, final_score FROM tracks "
-            "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND final_score > 0",
-            (artist,),
-        )
-        db_rows = [
-            (str(row.get("album") or ""), float(row.get("final_score") or 0))
-            for row in cursor.fetchall()
-            if row.get("final_score")
-            and str(row.get("title") or "").strip().lower() not in scanned_titles
-            and not is_bonus_track_title(str(row.get("title") or ""))
-        ]
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
+        with _db_session() as session:
+            result = session.execute(
+                _text(
+                    "SELECT title, album, final_score FROM tracks "
+                    "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND final_score > 0"
+                ),
+                {"artist": artist},
+            )
+            db_rows = [
+                (str(row_get(row, "album") or ""), float(row_get(row, "final_score") or 0))
+                for row in result.fetchall() or []
+                if row_get(row, "final_score")
+                and str(row_get(row, "title") or "").strip().lower() not in scanned_titles
+                and not is_bonus_track_title(str(row_get(row, "title") or ""))
+            ]
     except Exception as exc:
         logger.debug("[finalise_stage] Artist DB score fetch failed for %s: %s", artist, exc)
     try:
@@ -1422,8 +1445,6 @@ def post_album_star_ratings(
     artist: str,
     artist_scores: list[float],
     options: dict[str, Any],
-    conn=None,
-    cursor=None,
 ) -> dict[str, int]:
     """Assign, persist, log and sync star ratings for ONE album.
 
@@ -1432,16 +1453,11 @@ def post_album_star_ratings(
     ratings are written to the DB and surfaced in the unified log as each
     album finishes, instead of all being batched for the end of the scan.
 
-    ``conn``/``cursor`` are optional — when omitted a connection is opened and
-    closed for this album (safe to call standalone from the scan loop).
+    All persistence runs on its own SQLAlchemy sessions (safe to call
+    standalone from the scan loop).
     """
     if not album_results:
         return {"star_ratings": 0, "navidrome_synced": 0}
-
-    owns_conn = conn is None or cursor is None
-    if owns_conn:
-        conn = get_db_connection()
-        cursor = conn.cursor()
 
     total_star_ratings = 0
     navidrome_synced = 0
@@ -1521,18 +1537,21 @@ def post_album_star_ratings(
             # way the in-scan results are — a studio album's average must not
             # be dragged down by its padded live cuts.
             from services.catalog.album_classification_service import is_bonus_track_title
+            from sqlalchemy import text as _text
+            from db.engine import db_session as _db_session
             scanned_titles = {str(r.get("title") or "").strip().lower() for r in album_results}
-            cursor.execute(
-                "SELECT title, final_score FROM tracks "
-                "WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s AND album = %s AND final_score > 0",
-                (artist, album),
-            )
+            with _db_session() as session:
+                rows = session.execute(
+                    _text("SELECT title, final_score FROM tracks "
+                          "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album AND final_score > 0"),
+                    {"artist": artist, "album": album},
+                ).fetchall() or []
             db_album_scores = [
-                float(row.get("final_score") or 0)
-                for row in cursor.fetchall()
-                if row.get("final_score")
-                and str(row.get("title") or "").strip().lower() not in scanned_titles
-                and not is_bonus_track_title(str(row.get("title") or ""))
+                float(row_get(row, "final_score") or 0)
+                for row in rows
+                if row_get(row, "final_score")
+                and str(row_get(row, "title") or "").strip().lower() not in scanned_titles
+                and not is_bonus_track_title(str(row_get(row, "title") or ""))
             ]
             album_scores = list(album_scores) + list(db_album_scores)
         except Exception as exc:
@@ -1544,7 +1563,7 @@ def post_album_star_ratings(
         # artist has no catalogue data to benchmark against.
         album_model: dict[str, Any] = {}
         try:
-            album_model = _build_album_model(artist, album_results, artist_scores, cursor)
+            album_model = _build_album_model(artist, album_results, artist_scores)
             if album_model.get("has_benchmark"):
                 logger.info(
                     "[finalise_stage] %s - %s → era=%s (M_peak=%.1f, album median=%.1f, A_skew=%.2f, R_eff=%.2f)",
@@ -1560,124 +1579,126 @@ def post_album_star_ratings(
         # Surface the exact weights + era rules this album was rated with.
         _log_scan_weights(artist, album, album_model)
 
-        for track in album_results:
-            # Assign star rating — one track's edge case (e.g. a degenerate
-            # distribution) must never abort the whole album's rating pass and
-            # silently leave every track unrated.  Surface it, skip it, and let
-            # the rest of the album proceed.
-            try:
-                stars = _assign_stars(
-                    track,
-                    album_scores,
-                    artist_scores,
-                    album_lf_listeners,
-                    album_lb_listens,
-                    popularity_only=bool(options.get("popularity_only")),
-                    album_model=album_model,
-                    is_compilation=is_compilation,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "[finalise_stage] Star assignment failed for %s - %s: %s",
-                    artist, track.get("title"), exc,
-                )
-                continue
-            track["stars"] = stars
-            total_star_ratings += 1
-            _track_score = float(track.get("popularity_score") or 0)
-            _album_z = _compute_album_z(_track_score, album_scores)[0]
-            _artist_z = _compute_artist_z(_track_score, artist_scores)[0]
-            # Per-track rating line at INFO so operators can verify the
-            # scoring logic end-to-end (score → z-scores → star band).
-            log_unified(
-                f"[TRACK_RESULT] {artist} - {track.get('title')} → {stars}★ "
-                f"(score={_track_score:.1f}, album_z={_album_z:.2f}, artist_z={_artist_z:.2f}, "
-                f"single={track.get('is_single')}/{track.get('single_confidence')}"
-                + (
-                    f", era={album_model.get('era')}/R={float(album_model.get('reff') or 0):.2f}"
-                    if album_model.get("has_benchmark") else ""
-                )
-                + ")"
-            )
-            logger.debug(
-                "[finalise_stage] %s - %s → %d★ (score=%.1f, album_z=%.2f, artist_z=%.2f, single=%s/%s%s)",
-                artist, track.get("title"), stars,
-                _track_score,
-                _album_z,
-                _artist_z,
-                track.get("is_single"), track.get("single_confidence"),
-                f", era={album_model.get('era')}/R={float(album_model.get('reff') or 0):.2f}"
-                if album_model.get("has_benchmark") else "",
-            )
-
-            # Persist to database
-            track_id = str(track.get("track_id") or "")
-            if track_id:
+        # Persist to database — one session for the whole album's rating
+        # writes so the per-album assignment commits atomically.
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
+        with _db_session() as session:
+            for track in album_results:
+                # Assign star rating — one track's edge case (e.g. a degenerate
+                # distribution) must never abort the whole album's rating pass and
+                # silently leave every track unrated.  Surface it, skip it, and let
+                # the rest of the album proceed.
                 try:
-                    cursor.execute(
-                        "UPDATE tracks SET stars = %s WHERE id = %s",
-                        (stars, track_id)
+                    stars = _assign_stars(
+                        track,
+                        album_scores,
+                        artist_scores,
+                        album_lf_listeners,
+                        album_lb_listens,
+                        popularity_only=bool(options.get("popularity_only")),
+                        album_model=album_model,
+                        is_compilation=is_compilation,
                     )
                 except Exception as exc:
-                    logger.debug("[finalise_stage] DB update failed for %s: %s", track_id, exc)
-
-                # Mirror the rating into the audio file tags (POPM/RATING) when
-                # the tagging policy permits — the master toggle and the
-                # ratings_only mode are honoured by ``write_rating_to_file``.
-                # Silently skipped when tag writes are disabled.
-                if stars >= 1:
-                    try:
-                        from services.metadata.tag_file_service import (
-                            _get_track_file_path,
-                            _resolve_music_file_path,
-                            write_rating_to_file,
-                        )
-                        _abs = _resolve_music_file_path(_get_track_file_path(track_id))
-                        if _abs:
-                            write_rating_to_file(_abs, stars)
-                    except Exception as _tag_err:
-                        logger.debug("[finalise_stage] Rating tag write failed for %s: %s", track_id, _tag_err)
-
-        # ── Era 5★ slot cap (scaling model step 4) ────────────────────────
-        # The era's slot budget limits how many 5★ singles one album can
-        # carry via the catalog/album-rank path; surplus (weakest by album
-        # z-score) are demoted to the 4★ Single Floor.
-        if album_model.get("has_benchmark"):
-            _rules, _, _ = _live_album_scaling()
-            max_slots = int(
-                album_model.get("max_5star_slots")
-                or _rules["peak"]["max_5star_slots"]
-            )
-            slot_tracks = [
-                t for t in album_results
-                if t.get("_era_5star") and int(t.get("stars") or 0) == 5
-            ]
-            if len(slot_tracks) > max_slots:
-                slot_tracks.sort(
-                    key=lambda t: _compute_album_z(
-                        float(t.get("popularity_score") or 0), album_scores
-                    )[0],
-                    reverse=True,
-                )
-                for t in slot_tracks[max_slots:]:
-                    t["stars"] = 4
-                    _tid = str(t.get("track_id") or "")
-                    if _tid:
-                        try:
-                            cursor.execute(
-                                "UPDATE tracks SET stars = 4 WHERE id = %s",
-                                (_tid,),
-                            )
-                        except Exception as exc:
-                            logger.debug(
-                                "[finalise_stage] 5★ cap demote failed for %s: %s", _tid, exc,
-                            )
-                    logger.info(
-                        "[finalise_stage] %s - %s 5★ → 4★ (era slot cap %d)",
-                        artist, t.get("title"), max_slots,
+                    logger.warning(
+                        "[finalise_stage] Star assignment failed for %s - %s: %s",
+                        artist, track.get("title"), exc,
                     )
+                    continue
+                track["stars"] = stars
+                total_star_ratings += 1
+                _track_score = float(track.get("popularity_score") or 0)
+                _album_z = _compute_album_z(_track_score, album_scores)[0]
+                _artist_z = _compute_artist_z(_track_score, artist_scores)[0]
+                # Per-track rating line at INFO so operators can verify the
+                # scoring logic end-to-end (score → z-scores → star band).
+                log_unified(
+                    f"[TRACK_RESULT] {artist} - {track.get('title')} → {stars}★ "
+                    f"(score={_track_score:.1f}, album_z={_album_z:.2f}, artist_z={_artist_z:.2f}, "
+                    f"single={track.get('is_single')}/{track.get('single_confidence')}"
+                    + (
+                        f", era={album_model.get('era')}/R={float(album_model.get('reff') or 0):.2f}"
+                        if album_model.get("has_benchmark") else ""
+                    )
+                    + ")"
+                )
+                logger.debug(
+                    "[finalise_stage] %s - %s → %d★ (score=%.1f, album_z=%.2f, artist_z=%.2f, single=%s/%s%s)",
+                    artist, track.get("title"), stars,
+                    _track_score,
+                    _album_z,
+                    _artist_z,
+                    track.get("is_single"), track.get("single_confidence"),
+                    f", era={album_model.get('era')}/R={float(album_model.get('reff') or 0):.2f}"
+                    if album_model.get("has_benchmark") else "",
+                )
 
-        conn.commit()
+                track_id = str(track.get("track_id") or "")
+                if track_id:
+                    try:
+                        session.execute(
+                            _text("UPDATE tracks SET stars = :stars WHERE id = :tid"),
+                            {"stars": stars, "tid": track_id},
+                        )
+                    except Exception as exc:
+                        logger.debug("[finalise_stage] DB update failed for %s: %s", track_id, exc)
+
+                    # Mirror the rating into the audio file tags (POPM/RATING) when
+                    # the tagging policy permits — the master toggle and the
+                    # ratings_only mode are honoured by ``write_rating_to_file``.
+                    # Silently skipped when tag writes are disabled.
+                    if stars >= 1:
+                        try:
+                            from services.metadata.tag_file_service import (
+                                _get_track_file_path,
+                                _resolve_music_file_path,
+                                write_rating_to_file,
+                            )
+                            _abs = _resolve_music_file_path(_get_track_file_path(track_id))
+                            if _abs:
+                                write_rating_to_file(_abs, stars)
+                        except Exception as _tag_err:
+                            logger.debug("[finalise_stage] Rating tag write failed for %s: %s", track_id, _tag_err)
+
+            # ── Era 5★ slot cap (scaling model step 4) ────────────────────
+            # The era's slot budget limits how many 5★ singles one album can
+            # carry via the catalog/album-rank path; surplus (weakest by album
+            # z-score) are demoted to the 4★ Single Floor.
+            if album_model.get("has_benchmark"):
+                _rules, _, _ = _live_album_scaling()
+                max_slots = int(
+                    album_model.get("max_5star_slots")
+                    or _rules["peak"]["max_5star_slots"]
+                )
+                slot_tracks = [
+                    t for t in album_results
+                    if t.get("_era_5star") and int(t.get("stars") or 0) == 5
+                ]
+                if len(slot_tracks) > max_slots:
+                    slot_tracks.sort(
+                        key=lambda t: _compute_album_z(
+                            float(t.get("popularity_score") or 0), album_scores
+                        )[0],
+                        reverse=True,
+                    )
+                    for t in slot_tracks[max_slots:]:
+                        t["stars"] = 4
+                        _tid = str(t.get("track_id") or "")
+                        if _tid:
+                            try:
+                                session.execute(
+                                    _text("UPDATE tracks SET stars = 4 WHERE id = :tid"),
+                                    {"tid": _tid},
+                                )
+                            except Exception as exc:
+                                logger.debug(
+                                    "[finalise_stage] 5★ cap demote failed for %s: %s", _tid, exc,
+                                )
+                        logger.info(
+                            "[finalise_stage] %s - %s 5★ → 4★ (era slot cap %d)",
+                            artist, t.get("title"), max_slots,
+                        )
 
         # ── Per-album tabular summary (dashboard unified log) ─────
         # One clean table per album: rating, track title, album z-score,
@@ -1797,13 +1818,6 @@ def post_album_star_ratings(
 
     except Exception as exc:
         logger.error("[finalise_stage] Album finalisation failed for %s - %s: %s", artist, album, exc)
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-    finally:
-        if owns_conn:
-            conn.close()
 
     return {"star_ratings": total_star_ratings, "navidrome_synced": navidrome_synced}
 
@@ -1812,7 +1826,7 @@ def post_album_star_ratings(
 # Main entrypoint
 # ---------------------------------------------------------------------------
 
-def _sync_isrc_popularity(cursor) -> int:
+def _sync_isrc_popularity() -> int:
     """Sync popularity stats across tracks sharing the same ISRC.
 
     A recording is a unique performance — every track in the library that
@@ -1823,26 +1837,29 @@ def _sync_isrc_popularity(cursor) -> int:
     scores down.  ``final_score`` and ``popularity`` are written in lockstep
     everywhere, so both columns are synced together.
     """
+    from sqlalchemy import text as _text
+    from db.engine import db_session as _db_session
     try:
-        cursor.execute(
-            """
-            UPDATE tracks
-            SET popularity = subquery.max_score,
-                final_score = subquery.max_score,
-                is_single = subquery.max_single_status
-            FROM (
-                SELECT isrc,
-                       MAX(COALESCE(popularity, final_score)) AS max_score,
-                       MAX(CASE WHEN is_single THEN 1 ELSE 0 END) = 1 AS max_single_status
-                FROM tracks
-                WHERE isrc IS NOT NULL AND isrc != ''
-                GROUP BY isrc
-            ) AS subquery
-            WHERE tracks.isrc = subquery.isrc
-              AND COALESCE(tracks.popularity, tracks.final_score) < subquery.max_score
-            """
-        )
-        return cursor.rowcount
+        with _db_session() as session:
+            result = session.execute(
+                _text("""
+                    UPDATE tracks
+                    SET popularity = subquery.max_score,
+                        final_score = subquery.max_score,
+                        is_single = subquery.max_single_status
+                    FROM (
+                        SELECT isrc,
+                               MAX(COALESCE(popularity, final_score)) AS max_score,
+                               MAX(CASE WHEN is_single THEN 1 ELSE 0 END) = 1 AS max_single_status
+                        FROM tracks
+                        WHERE isrc IS NOT NULL AND isrc != ''
+                        GROUP BY isrc
+                    ) AS subquery
+                    WHERE tracks.isrc = subquery.isrc
+                      AND COALESCE(tracks.popularity, tracks.final_score) < subquery.max_score
+                """)
+            )
+            return result.rowcount or 0
     except Exception as exc:
         logger.debug("[finalise_stage] ISRC popularity sync failed: %s", exc)
         return 0
@@ -1901,8 +1918,6 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
         artist = str(r.get("album_artist") or r.get("artist") or r.get("canonical_artist") or "Unknown")
         by_artist[artist].append(r)
 
-    conn = get_db_connection()
-    cursor = conn.cursor()
     total_star_ratings = 0
     navidrome_synced = 0
 
@@ -1935,8 +1950,6 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
                     if float(r.get("popularity_score") or 0) > 0
                     and not bool(r.get("exclude_from_stats"))
                 ],
-                conn,
-                cursor,
                 scanned_titles=scanned_titles,
             )
 
@@ -1945,6 +1958,8 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
             # from this table — without a write here the adjustment silently
             # no-ops and the artist page has no catalogue statistics.
             try:
+                from sqlalchemy import text as _text
+                from db.engine import db_session as _db_session
                 _valid_scores = [float(s) for s in artist_scores if float(s or 0) > 0]
                 if _valid_scores:
                     _med = median(_valid_scores)
@@ -1956,31 +1971,38 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
                     # artist import resolve "id = name" and skip (getArtist
                     # with a name returns no albums).  Resolve an existing
                     # real id when possible.
-                    _artist_id = _resolve_navidrome_artist_id(cursor, artist) or artist
+                    _artist_id = _resolve_navidrome_artist_id(artist) or artist
                     from datetime import datetime as _dt
-                    cursor.execute(
-                        """
-                        INSERT INTO artist_stats
-                            (artist_id, artist_name, album_count, track_count, last_updated,
-                             mean_popularity, median_popularity, popularity_stddev, popularity_mad)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (artist_id) DO UPDATE SET
-                            artist_name = EXCLUDED.artist_name,
-                            album_count = EXCLUDED.album_count,
-                            track_count = EXCLUDED.track_count,
-                            last_updated = EXCLUDED.last_updated,
-                            mean_popularity = EXCLUDED.mean_popularity,
-                            median_popularity = EXCLUDED.median_popularity,
-                            popularity_stddev = EXCLUDED.popularity_stddev,
-                            popularity_mad = EXCLUDED.popularity_mad
-                        """,
-                        (
-                            _artist_id, artist, _album_count, len(_valid_scores), _dt.now().isoformat(),
-                            mean(_valid_scores), _med,
-                            stdev(_valid_scores) if len(_valid_scores) > 1 else 0.0,
-                            _mad,
-                        ),
-                    )
+                    with _db_session() as session:
+                        session.execute(
+                            _text("""
+                                INSERT INTO artist_stats
+                                    (artist_id, artist_name, album_count, track_count, last_updated,
+                                     mean_popularity, median_popularity, popularity_stddev, popularity_mad)
+                                VALUES (:artist_id, :artist_name, :album_count, :track_count, :last_updated,
+                                        :mean, :median, :stddev, :mad)
+                                ON CONFLICT (artist_id) DO UPDATE SET
+                                    artist_name = EXCLUDED.artist_name,
+                                    album_count = EXCLUDED.album_count,
+                                    track_count = EXCLUDED.track_count,
+                                    last_updated = EXCLUDED.last_updated,
+                                    mean_popularity = EXCLUDED.mean_popularity,
+                                    median_popularity = EXCLUDED.median_popularity,
+                                    popularity_stddev = EXCLUDED.popularity_stddev,
+                                    popularity_mad = EXCLUDED.popularity_mad
+                            """),
+                            {
+                                "artist_id": _artist_id,
+                                "artist_name": artist,
+                                "album_count": _album_count,
+                                "track_count": len(_valid_scores),
+                                "last_updated": _dt.now().isoformat(),
+                                "mean": mean(_valid_scores),
+                                "median": _med,
+                                "stddev": stdev(_valid_scores) if len(_valid_scores) > 1 else 0.0,
+                                "mad": _mad,
+                            },
+                        )
                     logger.info(
                         "[FINALISE_STAGE] artist_stats updated for '%s' (id=%s, tracks=%d, median=%.1f, MAD=%.1f)",
                         artist, _artist_id, len(_valid_scores), _med, _mad,
@@ -2004,8 +2026,6 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
                     artist=artist,
                     artist_scores=artist_scores,
                     options=options,
-                    conn=conn,
-                    cursor=cursor,
                 )
                 total_star_ratings += _posted.get("star_ratings", 0)
                 navidrome_synced += _posted.get("navidrome_synced", 0)
@@ -2016,15 +2036,14 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
             # Gated by config (playlists.essential_playlists_enabled) or an
             # explicit pipeline override (options.create_playlists).
             if _essential_playlists_enabled(options):
-                _create_essential_m3u(artist, cursor)
+                _create_essential_m3u(artist)
 
         # ── ISRC popularity sync (recording-level inheritance) ─────────────
         # Runs once per scan, after every track is persisted: duplicate rows
         # sharing an ISRC inherit the strongest popularity/single evidence so
         # the recording is scored identically everywhere.
         try:
-            _isrc_updated = _sync_isrc_popularity(cursor)
-            conn.commit()
+            _isrc_updated = _sync_isrc_popularity()
             if _isrc_updated:
                 log_unified(
                     f"[FINALISE_STAGE] ISRC sync: {_isrc_updated} track(s) inherited higher popularity across shared ISRCs"
@@ -2041,8 +2060,7 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
         # playlists.genre_playlists_delete_enabled).
         try:
             if _genre_playlists_active():
-                _genre_playlists_written = _create_genre_top_track_playlists(cursor)
-                conn.commit()
+                _genre_playlists_written = _create_genre_top_track_playlists()
                 if _genre_playlists_written:
                     log_unified(
                         f"[FINALISE_STAGE] Genre playlists: {_genre_playlists_written} file(s) written"
@@ -2052,12 +2070,6 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
 
     except Exception as exc:
         logger.error("[finalise_stage] Finalisation failed: %s", exc)
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-    finally:
-        conn.close()
 
     # Log summary
     if per_album_posted:

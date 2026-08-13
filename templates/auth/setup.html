@@ -40,6 +40,7 @@
     <div class="step-dot" data-step="3"></div>
     <div class="step-dot" data-step="4"></div>
     <div class="step-dot" data-step="5"></div>
+    <div class="step-dot" data-step="6"></div>
   </div>
 
   <!-- Step 1: Navidrome + Database -->
@@ -205,23 +206,118 @@
     </div>
     <div class="d-flex justify-content-between">
       <button class="btn btn-outline-secondary" onclick="goToStep(3)"><i class="bi bi-arrow-left"></i> Back</button>
-      <button class="btn btn-primary" onclick="goToNextStep(5,this)">Skip & Finish <i class="bi bi-arrow-right"></i></button>
+      <button class="btn btn-primary" onclick="goToNextStep(5,this)">Skip & Continue <i class="bi bi-arrow-right"></i></button>
     </div>
   </div>
 
-  <!-- Step 5: Summary & Save -->
+  <!-- Step 5: Automation & Extras (recommended defaults) -->
   <div class="step-card d-none" id="step5">
+    <div class="d-flex align-items-center gap-2 mb-3">
+      <span class="badge bg-secondary rounded-pill">5</span>
+      <h5 class="mb-0">Automation & Extras</h5>
+      <span class="text-muted small">(recommended defaults — change anytime in Config)</span>
+    </div>
+    <p class="text-muted small mb-3">Popularr runs several background jobs automatically. Switch them on or off now — everything here can be changed later from <strong>Config → Automation Services</strong>.</p>
+    <div class="border rounded p-3 mb-3">
+      <h6 class="mb-2"><i class="bi bi-arrow-repeat text-success"></i> Background Services</h6>
+      <div class="row g-3">
+        <div class="col-md-6">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" id="setup_auto_import"{% if defaults.get('auto_import_enabled', True) %} checked{% endif %}>
+            <label class="form-check-label" for="setup_auto_import"><strong>Auto Import</strong></label>
+          </div>
+          <small class="text-muted d-block mt-1">Automatically import newly detected songs from Navidrome.</small>
+        </div>
+        <div class="col-md-6">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" id="setup_auto_popularity"{% if defaults.get('auto_popularity_scan', True) %} checked{% endif %}>
+            <label class="form-check-label" for="setup_auto_popularity"><strong>Auto Popularity Scan</strong></label>
+          </div>
+          <small class="text-muted d-block mt-1">Score popularity for tracks automatically after each import.</small>
+        </div>
+        <div class="col-md-6">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" id="setup_downloads_watcher"{% if defaults.get('downloads_watcher_enabled', True) %} checked{% endif %}>
+            <label class="form-check-label" for="setup_downloads_watcher"><strong>Downloads Watcher</strong></label>
+          </div>
+          <small class="text-muted d-block mt-1">Monitor the downloads folder and process completed files automatically.</small>
+        </div>
+        <div class="col-md-6">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" id="setup_cover_detection"{% if defaults.get('cover_detection_enabled', True) %} checked{% endif %}>
+            <label class="form-check-label" for="setup_cover_detection"><strong>Cover Song Detection</strong></label>
+          </div>
+          <small class="text-muted d-block mt-1">Flag cover songs during scans (uses MusicBrainz lookups).</small>
+        </div>
+        <div class="col-md-6">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" id="setup_upcoming_scans"{% if defaults.get('upcoming_releases_scan_enabled', True) %} checked{% endif %}>
+            <label class="form-check-label" for="setup_upcoming_scans"><strong>Upcoming Releases Scans</strong></label>
+          </div>
+          <small class="text-muted d-block mt-1">Daily Wikipedia + weekly MusicBrainz scan for new releases of your artists.</small>
+        </div>
+      </div>
+    </div>
+    <div class="border rounded p-3 mb-3">
+      <h6 class="mb-2"><i class="bi bi-stars text-warning"></i> Scan Outputs & Extras</h6>
+      <div class="row g-3">
+        <div class="col-md-6">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" id="setup_essential_playlists"{% if defaults.get('essential_playlists_enabled', True) %} checked{% endif %}>
+            <label class="form-check-label" for="setup_essential_playlists"><strong>Essential Playlists</strong></label>
+          </div>
+          <small class="text-muted d-block mt-1">Generate "{artist} - Essential Collection.m3u" playlists from 4★/5★ tracks.</small>
+        </div>
+        <div class="col-md-6">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" id="setup_genre_playlists"{% if defaults.get('genre_playlists_enabled', True) %} checked{% endif %}>
+            <label class="form-check-label" for="setup_genre_playlists"><strong>Genre Top-Tracks Playlists</strong></label>
+          </div>
+          <small class="text-muted d-block mt-1">Generate "{genre} - Top Tracks.m3u" playlists across the whole library.</small>
+        </div>
+        <div class="col-md-6">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" id="setup_write_tags"{% if defaults.get('write_tags_to_file', True) %} checked{% endif %}>
+            <label class="form-check-label" for="setup_write_tags"><strong>Write Tags to Audio Files</strong></label>
+          </div>
+          <small class="text-muted d-block mt-1">Embed ratings, genres and cover art into your audio files. Turn off for a read-only library.</small>
+        </div>
+        <div class="col-md-6">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" id="setup_sync_all_users"{% if defaults.get('sync_ratings_to_all_users') %} checked{% endif %}>
+            <label class="form-check-label" for="setup_sync_all_users"><strong>Sync Ratings to All Users</strong></label>
+          </div>
+          <small class="text-muted d-block mt-1">Push star ratings to every Navidrome user after each scan (not just the primary user).</small>
+        </div>
+        <div class="col-md-6">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" id="setup_quality_filter"{% if defaults.get('quality_filter_enabled') %} checked{% endif %}>
+            <label class="form-check-label" for="setup_quality_filter"><strong>Download Quality Filter</strong></label>
+          </div>
+          <small class="text-muted d-block mt-1">Only accept FLAC / 320 kbps MP3 downloads and reject lower-quality matches.</small>
+        </div>
+      </div>
+    </div>
+    <div class="d-flex justify-content-between">
+      <button class="btn btn-outline-secondary" onclick="goToStep(4)"><i class="bi bi-arrow-left"></i> Back</button>
+      <button class="btn btn-primary" onclick="goToNextStep(6,this)">Skip & Finish <i class="bi bi-arrow-right"></i></button>
+    </div>
+  </div>
+
+  <!-- Step 6: Summary & Save -->
+  <div class="step-card d-none" id="step6">
     <div class="text-center mb-4">
       <i class="bi bi-check-circle" style="font-size:3rem;color:var(--spotify-green);"></i>
       <h4 class="mt-2">You're All Set!</h4>
     </div>
     <div class="border rounded p-3 mb-2"><h6><i class="bi bi-server"></i> Navidrome</h6><p class="mb-0 small" id="summaryNavidrome">-</p></div>
-    <div class="border rounded p-3 mb-2"><h6><i class="bi bi-database"></i> Database</h6><p class="mb-0 small text-muted" id="summaryDatabase">SQLite (first-run mode)</p></div>
+    <div class="border rounded p-3 mb-2"><h6><i class="bi bi-database"></i> Database</h6><p class="mb-0 small text-muted" id="summaryDatabase">PostgreSQL (container defaults)</p></div>
     <div class="border rounded p-3 mb-2"><h6><i class="bi bi-plug"></i> APIs</h6><p class="mb-0 small text-muted" id="summaryApis">None enabled</p></div>
     <div class="border rounded p-3 mb-2"><h6><i class="bi bi-cpu"></i> Essentia</h6><p class="mb-0 small text-muted" id="summaryEssentia">Not enabled</p></div>
     <div class="border rounded p-3 mb-3"><h6><i class="bi bi-folder-symlink"></i> File Management</h6><p class="mb-0 small text-muted" id="summaryFiles">-</p></div>
+    <div class="border rounded p-3 mb-3"><h6><i class="bi bi-lightning-charge-fill"></i> Automation</h6><p class="mb-0 small text-muted" id="summaryAutomation">-</p></div>
     <div class="d-flex justify-content-between">
-      <button class="btn btn-outline-secondary" onclick="goToStep(4)"><i class="bi bi-arrow-left"></i> Back</button>
+      <button class="btn btn-outline-secondary" onclick="goToStep(5)"><i class="bi bi-arrow-left"></i> Back</button>
       <button class="btn btn-primary btn-lg" onclick="saveSetup()"><i class="bi bi-check-circle"></i> Save & Go to Dashboard</button>
     </div>
   </div>
@@ -249,7 +345,7 @@ async function testConnection() {
   }catch(e){status.textContent='Network error: '+e.message;status.className='ms-2 small text-danger';}
   btn.disabled=false;
 }
-function goToStep(n) { for(let i=1;i<=5;i++) document.getElementById('step'+i).classList.toggle('d-none',i!==n); document.querySelectorAll('.step-dot').forEach(d=>{const s=parseInt(d.dataset.step);d.classList.toggle('active',s===n);d.classList.toggle('done',s<n);}); if(n===5) updateSummary(); }
+function goToStep(n) { for(let i=1;i<=6;i++) document.getElementById('step'+i).classList.toggle('d-none',i!==n); document.querySelectorAll('.step-dot').forEach(d=>{const s=parseInt(d.dataset.step);d.classList.toggle('active',s===n);d.classList.toggle('done',s<n);}); if(n===6) updateSummary(); }
 
 /** Build a config object from the current form state (all steps). */
 function buildSetupConfig() {
@@ -258,7 +354,11 @@ function buildSetupConfig() {
   const config={navidrome_users:[{user:document.getElementById('navUser').value,display_name:document.getElementById('navUser').value,base_url:document.getElementById('navUrl').value,pass:document.getElementById('navPass').value,listenbrainz_user_token:lbToken}],api_integrations:{lastfm:{enabled:document.getElementById('lfmEnabled').checked,api_key:document.getElementById('lfmApiKey').value},discogs:{enabled:document.getElementById('dgEnabled').checked,token:document.getElementById('dgToken').value},musicbrainz:{enabled:true},listenbrainz:{enabled:document.getElementById('lbEnabled').checked},audiodb:{enabled:false},google:{enabled:false}},slskd:{enabled:document.getElementById('slskdEnabled').checked,web_url:document.getElementById('slskdUrl').value,api_key:document.getElementById('slskdApiKey').value}};
   if(pgHost){config.PG_HOST=pgHost;config.PG_PORT=document.getElementById('pgPort').value.trim()||'5432';config.PG_USER=document.getElementById('pgUser').value.trim()||'popularr';config.PG_PASSWORD=document.getElementById('pgPass').value;config.PG_DATABASE=document.getElementById('pgDb').value.trim()||'popularr';}
   if(document.getElementById('essentiaEnabled').checked) config.essentia={script_path:'/opt/Essentia-to-Metadata/tag_music.py',models_dir:'/opt/essentia_models',mood_threshold:0.005,per_file_timeout:300,tag_moods:document.getElementById('essentiaMoods').checked,tag_genres:document.getElementById('essentiaGenres').checked,parse_json_features:true,delete_json_after_import:true};
-  config.downloads={file_name_format:document.getElementById('setupFileNameFormat').value.trim()||'{album_artist}/{year} - {album}/{track_number}. {artist} - {title}',conversion:{enabled:document.getElementById('setupConversionEnabled').checked,mode:document.getElementById('setupConversionMode').value,mp3_bitrate_kbps:parseInt(document.getElementById('setupConversionBitrate').value)||320,original_handling:'move_to_original',original_subfolder:'Original'}};
+  config.downloads={file_name_format:document.getElementById('setupFileNameFormat').value.trim()||'{album_artist}/{year} - {album}/{track_number}. {artist} - {title}',conversion:{enabled:document.getElementById('setupConversionEnabled').checked,mode:document.getElementById('setupConversionMode').value,mp3_bitrate_kbps:parseInt(document.getElementById('setupConversionBitrate').value)||320,original_handling:'move_to_original',original_subfolder:'Original'},quality_filter:{enabled:document.getElementById('setup_quality_filter').checked,reject_others:true,bitrate_tolerance:5,priorities:[{format:'flac',bitrate_kbps:null},{format:'mp3',bitrate_kbps:320}]}};
+  config.watcher={auto_import_enabled:document.getElementById('setup_auto_import').checked,auto_popularity_scan:document.getElementById('setup_auto_popularity').checked,downloads_watcher_enabled:document.getElementById('setup_downloads_watcher').checked};
+  config.features={cover_detection_enabled:document.getElementById('setup_cover_detection').checked,upcoming_releases_scan_enabled:document.getElementById('setup_upcoming_scans').checked,sync_ratings_to_all_users:document.getElementById('setup_sync_all_users').checked};
+  config.playlists={essential_playlists_enabled:document.getElementById('setup_essential_playlists').checked,genre_playlists_enabled:document.getElementById('setup_genre_playlists').checked};
+  config.tagging={write_tags_to_file:document.getElementById('setup_write_tags').checked};
   return config;
 }
 
@@ -309,9 +409,21 @@ function updateSummary() {
   document.getElementById('summaryEssentia').textContent=document.getElementById('essentiaEnabled').checked?'Will be enabled':'Not enabled';
   const fmt=document.getElementById('setupFileNameFormat').value.trim()||'{album_artist}/{year} - {album}/{track_number}. {artist} - {title}';
   document.getElementById('summaryFiles').innerHTML='<code>'+fmt+'</code> — '+(document.getElementById('setupConversionEnabled').checked?'converts FLAC → MP3 ('+document.getElementById('setupConversionBitrate').value+'kbps)':'no conversion');
+  const automation=[];
+  if(document.getElementById('setup_auto_import').checked) automation.push('Auto Import');
+  if(document.getElementById('setup_auto_popularity').checked) automation.push('Auto Popularity Scan');
+  if(document.getElementById('setup_downloads_watcher').checked) automation.push('Downloads Watcher');
+  if(document.getElementById('setup_cover_detection').checked) automation.push('Cover Detection');
+  if(document.getElementById('setup_upcoming_scans').checked) automation.push('Upcoming Releases');
+  if(document.getElementById('setup_essential_playlists').checked) automation.push('Essential Playlists');
+  if(document.getElementById('setup_genre_playlists').checked) automation.push('Genre Playlists');
+  if(document.getElementById('setup_write_tags').checked) automation.push('Tag Writing');
+  if(document.getElementById('setup_sync_all_users').checked) automation.push('Sync All Users');
+  if(document.getElementById('setup_quality_filter').checked) automation.push('Quality Filter');
+  document.getElementById('summaryAutomation').textContent=automation.length?automation.join(', '):'All automation off';
 }
 async function saveSetup() {
-  const btn=document.querySelector('#step5 .btn-primary'); btn.disabled=true; btn.innerHTML='<span class="spinner-border spinner-border-sm me-2"></span>Saving...';
+  const btn=document.querySelector('#step6 .btn-primary'); btn.disabled=true; btn.innerHTML='<span class="spinner-border spinner-border-sm me-2"></span>Saving...';
   const config=buildSetupConfig();
   try {
     const r=await fetch('/api/setup/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(config)});

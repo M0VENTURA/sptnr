@@ -282,7 +282,7 @@
         </div>
         <div class="col-12 col-md-3">
           <label class="form-label">Lookahead (days)</label>
-          <input type="number" class="form-control" id="daily_musicbrainz_release_lookahead_days" placeholder="28" value="{{ config.get('features', {}).get('daily_musicbrainz_release_lookahead_days', 28) }}" min="1" max="365">
+          <input type="number" class="form-control" id="daily_musicbrainz_release_lookahead_days" placeholder="120" value="{{ config.get('features', {}).get('daily_musicbrainz_release_lookahead_days', 120) }}" min="1" max="365">
           <div class="form-text">How far ahead to look for announced/upcoming releases when building "upcoming" dashboard cards.</div>
         </div>
         <div class="col-12 col-md-3">
@@ -325,6 +325,7 @@
         <div class="row g-3">
           {% set feature_groups = {
             'General Operation': ['dry_run', 'sync', 'force', 'verbose', 'perpetual', 'batchrate', 'full_scan', 'auto_boot_navidrome_scan', 'artist'],
+            'Scan Behaviour': ['cover_detection_enabled'],
             'Single Detection & Scoring': ['album_skip_days', 'album_skip_min_tracks'],
             'Single Detection Sources': ['source_discogs_confidence', 'source_musicbrainz_confidence', 'source_musicbrainz_compilation_confidence', 'source_discogs_video_confidence', 'source_lastfm_confidence', 'source_radio_edit_confidence']
           } %}
@@ -339,6 +340,7 @@
             'full_scan': 'Run full scan pipeline on startup.',
             'auto_boot_navidrome_scan': 'Scan Navidrome metadata on app startup.',
             'artist': 'Comma-separated list of artist names to prioritize.',
+            'cover_detection_enabled': 'Flag cover songs during scans (MusicBrainz work-history lookup + "(Artist Cover)" renames). Turn off to skip the per-track cover pass entirely.',
             'album_skip_days': 'Days before rescanning an album.',
             'album_skip_min_tracks': 'Minimum tracks for a valid album.',
             'source_discogs_confidence': 'How much a Discogs single/EP release match counts toward the single-detection confidence (high/medium/low). "Low" excludes the source entirely.',
@@ -355,6 +357,7 @@
             'dry_run': false, 'sync': true, 'force': false, 'verbose': false,
             'perpetual': true, 'batchrate': false, 'full_scan': false,
             'auto_boot_navidrome_scan': false, 'artist': [],
+            'cover_detection_enabled': true,
             'album_skip_days': 7, 'album_skip_min_tracks': 1,
             'source_discogs_confidence': 'high',
             'source_musicbrainz_confidence': 'medium',

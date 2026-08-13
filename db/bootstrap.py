@@ -323,6 +323,22 @@ def verify_all_tables_exist() -> dict[str, Any]:
         present = {t for t in expected if table_exists(session, t)}
     return {"ok": expected.issubset(present), "missing": list(expected - present)}
 
+def _reset_stale_scan_states() -> None:
+    """Clear scan-state rows left ``running`` by a crash/reboot (boot hygiene).
+
+    Runs after the schema is ensured and BEFORE any worker can start a scan:
+    a hard kill mid-scan leaves ``scan_states.is_running=True`` (the normal
+    completion path never runs), which makes the scheduler/dashboard think a
+    scan is still active.  Single-process here (entrypoint runs bootstrap
+    before hypercorn spawns) so there is no race with a scan start.
+    """
+    try:
+        from services.scanning.scan_state import reset_stale_scan_states
+        reset_stale_scan_states()
+    except Exception as exc:
+        logging.warning("Stale scan-state reset skipped: %s", exc)
+
+
 def init_database_and_schema() -> bool:
     # Retry a few times — Postgres may be restarting (schema bootstrap runs
     # immediately after wait_for_db, but Postgres can still be in shutdown
@@ -332,6 +348,7 @@ def init_database_and_schema() -> bool:
         try:
             if ensure_full_schema():
                 verify_all_tables_exist()
+                _reset_stale_scan_states()
                 return True
         except Exception as exc:
             msg = str(exc)
@@ -367,6 +384,7 @@ def _run_deferred_startup_migrations() -> None:
     try:
         ensure_full_schema()
         verify_all_tables_exist()
+        _reset_stale_scan_states()
     except Exception as exc:
         logging.error("Deferred schema bootstrap failed: %s", exc, exc_info=True)
 

@@ -8,7 +8,7 @@ augmenting the Wikipedia scrape with direct MusicBrainz data.
 Config (``features.*`` in config.yaml, editable on the config page):
     daily_musicbrainz_release_scan_enabled (default True)
     daily_musicbrainz_release_lookback_days (default 42)
-    daily_musicbrainz_release_lookahead_days (default 28)
+    daily_musicbrainz_release_lookahead_days (default 120)
     daily_musicbrainz_release_max_artists (default 500)
     daily_musicbrainz_release_per_artist_limit (default 100)
 """
@@ -137,10 +137,17 @@ def _fetch_artist_release_groups(
     escaped = escape_lucene_special_chars(artist)
     # The date range is part of the Lucene query — keep its brackets/colons
     # unescaped (escape_lucene_special_chars would mangle them).
-    date_range = f"[{min_date.isoformat()} TO {max_date.isoformat()}]"
+    # The QUERY range is deliberately wider than the requested window: MB
+    # indexes partial first-release dates ("2026", "2026-10") as ranges, and
+    # a day-precision query bound can silently exclude them.  The exact
+    # window is re-applied client-side below (partial dates included).
+    query_margin = timedelta(days=90)
+    query_range = (
+        f"[{(min_date - query_margin).isoformat()} TO {(max_date + query_margin).isoformat()}]"
+    )
     query = (
         f'artist:"{escaped}" AND (primarytype:album OR primarytype:ep OR primarytype:single) '
-        f"AND firstreleasedate:{date_range}"
+        f"AND firstreleasedate:{query_range}"
     )
     raw = client.search_release_groups(query, limit=max(1, min(limit, 25)))
     requested_norm = _normalize_artist(artist)
@@ -167,18 +174,39 @@ def _fetch_artist_release_groups(
         parsed_date = _parse_release_date(rg.get("first-release-date"))
         if not parsed_date:
             continue
-        try:
-            release_dt = datetime.strptime(parsed_date, "%Y-%m-%d").date()
-        except ValueError:
-            release_dt = None
-        if release_dt and not (min_date <= release_dt <= max_date):
+        if not _within_window(parsed_date, min_date, max_date):
             continue
         out.append({
             "id": str(rg.get("id") or "").strip(),
             "title": str(rg.get("title") or "").strip(),
             "first_release_date": parsed_date,
+            "primary_type": primary,
         })
     return out
+
+
+def _within_window(raw_date: str, min_date, max_date) -> bool:
+    """True when a possibly-partial release date falls inside the window.
+
+    Handles YYYY-MM-DD / YYYY-MM / YYYY (the forms ``_parse_release_date``
+    accepts).  A year-only date is accepted when its year overlaps the
+    window's year span; a year-month date when the month overlaps; a full
+    date is compared exactly.  Releases with no usable date component are
+    rejected (the caller keeps TBA rows out of the daily scan).
+    """
+    try:
+        if len(raw_date) >= 10:
+            return min_date <= datetime.strptime(raw_date[:10], "%Y-%m-%d").date() <= max_date
+        if len(raw_date) == 7:
+            ym = datetime.strptime(raw_date, "%Y-%m").date()
+            # Overlap test: the release month intersects the window month span.
+            return ym.replace(day=1) <= max_date.replace(day=1) and ym.replace(day=28) >= min_date.replace(day=1)
+        if len(raw_date) == 4:
+            year = int(raw_date)
+            return min_date.year <= year <= max_date.year
+    except ValueError:
+        pass
+    return False
 
 
 def _persist_artist_releases(artist: str, releases: list[dict[str, Any]]) -> tuple[int, int]:
@@ -218,6 +246,7 @@ def _persist_artist_releases(artist: str, releases: list[dict[str, Any]]) -> tup
                 ).fetchone()
 
                 _mbid = rel.get("id") or None
+                _ptype = str(rel.get("primary_type") or "").strip()
                 if dup:
                     # Same precedence as the ON CONFLICT branch below.
                     session.execute(
@@ -225,6 +254,7 @@ def _persist_artist_releases(artist: str, releases: list[dict[str, Any]]) -> tup
                             UPDATE upcoming_releases SET
                                 last_seen_at = CURRENT_TIMESTAMP,
                                 source = :source,
+                                primary_type = COALESCE(:ptype, upcoming_releases.primary_type),
                                 release_date = CASE
                                     WHEN upcoming_releases.release_date IS NULL
                                          OR :date IS NULL
@@ -257,7 +287,7 @@ def _persist_artist_releases(artist: str, releases: list[dict[str, Any]]) -> tup
                             WHERE id = :id
                         """),
                         {"id": dup[0], "source": SOURCE_NAME, "date": rel_date,
-                         "year": release_year, "mbid": _mbid,
+                         "year": release_year, "mbid": _mbid, "ptype": _ptype,
                          "checked": datetime.now().isoformat()},
                     )
                     updated += 1
@@ -267,13 +297,13 @@ def _persist_artist_releases(artist: str, releases: list[dict[str, Any]]) -> tup
                     text("""
                         INSERT INTO upcoming_releases (
                             artist_name, album_name, release_date, release_year, source,
-                            artist_in_collection, release_group_mbid,
+                            primary_type, artist_in_collection, release_group_mbid,
                             mbid_match_status, mbid_source, mbid_confidence,
                             mbid_match_score, mbid_last_checked_at, status,
                             last_seen_at, updated_at
                         ) VALUES (
                             :artist, :album, :date, :year, :source,
-                            TRUE, :mbid,
+                            :ptype, TRUE, :mbid,
                             'matched', 'musicbrainz_daily_scan', 'high',
                             1.0, :checked, 'discovered',
                             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
@@ -281,6 +311,7 @@ def _persist_artist_releases(artist: str, releases: list[dict[str, Any]]) -> tup
                         ON CONFLICT (artist_name, album_name) DO UPDATE SET
                             last_seen_at = CURRENT_TIMESTAMP,
                             source = EXCLUDED.source,
+                            primary_type = COALESCE(EXCLUDED.primary_type, upcoming_releases.primary_type),
                             release_date = CASE
                                 WHEN upcoming_releases.release_date IS NULL
                                      OR EXCLUDED.release_date IS NULL
@@ -318,6 +349,7 @@ def _persist_artist_releases(artist: str, releases: list[dict[str, Any]]) -> tup
                         "year": release_year,
                         "source": SOURCE_NAME,
                         "mbid": _mbid,
+                        "ptype": _ptype,
                         "checked": datetime.now().isoformat(),
                     },
                 )
@@ -363,7 +395,10 @@ def fetch_musicbrainz_upcoming_releases(
     if lookback_days is None:
         lookback_days = _feature_int("daily_musicbrainz_release_lookback_days", 42)
     if lookahead_days is None:
-        lookahead_days = _feature_int("daily_musicbrainz_release_lookahead_days", 28)
+        # ~4 months: albums are usually announced well ahead of release
+        # (singles only days/weeks out), so a short lookahead starves the
+        # upcoming list of albums.  Tunable on the config page.
+        lookahead_days = _feature_int("daily_musicbrainz_release_lookahead_days", 120)
 
     today = datetime.now().date()
     min_date = today - timedelta(days=max(1, min(lookback_days, 365)))

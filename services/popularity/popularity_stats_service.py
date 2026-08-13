@@ -76,38 +76,25 @@ def calculate_album_stats(conn, artist: str, album: str) -> tuple[float, float, 
 def calculate_artist_stats(conn, artist: str) -> tuple[float, float, list[float]]:
     """Return (mean, stdev, values) of popularity scores for an artist.
 
-    When ``conn`` is ``None`` a fresh ``db_session`` is opened so callers
-    (e.g. the single-detection service) never crash on ``None.cursor()``.
+    ``conn`` is kept for backward compatibility — the query runs on its own
+    SQLAlchemy session.
     """
-    values: list[float] = []
-    if conn is None:
-        from sqlalchemy import text as _text
-        from db.engine import db_session as _db_session
-        try:
-            with _db_session() as session:
-                result = session.execute(
-                    _text("""
-                        SELECT final_score FROM tracks
-                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
-                          AND final_score > 0
-                    """),
-                    {"artist": artist},
-                )
-                values = [float(row[0] or 0) for row in result.fetchall() or []]
-        except Exception as exc:
-            logger.debug("[POPULARITY_STATS] Artist stats session error for %s: %s", artist, exc)
-            return 0.0, 0.0, []
-    else:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT final_score FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-              AND final_score > 0
-            """,
-            (artist,),
-        )
-        values = [float(row[0] or 0) for row in cursor.fetchall() or []]
+    from sqlalchemy import text as _text
+    from db.engine import db_session as _db_session
+    try:
+        with _db_session() as session:
+            result = session.execute(
+                _text("""
+                    SELECT final_score FROM tracks
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+                      AND final_score > 0
+                """),
+                {"artist": artist},
+            )
+            values = [float(row[0] or 0) for row in result.fetchall() or []]
+    except Exception as exc:
+        logger.debug("[POPULARITY_STATS] Artist stats session error for %s: %s", artist, exc)
+        return 0.0, 0.0, []
 
     if not values:
         logger.debug("[POPULARITY_STATS] No valid score tracks found for artist: %s", artist)
@@ -129,42 +116,28 @@ def calculate_album_listener_stats(conn, artist: str, album: str) -> tuple[list[
     tracks are excluded from the distributions (deluxe-edition padding must
     not compress the core tracks' z) with the same fallback as
     ``calculate_album_stats``: when fewer than 3 core tracks remain, the full
-    tracklist is used.  When ``conn`` is ``None`` a fresh ``db_session`` is
-    opened so callers (e.g. the single-detection service) never crash on
-    ``None.cursor()``.
+    tracklist is used.  ``conn`` is kept for backward compatibility — the
+    query runs on its own SQLAlchemy session.
     """
+    from sqlalchemy import text as _text
+    from db.engine import db_session as _db_session
+    try:
+        with _db_session() as session:
+            result = session.execute(
+                _text("""
+                    SELECT title, lastfm_listeners, listenbrainz_listens FROM tracks
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+                      AND album = :album
+                """),
+                {"artist": artist, "album": album},
+            )
+            rows = result.fetchall() or []
+    except Exception as exc:
+        logger.debug("[POPULARITY_STATS] Album listener session error for %s - %s: %s", artist, album, exc)
+        return [], []
+
     lf_listeners: list[float] = []
     lb_listens: list[float] = []
-    rows = []
-    if conn is None:
-        from sqlalchemy import text as _text
-        from db.engine import db_session as _db_session
-        try:
-            with _db_session() as session:
-                result = session.execute(
-                    _text("""
-                        SELECT title, lastfm_listeners, listenbrainz_listens FROM tracks
-                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
-                          AND album = :album
-                    """),
-                    {"artist": artist, "album": album},
-                )
-                rows = result.fetchall() or []
-        except Exception as exc:
-            logger.debug("[POPULARITY_STATS] Album listener session error for %s - %s: %s", artist, album, exc)
-            return [], []
-    else:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT title, lastfm_listeners, listenbrainz_listens FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = %s
-              AND album = %s
-            """,
-            (artist, album),
-        )
-        rows = cursor.fetchall() or []
-
     source_rows = _filter_bonus_rows(rows)
 
     for row in source_rows:

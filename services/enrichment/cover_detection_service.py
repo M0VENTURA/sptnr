@@ -19,7 +19,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from services.enrichment.cover_detector_impl import CoverDetector
-from db.utils import get_db_connection, row_get
+from db.utils import row_get
 from helpers.normalization_service import detect_cover_and_normalize_title
 
 logger = logging.getLogger(__name__)

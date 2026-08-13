@@ -368,6 +368,7 @@ window.performMbSearch = async function() {
         } else {
           html += '<button class="btn btn-sm btn-outline-secondary mb-select-btn w-100" onclick="selectMbRelease(\'' + dataKey + '\', \'' + escHtml(r.id || '') + '\', \'' + escHtml(r.title) + '\')"><i class="bi bi-plus-lg"></i> Select</button>';
         }
+        html += '<button class="btn btn-sm btn-outline-warning mb-select-btn w-100 mt-1" onclick="addMbReleaseToUpcoming(\'' + dataKey + '\', this)" title="Add to your upcoming releases list"><i class="bi bi-calendar-plus"></i> Add to Upcoming</button>';
         html += '</div></div></div></div></div>';
       });
     });
@@ -425,6 +426,48 @@ window.clearMbSearch = function() {
   var resultsEl = document.getElementById('mbSearchResults');
   if (resultsEl) {
     resultsEl.innerHTML = '<div class="col-12 text-center text-muted py-5"><i class="bi bi-music-note-beamed" style="font-size:2rem;"></i><p class="mt-2">Enter search terms above to find releases on MusicBrainz.</p></div>';
+  }
+};
+
+// Adds a searched release-group to the upcoming-releases list (POST
+// /api/upcoming-releases/add).  Reads the release data stashed at the card's
+// dataKey, then flips the button to a success state.
+window.addMbReleaseToUpcoming = async function(dataKey, btn) {
+  var release = window._mbReleaseData[dataKey];
+  if (!release) return;
+  if (btn.disabled) return;
+  btn.disabled = true;
+  var original = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Adding...';
+  try {
+    var artistName = release.artist || (release['artist-credit'] && release['artist-credit'][0]
+      ? (release['artist-credit'][0].name || release['artist-credit'][0].artist || '') : '');
+    var resp = await fetch('/api/upcoming-releases/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        artist: artistName,
+        album: release.title,
+        release_date: release.first_release_date || release.date || '',
+        release_group_mbid: release.id || '',
+        primary_type: release.primary_type || release.category || ''
+      })
+    });
+    var data = await resp.json().catch(function() { return {}; });
+    if (data && data.success) {
+      btn.innerHTML = '<i class="bi bi-check-circle"></i> ' + (data.merged ? 'Already Listed' : 'Added to Upcoming');
+      btn.classList.remove('btn-outline-warning');
+      btn.classList.add('btn-success');
+      btn.disabled = false;
+    } else {
+      btn.innerHTML = original;
+      btn.disabled = false;
+      alert('Failed to add: ' + ((data && data.error) || 'unknown error'));
+    }
+  } catch (e) {
+    btn.innerHTML = original;
+    btn.disabled = false;
+    alert('Request failed: ' + e.message);
   }
 };
 

@@ -1047,8 +1047,11 @@ def api_correcting_mb_suggestions():
             return jsonify({"success": True, "suggestions": {}, "mbid": None}), 200
         mbid = str(row[0])
         from api_clients.musicbrainz_http import MusicBrainzHttpClient
+        from services.infrastructure.api_rate_limiter import get_rate_limiter
         mb_client = MusicBrainzHttpClient()
-        time.sleep(1.0)
+        # Use the shared MusicBrainz rate budget so manual lookups don't
+        # collide with scan traffic (raw sleep bypassed it).
+        get_rate_limiter().throttle_musicbrainz()
         data = mb_client.get_release(mbid, inc="release-groups+labels", timeout=12.0)
         if not data:
             return jsonify({"success": True, "suggestions": {}, "mbid": mbid}), 200

@@ -12,10 +12,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from sqlalchemy import text
-from db.engine import db_session
-from db.utils import row_get
-
 logger = logging.getLogger(__name__)
 
 
@@ -117,68 +113,72 @@ def get_album_tag_inconsistencies(artist_filter: str | None = None) -> list[dict
                 params or None,
             ).mappings().all()
 
-        results = []
-        for row in flagged_albums:
-            row_dict = dict(row) if hasattr(row, "keys") else {"album_artist": row[0], "album": row[1], "track_count": row[2]}
-            aa = row_dict.get("album_artist") or ""
-            al = row_dict.get("album") or ""
-            tc = int(row_dict.get("track_count") or 0)
-
+            # User-dismissed (album_artist, album, field) triples — never
+            # re-flag them.  The table may predate the schema registry, so a
+            # missing table is treated as "no ignores".
+            ignored_keys: set[tuple[str, str, str]] = set()
             try:
-                cursor.execute(
-                    f"SELECT id, {', '.join(f for f, _ in effective_fields)} FROM tracks WHERE {artist_expr} = %s AND album = %s",
-                    (aa, al),
-                )
-                detail_rows = cursor.fetchall()
+                ignore_rows = session.execute(
+                    _text("SELECT album_artist, album, field FROM correction_ignores")
+                ).mappings().all() or []
+                ignored_keys = {
+                    (str(r.get("album_artist") or ""), str(r.get("album") or ""), str(r.get("field") or ""))
+                    for r in ignore_rows
+                }
             except Exception:
-                continue
+                pass
 
-            col_names = ["id"] + [f for f, _ in effective_fields]
-            inconsistencies = []
-            for field, field_label in effective_fields:
-                col_idx = col_names.index(field)
-                value_map: dict[str, dict] = {}
-                for dr in detail_rows:
-                    track_id = dr[0] if not hasattr(dr, "get") else dr.get("id")
-                    val = dr[col_idx] if not hasattr(dr, "get") else dr.get(field)
-                    val_str = str(val or "").strip()
-                    if val_str not in value_map:
-                        value_map[val_str] = {"value": val_str, "count": 0, "track_ids": []}
-                    value_map[val_str]["count"] += 1
-                    if track_id is not None:
-                        value_map[val_str]["track_ids"].append(str(track_id))
+            results = []
+            for row in flagged_albums:
+                row_dict = dict(row)
+                aa = row_dict.get("album_artist") or ""
+                al = row_dict.get("album") or ""
+                tc = int(row_dict.get("track_count") or 0)
 
-                non_empty = {v: d for v, d in value_map.items() if v and v != ""}
-                if len(non_empty) >= 2:
-                    inconsistencies.append({
-                        "field": field,
-                        "field_label": field_label,
-                        "values": sorted(non_empty.values(), key=lambda x: -x["count"]),
+                try:
+                    detail_rows = session.execute(
+                        _text(
+                            f"SELECT id, {', '.join(f for f, _ in effective_fields)} "
+                            f"FROM tracks WHERE {artist_expr} = :aa AND album = :al"
+                        ),
+                        {"aa": aa, "al": al},
+                    ).mappings().all()
+                except Exception:
+                    continue
+
+                inconsistencies = []
+                for field, field_label in effective_fields:
+                    value_map: dict[str, dict] = {}
+                    for dr in detail_rows:
+                        val_str = str(dr.get(field) or "").strip()
+                        bucket = value_map.setdefault(
+                            val_str, {"value": val_str, "count": 0, "track_ids": []}
+                        )
+                        bucket["count"] += 1
+                        if dr.get("id") is not None:
+                            bucket["track_ids"].append(str(dr.get("id")))
+
+                    non_empty = {v: d for v, d in value_map.items() if v}
+                    if len(non_empty) >= 2 and (aa, al, field) not in ignored_keys:
+                        inconsistencies.append({
+                            "field": field,
+                            "field_label": field_label,
+                            "values": sorted(non_empty.values(), key=lambda x: -x["count"]),
+                        })
+
+                if inconsistencies:
+                    results.append({
+                        "album_artist": aa,
+                        "album": al,
+                        "track_count": tc,
+                        "inconsistencies": inconsistencies,
                     })
-
-            if inconsistencies:
-                results.append({
-                    "album_artist": aa,
-                    "album": al,
-                    "track_count": tc,
-                    "inconsistencies": inconsistencies,
-                })
 
         return results
     except Exception as exc:
         logger.warning("Failed to get album tag inconsistencies: %s", exc, exc_info=True)
         return []
 
-
-def fix_album_field(album_artist: str, album: str, field: str, value: Any) -> tuple[int, int]:
-    """Apply a single field value to all tracks in an album.
-
-    Returns (tracks_updated, files_updated).
-    """
-    allowed = {f for f, _ in ALBUM_CONSISTENCY_FIELDS}
-    if field not in allowed:
-        logger.warning("Field %s not in allowed consistency fields", field)
-        return 0, 0
 
 def fix_album_field(album_artist: str, album: str, field: str, value: Any) -> tuple[int, int]:
     """Apply a single field value to all tracks in an album.

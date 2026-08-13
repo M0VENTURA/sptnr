@@ -20,6 +20,22 @@ def initialize_app_services(app=None):
     mirrors the Download Retry Scheduler's ``auto_start`` config into its
     runtime state so the config page shows Running after boot.
     """
+    # Boot hygiene: a scan killed by a crash/reboot leaves its DB
+    # ``scan_states`` row flagged running (the completion path never ran).
+    # The schema bootstrap already resets these before workers spawn, but
+    # direct ``python app.py`` dev runs skip bootstrap — reset here too so
+    # the scheduler/dashboard never see a phantom active scan.
+    try:
+        from services.scanning.scan_state import reset_stale_scan_states
+        stale = reset_stale_scan_states()
+        if stale:
+            logger.warning(
+                "[TASK_MANAGER] Reset %d stale scan-state row(s) left 'running' by a previous crash/reboot",
+                stale,
+            )
+    except Exception as exc:
+        logger.debug("[TASK_MANAGER] Stale scan-state reset skipped: %s", exc)
+
     try:
         from services.scheduler.scheduler_service import start_scheduler
         start_scheduler(app=app)

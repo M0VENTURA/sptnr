@@ -164,6 +164,10 @@ async def setup():
     nav_first = nav_users[0] if nav_users else {}
     api = cfg.get("api_integrations", {})
     dl = cfg.get("downloads", {})
+    watcher_cfg = cfg.get("watcher", {})
+    features_cfg = cfg.get("features", {})
+    playlists_cfg = cfg.get("playlists", {})
+    tagging_cfg = cfg.get("tagging", {})
 
     slskd_cfg = cfg.get("slskd", {})
     setup_defaults = {
@@ -193,6 +197,17 @@ async def setup():
         "conversion_enabled": bool(dl.get("conversion", {}).get("enabled", False)),
         "conversion_mode": dl.get("conversion", {}).get("mode", "flac_to_mp3"),
         "conversion_bitrate": dl.get("conversion", {}).get("mp3_bitrate_kbps", 320),
+        # Automation & Extras (Step 5)
+        "auto_import_enabled": watcher_cfg.get("auto_import_enabled", True),
+        "auto_popularity_scan": watcher_cfg.get("auto_popularity_scan", True),
+        "downloads_watcher_enabled": watcher_cfg.get("downloads_watcher_enabled", True),
+        "cover_detection_enabled": features_cfg.get("cover_detection_enabled", True),
+        "upcoming_releases_scan_enabled": features_cfg.get("upcoming_releases_scan_enabled", True),
+        "sync_ratings_to_all_users": features_cfg.get("sync_ratings_to_all_users", False),
+        "essential_playlists_enabled": playlists_cfg.get("essential_playlists_enabled", True),
+        "genre_playlists_enabled": playlists_cfg.get("genre_playlists_enabled", True),
+        "write_tags_to_file": tagging_cfg.get("write_tags_to_file", True),
+        "quality_filter_enabled": bool((dl.get("quality_filter") or {}).get("enabled", False)),
     }
 
     # PG env vars

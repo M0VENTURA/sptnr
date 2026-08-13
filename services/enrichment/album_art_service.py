@@ -18,7 +18,7 @@ from api_clients.discogs_http import DiscogsHttpClient
 from api_clients.musicbrainz_http import MusicBrainzHttpClient
 from sqlalchemy import text
 from db.engine import db_session
-from db.utils import get_db_connection, row_get
+from db.utils import row_get
 from db.repositories.metadata import fetch_album_art_blob
 from helpers.normalization_service import (
     normalize_artist,

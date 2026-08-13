@@ -1063,6 +1063,69 @@ body:has(#globalPlayerBar:not(.d-none)) .config-save-bar {
     flex-shrink: 0;
 }
 
+/* Scope selector tabs — structural active state (lightened background +
+   high-contrast border) instead of a solid fill; icon/count accents tie the
+   tab to its result rows (green = library, amber = MusicBrainz).  The
+   !important flags beat the global nav-pills green-fill rule scoped to this
+   flyout only. */
+.search-flyout #unifiedScopeTabs .nav-link {
+    background-color: #1e1e1e !important;
+    border: 1px solid transparent !important; /* prevents layout shift when active */
+    border-radius: 0.5rem !important;
+    color: #a0a0a0 !important;
+    min-height: 44px !important; /* comfortable touch target on mobile */
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 0.4rem !important;
+    padding: 0.5rem 0.9rem !important;
+}
+
+.search-flyout #unifiedScopeTabs .nav-link:hover {
+    color: #ffffff !important;
+}
+
+.search-flyout #unifiedScopeTabs .nav-link.active {
+    background-color: #2a2a2a !important;
+    border-color: rgba(255, 255, 255, 0.65) !important;
+    color: #ffffff !important;
+}
+
+.search-flyout #unifiedScopeTabs .us-scope-count {
+    background-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+.search-flyout #unifiedScopeTabs [data-scope="library"] .bi,
+.search-flyout #unifiedScopeTabs [data-scope="library"] .us-scope-count {
+    color: #2ecc71 !important;
+}
+
+.search-flyout #unifiedScopeTabs [data-scope="mb"] .bi,
+.search-flyout #unifiedScopeTabs [data-scope="mb"] .us-scope-count {
+    color: #f1c40f !important;
+}
+
+/* Result rows — colored source dot + artist-first subtitle hierarchy.
+   The dots reuse the tab accent colors so a row's origin (library green /
+   MusicBrainz amber) is recognisable at a glance. */
+.us-row .us-dot {
+    font-size: 0.6rem;
+    vertical-align: middle;
+    margin-right: 0.1rem;
+}
+
+.us-row .accent-library { color: #2ecc71; }
+.us-row .accent-mb { color: #f1c40f; }
+
+.us-row .us-artist {
+    color: #ffffff;
+    font-weight: 600;
+}
+
+.us-row .us-type,
+.us-row .us-owner {
+    color: var(--text-secondary);
+}
+
 /* Search flyout row thumbnails (local art / Cover Art Archive) */
 .us-row img {
     background-color: var(--tertiary-bg, #282828);

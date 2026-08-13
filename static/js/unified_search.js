@@ -242,8 +242,8 @@
       return '<a class="us-row" href="/artist/' + encodeURIComponent(a.name) + '">' +
         thumbHtml('/api/artist/image?name=' + encodeURIComponent(a.name), 'rounded-circle border border-secondary', a.name) +
         '<span class="us-row-main">' +
-          '<span class="us-row-title d-block">🟢 ' + esc(a.name) + '</span>' +
-          '<span class="us-row-sub d-block">' + a.track_count + ' track' + (a.track_count === 1 ? '' : 's') + ' · ' + a.album_count + ' album' + (a.album_count === 1 ? '' : 's') + '</span>' +
+          '<span class="us-row-title d-block"><span class="us-dot accent-library">●</span> ' + esc(a.name) + '</span>' +
+          '<span class="us-row-sub d-block">' + a.track_count + ' track' + (a.track_count === 1 ? '' : 's') + ' - ' + a.album_count + ' album' + (a.album_count === 1 ? '' : 's') + '</span>' +
         '</span>' +
         '<span class="us-row-meta badge bg-secondary-subtle text-secondary-emphasis">Artist</span>' +
         (isVarious ? '<span class="us-row-meta badge bg-secondary ms-1" title="Compilation placeholder entity">Compilation</span>' : '') +
@@ -257,7 +257,7 @@
         '<span class="us-row-icon"><i class="bi bi-music-note"></i></span>' +
         '<span class="us-row-main">' +
           '<span class="us-row-title d-block">' + esc(t.title) + '</span>' +
-          '<span class="us-row-sub d-block">' + esc(t.artist) + (t.album ? ' · ' + esc(t.album) : '') + '</span>' +
+          '<span class="us-row-sub d-block">' + esc(t.artist) + (t.album ? ' - ' + esc(t.album) : '') + '</span>' +
         '</span>' +
         (t.stars ? '<span class="us-row-meta text-warning"><i class="bi bi-star-fill"></i> ' + esc(t.stars) + '</span>' : '') +
       '</a>';
@@ -317,7 +317,7 @@
       // 3rd line: track count (+ total duration) — instant promo-vs-full check.
       var trackLine = '';
       if (it.track_count) {
-        trackLine = '<span class="us-row-sub d-block">' + it.track_count + ' track' + (it.track_count === 1 ? '' : 's') + (it.duration_total ? ' · ' + fmtDuration(it.duration_total) : '') + '</span>';
+        trackLine = '<span class="us-row-sub d-block">' + it.track_count + ' track' + (it.track_count === 1 ? '' : 's') + (it.duration_total ? ' - ' + fmtDuration(it.duration_total) : '') + '</span>';
       }
       if (it.local) {
         var href = '/album/' + encodeURIComponent(it.artist) + '/' + encodeURIComponent(it.title);
@@ -326,8 +326,8 @@
         html += '<a class="us-row" href="' + href + '">' +
           thumbHtml(localArt, 'rounded border border-secondary', it.title) +
           '<span class="us-row-main">' +
-            '<span class="us-row-title d-block">🟢 ' + esc(it.title) + yearSuffix + '</span>' +
-            '<span class="us-row-sub d-block">' + esc(it.typeLabel || 'Album') + ' • In Library</span>' +
+            '<span class="us-row-title d-block"><span class="us-dot accent-library">●</span> ' + esc(it.title) + yearSuffix + '</span>' +
+            '<span class="us-row-sub d-block"><span class="us-artist">' + esc(it.artist) + '</span> - <span class="us-type">' + esc(it.typeLabel || 'Album') + '</span> - <span class="us-owner">In Library</span></span>' +
             trackLine +
           '</span>' +
         '</a>';
@@ -339,8 +339,8 @@
         html += '<a class="us-row" href="' + ownedHref + '">' +
           thumbHtml(ownedArt, 'rounded border border-secondary', it.title) +
           '<span class="us-row-main">' +
-            '<span class="us-row-title d-block">🟢 ' + esc(it.title) + yearSuffix + '</span>' +
-            '<span class="us-row-sub d-block">' + esc(it.typeLabel || 'Album') + ' • In Library</span>' +
+            '<span class="us-row-title d-block"><span class="us-dot accent-library">●</span> ' + esc(it.title) + yearSuffix + '</span>' +
+            '<span class="us-row-sub d-block"><span class="us-artist">' + esc(it.artist) + '</span> - <span class="us-type">' + esc(it.typeLabel || 'Album') + '</span> - <span class="us-owner">In Library</span></span>' +
             trackLine +
           '</span>' +
         '</a>';
@@ -358,8 +358,8 @@
         html += '<a class="us-row" href="' + mbUrl + '" target="_blank" rel="noopener">' +
           thumbHtml(cover, 'rounded border border-secondary', it.title) +
           '<span class="us-row-main">' +
-            '<span class="us-row-title d-block">🟡 ' + esc(it.title) + yearSuffix + '</span>' +
-            '<span class="us-row-sub d-block">MusicBrainz ' + esc(it.typeLabel || 'Release') + ' • ' + esc(it.artist) + '</span>' +
+            '<span class="us-row-title d-block"><span class="us-dot accent-mb">●</span> ' + esc(it.title) + yearSuffix + '</span>' +
+            '<span class="us-row-sub d-block"><span class="us-artist">' + esc(it.artist) + '</span> - <span class="us-type">' + esc(it.typeLabel || 'Release') + '</span></span>' +
             trackLine +
           '</span>' +
           (withQueue ? (queued

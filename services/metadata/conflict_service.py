@@ -89,6 +89,11 @@ SAFE_FIELDS: frozenset[str] = frozenset({
     "file_path",
 })
 
+# The only fields a resolver may write to the tracks table.  Field names come
+# from user-supplied JSON keys (resolve-batch) — anything outside this set is
+# rejected to avoid arbitrary SQL column injection.
+RESOLVABLE_FIELDS: frozenset[str] = PROTECTED_FIELDS | SAFE_FIELDS
+
 
 # ---------------------------------------------------------------------------
 # Gatekeeper
@@ -368,6 +373,8 @@ def resolve_conflict(
         if accepted_value is not None:
             # Apply the accepted value to the tracks table
             field = conflict["field_name"]
+            if field not in RESOLVABLE_FIELDS:
+                return {"success": False, "error": f"Field '{field}' is not resolvable"}
             session.execute(
                 text(f"UPDATE tracks SET {field} = :value WHERE id = :track_id"),
                 {"value": accepted_value, "track_id": conflict["track_id"]},
@@ -417,7 +424,7 @@ def resolve_conflicts_batch(
 
     with db_session() as session:
         for field, accepted_value in resolutions.items():
-            if not field:
+            if not field or field not in RESOLVABLE_FIELDS:
                 continue
 
             # Update the canonical track

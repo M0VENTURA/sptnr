@@ -124,6 +124,41 @@ def clear_progress_file(path: str) -> None:
         session.query(ScanState).filter_by(scan_type=db_scan_type).delete()
         session.commit()
 
+
+def reset_stale_scan_states() -> int:
+    """Reset scan-state rows left ``running`` by a crash or reboot.
+
+    The ``scan_states`` row is the cross-process "is a scan running?" flag
+    the scheduler and dashboard consult.  When the server is killed mid-scan
+    (reboot, OOM, ``docker stop``) the normal completion path never runs, so
+    ``is_running`` stays ``True`` forever: the dashboard shows the scan as
+    active, scheduled scans are skipped as "already running", and a stale
+    ``stop_requested`` flag can abort the next scan immediately.
+
+    Called once at startup (schema bootstrap — before any worker spawns) and
+    again as a safety net when a worker boots.  Idempotent and safe to call
+    concurrently: it only touches rows that are still flagged running, and no
+    scan can have started yet.
+
+    Returns the number of rows reset.
+    """
+    try:
+        with db_session() as session:
+            stale = session.query(ScanState).filter(
+                ScanState.is_running.is_(True)
+            ).all()
+            for state in stale:
+                state.is_running = False
+                state.status = "interrupted"
+                state.stop_requested = False
+                # current_artist is kept so the dashboard can show where the
+                # interrupted scan stopped (resume uses it as a hint).
+            session.commit()
+            return len(stale)
+    except Exception as exc:
+        logger.warning("Failed to reset stale scan states: %s", exc)
+        return 0
+
 # -------------------------------------------------------------------------
 # Stop / cancel helpers
 # -------------------------------------------------------------------------

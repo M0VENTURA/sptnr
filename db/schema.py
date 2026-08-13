@@ -135,6 +135,16 @@ TABLES_TO_ENSURE: dict[str, str] = {
             CONSTRAINT uq_track_provider_field UNIQUE (track_id, provider, field_name)
         )
     """,
+    "correction_ignores": """
+        CREATE TABLE IF NOT EXISTS correction_ignores (
+            id BIGSERIAL PRIMARY KEY,
+            album_artist TEXT NOT NULL DEFAULT '',
+            album TEXT NOT NULL,
+            field TEXT NOT NULL,
+            ignored_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT uq_correction_ignore UNIQUE (album_artist, album, field)
+        )
+    """,
     "upcoming_releases": """
         CREATE TABLE IF NOT EXISTS upcoming_releases (
             id BIGSERIAL PRIMARY KEY,

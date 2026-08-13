@@ -16,36 +16,64 @@ completed.  These tests cover:
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import pytest
 
 
-class FakeCursor:
-    def __init__(self):
-        self.executed = []
+class _FakeResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def fetchall(self):
+        return self._rows
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+
+class _RecordingSession:
+    """Stub session that records executes and returns fixed (empty) rows.
+
+    Mirrors the real ``db_session()`` contract: each ``execute`` returns a
+    result with ``fetchall()``/``fetchone()``, and statements are recorded so
+    tests can assert exactly which SQL/params ran.
+    """
+
+    def __init__(self, rows_by_execute=None):
+        self.executed: list[tuple] = []
+        self._results = list(rows_by_execute or [])
+        self._index = 0
 
     def execute(self, sql, params=None):
         self.executed.append((sql, params))
-
-    def fetchall(self):
-        return []
-
-
-class FakeConn:
-    def __init__(self):
-        self.cur = FakeCursor()
-        self.commits = 0
-
-    def cursor(self):
-        return self.cur
+        rows = self._results[self._index] if self._index < len(self._results) else []
+        self._index += 1
+        return _FakeResult(rows)
 
     def commit(self):
-        self.commits += 1
+        pass
 
     def rollback(self):
         pass
 
-    def close(self):
-        pass
+
+@contextmanager
+def _fake_db_session(session):
+    yield session
+
+
+def _session_factory(session):
+    """Return a ``db_session`` callable backed by ONE shared fake session.
+
+    Sequential ``execute`` calls across separate ``with`` blocks advance one
+    shared result queue — mirrors the real session-per-call behaviour.
+    """
+    @contextmanager
+    def _cm():
+        yield session
+
+    return _cm
 
 
 def _album_results():
@@ -276,8 +304,10 @@ class TestZStandoutSourceReVerification:
 class TestPostAlbumStarRatings:
     def test_assigns_persists_logs_and_syncs(self, monkeypatch):
         from services.popularity.stages import finalise_stage as fs
+        import db.engine as db_engine
 
-        conn = FakeConn()
+        session = _RecordingSession()
+        monkeypatch.setattr(db_engine, "db_session", _session_factory(session))
         # Deterministic star value per track so assertions are stable.
         monkeypatch.setattr(
             fs, "_assign_stars",
@@ -293,8 +323,6 @@ class TestPostAlbumStarRatings:
             artist="Muse",
             artist_scores=[80.0, 90.0],
             options={"sync_navidrome": True},
-            conn=conn,
-            cursor=conn.cur,
         )
 
         assert outcome["star_ratings"] == 2
@@ -302,9 +330,9 @@ class TestPostAlbumStarRatings:
         assert [t["stars"] for t in results] == [4, 5]
 
         # Each rated track persisted its star rating.
-        star_updates = [e for e in conn.cur.executed if "UPDATE tracks SET stars" in e[0]]
+        star_updates = [e for e in session.executed if "UPDATE tracks SET stars" in str(e[0])]
         assert len(star_updates) == 2
-        assert (5, "t2") in {e[1] for e in star_updates}
+        assert any(e[1].get("tid") == "t2" and e[1].get("stars") == 5 for e in star_updates)
 
         # Per-album tabular summary was emitted (new format).
         assert any("📊 SCAN RESULTS: Muse — Absolution" in m for m in logged)
@@ -313,18 +341,18 @@ class TestPostAlbumStarRatings:
 
     def test_returns_zero_for_empty_album(self, monkeypatch):
         from services.popularity.stages import finalise_stage as fs
+        import db.engine as db_engine
 
-        conn = FakeConn()
+        session = _RecordingSession()
+        monkeypatch.setattr(db_engine, "db_session", _session_factory(session))
         outcome = fs.post_album_star_ratings(
             album_results=[],
             artist="Muse",
             artist_scores=[],
             options={},
-            conn=conn,
-            cursor=conn.cur,
         )
         assert outcome == {"star_ratings": 0, "navidrome_synced": 0}
-        assert conn.cur.executed == []
+        assert session.executed == []
 
 
 class TestAssignStarsPopularityOnly:
@@ -434,31 +462,31 @@ class TestComputeArtistScoresExcludesScanned:
     titles; ``compute_artist_scores`` must do the same.
     """
 
-    def test_scanned_titles_excluded_from_db_merge(self):
+    def test_scanned_titles_excluded_from_db_merge(self, monkeypatch):
         from services.popularity.stages import finalise_stage as fs
+        import db.engine as db_engine
+        from sqlalchemy import create_engine, text as sa_text
 
-        class _Cursor:
-            def __init__(self):
-                self.fetched = [
-                    {"title": "Scanned A", "final_score": 80.0},
-                    {"title": "Scanned B", "final_score": 90.0},
-                    {"title": "Older Track", "final_score": 70.0},
-                ]
+        # Real SQLAlchemy Rows for the artist-score merge SELECT.
+        engine = create_engine("sqlite://")
+        with engine.connect() as conn:
+            conn.execute(sa_text("CREATE TABLE t (title TEXT, album TEXT, final_score REAL)"))
+            for title, score in [
+                ("Scanned A", 80.0), ("Scanned B", 90.0), ("Older Track", 70.0),
+            ]:
+                conn.execute(
+                    sa_text("INSERT INTO t (title, album, final_score) VALUES (:t, 'Album', :s)"),
+                    {"t": title, "s": score},
+                )
+            rows = list(conn.execute(sa_text("SELECT title, album, final_score FROM t")).fetchall())
 
-            def execute(self, sql, params=None):
-                self.sql = sql
-                self.params = params
+        session = _RecordingSession([rows])
+        monkeypatch.setattr(db_engine, "db_session", _session_factory(session))
 
-            def fetchall(self):
-                return self.fetched
-
-        cursor = _Cursor()
         # Both scanned titles must be excluded → only the older track anchors.
         scores = fs.compute_artist_scores(
             "Artist",
             [80.0, 90.0],
-            object(),
-            cursor,
             scanned_titles={"scanned a", "scanned b"},
         )
         assert scores == [80.0, 90.0, 70.0]
@@ -494,15 +522,13 @@ class TestFinaliseScanPerAlbumFlag:
     def test_featured_tracks_group_by_album_artist(self, monkeypatch):
         from services.popularity.stages import finalise_stage as fs
 
-        conn = FakeConn()
-        monkeypatch.setattr(fs, "get_db_connection", lambda: conn)
         posted = []
         monkeypatch.setattr(
             fs,
             "post_album_star_ratings",
             lambda **kw: posted.append(kw) or {"star_ratings": 3, "navidrome_synced": 0},
         )
-        monkeypatch.setattr(fs, "_create_essential_m3u", lambda artist, cursor: None)
+        monkeypatch.setattr(fs, "_create_essential_m3u", lambda artist: None)
         monkeypatch.setattr(fs, "log_unified", lambda msg: None)
 
         fs.finalise_scan(
@@ -520,16 +546,17 @@ class TestFinaliseScanPerAlbumFlag:
 
     def test_per_album_posted_skips_duplicate_star_work(self, monkeypatch):
         from services.popularity.stages import finalise_stage as fs
+        import db.engine as db_engine
 
-        conn = FakeConn()
-        monkeypatch.setattr(fs, "get_db_connection", lambda: conn)
+        session = _RecordingSession()
+        monkeypatch.setattr(db_engine, "db_session", _session_factory(session))
         posted = []
         monkeypatch.setattr(
             fs,
             "post_album_star_ratings",
             lambda **kw: posted.append(kw),
         )
-        monkeypatch.setattr(fs, "_create_essential_m3u", lambda artist, cursor: None)
+        monkeypatch.setattr(fs, "_create_essential_m3u", lambda artist: None)
         logged = []
         monkeypatch.setattr(fs, "log_unified", lambda msg: logged.append(msg))
 
@@ -545,21 +572,22 @@ class TestFinaliseScanPerAlbumFlag:
         # Runner already posted per-album ratings → finalise must not re-assign.
         assert posted == []
         # artist_stats write still happened (album/artist context data).
-        stats_writes = [e for e in conn.cur.executed if "INSERT INTO artist_stats" in e[0]]
+        stats_writes = [e for e in session.executed if "INSERT INTO artist_stats" in str(e[0])]
         assert len(stats_writes) == 1
 
     def test_without_flag_delegates_per_album(self, monkeypatch):
         from services.popularity.stages import finalise_stage as fs
+        import db.engine as db_engine
 
-        conn = FakeConn()
-        monkeypatch.setattr(fs, "get_db_connection", lambda: conn)
+        session = _RecordingSession()
+        monkeypatch.setattr(db_engine, "db_session", _session_factory(session))
         posted = []
         monkeypatch.setattr(
             fs,
             "post_album_star_ratings",
             lambda **kw: posted.append(kw) or {"star_ratings": 2, "navidrome_synced": 0},
         )
-        monkeypatch.setattr(fs, "_create_essential_m3u", lambda artist, cursor: None)
+        monkeypatch.setattr(fs, "_create_essential_m3u", lambda artist: None)
         monkeypatch.setattr(fs, "log_unified", lambda msg: None)
 
         fs.finalise_scan(
@@ -614,8 +642,10 @@ class TestListenerZRobustness:
 class TestPostAlbumStarRatingsResilience:
     def test_one_track_failure_does_not_abort_album(self, monkeypatch):
         from services.popularity.stages import finalise_stage as fs
+        import db.engine as db_engine
 
-        conn = FakeConn()
+        session = _RecordingSession()
+        monkeypatch.setattr(db_engine, "db_session", _session_factory(session))
 
         def flaky_assign(track, *args, **kwargs):
             if track["title"] == "Time Is Running Out":
@@ -633,8 +663,6 @@ class TestPostAlbumStarRatingsResilience:
             artist="Muse",
             artist_scores=[80.0, 90.0],
             options={"sync_navidrome": True},
-            conn=conn,
-            cursor=conn.cur,
         )
 
         # The failing track is skipped; the healthy one still gets rated.

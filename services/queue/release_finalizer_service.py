@@ -68,8 +68,6 @@ def finalize_release(release: Dict[str, Any]) -> bool:
     Returns:
         True if the release was finalised successfully.
     """
-    conn = get_db_connection()
-    cursor = conn.cursor()
     try:
         release_db_id = release["id"]
         release_id = release["release_id"]
@@ -94,18 +92,22 @@ def finalize_release(release: Dict[str, Any]) -> bool:
 
         # Get track files and rename with track numbers
         audio_extensions = {".mp3", ".flac", ".m4a", ".ogg", ".wav", ".aac", ".wma"}
-        cursor.execute("""
-            SELECT track_number, track_title, file_path
-            FROM musicbrainz_release_tracks
-            WHERE release_id = %s AND status = 'completed'
-            ORDER BY disc_number, track_number
-        """, (release_id,))
-        tracks = cursor.fetchall() or []
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    SELECT track_number, track_title, file_path
+                    FROM musicbrainz_release_tracks
+                    WHERE release_id = :release_id AND status = 'completed'
+                    ORDER BY disc_number, track_number
+                """),
+                {"release_id": release_id},
+            )
+            tracks = [dict(r._mapping) for r in result.fetchall() or []]
 
         for idx, row in enumerate(tracks):
-            track_num = row[0] if not hasattr(row, "get") else row.get("track_number")
-            track_title = row[1] if not hasattr(row, "get") else row.get("track_title")
-            src_path_str = row[2] if not hasattr(row, "get") else row.get("file_path")
+            track_num = row.get("track_number")
+            track_title = row.get("track_title")
+            src_path_str = row.get("file_path")
 
             if not src_path_str:
                 continue
@@ -130,21 +132,26 @@ def finalize_release(release: Dict[str, Any]) -> bool:
             logger.debug("Moved %s → %s", src, dest_path)
 
             # Update track record
-            cursor.execute(
-                "UPDATE musicbrainz_release_tracks SET file_path = %s WHERE release_id = %s AND track_number = %s",
-                (str(dest_path), release_id, track_num),
-            )
+            with db_session() as session:
+                session.execute(
+                    text("UPDATE musicbrainz_release_tracks SET file_path = :fp "
+                         "WHERE release_id = :release_id AND track_number = :track_number"),
+                    {"fp": str(dest_path), "release_id": release_id, "track_number": track_num},
+                )
 
         # Update release status
-        cursor.execute("""
-            UPDATE musicbrainz_releases
-            SET status = 'finalized',
-                final_folder_path = %s,
-                finalized_at = CURRENT_TIMESTAMP,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = %s
-        """, (str(dest_dir), release_db_id))
-        conn.commit()
+        with db_session() as session:
+            session.execute(
+                text("""
+                    UPDATE musicbrainz_releases
+                    SET status = 'finalized',
+                        final_folder_path = :path,
+                        finalized_at = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = :id
+                """),
+                {"path": str(dest_dir), "id": release_db_id},
+            )
 
         # Clean up empty monitoring folder
         _cleanup_folder(monitoring_path)
@@ -157,13 +164,7 @@ def finalize_release(release: Dict[str, Any]) -> bool:
 
     except Exception as exc:
         logger.error("Failed to finalize release %s: %s", release.get("release_id"), exc)
-        try:
-            conn.rollback()
-        except Exception:
-            pass
         return False
-    finally:
-        conn.close()
 
 
 def _cleanup_folder(folder: Path) -> None:

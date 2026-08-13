@@ -277,51 +277,41 @@ class TestLookupArtistIdSkipsNameKeyedRows:
 class TestResolveNavidromeArtistId:
     """finalise_stage must reuse a real id instead of writing the name."""
 
-    class _Cursor:
-        """psycopg2 RealDictCursor-like: execute() + fetchone() over dicts."""
-
-        def __init__(self, results):
-            self._results = list(results)
-            self._index = 0
-            self.executed = []
-
-        def execute(self, sql, params=None):
-            self.executed.append(sql)
-
-        def fetchone(self):
-            if self._index >= len(self._results):
-                return None
-            row = self._results[self._index]
-            self._index += 1
-            return row
-
-    def test_returns_existing_real_id_from_artist_stats(self):
+    def test_returns_existing_real_id_from_artist_stats(self, monkeypatch):
         from services.popularity.stages.finalise_stage import _resolve_navidrome_artist_id
+        import db.engine as db_engine
 
-        cursor = self._Cursor([
-            {"artist_id": "nC8zJIGaf8CEiq8PT5L5cu"},
-            {"artist_id": "other-id"},
-        ])
-        assert _resolve_navidrome_artist_id(cursor, "Ad Infinitum") == "nC8zJIGaf8CEiq8PT5L5cu"
+        rows = _make_rows([("nC8zJIGaf8CEiq8PT5L5cu",)], single_col="artist_id")
+        monkeypatch.setattr(db_engine, "db_session", _session_factory([rows]))
 
-    def test_skips_name_keyed_artist_stats_row(self):
+        assert _resolve_navidrome_artist_id("Ad Infinitum") == "nC8zJIGaf8CEiq8PT5L5cu"
+
+    def test_skips_name_keyed_artist_stats_row(self, monkeypatch):
         from services.popularity.stages.finalise_stage import _resolve_navidrome_artist_id
+        import db.engine as db_engine
 
         # artist_stats only has the corrupted name-keyed row — must NOT return it.
-        cursor = self._Cursor([
-            {"artist_id": "Ad Infinitum"},
-            {"artist_id": "nC8zJIGaf8CEiq8PT5L5cu"},
-        ])
-        assert _resolve_navidrome_artist_id(cursor, "Ad Infinitum") == "nC8zJIGaf8CEiq8PT5L5cu"
+        name_rows = _make_rows([("Ad Infinitum",)], single_col="artist_id")
+        real_rows = _make_rows([("nC8zJIGaf8CEiq8PT5L5cu",)], single_col="artist_id")
+        monkeypatch.setattr(db_engine, "db_session", _session_factory([name_rows, real_rows]))
 
-    def test_returns_none_when_no_real_id_anywhere(self):
+        assert _resolve_navidrome_artist_id("Ad Infinitum") == "nC8zJIGaf8CEiq8PT5L5cu"
+
+    def test_returns_none_when_no_real_id_anywhere(self, monkeypatch):
         from services.popularity.stages.finalise_stage import _resolve_navidrome_artist_id
+        import db.engine as db_engine
 
-        cursor = self._Cursor([None, None])
-        assert _resolve_navidrome_artist_id(cursor, "Ad Infinitum") is None
+        empty = _make_rows([], single_col="artist_id")
+        monkeypatch.setattr(db_engine, "db_session", _session_factory([empty, empty]))
 
-    def test_ignores_name_in_tracks_fallback(self):
+        assert _resolve_navidrome_artist_id("Ad Infinitum") is None
+
+    def test_ignores_name_in_tracks_fallback(self, monkeypatch):
         from services.popularity.stages.finalise_stage import _resolve_navidrome_artist_id
+        import db.engine as db_engine
 
-        cursor = self._Cursor([None, {"artist_id": "Ad Infinitum"}])
-        assert _resolve_navidrome_artist_id(cursor, "Ad Infinitum") is None
+        empty = _make_rows([], single_col="artist_id")
+        name_rows = _make_rows([("Ad Infinitum",)], single_col="artist_id")
+        monkeypatch.setattr(db_engine, "db_session", _session_factory([empty, name_rows]))
+
+        assert _resolve_navidrome_artist_id("Ad Infinitum") is None

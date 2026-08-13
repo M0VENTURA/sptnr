@@ -48,7 +48,6 @@ Architecture:
 from __future__ import annotations
 import re
 from db.engine import db_session
-from db.utils import get_db_connection
 from collections import defaultdict
 from sqlalchemy import text
 import logging

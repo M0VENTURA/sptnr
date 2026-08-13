@@ -11,7 +11,8 @@ Key Functions:
 Architecture:
     Owns the matching loop and result aggregation. Delegates individual
     track matching to the ``enhanced_match_track`` callable parameter.
-    Manages its own database context via ``db_cursor()``.
+    Manages its own SQLAlchemy ``db_session()`` context (a raw DBAPI
+    cursor is derived from the session for legacy matcher compatibility).
 
     Returns:
         matched_tracks: List of successfully matched library tracks.

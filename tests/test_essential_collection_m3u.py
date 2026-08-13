@@ -16,22 +16,107 @@ directory instead, using the full DB track history scoped to ``album_artist``:
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 
 import pytest
+from sqlalchemy import create_engine, text as sa_text
 
 from services.popularity.stages import finalise_stage as fs
 
 
-class FakeCursor:
-    def __init__(self, rows):
-        self.rows = rows
-        self.executed = []
+# ---------------------------------------------------------------------------
+# Helpers: route finalise_stage's db_session to real SQLAlchemy Rows
+# ---------------------------------------------------------------------------
 
-    def execute(self, sql, params=None):
-        self.executed.append((sql, params))
+_ESSENTIAL_COLUMNS = (
+    "id", "title", "file_path", "duration", "stars", "is_live",
+    "is_compilation", "popularity_score", "year", "release_year", "artist",
+)
+
+
+def _make_rows(rows_data: list[dict]) -> list:
+    """Real SQLAlchemy ``Row`` objects shaped like the essential SELECT."""
+    engine = create_engine("sqlite://")
+    with engine.connect() as conn:
+        conn.execute(sa_text(
+            "CREATE TABLE t (id TEXT, title TEXT, file_path TEXT, duration INT, "
+            "stars INT, is_live INT, is_compilation INT, popularity_score REAL, "
+            "year INT, release_year INT, artist TEXT)"
+        ))
+        for r in rows_data:
+            conn.execute(
+                sa_text(
+                    "INSERT INTO t (id, title, file_path, duration, stars, is_live, "
+                    "is_compilation, popularity_score, year, release_year, artist) "
+                    "VALUES (:id, :title, :fp, :dur, :stars, :live, :comp, :score, "
+                    ":year, :ryear, :artist)"
+                ),
+                {
+                    "id": r.get("id"),
+                    "title": r.get("title"),
+                    "fp": r.get("file_path"),
+                    "dur": r.get("duration"),
+                    "stars": r.get("stars"),
+                    "live": r.get("is_live"),
+                    "comp": r.get("is_compilation"),
+                    "score": r.get("popularity_score"),
+                    "year": r.get("year"),
+                    "ryear": r.get("release_year"),
+                    "artist": r.get("artist", ""),
+                },
+            )
+        return list(conn.execute(
+            sa_text(f"SELECT {', '.join(_ESSENTIAL_COLUMNS)} FROM t")
+        ).fetchall())
+
+
+class _FakeResult:
+    def __init__(self, rows):
+        self._rows = rows
 
     def fetchall(self):
-        return self.rows
+        return self._rows
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+
+class _FakeSession:
+    def __init__(self, rows_by_execute):
+        self._results = list(rows_by_execute)
+        self._index = 0
+
+    def execute(self, *args, **kwargs):
+        rows = self._results[self._index] if self._index < len(self._results) else []
+        self._index += 1
+        return _FakeResult(rows)
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
+
+
+@contextmanager
+def _fake_db_session(session):
+    yield session
+
+
+def _session_factory(session):
+    @contextmanager
+    def _cm():
+        yield session
+
+    return _cm
+
+
+def _patch_db(monkeypatch, rows: list[dict]) -> None:
+    """Route finalise_stage's ``db_session`` to a fake returning *rows*."""
+    import db.engine as db_engine
+
+    session = _FakeSession([_make_rows(rows), []])
+    monkeypatch.setattr(db_engine, "db_session", _session_factory(session))
 
 
 def make_row(
@@ -95,9 +180,9 @@ class TestExcludedArtists:
 class TestCreateEssentialM3u:
     def _run(self, tmp_path, artist="Poppy", rows=None, monkeypatch=None):
         playlists_dir = tmp_path / "Playlists"
-        cursor = FakeCursor(rows or [])
+        _patch_db(monkeypatch, rows or [])
         monkeypatch.setattr(fs, "_essential_playlists_dir", lambda: str(playlists_dir))
-        fs._create_essential_m3u(artist, cursor)
+        fs._create_essential_m3u(artist)
         return playlists_dir
 
     def test_creates_m3u_with_13_unique_tracks(self, tmp_path, monkeypatch):
@@ -138,7 +223,8 @@ class TestCreateEssentialM3u:
         # A stale file from a previous scan is removed.
         playlists_dir.mkdir(parents=True, exist_ok=True)
         m3u.write_text("#EXTM3U\n", encoding="utf-8")
-        fs._create_essential_m3u("Poppy", FakeCursor([make_row(t) for t in _unique_titles(12)]))
+        _patch_db(monkeypatch, [make_row(t) for t in _unique_titles(12)])
+        fs._create_essential_m3u("Poppy")
         assert not m3u.exists()
 
     def test_removes_stale_nsp_files_on_write(self, tmp_path, monkeypatch):
@@ -151,7 +237,8 @@ class TestCreateEssentialM3u:
         old_name = playlists_dir / "Poppy - Essential Collection.nsp"
         legacy.write_text("{}", encoding="utf-8")
         old_name.write_text("{}", encoding="utf-8")
-        fs._create_essential_m3u("Poppy", FakeCursor([make_row(t) for t in _unique_titles(13)]))
+        _patch_db(monkeypatch, [make_row(t) for t in _unique_titles(13)])
+        fs._create_essential_m3u("Poppy")
         assert not legacy.exists()
         assert not old_name.exists()
 
@@ -165,24 +252,31 @@ class TestCreateEssentialM3u:
         assert not (playlists_dir / "Various Artists - Essential Collection.m3u").exists()
 
     def test_db_fetch_failure_is_graceful(self, tmp_path, monkeypatch):
-        class BoomCursor:
-            def execute(self, sql, params=None):
+        import db.engine as db_engine
+
+        class BoomSession:
+            def execute(self, *args, **kwargs):
                 raise RuntimeError("db down")
 
-            def fetchall(self):
-                raise AssertionError("should not be reached")
+            def commit(self):
+                pass
 
+            def rollback(self):
+                pass
+
+        monkeypatch.setattr(db_engine, "db_session", _session_factory(BoomSession()))
         playlists_dir = tmp_path / "Playlists"
         monkeypatch.setattr(fs, "_essential_playlists_dir", lambda: str(playlists_dir))
-        fs._create_essential_m3u("Poppy", BoomCursor())  # must not raise
+        fs._create_essential_m3u("Poppy")  # must not raise
         assert not (playlists_dir / "Poppy - Essential Collection.m3u").exists()
 
 
 class TestDedupWinner:
     def _write(self, tmp_path, rows, monkeypatch):
         playlists_dir = tmp_path / "Playlists"
+        _patch_db(monkeypatch, rows)
         monkeypatch.setattr(fs, "_essential_playlists_dir", lambda: str(playlists_dir))
-        fs._create_essential_m3u("Poppy", FakeCursor(rows))
+        fs._create_essential_m3u("Poppy")
         m3u = playlists_dir / "Poppy - Essential Collection.m3u"
         assert m3u.exists(), "dedup test needs >12 unique groups"
         return m3u.read_text(encoding="utf-8")

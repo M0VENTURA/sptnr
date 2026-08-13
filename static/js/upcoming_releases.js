@@ -228,6 +228,21 @@
         '<i class="bi bi-hexagon-fill"></i></span>'
       : '';
 
+    // Release-type badge (Album / EP / Single / …) from the MB primary type.
+    var typeBadge = '';
+    var rawType = String(release.primary_type || '').trim();
+    var pt = rawType.toLowerCase();
+    if (pt === 'album') {
+      typeBadge = '<span class="badge bg-primary-subtle text-primary-emphasis ms-1">Album</span>';
+    } else if (pt === 'ep') {
+      typeBadge = '<span class="badge bg-success-subtle text-success-emphasis ms-1">EP</span>';
+    } else if (pt === 'single') {
+      typeBadge = '<span class="badge bg-warning-subtle text-warning-emphasis ms-1">Single</span>';
+    } else if (rawType) {
+      typeBadge = '<span class="badge bg-secondary-subtle text-secondary-emphasis ms-1">' +
+        escapeHtml(rawType) + '</span>';
+    }
+
     var mbidCell = release.release_group_mbid
       ? '<code class="small">' + escapeHtml(String(release.release_group_mbid).slice(0, 8)) + '…</code>'
       : (isCandidate
@@ -236,7 +251,7 @@
 
     return '<tr>' +
       '<td>' + escapeHtml(release.artist_name || '') + '</td>' +
-      '<td>' + escapeHtml(release.album_name || '') + linkedBadge + '</td>' +
+      '<td>' + escapeHtml(release.album_name || '') + typeBadge + linkedBadge + '</td>' +
       '<td><small>' + escapeHtml(releaseDate) + ' ' + dateBadge + '</small></td>' +
       '<td>' + sourceBadge(release) + '</td>' +
       '<td>' + mbidCell + '</td>' +

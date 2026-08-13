@@ -22,36 +22,6 @@ from services.scanning.scan_state import (
 logger = logging.getLogger(__name__)
 
 
-def _get_db_connection():
-    """Return the app database connection.
-
-    Uses the canonical DB layer; callers should migrate to
-    ``db.utils.get_db_connection`` directly over time.
-    """
-    from db.utils import get_db_connection
-
-    return get_db_connection()
-
-
-def _row_value(row: Any, key: str, index: int = 0):
-    """Read a value from either a dict-like row or tuple/list row."""
-    if row is None:
-        return None
-
-    if isinstance(row, dict):
-        return row.get(key)
-
-    try:
-        return row[key]
-    except Exception:
-        pass
-
-    try:
-        return row[index]
-    except Exception:
-        return None
-
-
 def _resolve_first_artist_for_letter(letter: str) -> str:
     """Resolve the first matching local library artist for a starting letter.
 
