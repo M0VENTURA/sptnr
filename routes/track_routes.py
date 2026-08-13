@@ -306,12 +306,13 @@ async def api_track_update_metadata():
             # integer/numeric columns don't reject string payloads either.
             updates = _normalize_track_updates(updates, _get_track_column_types(session))
 
-            # Album-scoped fields describe the release as a whole. When they
-            # actually change for one track, push the same values to the other
-            # tracks on the album so a per-track edit can never split one
-            # release into two albums. Set ``apply_to_album: false`` to opt out.
+            # Album-scoped fields describe the release as a whole. By default a
+            # single-track edit only touches that one track — fixing a song that
+            # was mis-tagged onto the wrong album must not rewrite every sibling
+            # on the old album. Callers opt in to album-wide propagation by
+            # sending ``apply_to_album: true``.
             #
-            # Two guards keep a single-track edit from clobbering sibling
+            # Two guards keep an opted-in album edit from clobbering sibling
             # tracks:
             #   1. Only fields whose value really changed are propagated — the
             #      edit modals submit every field, so an unchanged album/year
@@ -326,7 +327,7 @@ async def api_track_update_metadata():
                 "musicbrainz_releasegroupid",
             }
             album_tracks_updated = 0
-            apply_to_album = data.get("apply_to_album", True) is not False
+            apply_to_album = data.get("apply_to_album") is True
             album_updates = {
                 k: v for k, v in updates.items() if k in album_scoped_fields
             }
