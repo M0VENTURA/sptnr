@@ -5,6 +5,8 @@ Queue matching routes.
 from __future__ import annotations
 
 
+import asyncio
+
 from quart import Blueprint, request
 from routes.utils import json_response as _json_response
 
@@ -156,7 +158,9 @@ async def api_queue_organize_group():
             "message": "Organization started in background",
         }, 202))
 
-    return _json_response(organize_group_sync(group_id, payload.get("metadata") or {}))
+    # organize_group_sync does filesystem moves + DB writes — offload so the
+    # event loop stays responsive while a large group organizes.
+    return _json_response(await asyncio.to_thread(organize_group_sync, group_id, payload.get("metadata") or {}))
 
 # -----------------------------------------------------------------------------
 # Matching (optional but correct)

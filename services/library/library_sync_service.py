@@ -122,23 +122,11 @@ def _run_library_sync_worker() -> None:
 
 def get_navidrome_config() -> dict[str, str] | None:
     try:
-        from helpers.config_helpers import get_config
-        cfg = get_config() or {}
-        nav_users = cfg.get("navidrome_users", []) or []
-        if not nav_users:
-            nav_cfg = cfg.get("navidrome", {}) or {}
-            if isinstance(nav_cfg, dict) and nav_cfg.get("base_url"):
-                nav_users = [nav_cfg]
-        if nav_users:
-            first = nav_users[0]
-            return {
-                "base_url": str(first.get("base_url", "") or "").rstrip("/"), 
-                "user": str(first.get("user", first.get("username", "")) or ""), 
-                "pass": str(first.get("pass", first.get("password", "")) or "")
-            }
+        from helpers.config_helpers import get_navidrome_first_user
+        return get_navidrome_first_user() or None
     except Exception as exc:
         logger.debug("Could not load Navidrome config: %s", exc)
-    return None
+        return None
 
 
 def perform_library_sync() -> dict[str, Any]:

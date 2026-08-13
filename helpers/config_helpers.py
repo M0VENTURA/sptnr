@@ -1228,6 +1228,52 @@ def get_navidrome_users() -> list[dict[str, Any]]:
     return cfg.get("navidrome_users", [])
 
 
+def get_navidrome_users_normalized() -> list[dict[str, str]]:
+    """All configured Navidrome accounts, normalized to ``base_url``/``user``/``pass``.
+
+    Falls back to the legacy top-level ``navidrome`` section when
+    ``navidrome_users`` is empty, accepts ``username``/``password`` aliases,
+    strips trailing slashes from ``base_url`` and drops entries without a
+    URL — previously each consumer re-implemented this with subtly different
+    fallbacks.
+    """
+    cfg = get_config()
+    raw = cfg.get("navidrome_users") or []
+    if not raw:
+        nav = cfg.get("navidrome") or {}
+        if isinstance(nav, dict) and (nav.get("base_url") or nav.get("user")):
+            raw = [nav]
+    normalized: list[dict[str, str]] = []
+    for u in raw:
+        if not isinstance(u, dict):
+            continue
+        entry = {
+            "base_url": str(u.get("base_url", "") or "").rstrip("/"),
+            "user": str(u.get("user", u.get("username", "")) or ""),
+            "pass": str(u.get("pass", u.get("password", "")) or ""),
+        }
+        if entry["base_url"]:
+            normalized.append(entry)
+    return normalized
+
+
+def get_navidrome_first_user() -> dict[str, str]:
+    """Primary Navidrome account as a normalized dict (``{}`` when unset).
+
+    Env fallback (``NAV_BASE_URL``/``NAV_USER``/``NAV_PASS``) is included so
+    container/env-based installs resolve the same way as config-file ones.
+    """
+    users = get_navidrome_users_normalized()
+    if users:
+        return users[0]
+    base_url = os.environ.get("NAV_BASE_URL", "").strip().rstrip("/")
+    user = os.environ.get("NAV_USER", "").strip()
+    pw = os.environ.get("NAV_PASS", "").strip()
+    if base_url and user and pw:
+        return {"base_url": base_url, "user": user, "pass": pw}
+    return {}
+
+
 # =============================================================================
 # MusicBrainz User-Agent
 # =============================================================================

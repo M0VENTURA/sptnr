@@ -9,6 +9,7 @@ Handles:
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 
 from quart import Blueprint, request, jsonify
@@ -90,7 +91,8 @@ async def api_match_folder_to_release():
     if not folder_path or not mb_id:
         return jsonify({"success": False, "error": "folder_path and mb_id (release/release-group URL or ID) are required"}), 400
     from services.downloads.download_folder_service import match_folder_to_release
-    return jsonify(match_folder_to_release(folder_path, mb_id))
+    # Filesystem + DB work — offload so the event loop stays responsive.
+    return jsonify(await asyncio.to_thread(match_folder_to_release, folder_path, mb_id))
 
 
 @downloads_bp.route("/api/downloads/folder/delete", methods=["POST"])
@@ -101,8 +103,7 @@ async def api_delete_download_folder():
     if not folder_path:
         return jsonify({"success": False, "error": "folder_path required"}), 400
     from services.downloads.download_folder_service import delete_download_folder
-    return jsonify(delete_download_folder(folder_path))
-    return jsonify(get_folder_groups_with_musicbrainz())
+    return jsonify(await asyncio.to_thread(delete_download_folder, folder_path))
 
 
 @downloads_bp.route("/api/downloads/folder-status")
@@ -159,12 +160,14 @@ def api_downloads_verify_moved():
 
 @downloads_bp.route("/api/downloads/folder/<path:folder_path>/match-musicbrainz", methods=["POST"])
 async def api_match_folder(folder_path):
-    return jsonify(match_folder(folder_path, await request.get_json()))
+    payload = await request.get_json()
+    return jsonify(await asyncio.to_thread(match_folder, folder_path, payload))
 
 
 @downloads_bp.route("/api/downloads/folder/<path:folder_path>/auto-match", methods=["POST"])
 async def api_auto_match_folder(folder_path):
-    return jsonify(auto_match_folder(folder_path, await request.get_json()))
+    payload = await request.get_json()
+    return jsonify(await asyncio.to_thread(auto_match_folder, folder_path, payload))
 
 
 @downloads_bp.route("/api/downloads/release/<source>/<release_id>/tracks")
@@ -174,7 +177,8 @@ def api_release_tracks(source, release_id):
 
 @downloads_bp.route("/api/downloads/folder/<path:folder_path>/duplicates", methods=["POST"])
 async def api_check_duplicates(folder_path):
-    return jsonify(check_folder_duplicates(folder_path, await request.get_json()))
+    payload = await request.get_json()
+    return jsonify(await asyncio.to_thread(check_folder_duplicates, folder_path, payload))
 from services.downloads.match_orchestrator import apply_mbid_match_batch
 
 
@@ -193,7 +197,8 @@ async def api_queue_apply_mbid_match_batch():
         new_artist = (data.get("new_artist") or "").strip()
         new_album = (data.get("new_album") or "").strip()
 
-        result = apply_mbid_match_batch(
+        result = await asyncio.to_thread(
+            apply_mbid_match_batch,
             queue_ids=queue_ids,
             new_mbid=new_mbid,
             new_artist=new_artist,
@@ -206,7 +211,7 @@ async def api_queue_apply_mbid_match_batch():
         return jsonify(result)
 
     except Exception as e:
-        logging.error(f"[API] apply MBID batch failed: {e}")
+        logging.error("[API] apply MBID batch failed: %s", e, exc_info=True)
         return jsonify({"success": False, "error": str(e)}), 500
 
 # =============================================================================
@@ -215,19 +220,22 @@ async def api_queue_apply_mbid_match_batch():
 
 @downloads_bp.route("/api/downloads/folder/<path:folder_path>/organize", methods=["POST"])
 async def api_organize_folder(folder_path):
-    return jsonify(organize_folder(folder_path, await request.get_json()))
+    payload = await request.get_json()
+    return jsonify(await asyncio.to_thread(organize_folder, folder_path, payload))
 
 
 
 @downloads_bp.route("/api/downloads/track/<int:track_index>/move", methods=["POST"])
 async def api_move_track(track_index):
-    return jsonify(organize_track(track_index, await request.get_json()))
+    payload = await request.get_json()
+    return jsonify(await asyncio.to_thread(organize_track, track_index, payload))
 
 
 
 @downloads_bp.route("/api/downloads/merge-folders", methods=["POST"])
 async def api_merge_folders():
-    return jsonify(merge_folders(await request.get_json()))
+    payload = await request.get_json()
+    return jsonify(await asyncio.to_thread(merge_folders, payload))
 
 
 # =============================================================================
@@ -243,7 +251,8 @@ def api_process():
 
 @downloads_bp.route("/api/downloads/process-one", methods=["POST"])
 async def api_process_one():
-    return jsonify(process_single_file(await request.get_json()))
+    payload = await request.get_json()
+    return jsonify(await asyncio.to_thread(process_single_file, payload))
 
 
 @downloads_bp.route("/api/downloads/process-retry", methods=["POST"])
@@ -258,17 +267,20 @@ def api_process_albums():
 
 @downloads_bp.route("/api/downloads/albums/use-existing", methods=["POST"])
 async def api_use_existing():
-    return jsonify(process_album_existing(await request.get_json()))
+    payload = await request.get_json()
+    return jsonify(await asyncio.to_thread(process_album_existing, payload))
 
 
 @downloads_bp.route("/api/downloads/albums/apply-match", methods=["POST"])
 async def api_apply_match():
-    return jsonify(apply_musicbrainz_match(await request.get_json()))
+    payload = await request.get_json()
+    return jsonify(await asyncio.to_thread(apply_musicbrainz_match, payload))
 
 
 @downloads_bp.route("/api/downloads/release-tracks", methods=["POST"])
 async def api_release_status():
-    return jsonify(get_release_status(await request.get_json()))
+    payload = await request.get_json()
+    return jsonify(await asyncio.to_thread(get_release_status, payload))
 
 
 # =============================================================================

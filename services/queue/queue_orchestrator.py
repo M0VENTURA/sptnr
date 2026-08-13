@@ -86,6 +86,8 @@ DO_NOT_PROCESS_STATUSES = {
 #
 # Add the actual migrated function name here when your final processing service
 # lands. This orchestrator will automatically use the first available function.
+# The legacy ``download_queue_service`` candidates were removed — that module
+# never defined process_queue_item/process_download_queue_item.
 PROCESSOR_CANDIDATES: tuple[ProcessorCandidate, ...] = (
     ProcessorCandidate(
         "services.downloads.download_processing_service",
@@ -93,14 +95,6 @@ PROCESSOR_CANDIDATES: tuple[ProcessorCandidate, ...] = (
     ),
     ProcessorCandidate(
         "services.downloads.download_processing_service",
-        "process_download_queue_item",
-    ),
-    ProcessorCandidate(
-        "services.downloads.download_queue_service",
-        "process_queue_item",
-    ),
-    ProcessorCandidate(
-        "services.downloads.download_queue_service",
         "process_download_queue_item",
     ),
     ProcessorCandidate(

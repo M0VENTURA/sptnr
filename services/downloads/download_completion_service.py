@@ -429,14 +429,20 @@ def _delete_mismatched_download(file_path: str, queue_id: int, reason: str) -> N
 
 
 def _extract_duration_seconds(file_path: str) -> Optional[int]:
-    """Return the file duration in seconds, or None when unreadable."""
+    """Return the file duration in seconds, or None when unreadable.
+
+    Normalises through ``queue_duration_seconds`` so the ms-vs-seconds
+    threshold is the single source of truth — this previously used its own
+    ``>1000`` heuristic that disagreed with the queue matcher's ``>=3000``.
+    """
     try:
         from helpers.metadata_reader import read_mp3_metadata
         meta = read_mp3_metadata(file_path) or {}
         dur = meta.get("duration_ms")
         if not dur:
             return None
-        return int(dur) // 1000 if int(dur) > 1000 else int(dur)
+        seconds = queue_duration_seconds(dur)
+        return int(seconds) if seconds else None
     except Exception:
         return None
 

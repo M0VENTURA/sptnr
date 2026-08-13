@@ -86,21 +86,6 @@ def make_track_match_key(artist: str, title: str) -> str:
     return f"{artist_key}::{title_key}"
 
 
-def normalize_title_for_lookup(title: str, extra_strip_patterns: list[str] | None = None) -> str:
-    """Normalize a track title for external API lookups."""
-    if not title:
-        return ""
-    value = title.strip()
-    patterns = [
-        r"\s*\((?:official\s+)?(?:music\s+)?video\)\s*$",
-        r"\s*\[(?:official\s+)?(?:music\s+)?video\]\s*$",
-    ]
-    patterns.extend(extra_strip_patterns or [])
-    for pattern in patterns:
-        value = re.sub(pattern, "", value, flags=re.IGNORECASE)
-    return re.sub(r"\s+", " ", value).strip()
-
-
 def normalize_for_aggregation(title: str) -> str:
     """Aggressively normalise title for local provider-count aggregation."""
     value = str(title or "").lower()

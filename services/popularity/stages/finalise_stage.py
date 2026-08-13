@@ -637,79 +637,21 @@ def _assign_stars(
 # Navidrome sync
 # ---------------------------------------------------------------------------
 
-def _load_navidrome_users() -> list[dict]:
-    """Load Navidrome credentials from config."""
-    users: list[dict] = []
-    try:
-        from helpers.config_helpers import get_config
-        cfg = get_config()
-        nav_users = cfg.get("navidrome_users", [])
-        for u in nav_users:
-            base_url = (u.get("base_url") or "").strip().rstrip("/")
-            user = (u.get("user") or "").strip()
-            pw = (u.get("pass") or "").strip()
-            if base_url and user and pw:
-                users.append({"base_url": base_url, "user": user, "pass": pw})
-
-        if not users:
-            nav = cfg.get("navidrome", {})
-            base_url = (nav.get("base_url") or "").strip().rstrip("/")
-            user = (nav.get("user") or "").strip()
-            pw = (nav.get("pass") or "").strip()
-            if base_url and user and pw:
-                users.append({"base_url": base_url, "user": user, "pass": pw})
-    except Exception:
-        for key in ("NAV_BASE_URL", "NAV_USER", "NAV_PASS"):
-            if not all(os.environ.get(k) for k in ("NAV_BASE_URL", "NAV_USER", "NAV_PASS")):
-                break
-        else:
-            users.append({
-                "base_url": os.environ["NAV_BASE_URL"].strip("/"),
-                "user": os.environ["NAV_USER"],
-                "pass": os.environ["NAV_PASS"],
-            })
-    return users
-
-
 def _sync_rating_to_navidrome(track_id: str, stars: int) -> bool:
-    """Push a single track rating to Navidrome via the Subsonic API.
+    """Push a single track rating to Navidrome.
 
-    Old-system parity: ``features.sync_ratings_to_all_users`` (default off)
-    controls whether every configured Navidrome user is updated; when off,
-    only the primary (first) user is.
+    Delegates to ``services.navidrome.rating_sync_service`` — the single
+    implementation using the Navidrome client (token auth).  The old raw-HTTP
+    copy sent plaintext ``u``/``p`` credentials with a hardcoded API version;
+    it was removed so the two paths can never drift.  ``sync_ratings_to_all_users``
+    (default off) controls whether every configured user is updated; when off
+    only the primary user is.
     """
-    users = _load_navidrome_users()
-    if not users:
-        return False
     try:
-        from services.navidrome.rating_sync_service import is_sync_ratings_to_all_users_enabled
-        sync_all = is_sync_ratings_to_all_users_enabled()
+        from services.navidrome.rating_sync_service import sync_track_rating_to_navidrome
+        return sync_track_rating_to_navidrome(track_id, stars)
     except Exception:
-        sync_all = False  # old-system default: primary user only
-    if not sync_all:
-        users = users[:1]
-
-    from api_clients import session
-    any_success = False
-    for creds in users:
-        params = {
-            "u": creds["user"],
-            "p": creds["pass"],
-            "v": "1.16.1",
-            "c": "popularr",
-            "f": "json",
-            "id": track_id,
-            "rating": stars,
-        }
-        try:
-            resp = session.get(f"{creds['base_url']}/rest/setRating.view", params=params, timeout=10)
-            resp.raise_for_status()
-            result = resp.json()
-            if result.get("subsonic-response", {}).get("status") == "ok":
-                any_success = True
-        except Exception as exc:
-            logger.debug("[finalise_stage] Navidrome sync failed for track %s: %s", track_id, exc)
-    return any_success
+        return False
 
 
 # ---------------------------------------------------------------------------

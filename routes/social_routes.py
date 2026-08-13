@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -35,7 +36,8 @@ async def api_listenbrainz_rss_sync():
     data = (await request.get_json()) or {}
     app_username = session.get("username", "default_user")
     lb_username = (data.get("listenbrainz_username") or app_username or "").strip()
-    result = sync_rss_playlists_for_user(app_username, lb_username)
+    # Blocking ListenBrainz HTTP + DB work — offload from the event loop.
+    result = await asyncio.to_thread(sync_rss_playlists_for_user, app_username, lb_username)
     return jsonify(result), (200 if result.get("success") else 500)
 
 

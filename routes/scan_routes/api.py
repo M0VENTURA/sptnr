@@ -252,7 +252,9 @@ async def api_scan_progress_stream():
         while True:
             try:
                 from services.scanning.pipelines.progress_service import get_scan_progress
-                result = get_scan_progress()
+                # get_scan_progress is sync DB + file I/O — offload it so the
+                # per-second tick never blocks the event loop.
+                result = await asyncio.to_thread(get_scan_progress)
             except Exception:
                 result = {"is_running": False, "active_scans": []}
             try:

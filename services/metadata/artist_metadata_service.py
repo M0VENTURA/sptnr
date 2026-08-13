@@ -4,13 +4,6 @@ This module owns artist-level metadata routes that don't fit neatly into
 the existing correction/scan services. Functions are module-level so routes
 can ``import metadata_service as metadata``.
 
-TODO: Many functions are still stubs — port the full implementations from the
-old app.py when those features are needed.
-"""
-
-from __future__ import annotations
-
-import logging
 import time
 from typing import Any
 

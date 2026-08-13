@@ -28,12 +28,8 @@ def navidrome_scan_running() -> bool:
 
 def load_navidrome_users_from_config() -> list[dict]:
     try:
-        from helpers.config_helpers import get_config
-        cfg = get_config() or {}
-        users = cfg.get("navidrome_users") or []
-        if not users and cfg.get("navidrome"):
-            users = [cfg["navidrome"]]
-        return users
+        from helpers.config_helpers import get_navidrome_users_normalized
+        return get_navidrome_users_normalized()
     except Exception:
         return []
 

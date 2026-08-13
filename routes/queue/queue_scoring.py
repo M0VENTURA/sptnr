@@ -1,9 +1,10 @@
 """
-QUEUE SCORING
+REMOVED — stale duplicate of ``services/queue/queue_scoring.py``.
 
-✅ Contains Soulseek candidate scoring logic
-✅ Uses canonical normalization_service
-✅ No duplicated normalization functions
+The live scorer lives in ``services/queue/queue_scoring.py``; this routes-
+level copy had diverged (different weights, no edition-annotation gate, no
+album_artist match) and had zero importers.  Scheduled for ``git rm`` —
+kept inert here so any stray import fails loudly.
 """
 
 from __future__ import annotations
@@ -22,6 +23,12 @@ from helpers.normalization_service import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _score_soulseek_candidate(filename: str, queue_item: QueueItem, candidate_duration=None):
+    """REMOVED — see module docstring; superseded by services/queue/queue_scoring.py."""
+    return 0.0
+
 
 
 # =============================================================================

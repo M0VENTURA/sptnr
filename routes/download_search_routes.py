@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -115,16 +116,18 @@ async def slskd_search():
         from api_clients.slskd_http import SlskdHttpClient
         from services.downloads.slskd_service import SlskdService
         client = SlskdHttpClient(web_url, api_key)
+        slskd_service = SlskdService(http_client=client)
         # Free the single search slot before starting a manual search so a
         # leftover completed/stuck search cannot force an HTTP 429 (legacy
         # parity: _clear_stale_slskd_searches).
         try:
-            SlskdService(http_client=client).clear_stale_searches(budget_seconds=6)
+            await asyncio.to_thread(slskd_service.clear_stale_searches, budget_seconds=6)
         except Exception:
             pass
         started = time.time()
-        slskd_service = SlskdService(http_client=client)
-        search_id = slskd_service.start_search(query, timeout=20)
+        # start_search blocks up to 20s on slskd HTTP — offload so the event
+        # loop keeps serving other requests.
+        search_id = await asyncio.to_thread(slskd_service.start_search, query, 20)
         if search_id:
             with _manual_search_lock:
                 _manual_search_state[search_id] = {
@@ -216,7 +219,7 @@ async def slskd_download():
     try:
         from api_clients.slskd_http import SlskdHttpClient
         client = SlskdHttpClient(slskd_config["web_url"], slskd_config.get("api_key", ""))
-        result = client.enqueue_download(username, filename)
+        result = await asyncio.to_thread(client.enqueue_download, username, filename)
         _log_manual_search_event(
             search_type="manual",
             query=f"{username} - {filename}",
@@ -245,7 +248,7 @@ async def slskd_cancel():
     try:
         from api_clients.slskd_http import SlskdHttpClient
         client = SlskdHttpClient(slskd_config["web_url"], slskd_config.get("api_key", ""))
-        result = client.cancel_download(username, filename, transfer_id)
+        result = await asyncio.to_thread(client.cancel_download, username, filename, transfer_id)
         return jsonify({"success": True, "result": result})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -282,7 +285,7 @@ async def slskd_retry():
     try:
         from api_clients.slskd_http import SlskdHttpClient
         client = SlskdHttpClient(slskd_config["web_url"], slskd_config.get("api_key", ""))
-        result = client.retry_download(username, filename)
+        result = await asyncio.to_thread(client.retry_download, username, filename)
         return jsonify({"success": True, "result": result})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -304,7 +307,7 @@ async def slskd_queue_download():
     try:
         from api_clients.slskd_http import SlskdHttpClient
         client = SlskdHttpClient(slskd_config["web_url"], slskd_config.get("api_key", ""))
-        result = client.enqueue_download(username, filename)
+        result = await asyncio.to_thread(client.enqueue_download, username, filename)
         return jsonify({"success": True, "result": result})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
