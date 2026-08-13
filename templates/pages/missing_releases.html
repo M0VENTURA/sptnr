@@ -50,9 +50,7 @@
 
 <script>
 // ── Config for queue source ──────────────────────────────────────────────────
-const qbitEnabled = {{ 'true' if qbit_config and qbit_config.get('enabled') else 'false' }};
-const slskdEnabled = {{ 'true' if slskd_config and slskd_config.get('enabled') else 'false' }};
-const defaultQueueSource = qbitEnabled ? 'qbittorrent' : 'soulseek';
+const defaultQueueSource = 'soulseek';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 function escHtml(s) {

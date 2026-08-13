@@ -740,9 +740,8 @@ function refreshConsolidatedSlskdMonitor() {
 }
 
 function updateTotalMonitorCount() {
-  const qbitCount = document.querySelectorAll('#monitorQbitTableBody tr').length;
   const slskdCount = document.querySelectorAll('#monitorSlskdTableBody tr').length;
-  const total = qbitCount + slskdCount;
+  const total = slskdCount;
   
   const totalBadge = document.getElementById('monitorTotalCount');
   if (totalBadge) {
@@ -887,9 +886,7 @@ function refreshMbDownloads() {
                     </td>
                     <td>${dl.artist}</td>
                     <td class="text-center">
-                        <span class="badge ${dl.method === 'slskd' ? 'bg-success' : 'bg-primary'}">
-                            ${dl.method === 'slskd' ? 'Soulseek' : 'qBittorrent'}
-                        </span>
+                        <span class="badge bg-success">Soulseek</span>
                     </td>
                     <td class="text-center">${statusBadge}</td>
                     <td class="text-center text-muted small">${formatTimestamp(dl.created_at)}</td>
@@ -1311,9 +1308,11 @@ function displayLastfmTracks(tracks) {
 }
 
 function downloadArtist(artist) {
-  // Trigger qBittorrent or Soulseek search for artist
-  document.getElementById('qbitSearchInput').value = artist;
-  performQbitSearch();
+  // Trigger Soulseek search for artist
+  document.getElementById('slskdSearchInput').value = normalizeSoulseekQuery(artist);
+  // Switch to Soulseek tab
+  document.getElementById('slskdTab').click();
+  setTimeout(() => performSlskdSearch(), 300);
 }
 
 function downloadAlbum(artist, album) {
@@ -1977,7 +1976,7 @@ async function addReleaseToQueue(artist, album) {
         artist: artist,
         title: album,  // Use album name as title for full album downloads
         album: album,
-        source: 'qbittorrent',  // Albums are downloaded via qBittorrent
+        source: 'soulseek',  // Albums are downloaded via Soulseek
         priority: 5  // Normal priority
       })
     });
@@ -3858,12 +3857,12 @@ function displaySimilarArtistsGrid() {
 }
 
 function openDownloadSearch(artist) {
-  // Navigate to qBittorrent search with artist query
+  // Navigate to Soulseek search with artist query
   window.location.hash = '';
-  document.getElementById('qbitTab').click();
+  document.getElementById('slskdTab').click();
   setTimeout(() => {
-    document.getElementById('qbitSearch').value = artist;
-    performQbitSearch();
+    document.getElementById('slskdSearchInput').value = normalizeSoulseekQuery(artist);
+    performSlskdSearch();
   }, 100);
 }
 

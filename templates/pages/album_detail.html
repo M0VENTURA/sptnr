@@ -617,6 +617,7 @@
                     <li><a class="dropdown-item" href="{{ url_for('ui.track_detail', track_id=track.id) }}"><i class="bi bi-music-note me-2"></i>Open Track Page</a></li>
                     <li><a class="dropdown-item" href="javascript:void(0)" onclick="rescanTrack('{{ track.id }}')"><i class="bi bi-lightning me-2"></i>Rescan Track</a></li>
                     <li><a class="dropdown-item" href="javascript:void(0)" onclick="openEditTrackFromAlbum('{{ track.id }}')"><i class="bi bi-pencil me-2"></i>Edit Metadata</a></li>
+                    <li><a class="dropdown-item" href="javascript:void(0)" onclick="openAddToPlaylistModal('{{ track.id }}', '{{ track.title|escapejs }}')"><i class="bi bi-list-plus me-2"></i>Add to Playlist</a></li>
                     {% if track.musicbrainz_trackid or track.beets_mbid or track.mbid %}
                     <li><a class="dropdown-item" href="javascript:void(0)" onclick="openAlbumTrackMbReleaseModal('{{ track.id }}')"><i class="bi bi-arrow-repeat me-2"></i>Re-match MusicBrainz</a></li>
                     {% endif %}
@@ -842,6 +843,7 @@
 <script>var _pd = JSON.parse(document.getElementById('page-data').textContent); window._pageData = _pd;</script>
 <script src="{{ versioned_static('js/album_detail.js') }}"></script>
 <script src="{{ versioned_static('js/genre-utils.js') }}"></script>
+<script src="{{ versioned_static('js/add_to_playlist.js') }}"></script>
 
 <!-- Bulk Genre Tagger Modal (used by the Tracks toolbar "Add Tags" button) -->
 <div class="modal fade" id="bulkGenreTaggerModal" tabindex="-1" aria-hidden="true">

@@ -519,6 +519,114 @@ async function submitGenerator() {
 }
 
 // ===============================
+// EXPORT (zip download with progress)
+// ===============================
+
+let _exportJobId = null;
+let _exportPollTimer = null;
+let _exportPollRetries = 0;
+
+function _exportShowError(message) {
+  const errorEl = document.getElementById('exportError');
+  errorEl.textContent = message;
+  errorEl.classList.remove('d-none');
+  document.getElementById('exportProgressWrap').classList.add('d-none');
+  document.getElementById('exportDoneWrap').classList.add('d-none');
+}
+
+function openExportModal() {
+  if (!currentPlaylist) return;
+  const modal = new bootstrap.Modal(document.getElementById('exportPlaylistModal'));
+  document.getElementById('exportInfo').textContent =
+    `"${currentPlaylist.name}" — zipping the local audio files of its ${currentPlaylist.track_count || 0} track(s). Missing files are skipped.`;
+  document.getElementById('exportError').classList.add('d-none');
+  document.getElementById('exportDoneWrap').classList.add('d-none');
+  document.getElementById('exportProgressWrap').classList.remove('d-none');
+  _setExportProgress(0, 'Starting…');
+  modal.show();
+  startExport();
+}
+
+function _setExportProgress(percent, text) {
+  const bar = document.getElementById('exportProgressBar');
+  const pct = Math.max(0, Math.min(100, Math.round(percent)));
+  bar.style.width = pct + '%';
+  bar.textContent = pct + '%';
+  document.getElementById('exportProgressText').textContent = text;
+}
+
+async function startExport() {
+  clearTimeout(_exportPollTimer);
+  try {
+    const response = await fetch('/api/playlists/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: currentPlaylist.id,
+        source: currentPlaylist.source,
+        file_path: currentPlaylist.file_path || null,
+      }),
+    });
+    const data = await parseJsonOrThrow(response);
+    if (!response.ok) throw new Error(data.error || 'Export failed');
+    if (data.status === 'error') {
+      _exportShowError(data.error || 'No local audio files found for this playlist');
+      return;
+    }
+    _exportJobId = data.job_id;
+    _pollExport();
+  } catch (err) {
+    _exportShowError(err.message);
+  }
+}
+
+function _pollExport() {
+  clearTimeout(_exportPollTimer);
+  if (!_exportJobId) return;
+  fetch(`/api/playlists/export/status/${_exportJobId}`)
+    .then(response => Promise.all([response.ok, parseJsonOrThrow(response)]))
+    .then(([ok, job]) => {
+      if (!ok) throw new Error(job.error || 'Export job unavailable');
+      if (job.status === 'error') {
+        _exportShowError(job.error || 'Export failed');
+        return;
+      }
+      if (job.status === 'done') {
+        _setExportProgress(100, `Done — ${job.total} file(s) zipped${job.skipped && job.skipped.length ? `, ${job.skipped.length} skipped` : ''}`);
+        const download = document.getElementById('exportDownloadLink');
+        download.href = `/api/playlists/export/download/${_exportJobId}`;
+        const skipped = document.getElementById('exportSkippedNote');
+        if (job.skipped && job.skipped.length) {
+          skipped.textContent = `${job.skipped.length} track(s) had no local file and were skipped.`;
+          skipped.classList.remove('d-none');
+        } else {
+          skipped.classList.add('d-none');
+        }
+        document.getElementById('exportProgressWrap').classList.add('d-none');
+        document.getElementById('exportDoneWrap').classList.remove('d-none');
+        return;
+      }
+      const percent = job.total ? (job.done / job.total) * 100 : 0;
+      _setExportProgress(percent, job.current ? `Zipping: ${job.current}` : 'Preparing…');
+      _exportPollRetries = 0;
+      _exportPollTimer = setTimeout(_pollExport, 600);
+    })
+    .catch(() => {
+      // Transient failure — retry a few times, then give up with an error.
+      _exportPollRetries += 1;
+      if (_exportPollRetries >= 5) {
+        _exportShowError('Export job became unavailable — please try again.');
+      } else {
+        _exportPollTimer = setTimeout(_pollExport, 1200);
+      }
+    });
+}
+
+document.getElementById('exportPlaylistModal')?.addEventListener('hidden.bs.modal', () => {
+  clearTimeout(_exportPollTimer);
+});
+
+// ===============================
 // CSV IMPORT
 // ===============================
 

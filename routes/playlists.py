@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from quart import Blueprint, render_template, redirect, url_for, session, request, jsonify
+from quart import Blueprint, render_template, redirect, url_for, session, request, jsonify, send_file
 
 from helpers.config_helpers import get_config
 
@@ -768,6 +768,106 @@ async def api_playlists_generate():
         return jsonify({"error": f"Playlist generation failed: {exc}"}), 500
 
 
+class _PlaylistTracksError(Exception):
+    """Raised by ``_fetch_playlist_tracks`` for user-facing failures."""
+
+    def __init__(self, message: str, status: int = 400):
+        super().__init__(message)
+        self.message = message
+        self.status = status
+
+
+def _fetch_playlist_tracks(source: str, playlist_id: str, file_path: str) -> tuple[dict, list[dict]]:
+    """Resolve one playlist into ``(meta, tracks)``.
+
+    ``source`` selects the backend: ``file`` reads the .nsp JSON directly
+    (falling back to a Navidrome name lookup for rule-based files), while
+    ``navidrome`` loads the playlist from the Subsonic API.  Raises
+    ``_PlaylistTracksError`` for missing or unknown input.
+    """
+    from routes.navidrome import get_navidrome_client
+    from services.playlists.playlist_service import read_nsp_playlist
+
+    if source == "file":
+        file_path = str(file_path or "")
+        if not file_path or not _os.path.exists(file_path):
+            raise _PlaylistTracksError("Playlist file not found", 404)
+
+        # Generated .m3u playlists are plain text — parse directly.
+        if str(file_path).lower().endswith((".m3u", ".m3u8")):
+            from services.playlists.playlist_service import read_m3u_file
+            return ({
+                "id": playlist_id,
+                "source": "file",
+                "type": "regular",
+                "name": _os.path.splitext(_os.path.basename(file_path))[0],
+                "file_name": _os.path.basename(file_path),
+                "file_path": file_path,
+                "comment": "Generated playlist",
+                "rule_based": False,
+            }, read_m3u_file(file_path))
+
+        playlist = read_nsp_playlist(file_path)
+        if not playlist:
+            raise _PlaylistTracksError("Could not read playlist file", 500)
+
+        tracks = playlist.get("_tracks") or []
+        if not tracks:
+            # Rule-based or trackIds-only: let Navidrome resolve the entries.
+            client = get_navidrome_client()
+            if client:
+                try:
+                    found = client.find_playlist_by_name(playlist.get("name") or "")
+                    if found:
+                        detail = client.fetch_playlist(found.get("id"))
+                        tracks = detail.get("tracks") or []
+                except Exception as exc:
+                    logging.error("Failed to resolve rule-based playlist via Navidrome: %s", exc, exc_info=True)
+
+        return ({
+            "id": playlist_id,
+            "source": "file",
+            "type": "smart",
+            "name": playlist.get("name"),
+            "file_name": playlist.get("_file_name"),
+            "file_path": playlist.get("_file_path"),
+            "comment": playlist.get("comment") or "",
+            "rule_based": bool(playlist.get("rules")),
+        }, tracks)
+
+    if source == "navidrome":
+        client = get_navidrome_client()
+        if not client:
+            raise _PlaylistTracksError("Navidrome not configured", 400)
+        playlist = client.fetch_playlist(playlist_id)
+        if not playlist:
+            raise _PlaylistTracksError("Playlist not found", 404)
+        tracks = []
+        for entry in playlist.get("tracks") or []:
+            if not isinstance(entry, dict):
+                continue
+            tracks.append({
+                "id": str(entry.get("id") or ""),
+                "title": str(entry.get("title") or entry.get("name") or ""),
+                "artist": str(entry.get("artist") or ""),
+                "album": str(entry.get("album") or ""),
+                "duration": entry.get("duration"),
+                "rating": entry.get("userRating") or entry.get("rating"),
+            })
+        return ({
+            "id": playlist_id,
+            "source": "navidrome",
+            "type": playlist.get("type") if playlist.get("type") in ("smart", "regular") else "regular",
+            "name": playlist.get("name"),
+            "file_name": None,
+            "file_path": None,
+            "comment": playlist.get("comment") or "",
+            "rule_based": False,
+        }, tracks)
+
+    raise _PlaylistTracksError("Unknown playlist source", 400)
+
+
 @playlists_bp.route("/api/playlists/tracks", methods=["POST"])
 async def api_playlists_tracks():
     """Return the track list of one playlist.
@@ -778,103 +878,230 @@ async def api_playlists_tracks():
     """
     try:
         data = (await request.get_json(silent=True)) or {}
-        source = str(data.get("source") or "")
-        playlist_id = str(data.get("id") or "")
-
-        from routes.navidrome import get_navidrome_client
-        from services.playlists.playlist_service import read_nsp_playlist
-
-        if source == "file":
-            file_path = str(data.get("file_path") or "")
-            if not file_path or not _os.path.exists(file_path):
-                return jsonify({"error": "Playlist file not found"}), 404
-
-            # Generated .m3u playlists are plain text — parse directly.
-            if str(file_path).lower().endswith((".m3u", ".m3u8")):
-                from services.playlists.playlist_service import read_m3u_file
-                tracks = read_m3u_file(file_path)
-                return jsonify({
-                    "playlist": {
-                        "id": playlist_id,
-                        "source": "file",
-                        "type": "regular",
-                        "name": _os.path.splitext(_os.path.basename(file_path))[0],
-                        "file_name": _os.path.basename(file_path),
-                        "file_path": file_path,
-                        "comment": "Generated playlist",
-                        "rule_based": False,
-                    },
-                    "tracks": tracks,
-                })
-
-            playlist = read_nsp_playlist(file_path)
-            if not playlist:
-                return jsonify({"error": "Could not read playlist file"}), 500
-
-            tracks = playlist.get("_tracks") or []
-            if not tracks:
-                # Rule-based or trackIds-only: let Navidrome resolve the entries.
-                client = get_navidrome_client()
-                if client:
-                    try:
-                        found = client.find_playlist_by_name(playlist.get("name") or "")
-                        if found:
-                            detail = client.fetch_playlist(found.get("id"))
-                            tracks = detail.get("tracks") or []
-                    except Exception as exc:
-                        logging.error("Failed to resolve rule-based playlist via Navidrome: %s", exc, exc_info=True)
-
-            return jsonify({
-                "playlist": {
-                    "id": playlist_id,
-                    "source": "file",
-                    "type": "smart",
-                    "name": playlist.get("name"),
-                    "file_name": playlist.get("_file_name"),
-                    "file_path": playlist.get("_file_path"),
-                    "comment": playlist.get("comment") or "",
-                    "rule_based": bool(playlist.get("rules")),
-                },
-                "tracks": tracks,
-            })
-
-        if source == "navidrome":
-            client = get_navidrome_client()
-            if not client:
-                return jsonify({"error": "Navidrome not configured"}), 400
-            playlist = client.fetch_playlist(playlist_id)
-            if not playlist:
-                return jsonify({"error": "Playlist not found"}), 404
-            tracks = []
-            for entry in playlist.get("tracks") or []:
-                if not isinstance(entry, dict):
-                    continue
-                tracks.append({
-                    "id": str(entry.get("id") or ""),
-                    "title": str(entry.get("title") or entry.get("name") or ""),
-                    "artist": str(entry.get("artist") or ""),
-                    "album": str(entry.get("album") or ""),
-                    "duration": entry.get("duration"),
-                    "rating": entry.get("userRating") or entry.get("rating"),
-                })
-            return jsonify({
-                "playlist": {
-                    "id": playlist_id,
-                    "source": "navidrome",
-                    "type": playlist.get("type") if playlist.get("type") in ("smart", "regular") else "regular",
-                    "name": playlist.get("name"),
-                    "file_name": None,
-                    "file_path": None,
-                    "comment": playlist.get("comment") or "",
-                    "rule_based": False,
-                },
-                "tracks": tracks,
-            })
-
-        return jsonify({"error": "Unknown playlist source"}), 400
+        meta, tracks = _fetch_playlist_tracks(
+            str(data.get("source") or ""),
+            str(data.get("id") or ""),
+            str(data.get("file_path") or ""),
+        )
+        return jsonify({"playlist": meta, "tracks": tracks})
+    except _PlaylistTracksError as exc:
+        return jsonify({"error": exc.message}), exc.status
     except Exception as exc:
         logging.error("Failed to load playlist tracks: %s", exc, exc_info=True)
         return jsonify({"error": f"Failed to load playlist tracks: {exc}", "tracks": []}), 500
+
+
+# -----------------------------------------------------------------------------
+# ADD TRACK TO PLAYLIST (album/track page picker)
+# -----------------------------------------------------------------------------
+
+def _find_playlist_entry(playlist_id: str) -> dict | None:
+    """Look up a file-backed playlist entry by its ``file::<name>`` id."""
+    from services.playlists.playlist_service import list_nsp_playlists
+    return next(
+        (p for p in list_nsp_playlists() if str(p.get("id")) == str(playlist_id)),
+        None,
+    )
+
+
+@playlists_bp.route("/api/playlists/add-track", methods=["POST"])
+async def api_playlists_add_track():
+    """Add one library track to a file-backed playlist (.nsp/.m3u).
+
+    Payload: ``{track_id, playlist_id?}`` (existing playlist) or
+    ``{track_id, new_name}`` (creates a new .nsp playlist, or appends when a
+    playlist with that name already exists).  Rule-based playlists are
+    rejected — they resolve their entries dynamically and cannot be edited.
+    """
+    try:
+        from db.engine import db_session
+        from sqlalchemy import text
+
+        data = (await request.get_json(silent=True)) or {}
+        track_id = str(data.get("track_id") or "").strip()
+        if not track_id:
+            return jsonify({"error": "Missing track_id"}), 400
+
+        with db_session() as session:
+            row = session.execute(
+                text(
+                    "SELECT CAST(id AS TEXT) AS id, title, artist, album, file_path, duration "
+                    "FROM tracks WHERE CAST(id AS TEXT) = :id"
+                ),
+                {"id": track_id},
+            ).fetchone()
+        if not row:
+            return jsonify({"error": "Track not found"}), 404
+        mapping = row._mapping
+        track = {
+            "id": str(mapping.get("id") or ""),
+            "title": str(mapping.get("title") or ""),
+            "artist": str(mapping.get("artist") or ""),
+            "album": str(mapping.get("album") or ""),
+            "file_path": str(mapping.get("file_path") or ""),
+            "duration": 0,
+        }
+        try:
+            track["duration"] = max(0, int(float(mapping.get("duration") or 0) or 0))
+        except (TypeError, ValueError):
+            track["duration"] = 0
+
+        new_name = str(data.get("new_name") or "").strip()
+        playlist_id = str(data.get("playlist_id") or "").strip()
+
+        from services.playlists.playlist_service import (
+            create_nsp_file,
+            playlist_path,
+        )
+
+        entry = None
+        if playlist_id:
+            entry = _find_playlist_entry(playlist_id)
+            if not entry:
+                return jsonify({"error": "Playlist not found"}), 404
+        elif new_name:
+            existing = [
+                p for p in _all_entries()
+                if str(p.get("name") or "").strip().lower() == new_name.lower()
+            ]
+            entry = existing[0] if existing else None
+
+        if entry:
+            target_name = str(entry.get("name") or "")
+            path = str(entry.get("file_path") or "")
+
+            # ── .m3u: append one #EXTINF block ────────────────────────────
+            if entry.get("kind") == "m3u":
+                if not track["file_path"]:
+                    return jsonify({"error": "Track has no audio file on disk"}), 400
+                with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+                    lines = [line.rstrip("\n") for line in handle]
+                existing_paths = {
+                    line.strip() for line in lines
+                    if line.strip() and not line.startswith("#")
+                }
+                added = track["file_path"].strip() not in existing_paths
+                if added:
+                    lines.append(f"#EXTINF:{track['duration']},{track['artist']} - {track['title']}")
+                    lines.append(track["file_path"])
+                    with open(path, "w", encoding="utf-8") as handle:
+                        handle.write("\n".join(lines) + "\n")
+                return jsonify({"success": True, "playlist": target_name, "added": added})
+
+            # ── .nsp: append id + embedded display entry ──────────────────
+            with open(path, "r", encoding="utf-8") as handle:
+                nsp_data = _json.load(handle)
+            if not isinstance(nsp_data, dict):
+                return jsonify({"error": "Playlist file is not valid JSON"}), 500
+            if nsp_data.get("rules"):
+                return jsonify({"error": "Cannot add tracks to a rule-based playlist"}), 400
+        else:
+            # ── Create-new: fresh .nsp holding this single track ──────────
+            if not new_name:
+                return jsonify({"error": "Provide playlist_id or new_name"}), 400
+            target_name = new_name
+            nsp_data = {"name": new_name, "comment": "", "trackIds": [], "tracks": []}
+            path = playlist_path(new_name)
+
+        track_ids = [str(t) for t in (nsp_data.get("trackIds") or [])]
+        embedded = nsp_data.get("tracks") or []
+        if not isinstance(embedded, list):
+            embedded = []
+        added = track["id"] not in track_ids
+        if added:
+            track_ids.append(track["id"])
+            nsp_data["trackIds"] = track_ids
+            if not any(
+                isinstance(e, dict) and str(e.get("id")) == track["id"] for e in embedded
+            ):
+                embedded.append({
+                    "id": track["id"],
+                    "title": track["title"],
+                    "artist": track["artist"],
+                    "album": track["album"],
+                    "rating": 0,
+                })
+            nsp_data["tracks"] = embedded
+            if entry:
+                # Write back to the existing file — its embedded ``name`` may
+                # differ from the sanitized file name, so never re-derive it.
+                with open(path, "w", encoding="utf-8") as handle:
+                    _json.dump(nsp_data, handle, indent=2, ensure_ascii=False)
+            elif not create_nsp_file(target_name, nsp_data):
+                return jsonify({"error": "Failed to write playlist file"}), 500
+
+        return jsonify({
+            "success": True,
+            "playlist": target_name,
+            "added": added,
+            "track_count": len(track_ids),
+        })
+    except Exception as exc:
+        logging.error("Playlist add-track error: %s", exc, exc_info=True)
+        return jsonify({"error": str(exc)}), 500
+
+
+def _all_entries() -> list[dict]:
+    """Every file-backed playlist entry (used for create-new name matching)."""
+    from services.playlists.playlist_service import list_nsp_playlists
+    return list_nsp_playlists()
+
+
+# -----------------------------------------------------------------------------
+# PLAYLIST EXPORT (zip + progress)
+# -----------------------------------------------------------------------------
+
+@playlists_bp.route("/api/playlists/export", methods=["POST"])
+async def api_playlists_export():
+    """Start a background job that zips a playlist's local audio files."""
+    try:
+        data = (await request.get_json(silent=True)) or {}
+        meta, tracks = _fetch_playlist_tracks(
+            str(data.get("source") or ""),
+            str(data.get("id") or ""),
+            str(data.get("file_path") or ""),
+        )
+        if not tracks:
+            return jsonify({"error": "Playlist has no tracks to export"}), 400
+
+        from services.playlists.playlist_export_service import create_export_job
+        job = create_export_job(str(meta.get("name") or "Playlist"), tracks)
+        return jsonify({
+            "job_id": job["id"],
+            "status": job["status"],
+            "total": job["total"],
+            "skipped": len(job["skipped"]),
+            "error": job["error"],
+        })
+    except _PlaylistTracksError as exc:
+        return jsonify({"error": exc.message}), exc.status
+    except Exception as exc:
+        logging.error("Playlist export error: %s", exc, exc_info=True)
+        return jsonify({"error": str(exc)}), 500
+
+
+@playlists_bp.route("/api/playlists/export/status/<job_id>")
+def api_playlists_export_status(job_id: str):
+    """Poll progress for a running export job."""
+    from services.playlists.playlist_export_service import get_export_job
+    job = get_export_job(str(job_id))
+    if not job:
+        return jsonify({"error": "Export job not found"}), 404
+    return jsonify(job)
+
+
+@playlists_bp.route("/api/playlists/export/download/<job_id>")
+async def api_playlists_export_download(job_id: str):
+    """Serve the finished ZIP archive for a completed export job."""
+    from services.playlists.playlist_export_service import get_export_job, safe_arcname
+    job = get_export_job(str(job_id))
+    if not job or job.get("status") != "done" or not job.get("zip_path"):
+        return jsonify({"error": "Export not ready"}), 404
+    return await send_file(
+        job["zip_path"],
+        as_attachment=True,
+        download_name=f"{safe_arcname(job.get('name') or 'Playlist')}.zip",
+    )
 
 
 @playlists_bp.route("/api/playlists/rename", methods=["POST"])

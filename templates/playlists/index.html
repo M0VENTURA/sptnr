@@ -82,6 +82,9 @@
               </div>
             </div>
             <div class="d-flex align-items-center gap-2">
+              <button type="button" class="btn btn-sm btn-outline-success text-nowrap" onclick="openExportModal()" title="Download all playlist tracks as a ZIP file">
+                <i class="bi bi-download"></i> Export
+              </button>
               <button type="button" class="btn btn-sm btn-outline-primary text-nowrap" onclick="openRenameModal()">
                 <i class="bi bi-pencil"></i> Rename
               </button>
@@ -118,6 +121,34 @@
               <div id="detailStacked" class="d-flex flex-column gap-2"></div>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======================= EXPORT PLAYLIST MODAL ======================= -->
+<div class="modal fade" id="exportPlaylistModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h6 class="modal-title"><i class="bi bi-file-earmark-zip"></i> Export Playlist</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="small text-muted mb-2" id="exportInfo"></p>
+        <div class="d-none" id="exportProgressWrap">
+          <div class="progress" style="height: 18px;">
+            <div class="progress-bar progress-bar-striped progress-bar-animated" id="exportProgressBar" role="progressbar" style="width: 0%">0%</div>
+          </div>
+          <div class="small text-muted mt-2" id="exportProgressText">Preparing…</div>
+        </div>
+        <div class="alert alert-danger py-2 small d-none mt-2" id="exportError"></div>
+        <div class="d-none text-center mt-3" id="exportDoneWrap">
+          <a class="btn btn-success" id="exportDownloadLink">
+            <i class="bi bi-download"></i> Download ZIP
+          </a>
+          <div class="small text-muted mt-2" id="exportSkippedNote"></div>
         </div>
       </div>
     </div>
