@@ -237,7 +237,7 @@
       <div id="featuresWeightsForm">
         <div class="row g-3">
           {# Keys that moved to dedicated cards (Scan Behaviour / Single Detection) — never shown here #}
-          {% set moved_feature_keys = ['album_skip_days', 'album_skip_min_tracks', 'skip_unchanged_albums', 'cover_detection_enabled', 'mature_track_min_age_years',
+          {% set moved_feature_keys = ['album_skip_days', 'popularity_skip_days', 'singles_skip_days', 'metadata_skip_days', 'album_skip_min_tracks', 'skip_unchanged_albums', 'run_singles_on_skipped_albums', 'cover_detection_enabled', 'mature_track_min_age_years',
             'source_discogs_confidence', 'source_musicbrainz_confidence', 'source_musicbrainz_compilation_confidence',
             'source_discogs_video_confidence', 'source_lastfm_confidence', 'source_radio_edit_confidence'] %}
           {# Legacy keys from the old system with no readers in the current codebase — never shown or re-saved #}
@@ -1180,9 +1180,24 @@
     <div class="card-body">
       <div class="row g-3">
         <div class="col-12 col-sm-6 col-lg-4">
-          <label class="form-label form-label-sm">Rescan Skip Window (days)</label>
+          <label class="form-label form-label-sm">Full Scan Rescan Window (days)</label>
           <input type="number" step="1" min="0" max="365" class="form-control form-control-sm feature-field" name="feature_album_skip_days" value="{{ config.get('features', {}).get('album_skip_days', 7) }}">
-          <small class="form-text text-muted">Albums scanned within this many days are skipped on the next scan. Set to <strong>0 to always rescan</strong> every album. Default: <strong>7</strong></small>
+          <small class="form-text text-muted">Albums scanned by a <strong>full scan</strong> within this many days are skipped. Set to <strong>0 to always rescan</strong>. Default: <strong>7</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-4">
+          <label class="form-label form-label-sm">Popularity Scan Window (days)</label>
+          <input type="number" step="1" min="0" max="365" class="form-control form-control-sm feature-field" name="feature_popularity_skip_days" value="{{ config.get('features', {}).get('popularity_skip_days', 7) }}">
+          <small class="form-text text-muted">Albums re-scored by the <strong>Popularity</strong> scan option within this many days are skipped. Set to <strong>0 to always run</strong>. Default: <strong>7</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-4">
+          <label class="form-label form-label-sm">Singles Scan Window (days)</label>
+          <input type="number" step="1" min="0" max="365" class="form-control form-control-sm feature-field" name="feature_singles_skip_days" value="{{ config.get('features', {}).get('singles_skip_days', 7) }}">
+          <small class="form-text text-muted">Albums whose <strong>Singles</strong> scan ran within this many days are skipped (verdicts are also reused per-track inside their freshness TTL). Set to <strong>0 to always run</strong>. Default: <strong>7</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-4">
+          <label class="form-label form-label-sm">Metadata Scan Window (days)</label>
+          <input type="number" step="1" min="0" max="365" class="form-control form-control-sm feature-field" name="feature_metadata_skip_days" value="{{ config.get('features', {}).get('metadata_skip_days', 0) }}">
+          <small class="form-text text-muted">Albums whose <strong>Metadata</strong> scan ran within this many days are skipped. Set to <strong>0 to always run</strong> (default — metadata stays fresh).</small>
         </div>
         <div class="col-12 col-sm-6 col-lg-4">
           <label class="form-label form-label-sm">Minimum Tracks for Album Skip Check</label>
@@ -1196,6 +1211,14 @@
             <option value="false" {% if not config.get('features', {}).get('skip_unchanged_albums', True) %}selected{% endif %}>False</option>
           </select>
           <small class="form-text text-muted">Skip albums whose tracks are all already scored and singles-assessed, even inside the window. Default: <strong>True</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-4">
+          <label class="form-label form-label-sm">Run Singles Detection on Skipped Albums</label>
+          <select class="form-select form-select-sm feature-field" name="feature_run_singles_on_skipped_albums">
+            <option value="true" {% if config.get('features', {}).get('run_singles_on_skipped_albums', False) %}selected{% endif %}>True</option>
+            <option value="false" {% if not config.get('features', {}).get('run_singles_on_skipped_albums', False) %}selected{% endif %}>False</option>
+          </select>
+          <small class="form-text text-muted">Backfill single verdicts on skipped albums (both skip paths) so never-assessed tracks get one without a full rescan. Makes Discogs/MusicBrainz lookups for tracks without a stored verdict — off by default for quiet, fast skips.</small>
         </div>
         <div class="col-12 col-sm-6 col-lg-4">
           <label class="form-label form-label-sm">Flag Cover Songs During Scans</label>
@@ -1213,9 +1236,10 @@
       </div>
       <div class="alert alert-secondary mb-0 mt-3 py-2">
         <small class="text-muted">
-          <strong>How it works:</strong> after each scan, an album is only re-scanned once the window has passed.
-          Set the window to <strong>0</strong> and every scan re-processes the whole library (slower, more API calls).
-          A forced scan or an individual album scan always re-scans regardless of these settings.
+          <strong>How it works:</strong> each scan option on the Scan page (Full, Popularity, Singles, Metadata) has its own
+          rescan window — an album is only re-processed by that scan once its window has passed. Set any window to <strong>0</strong>
+          and that scan always re-processes the whole library (slower, more API calls). A forced scan or an individual album
+          scan always re-scans regardless of these settings.
         </small>
       </div>
     </div>

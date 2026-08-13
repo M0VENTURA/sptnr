@@ -907,6 +907,115 @@ def _persist_alternate_takes(album_context) -> None:
         logger.info("[album_stage] Marked %s alternate take(s) in album", updated)
 
 
+def _get_discogs_token() -> str | None:
+    """Resolve the configured Discogs token (empty placeholders → None)."""
+    try:
+        from helpers.config_helpers import get_config
+        cfg = get_config()
+        token = cfg.get("api_integrations", {}).get("discogs", {}).get("token")
+        if token and str(token).lower() in ("your_discogs_token", "your_token", "placeholder", ""):
+            return None
+        return token
+    except Exception:
+        return None
+
+
+def _run_full_enrichment(
+    artist: str,
+    album: str,
+    album_context: dict[str, Any],
+    album_tracks: list[dict[str, Any]],
+    detected_type: str,
+    options: dict[str, Any],
+    discogs_token: str | None,
+) -> tuple[dict, dict[str, list]]:
+    """Album art, artist metadata, tags, similar artists, live/remix tagging.
+
+    The 'full metadata import': everything beyond what singles detection and
+    popularity scoring need.  In a full scan this runs AFTER the per-track
+    singles pass (via ``enrich_album_extras``) so singles never wait on
+    enrichment lookups; metadata-only scans run it inline.
+    """
+    # 2. Album art (delegates to existing enrichment services)
+    art_source = _fetch_album_art_with_fallback(artist, album, discogs_token)
+    if art_source:
+        logger.info("[album_stage] Album art cached for %s - %s (%s)", artist, album, art_source)
+
+    # 3. Artist metadata (delegates to existing enrichment services)
+    meta = _fetch_artist_metadata(artist, None)
+
+    # Last.fm artist top tags (legacy parity)
+    _fetch_artist_lastfm_tags(artist, None)
+
+    # Backfill releasecountry for tracks missing a release country so
+    # Navidrome's "Release Country" field stays populated (legacy parity).
+    if meta.get("country"):
+        try:
+            from sqlalchemy import text as _text
+            from db.engine import db_session as _db_session
+            with _db_session() as session:
+                session.execute(
+                    _text("UPDATE tracks SET releasecountry = :country "
+                          "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
+                          "AND (releasecountry IS NULL OR TRIM(releasecountry) = '')"),
+                    {"country": meta["country"], "artist": artist},
+                )
+        except Exception as exc:
+            logger.debug("[album_stage] releasecountry backfill failed: %s", exc)
+
+    # 4. MusicBrainz artist ID — run BEFORE similar artists so the LB
+    #    similar-artists lookup can use the freshly resolved MBID.
+    _fetch_musicbrainz_artist_id(artist, None, options)
+
+    # 5. Similar artists
+    similar = _fetch_similar_artists(artist, None, options)
+
+    # 6. Discogs artist ID (legacy parity)
+    _fetch_discogs_artist_id(artist, None, options)
+
+    # 7. Live/remix album tagging + alternate-take persistence
+    _apply_live_remix_album_tagging(artist, album, detected_type, album_tracks)
+    _persist_alternate_takes(album_context)
+
+    return meta, similar
+
+
+def enrich_album_extras(
+    *,
+    artist: str,
+    album: str,
+    album_context: dict[str, Any],
+    album_tracks: list[dict[str, Any]],
+    detected_type: str,
+    options: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, list], dict]:
+    """Post-singles full metadata import for full scans.
+
+    Runs the album-level enrichment deferred by ``enrich_album`` (art cache,
+    artist metadata, Last.fm tags, similar artists, Discogs ID, live/remix
+    tagging, alternate takes) AFTER the per-track loop, so singles detection
+    never waits on enrichment lookups.  Returns ``(extra_context, similar,
+    meta)`` for the caller to merge into the album result.
+    """
+    meta, similar = _run_full_enrichment(
+        artist,
+        album,
+        album_context,
+        album_tracks,
+        detected_type,
+        options,
+        _get_discogs_token(),
+    )
+    extra_context: dict[str, Any] = {}
+    if meta.get("country"):
+        extra_context["artist_country"] = meta["country"]
+    if similar["lastfm"]:
+        extra_context["similar_artists_lastfm"] = similar["lastfm"]
+    if similar["listenbrainz"]:
+        extra_context["similar_artists_listenbrainz"] = similar["listenbrainz"]
+    return extra_context, similar, meta
+
+
 def enrich_album(
     *,
     album_row: dict[str, Any],
@@ -918,6 +1027,17 @@ def enrich_album(
 
     Returns a dict with enrichment results that the caller can pass downstream
     to per-track processing and finalisation stages.
+
+    Scan-mode gates: a singles pass only needs the album type (compilation
+    detection feeds singles detection) and the MusicBrainz artist ID (the
+    artist-scoped release-group search); art / bio / country / similar
+    artists / Last.fm tags / live-remix tagging are NOT singles work. A
+    popularity-only pass needs none of the enrichment at all — popularity
+    scoring reads raw counts, not album enrichment — so only the free
+    name-based type detection runs (no API calls).  A full scan defers the
+    heavy enrichment (art / metadata / similar artists / tags / live-remix
+    tagging) to ``enrich_album_extras`` AFTER the per-track singles loop;
+    metadata-only scans run it inline here.
     """
     artist = str(album_row.get("artist") or "")
     album = str(album_row.get("album") or "")
@@ -928,13 +1048,6 @@ def enrich_album(
         or ""
     )
 
-    # Scan-mode gates: a singles pass only needs the album type (compilation
-    # detection feeds singles detection) and the MusicBrainz artist ID (the
-    # artist-scoped release-group search); art / bio / country / similar
-    # artists / Last.fm tags / live-remix tagging are NOT singles work. A
-    # popularity-only pass needs none of the enrichment at all — popularity
-    # scoring reads raw counts, not album enrichment — so only the free
-    # name-based type detection runs (no API calls).
     _singles_pass = bool(
         options.get("singles_only")
         or options.get("singles_with_missing_popularity")
@@ -944,16 +1057,7 @@ def enrich_album(
     _meta = {"country": None, "bio": None, "image_url": None}
     _similar: dict[str, list] = {"lastfm": [], "listenbrainz": []}
 
-    # Acquire Discogs token from config
-    discogs_token: str | None = None
-    try:
-        from helpers.config_helpers import get_config
-        cfg = get_config()
-        discogs_token = cfg.get("api_integrations", {}).get("discogs", {}).get("token")
-        if discogs_token and discogs_token.lower() in ("your_discogs_token", "your_token", "placeholder", ""):
-            discogs_token = None
-    except Exception:
-        pass
+    discogs_token = _get_discogs_token()
 
     album_tracks = album_row.get("tracks") or []
     try:
@@ -1009,7 +1113,10 @@ def enrich_album(
         #    Discogs id / live-remix tagging — enrichment, not singles or
         #    popularity work.  A singles pass keeps ONLY the MusicBrainz artist
         #    ID (the artist-scoped release-group search feeds singles
-        #    detection); a popularity-only pass skips all of it.
+        #    detection); a popularity-only pass skips all of it.  A full scan
+        #    defers the heavy enrichment until AFTER the per-track singles
+        #    loop (``enrich_album_extras``) so singles never wait on it;
+        #    metadata-only scans run it inline here.
         if _popularity_pass or _singles_pass:
             art_source = None
             meta = _meta
@@ -1017,46 +1124,18 @@ def enrich_album(
             if _singles_pass:
                 _fetch_musicbrainz_artist_id(artist, None, options)
         else:
-            # 2. Album art (delegates to existing enrichment services)
-            art_source = _fetch_album_art_with_fallback(artist, album, discogs_token)
-            if art_source:
-                logger.info("[album_stage] Album art cached for %s - %s (%s)", artist, album, art_source)
-
-            # 3. Artist metadata (delegates to existing enrichment services)
-            meta = _fetch_artist_metadata(artist, None)
-
-            # Last.fm artist top tags (legacy parity)
-            _fetch_artist_lastfm_tags(artist, None)
-
-            # Backfill releasecountry for tracks missing a release country so
-            # Navidrome's "Release Country" field stays populated (legacy parity).
-            if meta.get("country"):
-                try:
-                    from sqlalchemy import text as _text
-                    from db.engine import db_session as _db_session
-                    with _db_session() as session:
-                        session.execute(
-                            _text("UPDATE tracks SET releasecountry = :country "
-                                  "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
-                                  "AND (releasecountry IS NULL OR TRIM(releasecountry) = '')"),
-                            {"country": meta["country"], "artist": artist},
-                        )
-                except Exception as exc:
-                    logger.debug("[album_stage] releasecountry backfill failed: %s", exc)
-
-            # 4. MusicBrainz artist ID — run BEFORE similar artists so the LB
-            #    similar-artists lookup can use the freshly resolved MBID.
-            _fetch_musicbrainz_artist_id(artist, None, options)
-
-            # 5. Similar artists
-            similar = _fetch_similar_artists(artist, None, options)
-
-            # 6. Discogs artist ID (legacy parity)
-            _fetch_discogs_artist_id(artist, None, options)
-
-            # 7. Live/remix album tagging + alternate-take persistence
-            _apply_live_remix_album_tagging(artist, album, detected_type, album_tracks)
-            _persist_alternate_takes(album_context)
+            if bool(options.get("defer_full_enrichment")):
+                # Full scan: only the MB artist ID runs now (singles detection
+                # uses it); the rest runs post-singles in enrich_album_extras.
+                art_source = None
+                meta = _meta
+                similar = _similar
+                _fetch_musicbrainz_artist_id(artist, None, options)
+            else:
+                art_source, meta, similar = _run_full_enrichment(
+                    artist, album, album_context, album_tracks,
+                    detected_type, options, discogs_token,
+                )
 
         # 8. Cover song detection (legacy parity — full CoverDetector).
         # NOTE: the full cover pass (work-history lookup + "Title (Artist

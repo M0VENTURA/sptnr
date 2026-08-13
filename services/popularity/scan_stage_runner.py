@@ -1089,29 +1089,54 @@ def run_scan(
             artist_discogs_promo_cache[artist] = _load_discogs_promo_titles(artist)
         discogs_cached_promos = artist_discogs_promo_cache.get(artist) or set()
 
-        # ── Album skip (album_skip_days + skip-if-unchanged) ────────────
-        # Mirrors the legacy scanner: albums already scanned within the
-        # configured window, or whose tracks are all scored + singles
-        # assessed, are skipped unless forced or explicitly targeted via
+        # ── Album skip (per-mode rescan windows + skip-if-unchanged) ────
+        # Each scan type on the main page has its own skip window
+        # (``features.*_skip_days``; 0 = always run): full scans use
+        # ``album_skip_days``, standalone Popularity / Singles / Metadata
+        # scans use their own keys.  Albums already scanned within the mode's
+        # window — or whose stored data already covers everything the mode
+        # would update — are skipped unless forced or explicitly targeted via
         # album_filter (a single-album scan always processes).
         # NOTE: artist-filtered scans (artist page / full library scan) DO
         # honour the timestamp skip — non-forced runs are incremental and
         # only re-process albums that changed or were never scored.
+        _mode_meta = bool(options.get("metadata_only"))
+        _mode_pop = bool(options.get("popularity_only"))
+        _mode_singles = bool(
+            options.get("singles_only")
+            or options.get("singles_with_missing_popularity")
+        )
         skip_album = False
-        if not force and not album_filter and not metadata_only:
+        if not force and not album_filter:
             try:
                 from helpers.config_helpers import get_feature
-                skip_days = int(get_feature("album_skip_days", 7) or 0)
+                if _mode_meta:
+                    skip_days = int(get_feature("metadata_skip_days", 0) or 0)
+                elif _mode_pop:
+                    skip_days = int(get_feature("popularity_skip_days", 7) or 0)
+                elif _mode_singles:
+                    skip_days = int(get_feature("singles_skip_days", 7) or 0)
+                else:
+                    skip_days = int(get_feature("album_skip_days", 7) or 0)
             except Exception:
                 skip_days = 7
             if skip_days > 0:
                 if was_album_scanned(artist, album, scan_type, skip_days):
                     skip_album = True
                     log_unified(f"Popularity Scan - Skipping album \"{str(album or '').strip()}\" (scanned within last {skip_days} days)")
-                elif get_feature("skip_unchanged_albums", True) and tracks:
-                    all_scored = all(float(t.get("final_score") or 0) > 0 for t in tracks)
-                    all_assessed = all(t.get("single_detection_last_updated") for t in tracks)
-                    if all_scored and all_assessed:
+                elif get_feature("skip_unchanged_albums", True) and tracks and not _mode_meta:
+                    # The unchanged check is mode-appropriate: full scans need
+                    # scores + singles verdicts, popularity-only scans need
+                    # scores, singles scans need singles verdicts.
+                    if _mode_singles:
+                        all_done = all(t.get("single_detection_last_updated") for t in tracks)
+                    elif _mode_pop:
+                        all_done = all(float(t.get("final_score") or 0) > 0 for t in tracks)
+                    else:
+                        all_scored = all(float(t.get("final_score") or 0) > 0 for t in tracks)
+                        all_assessed = all(t.get("single_detection_last_updated") for t in tracks)
+                        all_done = all_scored and all_assessed
+                    if all_done:
                         skip_album = True
                         log_unified(f"Popularity Scan - Skipping album \"{str(album or '').strip()}\" (no changes detected)")
         if skip_album:
@@ -1126,11 +1151,77 @@ def run_scan(
             except Exception as exc:
                 logger.debug("[scan_runner] Album type ensure failed for %s - %s: %s", artist, album, exc)
                 _detected_type = None
-            # Nothing else runs for a skipped album: no singles re-detection
-            # (that would re-fire Discogs/MusicBrainz lookups), no result rows
-            # (so finalise never re-posts star ratings or re-syncs Navidrome
-            # with unchanged values) — the stored scores/verdicts stand until
-            # the window passes or the album is scanned forcibly.
+            # Optional singles backfill (off by default, covers BOTH skip
+            # paths — time window and no-changes): a singles-only pass runs
+            # for skipped albums so tracks that were never assessed get a
+            # verdict without a full rescan.  It makes real Discogs /
+            # MusicBrainz lookups for tracks without a stored verdict, so it
+            # is opt-in; the stored scores/verdicts otherwise stand until the
+            # window passes or the album is scanned forcibly.
+            try:
+                from helpers.config_helpers import get_feature as _gf
+                _run_singles_on_skip = _gf("run_singles_on_skipped_albums", False)
+            except Exception:
+                _run_singles_on_skip = False
+            if _run_singles_on_skip and not metadata_only and not popularity_only:
+                try:
+                    _album_context, _track_contexts = prepare_tracks_for_album(
+                        artist=artist,
+                        album=album,
+                        tracks=tracks,
+                        album_artist=album_row.get("album_artist"),
+                        spotify_album_type=album_row.get("spotify_album_type"),
+                        musicbrainz_album_type=album_row.get("musicbrainz_album_type"),
+                    )
+                    _refresh_album_live_context(
+                        album,
+                        _album_context,
+                        _track_contexts,
+                        _detected_type or "",
+                    )
+                    _album_result = {
+                        "album_row": album_row,
+                        "album_context": _album_context,
+                        "detected_album_type": _detected_type or "",
+                        "is_heterogeneous": False,
+                    }
+                    _singles_options = dict(options)
+                    _singles_options["singles_detection_only"] = True
+                    import concurrent.futures as _futures2
+                    _skip_jobs = [
+                        (apply_context_fields_to_track(_tc), _tc)
+                        for _tc in _track_contexts
+                    ]
+
+                    def _run_skip_job(job: tuple) -> dict[str, Any] | None:
+                        _prepared, _tc = job
+                        return process_track(
+                            track=_prepared,
+                            track_context=_tc,
+                            album_context=_album_context,
+                            album_result=_album_result,
+                            options=_singles_options,
+                            album_lb_listens=None,
+                            artist_max_lf_listeners=0,
+                            artist_lf_context={},
+                            mb_cached_singles=mb_cached_singles,
+                            discogs_cached_singles=discogs_cached_singles,
+                            discogs_cached_promos=discogs_cached_promos,
+                            prefetched_popularity={},
+                        )
+
+                    if _scan_threads > 1 and len(_skip_jobs) > 1:
+                        with _futures2.ThreadPoolExecutor(max_workers=_scan_threads) as _pool:
+                            _skip_futures = [_pool.submit(_run_skip_job, job) for job in _skip_jobs]
+                            _skip_results = [f.result() for f in _skip_futures]
+                    else:
+                        _skip_results = [_run_skip_job(job) for job in _skip_jobs]
+                    # Verdicts are persisted inside process_track; the result
+                    # dicts are deliberately NOT appended to ``results`` so
+                    # finalise never re-posts star ratings or re-syncs
+                    # Navidrome for a skipped album.
+                except Exception as exc:
+                    logger.debug("[scan_runner] Singles-only pass failed for %s - %s: %s", artist, album, exc)
             continue
 
         # ── Per-artist progress checkpoint ───────────────────────────────
@@ -1212,6 +1303,21 @@ def run_scan(
         # Determine actual scan type from options for history display
         try:
             record_scan(scan_type, "started", message=f"{scan_type} scan: {artist} - {album}", artist=artist, album=album)
+
+            # Full scans defer the heavy album-level enrichment (art, artist
+            # metadata, similar artists, tags, live/remix tagging, alternate
+            # takes) until AFTER the per-track singles loop — see
+            # enrich_album_extras below.  Only the album type + MB artist ID
+            # (both singles inputs) run up front.
+            _full_pass = not (
+                options.get("metadata_only")
+                or options.get("popularity_only")
+                or options.get("singles_only")
+                or options.get("singles_with_missing_popularity")
+                or options.get("singles_detection_only")
+            )
+            if _full_pass:
+                options["defer_full_enrichment"] = True
 
             album_result = enrich_album(
                 album_row=album_row,
@@ -1614,6 +1720,33 @@ def run_scan(
                                 f"[TRACK_RESULT] '{_tt}' -> Final: {float(_fs or 0.0):.1f} (LF: {float(track_result.get('lastfm_score') or 0.0):.1f} | LB: {float(track_result.get('listenbrainz_score') or 0.0):.1f})",
                             )
                 tracks_processed += 1
+
+            # ── Full metadata import (post-singles) ─────────────────────────
+            # The heavy album-level enrichment (art cache, artist metadata,
+            # similar artists, Last.fm tags, Discogs ID, live/remix tagging,
+            # alternate takes) is deferred until AFTER the per-track loop so
+            # singles detection never waits on enrichment lookups.  Runs
+            # before the full cover pass so live/remix renames are seen by
+            # cover detection (same relative order as the legacy pre-loop
+            # enrichment).  Popularity-only / singles / metadata passes skip
+            # it — their enrich_album already ran the right scope.
+            if _full_pass:
+                try:
+                    from services.popularity.stages.album_stage import enrich_album_extras
+                    _extra_ctx, _extra_similar, _extra_meta = enrich_album_extras(
+                        artist=artist,
+                        album=album,
+                        album_context=album_context,
+                        album_tracks=tracks,
+                        detected_type=str((album_result or {}).get("detected_album_type") or ""),
+                        options=options,
+                    )
+                    if album_result is not None:
+                        album_result.setdefault("album_context", {}).update(_extra_ctx)
+                        album_result["similar_artists"] = _extra_similar
+                        album_result["artist_metadata"] = _extra_meta
+                except Exception as exc:
+                    logger.debug("[scan_runner] Post-singles enrichment failed for %s - %s: %s", artist, album, exc)
 
             # ── Full cover detection stage (after per-track singles/cover
             #    detection) ────────────────────────────────────────────────
