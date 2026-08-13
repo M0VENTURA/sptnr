@@ -47,10 +47,16 @@ position:fixed flyout anchored below the navbar.
       />
     </div>
 
-    <!-- Advanced filters — always visible (the collapsible toggle was removed
-         so the structured Artist / Album / Track / Year fields show without
-         a click). Fields drive MusicBrainz discovery AND feed the library
-         search when the main bar is empty (e.g. artist-only matching). -->
+    <!-- Advanced filters — collapsible.  Expanded on open, auto-collapses
+         after a search submit so results get the screen; re-expand with the
+         toggle (values are preserved).  Fields drive MusicBrainz discovery
+         AND feed the library search when the main bar is empty (e.g.
+         artist-only matching). -->
+    <div class="d-flex align-items-center mb-1">
+      <button type="button" class="btn btn-sm btn-link p-0 text-decoration-none us-filter-toggle" id="unifiedFiltersToggle" aria-expanded="true">
+        <i class="bi bi-chevron-up" id="unifiedFiltersToggleIcon"></i> <span id="unifiedFiltersToggleLabel">Advanced Search</span>
+      </button>
+    </div>
     <div class="border rounded p-2 mb-2" id="unifiedAdvancedFilters" style="background: var(--primary-bg);">
       <div class="d-flex align-items-center gap-2 mb-1 flex-wrap">
         <small class="text-muted" style="font-size: 0.75rem;"><i class="bi bi-info-circle"></i> Apply to your library and MusicBrainz discovery — an artist field alone still matches library artists.</small>
@@ -75,38 +81,41 @@ position:fixed flyout anchored below the navbar.
       </div>
     </div>
 
-    <ul class="nav nav-pills gap-1 mb-2" id="unifiedScopeTabs" role="tablist">
-      <li class="nav-item" role="presentation">
-        <button type="button" class="nav-link active" data-scope="all" role="tab" aria-selected="true">
-          <i class="bi bi-collection"></i> All <span class="us-scope-count badge bg-secondary ms-1 d-none">0</span>
-        </button>
-      </li>
-      <li class="nav-item" role="presentation">
-        <button type="button" class="nav-link" data-scope="library" role="tab" aria-selected="false">
-          <i class="bi bi-music-note-beamed"></i> In Library <span class="us-scope-count badge bg-secondary ms-1 d-none">0</span>
-        </button>
-      </li>
-      <li class="nav-item" role="presentation">
-        <button type="button" class="nav-link" data-scope="mb" role="tab" aria-selected="false">
-          <i class="bi bi-hexagon-fill"></i> MusicBrainz <span class="us-scope-count badge bg-secondary ms-1 d-none">0</span>
-        </button>
-      </li>
-    </ul>
-
     <div class="d-flex align-items-center gap-2 mb-2">
-      <label class="form-label small text-muted mb-0 flex-shrink-0"><i class="bi bi-funnel"></i> Type:</label>
-      <select id="unifiedSearchType" class="form-select form-select-sm" style="max-width: 220px;">
-        <option value="">All types</option>
-        <option value="album">Album</option>
-        <option value="single">Single</option>
-        <option value="ep">EP</option>
-        <option value="compilation">Compilation</option>
-        <option value="soundtrack">Soundtrack</option>
-        <option value="live">Live</option>
-        <option value="remix">Remix</option>
-      </select>
-      <span class="ms-auto"><small class="text-muted" id="unifiedTypeHint">Filters library + MusicBrainz results</small></span>
+      <ul class="nav nav-pills gap-1 us-scope-chips flex-grow-1" id="unifiedScopeTabs" role="tablist">
+        <li class="nav-item" role="presentation">
+          <button type="button" class="nav-link active" data-scope="all" role="tab" aria-selected="true">
+            <i class="bi bi-collection"></i> All <span class="us-scope-count badge bg-secondary ms-1 d-none">0</span>
+          </button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button type="button" class="nav-link" data-scope="library" role="tab" aria-selected="false">
+            <i class="bi bi-music-note-beamed"></i> In Library <span class="us-scope-count badge bg-secondary ms-1 d-none">0</span>
+          </button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button type="button" class="nav-link" data-scope="mb" role="tab" aria-selected="false">
+            <i class="bi bi-hexagon-fill"></i> MusicBrainz <span class="us-scope-count badge bg-secondary ms-1 d-none">0</span>
+          </button>
+        </li>
+      </ul>
+      <button type="button" class="btn btn-sm us-filter-btn flex-shrink-0" id="unifiedFilterBtn" title="Release type filter" aria-label="Release type filter">
+        <i class="bi bi-funnel"></i><span class="badge bg-info d-none ms-1" id="unifiedFilterBadge"></span>
+      </button>
     </div>
+
+    <!-- Hidden type select — source of truth for the search engine; the
+         funnel button opens a mobile-friendly bottom sheet instead. -->
+    <select id="unifiedSearchType" class="d-none" aria-hidden="true" tabindex="-1">
+      <option value="">All types</option>
+      <option value="album">Album</option>
+      <option value="single">Single</option>
+      <option value="ep">EP</option>
+      <option value="compilation">Compilation</option>
+      <option value="soundtrack">Soundtrack</option>
+      <option value="live">Live</option>
+      <option value="remix">Remix</option>
+    </select>
 
     <div id="unifiedSearchError" class="alert alert-danger py-1 px-2 small d-none" role="alert"></div>
     <div id="unifiedSearchResults" class="us-results"></div>

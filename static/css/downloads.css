@@ -129,8 +129,20 @@
     font-size: 0.8rem;
     color: var(--text-secondary, #adb5bd);
     white-space: nowrap;
+    flex: 0 0 auto;
 }
 .stat-pill strong {
     color: var(--text-primary, #e9ecef);
     font-variant-numeric: tabular-nums;
+}
+
+/* Stat pills stay on ONE line: swipe horizontally when they overflow */
+.stat-pills-row {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+    max-width: 100%;
+}
+.stat-pills-row .stat-pill.d-none {
+    display: none !important;
 }

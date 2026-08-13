@@ -9,32 +9,24 @@
         <small class="text-muted">Directory: {{ log_dir }}</small>
     </div>
 
-    <div class="mb-3">
-        <div class="row g-2 align-items-center">
-            <div class="col-auto">
-                <select id="logSelector" class="form-select form-select-sm" style="min-width:200px;">
-                    {% for f in log_files %}
-                    <option value="{{ f.name }}" data-path="{{ f.path }}">{{ f.name }} ({{ '{:.1f}'.format(f.size / 1024) }} KB)</option>
-                    {% endfor %}
-                </select>
-            </div>
-            <div class="col-auto">
-                <button id="streamLogBtn" class="btn btn-success btn-sm" title="Stream new log lines live (SSE)"><i class="bi bi-broadcast"></i> <span id="streamLogLabel">Live Stream</span></button>
-            </div>
-            <div class="col-auto">
-                <div class="dropdown">
-                    <button class="btn btn-outline-secondary btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" title="More log actions">
-                        <i class="bi bi-three-dots-vertical"></i>
-                    </button>
-                    <ul class="dropdown-menu dropdown-menu-end dropdown-menu-dark">
-                        <li><button type="button" class="dropdown-item" id="refreshLogBtn" data-bs-dismiss="dropdown"><i class="bi bi-arrow-clockwise me-2"></i>Refresh</button></li>
-                        <li><button type="button" class="dropdown-item" id="downloadLogBtn" data-bs-dismiss="dropdown"><i class="bi bi-download me-2"></i>Download</button></li>
-                        <li><button type="button" class="dropdown-item" id="copyLogBtn" data-bs-dismiss="dropdown"><i class="bi bi-clipboard me-2"></i>Copy</button></li>
-                        <li><hr class="dropdown-divider"></li>
-                        <li><button type="button" class="dropdown-item text-danger" id="clearLogBtn" data-bs-dismiss="dropdown"><i class="bi bi-trash me-2"></i>Clear</button></li>
-                    </ul>
-                </div>
-            </div>
+    <div class="mb-3 d-flex flex-nowrap align-items-center gap-2">
+        <select id="logSelector" class="form-select form-select-sm flex-shrink-1" style="min-width: 140px; max-width: 280px;">
+            {% for f in log_files %}
+            <option value="{{ f.name }}" data-path="{{ f.path }}">{{ f.name }} ({{ '{:.1f}'.format(f.size / 1024) }} KB)</option>
+            {% endfor %}
+        </select>
+        <button id="streamLogBtn" class="btn btn-success btn-sm text-nowrap flex-shrink-0" title="Stream new log lines live (SSE)"><i class="bi bi-broadcast"></i> <span id="streamLogLabel">Live Stream</span></button>
+        <div class="dropdown ms-auto flex-shrink-0">
+            <button class="btn btn-outline-secondary btn-sm" type="button" data-bs-toggle="dropdown" aria-expanded="false" title="More log actions">
+                <i class="bi bi-three-dots-vertical"></i>
+            </button>
+            <ul class="dropdown-menu dropdown-menu-end dropdown-menu-dark">
+                <li><button type="button" class="dropdown-item" id="refreshLogBtn" data-bs-dismiss="dropdown"><i class="bi bi-arrow-clockwise me-2"></i>Refresh</button></li>
+                <li><button type="button" class="dropdown-item" id="downloadLogBtn" data-bs-dismiss="dropdown"><i class="bi bi-download me-2"></i>Download</button></li>
+                <li><button type="button" class="dropdown-item" id="copyLogBtn" data-bs-dismiss="dropdown"><i class="bi bi-clipboard me-2"></i>Copy</button></li>
+                <li><hr class="dropdown-divider"></li>
+                <li><button type="button" class="dropdown-item text-danger" id="clearLogBtn" data-bs-dismiss="dropdown"><i class="bi bi-trash me-2"></i>Clear</button></li>
+            </ul>
         </div>
     </div>
 
@@ -59,10 +51,11 @@
     <div class="card">
         <div class="card-header d-flex justify-content-between align-items-center gap-2 py-1 px-3">
             <span id="tailBannerText" class="small text-muted text-truncate d-none"></span>
-            <button type="button" id="loadFullLogBtn" class="btn btn-sm btn-outline-secondary flex-shrink-0" title="Load the entire log file" style="padding: 0.1rem 0.45rem;"><i class="bi bi-arrow-down-up"></i></button>
         </div>
-        <div class="card-body p-2">
+        <div class="card-body p-2" style="position: relative;">
             <div id="logOutput" class="bg-dark text-light p-3 mb-0" style="height: calc(100dvh - 360px); min-height: 280px; overflow-y: scroll; font-family: 'Consolas', 'Courier New', monospace; font-size: 12px; line-height: 1.45; white-space: pre; word-wrap: normal;"></div>
+            <!-- Floating action button: load the full log without eating header space -->
+            <button type="button" id="loadFullLogBtn" class="btn btn-sm btn-outline-secondary us-log-fab" title="Load the entire log file"><i class="bi bi-arrow-down-up"></i></button>
         </div>
     </div>
 </div>
@@ -186,13 +179,18 @@
                 if (data && data.error) { logOutput.textContent = 'Error: ' + data.error; return; }
                 rawLines = (data && data.lines) || [];
                 loadingAll = opts.all || data.truncated === false;
-                if (data.truncated && !opts.all) {
+                var truncated = data.truncated && !opts.all;
+                if (truncated) {
                     tailBannerText.textContent = 'Viewing ' + rawLines.length.toLocaleString() +
                         ' / ' + (data.total_lines ? data.total_lines.toLocaleString() : '?') + ' lines';
                     tailBannerText.classList.remove('d-none');
                 } else {
                     tailBannerText.classList.add('d-none');
                 }
+                // The floating "load entire log" FAB only matters while the
+                // view is truncated; hide it once the full file is loaded.
+                var fab = document.getElementById('loadFullLogBtn');
+                if (fab) fab.classList.toggle('d-none', !truncated);
                 render();
                 scrollToBottom();
             })

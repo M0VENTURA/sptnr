@@ -675,6 +675,8 @@
     // reset search state — exactly as the "navigate away" rule intends).
     selectScope(scope || _scope);
     input.value = prefill;
+    // Advanced filters default to EXPANDED each time the panel opens.
+    setAdvancedFiltersVisible(true);
     if (getErrorEl()) getErrorEl().classList.add('d-none');
 
     // Anchor the flyout directly under the fixed navbar (measured so the
@@ -750,6 +752,8 @@
         e.preventDefault();
         clearTimeout(_debounceTimer);
         runSearch();
+        // Submit collapses the advanced filters so results own the panel.
+        setAdvancedFiltersVisible(false);
       }
     });
 
@@ -761,7 +765,11 @@
     // always visible in the flyout — no collapse toggle).
     var filterInputs = document.querySelectorAll('#unifiedAdvancedFilters input, #unifiedSearchType');
     for (var i = 0; i < filterInputs.length; i++) {
-      filterInputs[i].addEventListener('focus', function () { this.select(); });
+      // Auto-select text on focus — inputs only; the type <select> has no
+      // select() method (this.select would throw TypeError).
+      filterInputs[i].addEventListener('focus', function () {
+        if (typeof this.select === 'function') this.select();
+      });
       filterInputs[i].addEventListener('input', function () {
         clearTimeout(_debounceTimer);
         _debounceTimer = setTimeout(runSearch, _scope === SCOPE_MB ? MB_DEBOUNCE_MS : LOCAL_DEBOUNCE_MS);
@@ -770,7 +778,105 @@
         clearTimeout(_debounceTimer);
         runSearch();
       });
+      // Enter in a filter field submits AND collapses the advanced panel.
+      filterInputs[i].addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          clearTimeout(_debounceTimer);
+          runSearch();
+          setAdvancedFiltersVisible(false);
+        }
+      });
     }
+
+    // ── Advanced filters collapse / expand ──────────────────────────────
+    function setAdvancedFiltersVisible(visible) {
+      var panel = document.getElementById('unifiedAdvancedFilters');
+      var toggle = document.getElementById('unifiedFiltersToggle');
+      var icon = document.getElementById('unifiedFiltersToggleIcon');
+      if (!panel) return;
+      panel.classList.toggle('d-none', !visible);
+      if (icon) icon.className = 'bi bi-chevron-' + (visible ? 'up' : 'right');
+      if (toggle) toggle.setAttribute('aria-expanded', visible ? 'true' : 'false');
+    }
+    var filtersToggle = document.getElementById('unifiedFiltersToggle');
+    if (filtersToggle) {
+      filtersToggle.addEventListener('click', function () {
+        var panel = document.getElementById('unifiedAdvancedFilters');
+        setAdvancedFiltersVisible(!panel || panel.classList.contains('d-none'));
+      });
+    }
+
+    // ── Release-type filter bottom sheet (replaces the old Type row) ────
+    function updateFilterButtonState() {
+      var select = document.getElementById('unifiedSearchType');
+      var btn = document.getElementById('unifiedFilterBtn');
+      var badge = document.getElementById('unifiedFilterBadge');
+      if (!select || !btn) return;
+      var active = select.value !== '';
+      btn.classList.toggle('active', active);
+      if (badge) {
+        if (active) {
+          var opt = select.options[select.selectedIndex];
+          badge.textContent = opt ? opt.text : '';
+          badge.classList.remove('d-none');
+        } else {
+          badge.classList.add('d-none');
+        }
+      }
+    }
+
+    function closeUnifiedFilterSheet() {
+      var sheet = document.getElementById('usFilterSheet');
+      var backdrop = document.getElementById('usFilterBackdrop');
+      if (sheet) sheet.remove();
+      if (backdrop) backdrop.remove();
+    }
+    window.closeUnifiedFilterSheet = closeUnifiedFilterSheet;
+
+    function openUnifiedFilterSheet() {
+      var select = document.getElementById('unifiedSearchType');
+      if (!select) return;
+      closeUnifiedFilterSheet();
+
+      var backdrop = document.createElement('div');
+      backdrop.className = 'us-filter-backdrop';
+      backdrop.id = 'usFilterBackdrop';
+      backdrop.addEventListener('click', closeUnifiedFilterSheet);
+
+      var sheet = document.createElement('div');
+      sheet.className = 'us-filter-sheet';
+      sheet.id = 'usFilterSheet';
+      var html = '<div class="us-filter-sheet-header d-flex justify-content-between align-items-center px-3 py-2">' +
+        '<strong><i class="bi bi-funnel me-1"></i>Release Type</strong>' +
+        '<button type="button" class="btn-close" aria-label="Close" onclick="closeUnifiedFilterSheet()"></button></div>';
+      Array.prototype.forEach.call(select.options, function (opt) {
+        var value = opt.value || '';
+        var active = select.value === value ? ' active' : '';
+        html += '<button type="button" class="us-filter-option' + active + '" data-type="' + value + '">' +
+          '<span>' + opt.text + '</span>' +
+          (value === '' ? '' : '<i class="bi bi-check-lg us-filter-check"></i>') +
+          '</button>';
+      });
+      sheet.innerHTML = html;
+      document.body.appendChild(backdrop);
+      document.body.appendChild(sheet);
+      requestAnimationFrame(function () { sheet.classList.add('show'); });
+
+      sheet.querySelectorAll('.us-filter-option').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          select.value = btn.getAttribute('data-type') || '';
+          updateFilterButtonState();
+          closeUnifiedFilterSheet();
+          clearTimeout(_debounceTimer);
+          runSearch();
+        });
+      });
+    }
+    window.openUnifiedFilterSheet = openUnifiedFilterSheet;
+    var filterBtn = document.getElementById('unifiedFilterBtn');
+    if (filterBtn) filterBtn.addEventListener('click', openUnifiedFilterSheet);
+    updateFilterButtonState();
 
     // Scope tabs — switching re-runs immediately with the current query.
     var tabs = document.querySelectorAll('#unifiedScopeTabs .nav-link');

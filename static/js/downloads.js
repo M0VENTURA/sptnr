@@ -1405,6 +1405,14 @@ async function loadQueueStatus() {
     setNum('queueCompletedCount', countFor('completed'));
     setNum('queueMovingCount', countFor('moving','importing'));
     setNum('queueFailedCount', countFor('failed'));
+
+    // Hide stat pills whose count is 0 so the header stays focused on
+    // actionable items (the row scrolls horizontally when it overflows).
+    document.querySelectorAll('.stat-pill[data-pill-for]').forEach(pill => {
+      const el = document.getElementById(pill.dataset.pillFor);
+      const count = Number(el ? el.textContent : 0) || 0;
+      pill.classList.toggle('d-none', count === 0);
+    });
   } catch (error) {
     console.error('Error loading queue status:', error);
   }

@@ -1178,6 +1178,113 @@ html {
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
 }
 
+/* ── Unified search: collapsible filters, scope chips, type sheet ───────── */
+/* Scope tabs as compact chips on ONE horizontally-swipeable line */
+.search-flyout #unifiedScopeTabs.us-scope-chips {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    min-width: 0;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+}
+
+.search-flyout #unifiedScopeTabs.us-scope-chips .nav-link {
+    padding: 4px 12px;
+    font-size: 0.85rem;
+    white-space: nowrap;
+}
+
+.search-flyout #unifiedScopeTabs.us-scope-chips .us-scope-count {
+    font-size: 0.7rem;
+}
+
+/* Subtle advanced-search toggle */
+.search-flyout .us-filter-toggle {
+    font-size: 0.8rem;
+    color: var(--text-tertiary, #a0a0a0);
+}
+
+.search-flyout .us-filter-toggle:hover {
+    color: var(--spotify-green, #1db954);
+}
+
+/* Release-type funnel button (same row as the scope chips) */
+.search-flyout .us-filter-btn {
+    padding: 4px 10px;
+    font-size: 0.85rem;
+    color: var(--text-tertiary, #a0a0a0);
+    border-color: var(--border-color, #282828);
+    background: transparent;
+}
+
+.search-flyout .us-filter-btn:hover,
+.search-flyout .us-filter-btn.active {
+    color: var(--spotify-green, #1db954);
+    border-color: var(--spotify-green, #1db954);
+}
+
+/* Release-type bottom sheet (thumb-friendly, slides up from the bottom) */
+.us-filter-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    z-index: 3000;
+}
+
+.us-filter-sheet {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 3001;
+    background: var(--secondary-bg, #1e1e1e);
+    border-top: 1px solid var(--border-color, #282828);
+    border-radius: 12px 12px 0 0;
+    max-height: 60dvh;
+    overflow-y: auto;
+    transform: translateY(100%);
+    transition: transform 0.22s ease;
+    box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.5);
+}
+
+.us-filter-sheet.show {
+    transform: translateY(0);
+}
+
+.us-filter-sheet .us-filter-sheet-header {
+    position: sticky;
+    top: 0;
+    background: var(--secondary-bg, #1e1e1e);
+    border-bottom: 1px solid var(--border-color, #282828);
+}
+
+.us-filter-option {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: 0.9rem 1rem;
+    font-size: 1rem;
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid var(--border-color, #282828);
+    color: var(--text-primary, #ffffff);
+    text-align: left;
+}
+
+.us-filter-option:active {
+    background: var(--tertiary-bg, #282828);
+}
+
+.us-filter-option.active {
+    color: var(--spotify-green, #1db954);
+    font-weight: 600;
+}
+
+.us-filter-check {
+    color: var(--spotify-green, #1db954);
+}
+
 /* ── Config: Playlists tab — grouped setting cards ──────────────────────── */
 /* Each toggle switch stays bound to its title/description inside one card;
    numeric thresholds reflow via an auto-fit grid; naming templates are

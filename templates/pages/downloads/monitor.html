@@ -4,7 +4,7 @@
 
 {% block content %}
 <div class="container-fluid mt-4">
-  <!-- Header: clean title + compact stat pills + global toolbar -->
+  <!-- Header: clean title + compact stat pills + overflow menu -->
   <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
     <h4 class="mb-0 me-auto">
       <i class="bi bi-download"></i> Music Downloads
@@ -12,13 +12,24 @@
         <i class="bi bi-question-circle"></i>
       </a>
     </h4>
-    <div class="d-flex flex-wrap align-items-center gap-1">
-      <span class="stat-pill"><i class="bi bi-activity me-1"></i>Active <strong id="queueTotalCount">0</strong></span>
-      <span class="stat-pill"><i class="bi bi-cloud-arrow-down text-info me-1"></i>Downloading <strong id="queueActiveCount">0</strong></span>
-      <span class="stat-pill"><i class="bi bi-hourglass-split text-warning me-1"></i>Queued <strong id="queueQueuedCount">0</strong></span>
-      <span class="stat-pill"><i class="bi bi-x-circle text-danger me-1"></i>Failed <strong id="queueFailedCount">0</strong></span>
-      <span class="stat-pill"><i class="bi bi-check-circle text-success me-1"></i>Complete <strong id="queueCompletedCount">0</strong></span>
-      <span class="stat-pill"><i class="bi bi-arrow-left-right me-1"></i>Moving <strong id="queueMovingCount">0</strong></span>
+    <div class="stat-pills-row d-flex align-items-center gap-1">
+      <span class="stat-pill" data-pill-for="queueTotalCount"><i class="bi bi-activity me-1"></i>Active <strong id="queueTotalCount">0</strong></span>
+      <span class="stat-pill" data-pill-for="queueActiveCount"><i class="bi bi-cloud-arrow-down text-info me-1"></i>Downloading <strong id="queueActiveCount">0</strong></span>
+      <span class="stat-pill" data-pill-for="queueQueuedCount"><i class="bi bi-hourglass-split text-warning me-1"></i>Queued <strong id="queueQueuedCount">0</strong></span>
+      <span class="stat-pill" data-pill-for="queueFailedCount"><i class="bi bi-x-circle text-danger me-1"></i>Failed <strong id="queueFailedCount">0</strong></span>
+      <span class="stat-pill" data-pill-for="queueCompletedCount"><i class="bi bi-check-circle text-success me-1"></i>Complete <strong id="queueCompletedCount">0</strong></span>
+      <span class="stat-pill" data-pill-for="queueMovingCount"><i class="bi bi-arrow-left-right me-1"></i>Moving <strong id="queueMovingCount">0</strong></span>
+    </div>
+    <div class="dropdown">
+      <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="dropdown" aria-expanded="false" title="More actions">
+        <i class="bi bi-three-dots-vertical"></i>
+      </button>
+      <ul class="dropdown-menu dropdown-menu-end dropdown-menu-dark">
+        <li><a class="dropdown-item" href="/downloads/banned-words"><i class="bi bi-slash-circle me-2"></i>Banned Words</a></li>
+        <li><hr class="dropdown-divider"></li>
+        <li><button class="dropdown-item" type="button" onclick="clearQueue()"><i class="bi bi-eraser me-2"></i>Clear Queue</button></li>
+        <li><button class="dropdown-item text-danger" type="button" onclick="purgeAllQueueAndDownloads()"><i class="bi bi-trash-fill me-2"></i>Purge All &amp; Downloads</button></li>
+      </ul>
     </div>
   </div>
   <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
@@ -28,18 +39,6 @@
     <button class="btn btn-sm btn-success" onclick="discoverFiles(event)" title="Scan the downloads folder for audio files">
       <i class="bi bi-search"></i> Auto-Discover Files
     </button>
-    <a href="/downloads/banned-words" class="btn btn-sm btn-outline-danger">
-      <i class="bi bi-slash-circle"></i> Banned Words
-    </a>
-    <div class="dropdown ms-auto">
-      <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
-        <i class="bi bi-trash"></i> Cleanup Queue
-      </button>
-      <ul class="dropdown-menu dropdown-menu-dark">
-        <li><button class="dropdown-item" type="button" onclick="clearQueue()"><i class="bi bi-eraser me-2"></i>Clear Queue</button></li>
-        <li><button class="dropdown-item text-danger" type="button" onclick="purgeAllQueueAndDownloads()"><i class="bi bi-trash-fill me-2"></i>Purge All &amp; Downloads</button></li>
-      </ul>
-    </div>
   </div>
 
   {% include 'components/search/_monitor_queue_section.html' ignore missing %}

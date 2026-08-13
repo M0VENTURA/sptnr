@@ -369,24 +369,6 @@ function editTrackArtist(trackId, currentArtist) {
     }
 }
 
-// Update bulk actions UI (checkboxes)
-function updateBulkActionsUI() {
-    const checkboxes = document.querySelectorAll('input[data-bulk-select]');
-    const bulkActionsBar = document.getElementById('bulkActionsBar');
-    const countLabel = document.getElementById('bulkSelectCount');
-    
-    if (!checkboxes.length) return;
-    
-    const selectedCount = Array.from(checkboxes).filter(cb => cb.checked).length;
-    
-    if (selectedCount > 0) {
-        if (bulkActionsBar) bulkActionsBar.style.display = 'block';
-        if (countLabel) countLabel.textContent = selectedCount;
-    } else {
-        if (bulkActionsBar) bulkActionsBar.style.display = 'none';
-    }
-}
-
 // Fetch artist genre recommendations
 function fetchArtistGenreRecommendations() {
     const artistName = document.querySelector('[data-artist-name]')?.dataset.artistName || '';
@@ -453,11 +435,3 @@ function escapeHtml(text) {
     div.textContent = text;
     return div.innerHTML;
 }
-
-// Initialize bulk action listeners
-document.addEventListener('DOMContentLoaded', function() {
-    const checkboxes = document.querySelectorAll('input[data-bulk-select]');
-    checkboxes.forEach(checkbox => {
-        checkbox.addEventListener('change', updateBulkActionsUI);
-    });
-});

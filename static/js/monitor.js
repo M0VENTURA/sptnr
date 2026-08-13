@@ -536,27 +536,35 @@ function renderMonitorQueueItemRow(item) {
   var st = item.status || 'queued';
 
   // Action buttons grouped flush-right; role depends on the status.
+  // Borderless icons (row-icon-btn) keep the right side uncluttered.
   var actions = '';
   if (st === 'failed' && typeof window.retryQueueItem === 'function') {
-    actions += '<button class="btn btn-outline-warning" title="Retry now" onclick="retryQueueItem(' + item.id + ')"><i class="bi bi-arrow-clockwise"></i></button>';
+    actions += '<button class="row-icon-btn text-warning" title="Retry now" onclick="retryQueueItem(' + item.id + ')"><i class="bi bi-arrow-clockwise"></i></button>';
   } else if (st === 'downloading' && typeof window.cancelQueueItem === 'function') {
-    actions += '<button class="btn btn-outline-secondary" title="Cancel download" onclick="cancelQueueItem(' + item.id + ')"><i class="bi bi-stop-circle"></i></button>';
+    actions += '<button class="row-icon-btn text-secondary" title="Cancel download" onclick="cancelQueueItem(' + item.id + ')"><i class="bi bi-stop-circle"></i></button>';
   }
   if (typeof window.deleteQueueItem === 'function') {
-    actions += '<button class="btn btn-outline-danger" title="Remove from queue" onclick="deleteQueueItem(' + item.id + ', false)"><i class="bi bi-trash"></i></button>';
+    actions += '<button class="row-icon-btn text-danger" title="Remove from queue" onclick="deleteQueueItem(' + item.id + ', false)"><i class="bi bi-trash"></i></button>';
   }
   var actionsHtml = actions
-    ? '<div class="btn-group btn-group-sm flex-shrink-0">' + actions + '</div>'
+    ? '<div class="d-flex align-items-center gap-1 flex-shrink-0">' + actions + '</div>'
     : '';
+
+  // Status pill sits bottom-left, inline with the failure reason.
+  var metaLine = '<div class="d-flex align-items-center gap-2 flex-wrap mt-1">' + queueStatusPill(st, item);
+  if (st === 'failed' && item.failure_reason) {
+    metaLine += '<span class="small text-danger text-truncate"><i class="bi bi-exclamation-triangle"></i> ' + escapeHtml(item.failure_reason) + '</span>';
+  }
+  metaLine += '</div>';
 
   return '<div class="list-group-item queue-item"><div class="d-flex justify-content-between align-items-center gap-2">' +
     '<div style="min-width:0;">' +
       '<div class="text-truncate"><strong>' + escapeHtml(item.title || 'Unknown') + '</strong>' +
       (item.artist ? ' <small class="text-muted">' + escapeHtml(item.artist) + (item.album ? ' - ' + escapeHtml(item.album) : '') + '</small>' : '') +
       '</div>' +
-      (st === 'failed' && item.failure_reason ? '<div class="small text-danger text-truncate"><i class="bi bi-exclamation-triangle"></i> ' + escapeHtml(item.failure_reason) + '</div>' : '') +
+      metaLine +
     '</div>' +
-    '<div class="d-flex align-items-center gap-2 flex-shrink-0">' + queueStatusPill(st, item) + actionsHtml + '</div>' +
+    actionsHtml +
     '</div></div>';
 }
 
@@ -618,7 +626,7 @@ function renderMonitorQueueGroupRow(group, index) {
 
   var groupDelete = '';
   if (typeof window.deleteQueueItem === 'function') {
-    groupDelete = '<button class="btn btn-sm btn-outline-danger py-0 px-1 flex-shrink-0" title="Remove all tracks in this folder" onclick="deleteQueueGroup(' + index + ')"><i class="bi bi-trash"></i></button>';
+    groupDelete = '<button class="row-icon-btn text-danger flex-shrink-0" title="Remove all tracks in this folder" onclick="deleteQueueGroup(' + index + ')"><i class="bi bi-trash"></i></button>';
   }
 
   return '<div class="list-group-item">' +

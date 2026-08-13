@@ -7,9 +7,8 @@
         <i class="bi bi-list-task"></i> Download Queue
         <span class="badge bg-info ms-1" id="folderGroupsBadge">0 items</span>
       </h5>
-      <span class="text-muted small" id="queuePageSummary">Showing 0 of 0</span>
     </div>
-    <!-- Line 2: action toolbar — sort left, maintenance + paging right -->
+    <!-- Line 2: action toolbar — sort left, maintenance right -->
     <div class="d-flex justify-content-between align-items-center gap-2 flex-wrap">
       <select id="queueSortMode" class="form-select form-select-sm" style="width:auto;" onchange="loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true })">
         <option value="folder">Sort: Folder</option>
@@ -23,20 +22,24 @@
         <button class="btn btn-sm btn-outline-info" onclick="runQueueCleanup()" title="Remove expired duplicates and fully completed albums from queue">
           <i class="bi bi-broom"></i> <span class="d-none d-md-inline">Cleanup</span>
         </button>
-        <div class="btn-group" role="group">
-          <button class="btn btn-sm btn-outline-secondary" id="queuePrevPageBtn" onclick="changeQueuePage(-1)" disabled title="Previous page">
-            <i class="bi bi-chevron-left"></i>
-          </button>
-          <button class="btn btn-sm btn-outline-secondary" id="queueNextPageBtn" onclick="changeQueuePage(1)" disabled title="Next page">
-            <i class="bi bi-chevron-right"></i>
-          </button>
-        </div>
       </div>
     </div>
   </div>
   <div class="card-body p-0">
     <div id="folderGroupsList" style="max-height: 600px; overflow-y: auto;">
       <!-- Queue items rendered here -->
+    </div>
+  </div>
+  <!-- Footer: pagination belongs below the list -->
+  <div class="card-footer d-flex justify-content-between align-items-center flex-wrap gap-2 py-2">
+    <span class="text-muted small" id="queuePageSummary">Showing 0 of 0</span>
+    <div class="btn-group" role="group">
+      <button class="btn btn-sm btn-outline-secondary" id="queuePrevPageBtn" onclick="changeQueuePage(-1)" disabled title="Previous page">
+        <i class="bi bi-chevron-left"></i>
+      </button>
+      <button class="btn btn-sm btn-outline-secondary" id="queueNextPageBtn" onclick="changeQueuePage(1)" disabled title="Next page">
+        <i class="bi bi-chevron-right"></i>
+      </button>
     </div>
   </div>
 </div>
