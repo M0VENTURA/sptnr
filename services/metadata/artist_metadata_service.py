@@ -3,7 +3,9 @@
 This module owns artist-level metadata routes that don't fit neatly into
 the existing correction/scan services. Functions are module-level so routes
 can ``import metadata_service as metadata``.
+"""
 
+import logging
 import time
 from typing import Any
 
