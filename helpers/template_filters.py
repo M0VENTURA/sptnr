@@ -29,6 +29,13 @@ def register_filters(app):
             return ""
         return re.sub(pattern, replacement, str(value))
 
+    @app.template_filter('split')
+    def split(value, separator):
+        """Split a string on *separator* into a list (``"a/b"|split("/")``)."""
+        if value is None:
+            return []
+        return str(value).split(separator)
+
     @app.template_filter('safe_id')
     def safe_id(value):
         """Sanitize a value into a CSS/HTML id-safe token.
