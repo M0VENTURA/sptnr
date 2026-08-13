@@ -1178,6 +1178,43 @@ def _display_genre(genre: str) -> str:
     )
 
 
+def _delete_genre_playlist_from_navidrome(playlist_name: str) -> None:
+    """Best-effort: remove a genre playlist from Navidrome by name.
+
+    Deleting the ``.m3u`` from the watch folder only removes the file —
+    Navidrome keeps the imported playlist in its DB, so an under-threshold
+    genre playlist would linger in the UI.  Mirrors the legacy NSP-overwrite
+    flow (``find_playlist_by_name`` + ``deletePlaylist``).  Quiet on failure;
+    the file deletion remains the source of truth.
+    """
+    if not playlist_name:
+        return
+    try:
+        from helpers.config_helpers import get_config
+        from api_clients.navidrome import NavidromeClient
+        cfg = get_config() or {}
+        nav_cfg = cfg.get("navidrome") or {}
+        nav_users = cfg.get("navidrome_users") or []
+        if not nav_users and isinstance(nav_cfg, dict) and nav_cfg.get("base_url"):
+            nav_users = [nav_cfg]
+        for user in nav_users:
+            base_url = user.get("base_url")
+            username = user.get("user")
+            password = user.get("pass")
+            if not (base_url and username and password):
+                continue
+            client = NavidromeClient(base_url, username, password)
+            playlist = client.find_playlist_by_name(playlist_name)
+            if playlist and playlist.get("id") and client.delete_playlist(str(playlist["id"])):
+                logger.info("[finalise_stage] Deleted Navidrome playlist '%s'", playlist_name)
+                return
+    except Exception as exc:
+        logger.debug(
+            "[finalise_stage] Navidrome playlist delete failed for %s: %s",
+            playlist_name, exc,
+        )
+
+
 def _create_genre_top_track_playlists(prune_only: bool = False) -> int:
     """Build ``{Genre} - Top Tracks.m3u`` playlists for the whole library.
 
@@ -1395,6 +1432,9 @@ def _create_genre_top_track_playlists(prune_only: bool = False) -> int:
                 removed.add(name)
             except Exception:
                 pass
+            # The file is gone — drop the imported Navidrome playlist too so
+            # under-threshold genres don't linger in the UI.
+            _delete_genre_playlist_from_navidrome(os.path.splitext(name)[0])
 
     _save_genre_playlist_state((candidates | keep_names) - removed)
 
