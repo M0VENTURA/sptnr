@@ -27,6 +27,7 @@ from helpers.normalization_service import (
     normalize_core_title,
     normalize_core_filename,
     edition_annotations_compatible,
+    queue_duration_seconds,
 )
 
 logger = logging.getLogger(__name__)
@@ -172,6 +173,33 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
 
     if len(orphan_tokens) >= 2:
         score -= 0.3
+
+    # ------------------------------------------------------------------
+    # Duration scoring (legacy parity: graduated boosts/penalties).
+    # ------------------------------------------------------------------
+    # ``candidate_duration`` (seconds) is supplied by callers that can read a
+    # real duration off the file (e.g. the download-completion fuzzy match).
+    # Duration is strong independent evidence of track identity — an exact
+    # match confirms the right version, while a large mismatch rules out a
+    # differently-long track that happens to share a name.
+    expected_duration = queue_duration_seconds(queue_item.get("duration"))
+    candidate_duration = queue_duration_seconds(candidate_duration)
+    if expected_duration and candidate_duration:
+        duration_diff = abs(expected_duration - candidate_duration)
+        if duration_diff <= 2:
+            score += 0.22
+        elif duration_diff <= 5:
+            score += 0.12
+        elif duration_diff <= 10:
+            score -= 0.05
+        elif duration_diff <= 30:
+            score -= 0.15
+        else:
+            score -= 0.25
+    elif expected_duration and not candidate_duration:
+        # Missing/zero candidate length → moderate negative penalty so a
+        # same-named different-length track is not accepted without evidence.
+        score -= 0.15
 
     # ------------------------------------------------------------------
     # Final clamp

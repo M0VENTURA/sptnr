@@ -176,7 +176,53 @@ class SlskdService:
         except Exception:
             return None
 
-    def start_search(self, query: str, timeout: Optional[int] = None, max_attempts: int = 5) -> Optional[str]:
+    def find_active_search_by_query(self, query: str, within_seconds: int = 60) -> Optional[dict]:
+        """Return the most-recent active search whose query matches *query*.
+
+        Ported from the legacy queue processor.  Used to recover a search that
+        slskd actually started even though the HTTP response to
+        ``start_search()`` timed out or was lost — without this, a timed-out
+        POST leaves a live search running in slskd's single search slot while
+        the queue item is failed with ``no_results`` and every subsequent
+        search starts behind a 429 slot-busy wall.
+        """
+        _ACTIVE_STATES = {"None", "Queued", "Requested", "InProgress", "Initializing", "In Progress"}
+        try:
+            searches = self.list_searches(timeout=8)
+        except Exception:
+            return None
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        target = str(query or "").strip().lower()
+        matches = []
+        for s in searches or []:
+            state = str(s.get("state") or s.get("State") or "")
+            if state not in _ACTIVE_STATES:
+                continue
+            search_text = str(s.get("searchText") or s.get("query") or "").strip()
+            if target and search_text.lower() != target:
+                continue
+            started_at = s.get("startedAt") or s.get("StartedAt") or s.get("started_at")
+            if not started_at:
+                matches.append(s)
+                continue
+            try:
+                if isinstance(started_at, str):
+                    started_dt = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+                else:
+                    started_dt = started_at
+                if started_dt.tzinfo is None:
+                    started_dt = started_dt.replace(tzinfo=timezone.utc)
+                if (now - started_dt).total_seconds() <= within_seconds:
+                    matches.append(s)
+            except Exception:
+                matches.append(s)
+        if not matches:
+            return None
+        matches.sort(key=lambda s: s.get("startedAt") or s.get("StartedAt") or "", reverse=True)
+        return matches[0]
+
+    def start_search(self, query: str, timeout: Optional[int] = None, max_attempts: int = 5, recover: bool = True) -> Optional[str]:
         if not self.http.enabled:
             return None
         data = {"searchText": query, "filterResponses": False}
@@ -204,7 +250,7 @@ class SlskdService:
                     time.sleep(wait_seconds)
                     continue
                 logger.warning("slskd search start failed: %s - %s", resp.status_code, body_preview)
-                return None
+                break
             except Exception as exc:
                 # Include the exception class (ConnectTimeout vs ReadTimeout
                 # vs ConnectionRefused) and the resolved API URL so a failed
@@ -236,7 +282,29 @@ class SlskdService:
                     getattr(self.http, "base_url", "?"),
                     exc_info=True,
                 )
-                return None
+                break
+
+        # The POST may have timed out even though slskd actually started the
+        # search.  Recover the running search's ID instead of failing the item
+        # — legacy parity (``_start_slskd_search_with_recovery``).
+        if recover:
+            try:
+                recovered = self.find_active_search_by_query(query, within_seconds=60)
+                if recovered:
+                    recovered_id = (
+                        recovered.get("id")
+                        or recovered.get("searchId")
+                        or recovered.get("Id")
+                        or ""
+                    )
+                    if recovered_id:
+                        logger.info(
+                            "slskd recovered active search %s for query %r after start_search failed",
+                            recovered_id, query,
+                        )
+                        return str(recovered_id)
+            except Exception as exc:
+                logger.debug("slskd search recovery lookup failed for %r: %s", query, exc)
         return None
 
     def get_search_results(self, search_id: str, timeout: Optional[int] = None) -> tuple[list[SearchResponse], str, bool]:
@@ -334,6 +402,14 @@ class SlskdService:
             # with "no_results".
             from helpers.config_helpers import _SLSKD_SEARCH_MAX_WAIT_SECONDS
             wait_seconds = _SLSKD_SEARCH_MAX_WAIT_SECONDS
+        # Clear any terminal/stuck searches first so the single slskd search
+        # slot is free (legacy parity): a leftover "Completed" search that was
+        # never cleaned up makes the POST below return HTTP 429, and the whole
+        # 150 s wait is then spent polling a search that never started.
+        try:
+            self.clear_stale_searches(budget_seconds=6)
+        except Exception:
+            pass
         search_id = self.start_search(query, timeout=timeout)
         if not search_id:
             return []
@@ -425,6 +501,86 @@ class SlskdService:
             return payload if isinstance(payload, list) else []
         except Exception:
             return []
+
+    def clear_stale_searches(self, budget_seconds: float = 8) -> None:
+        """Cancel terminal-state (or long-running stuck) searches in slskd.
+
+        Ported from the legacy ``SlskdClient.clear_stale_searches``.  slskd
+        enforces a single concurrent search slot; a stale completed / timed-out
+        search that was never cleaned up causes every new ``start_search()`` to
+        receive HTTP 429 ("only one concurrent operation"), making searches
+        appear to time out.  Also cancels active searches older than
+        ``STUCK_SEARCH_TIMEOUT_MS``.
+
+        ``budget_seconds`` caps total wall-clock time so a large backlog of
+        entries cannot exceed the caller's request timeout.
+        """
+        _TERMINAL_STATES = {
+            "Completed, TimedOut",
+            "Completed, ResponseLimitReached",
+            "Completed, FileLimitReached",
+            "Completed, Cancelled",
+            "Completed, Errored",
+            "Completed",
+            "Succeeded",
+            "Cancelled",
+            "Errored",
+            "TimedOut",
+        }
+        deadline = time.monotonic() + max(0.1, float(budget_seconds))
+        try:
+            existing = self.list_searches(timeout=4)
+            for s in existing or []:
+                if time.monotonic() >= deadline:
+                    logger.warning("[SLSKD] Stale search cleanup budget exhausted")
+                    break
+                sid = s.get("id") or s.get("searchId") or s.get("Id")
+                state = str(s.get("state") or s.get("State") or "")
+                if not sid:
+                    continue
+
+                should_cancel = state in _TERMINAL_STATES
+                if not should_cancel and state in self.ACTIVE_STATES:
+                    started_at = s.get("startedAt") or s.get("StartedAt") or s.get("started_at")
+                    elapsed_ms = 0
+                    if started_at:
+                        try:
+                            from datetime import datetime, timezone
+                            if isinstance(started_at, str):
+                                started_dt = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+                            else:
+                                started_dt = started_at
+                            if started_dt.tzinfo is None:
+                                started_dt = started_dt.replace(tzinfo=timezone.utc)
+                            elapsed_ms = int((datetime.now(timezone.utc) - started_dt).total_seconds() * 1000)
+                        except Exception:
+                            elapsed_ms = 0
+                    if elapsed_ms > STUCK_SEARCH_TIMEOUT_MS:
+                        should_cancel = True
+                        logger.info(
+                            "[SLSKD] Cancelling stuck active search %s (state=%s, elapsed=%sms)",
+                            sid, state, elapsed_ms,
+                        )
+
+                if should_cancel:
+                    time_left = deadline - time.monotonic()
+                    if time_left <= 0:
+                        logger.warning("[SLSKD] Stale search cleanup budget exhausted")
+                        break
+                    if state in self.ACTIVE_STATES:
+                        try:
+                            self.http.put(f"searches/{sid}", timeout=max(0.5, min(2, time_left)))
+                        except Exception:
+                            pass
+                    time_left = deadline - time.monotonic()
+                    if time_left <= 0:
+                        logger.warning("[SLSKD] Stale search cleanup budget exhausted")
+                        break
+                    self.cancel_search(sid, timeout=max(0.5, min(2, time_left)))
+                    if state in _TERMINAL_STATES:
+                        logger.info("[SLSKD] Cleared stale search %s (state=%s)", sid, state)
+        except Exception as cleanup_err:
+            logger.warning("[SLSKD] Could not clear stale searches: %s", cleanup_err)
 
     def cancel_search(self, search_id: str, timeout: Optional[int] = None) -> bool:
         try:

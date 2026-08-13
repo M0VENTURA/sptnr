@@ -162,6 +162,11 @@ def _parse_filename_parts(filename: str) -> dict[str, str | None]:
 # Regex for characters slskd's tokenizer handles poorly
 _SLSKD_PROBLEMATIC_PUNCT_RE = re.compile(r"[\u2018\u2019\u201A\u201B\u2039\u203A'\u201C\u201D\u201E\u201F\u2033\u2036]")
 
+# Broad punctuation fallback for query variants: matches any character that is
+# not a word character, whitespace, or a hyphen (legacy
+# ``_strip_query_punctuation_for_slskd``).
+_SLSKD_ALL_PUNCT_RE = re.compile(r"[^\w\s-]")
+
 # Filename artifacts that must never reach a Soulseek query: file extensions,
 # internal timestamp/hash suffixes and track-number middle parts.
 _SLSKD_FILENAME_EXT_RE = re.compile(r"\.(flac|mp3|m4a|wav|aac|ogg|opus)$", re.IGNORECASE)
@@ -312,7 +317,9 @@ def _sanitize_slskd_query(query: str) -> str:
     Strips typographic quotes, file extensions (``.flac``/``.mp3``/...),
     internal timestamp/hash suffixes (``_639220150430615200``) and track-number
     middle parts (`` - 12 - ``) — a retry must never search for a raw local
-    filename, which no peer shares.
+    filename, which no peer shares.  Ampersands and their HTML/JSON encodings
+    are replaced with spaces (``A&B`` → ``A B``) since slskd treats ``&`` as a
+    query operator (legacy ``_normalize_slskd_query`` parity).
     """
     if not query:
         return query
@@ -320,6 +327,23 @@ def _sanitize_slskd_query(query: str) -> str:
     cleaned = _SLSKD_FILENAME_EXT_RE.sub("", cleaned)
     cleaned = _SLSKD_HASH_SUFFIX_RE.sub("", cleaned)
     cleaned = _SLSKD_TRACKNUM_RE.sub(" - ", cleaned)
+    cleaned = cleaned.replace("\\u0026", " ").replace("&amp;", " ").replace("&", " ")
+    return " ".join(cleaned.split())
+
+
+def _strip_all_query_punctuation_for_slskd(query: str) -> str:
+    """Aggressively strip all punctuation from a Soulseek search query.
+
+    Removes every character that is not a word character, whitespace, or a
+    hyphen — broader than ``_sanitize_slskd_query`` (which only removes quote
+    characters).  Used as a last-resort fallback variant when the primary and
+    quote-sanitized queries both return zero results: ``"Where's the Love"``
+    → ``"Wheres the Love"``, ``"AC/DC"`` → ``"ACDC"`` (legacy
+    ``_strip_query_punctuation_for_slskd`` parity).
+    """
+    if not query:
+        return query
+    cleaned = _SLSKD_ALL_PUNCT_RE.sub("", query)
     return " ".join(cleaned.split())
 
 
@@ -430,6 +454,14 @@ def _build_fallback_search_queries(item: dict, primary_query: str) -> list[str]:
     # Title only, as a last resort.
     _add(title)
 
+    # Aggressive punctuation-strip variant of the primary query (legacy
+    # ``_strip_query_punctuation_for_slskd``): "Where's the Love" →
+    # "Wheres the Love".  Some peers share filenames that Soulseek's
+    # tokenizer simply cannot match while the punctuation-free form works.
+    stripped_all = _strip_all_query_punctuation_for_slskd(query)
+    if stripped_all:
+        _add(stripped_all)
+
     return fallbacks
 
 
@@ -437,12 +469,35 @@ def _build_fallback_search_queries(item: dict, primary_query: str) -> list[str]:
 # RESULT SCORING
 # =============================================================================
 
+def _year_mismatch_rejects(filename: str, expected_year) -> bool:
+    """Return True when a bracketed year in *filename* conflicts with the queue year.
+
+    Extracts the first ``[YYYY]``/``(YYYY)`` year from the candidate path (e.g.
+    ``Artist - Album [2012]/track.mp3``) and the queue item's release year.
+    Returns True when both are present and differ by more than one year —
+    a 2024 queue item must not grab a ``[2012]`` file for the wrong release.
+    Legacy parity: ``_year_mismatch_rejects``.
+    """
+    if not expected_year:
+        return False
+    year_str = re.search(r"\d{4}", str(expected_year))
+    if not year_str:
+        return False
+    queue_year = int(year_str.group(0))
+    path_year_match = re.search(r"[\(\[]((?:19|20)\d{2})[\)\]]", str(filename or ""))
+    if not path_year_match:
+        return False
+    path_year = int(path_year_match.group(1))
+    return abs(queue_year - path_year) > 1
+
+
 def _score_result(
     result: dict[str, Any],
     expected_artist: str,
     expected_title: str,
     expected_album: str | None = None,
     expected_duration: int | None = None,
+    expected_year=None,
 ) -> float:
     """Score a single slskd search result (0–100).
 
@@ -457,6 +512,17 @@ def _score_result(
     score = 0.0
     filename = str(result.get("filename", ""))
     parts = _parse_filename_parts(filename)
+
+    # Year-mismatch guard: a candidate path carrying a bracketed year that
+    # conflicts with the queue item's release year is a hard reject — it is
+    # almost certainly a different release of the same track (e.g. a 2012
+    # recording vs a 2024 queue item).
+    if _year_mismatch_rejects(filename, expected_year):
+        logger.debug(
+            "[SLSKD_SCORE] Rejected candidate %r — year mismatch with %r",
+            filename[:180], expected_year,
+        )
+        return 0.0
 
     # Normalise the target strings: pre-sanitization-era queue rows can hold a
     # raw downloaded filename ("Artist - Album - 12 - Title_hash.flac") and an
@@ -604,13 +670,14 @@ def _select_best_result(
     expected_title: str,
     expected_album: str | None = None,
     expected_duration: int | None = None,
+    expected_year=None,
     min_score: float = 30.0,
 ) -> dict[str, Any] | None:
     """Score all results and return the best match above the threshold."""
     scored: list[tuple[float, dict]] = []
 
     for r in results:
-        s = _score_result(r, expected_artist, expected_title, expected_album, expected_duration)
+        s = _score_result(r, expected_artist, expected_title, expected_album, expected_duration, expected_year)
         scored.append((s, r))
 
     scored.sort(key=lambda pair: -pair[0])  # descending by score
@@ -672,6 +739,7 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
     expected_artist = (item.get("artist") or "").strip()
     expected_title = (item.get("title") or "").strip()
     expected_album = (item.get("album") or "").strip() or None
+    expected_year = item.get("year") or item.get("release_year")
     expected_duration = None
     if item.get("duration"):
         # Queue durations are stored in either seconds or milliseconds (the
@@ -744,6 +812,7 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
                     expected_title=expected_title,
                     expected_album=expected_album,
                     expected_duration=expected_duration,
+                    expected_year=expected_year,
                 )
                 if best:
                     used_low_quality_fallback = tier_index > 0
