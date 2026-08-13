@@ -1236,7 +1236,7 @@ def _display_genre(genre: str) -> str:
     )
 
 
-def _create_genre_top_track_playlists() -> int:
+def _create_genre_top_track_playlists(prune_only: bool = False) -> int:
     """Build ``{Genre} - Top Tracks.m3u`` playlists for the whole library.
 
     Library-wide (unlike the per-artist essential collections): every track
@@ -1259,6 +1259,11 @@ def _create_genre_top_track_playlists() -> int:
     ``playlists.genre_playlists_enabled`` and deletion by
     ``playlists.genre_playlists_delete_enabled``.  Returns the number of
     playlists written.
+
+    ``prune_only=True`` runs only the deletion check (used at app startup
+    and scan start): pools are counted so ``keep_names`` is accurate, but no
+    files are written — stale playlists below the delete threshold are still
+    removed.
     """
     from collections import defaultdict
 
@@ -1388,6 +1393,9 @@ def _create_genre_top_track_playlists() -> int:
         if qualifying_count >= delete_threshold:
             keep_names.add(file_name)
 
+        if prune_only:
+            continue
+
         if not create_enabled:
             continue
         if qualifying_count <= create_threshold:
@@ -1449,6 +1457,23 @@ def _create_genre_top_track_playlists() -> int:
     _save_genre_playlist_state((candidates | keep_names) - removed)
 
     return written
+
+
+def prune_genre_playlists_for_deletion() -> None:
+    """Delete genre playlists whose qualifying pool dropped below the delete
+    threshold — without creating or refreshing anything.
+
+    Runs at app startup and at the start of a fresh scan (in addition to the
+    scan-end finalise check) so stale files are cleaned even when no full
+    finalise pass completes.  Gated by
+    ``playlists.genre_playlists_delete_enabled``; best-effort.
+    """
+    try:
+        if not _genre_playlists_delete_enabled():
+            return
+        _create_genre_top_track_playlists(prune_only=True)
+    except Exception as exc:
+        logger.debug("[finalise_stage] Genre playlist prune failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------

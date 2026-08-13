@@ -486,9 +486,10 @@ def requeue_due_failed_items(limit: int = 50) -> List[Dict[str, Any]]:
                 {"limit": limit},
             )
             rows = [dict(r._mapping) for r in result.fetchall()]
+            _delay_default = _queue_retry_defaults()[0]
             for row in rows:
                 qid = row.get("id")
-                delay_minutes = max(1, int(row.get("retry_delay_minutes") or 30))
+                delay_minutes = max(1, int(row.get("retry_delay_minutes") or _delay_default))
                 session.execute(
                     text("""
                         UPDATE download_queue
@@ -663,31 +664,45 @@ def schedule_queue_retry(
         return None
 
 
+def _queue_retry_defaults() -> tuple[int, int]:
+    """Return ``(failure_retry_delay_minutes, max_retries)`` from ``queue.*`` config."""
+    try:
+        from helpers.config_helpers import get_config
+        q = (get_config() or {}).get("queue") or {}
+        delay = max(1, int(q.get("failure_retry_delay_minutes", 30) or 30))
+        max_retries = max(1, int(q.get("max_retries", 5) or 5))
+        return delay, max_retries
+    except Exception:
+        return 30, 5
+
+
 def mark_failed(queue_id: int, reason: str) -> Optional[Dict[str, Any]]:
     """Mark a queue item failed with a reason.
 
-    Also sets ``next_retry_at`` when unset (now + retry_delay_minutes) so the
-    automatic retry scheduler backs off instead of requeueing the item on the
-    very next worker cycle — ``requeue_due_failed_items`` treats a NULL
-    ``next_retry_at`` as immediately due, which made fresh failures churn
-    failed → queued → failed every cycle.
+    Retryable failures return to ``queued`` with ``next_retry_at`` refreshed
+    to now + retry delay — the worker only picks the item up once the retry
+    window passes, so it reads as queued in the UI instead of sitting in a
+    dead ``failed`` state.  Items that have exhausted ``max_retries`` stay
+    ``failed`` for manual retry.
     """
+    delay, max_retries = _queue_retry_defaults()
     try:
         with db_session() as session:
             session.execute(
                 text("""
                     UPDATE download_queue
-                    SET status = 'failed',
+                    SET status = CASE
+                            WHEN retry_count + 1 >= COALESCE(max_retries, :max_retries) THEN 'failed'
+                            ELSE 'queued'
+                        END,
                         failure_reason = :reason,
-                        next_retry_at = COALESCE(
-                            next_retry_at,
-                            CURRENT_TIMESTAMP
-                                + (COALESCE(retry_delay_minutes, 30) * INTERVAL '1 minute')
-                        ),
+                        retry_count = retry_count + 1,
+                        next_retry_at = CURRENT_TIMESTAMP
+                            + (COALESCE(retry_delay_minutes, :delay) * INTERVAL '1 minute'),
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = :qid
                 """),
-                {"qid": queue_id, "reason": reason},
+                {"qid": queue_id, "reason": reason, "delay": delay, "max_retries": max_retries},
             )
         return {"success": True, "id": queue_id}
     except Exception as exc:

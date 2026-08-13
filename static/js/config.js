@@ -237,7 +237,13 @@ function buildConfigObject() {
             detect_remix_tracks: getChecked('queue_detect_remix', true),
             detect_compilations: getChecked('queue_detect_compilations', true)
           }
-        )
+        ),
+        search_backoff_hours: getValue('queue_search_backoff_hours', '4, 12, 24')
+          .split(',').map(s => parseInt(s.trim(), 10))
+          .filter(n => !isNaN(n) && n > 0),
+        failure_retry_delay_minutes: parseInt(getValue('queue_failure_retry_delay_minutes', '30')) || 30,
+        max_retries: parseInt(getValue('queue_max_retries', '5')) || 5,
+        pre_release_retry_weekday: parseInt(getValue('queue_pre_release_retry_weekday', '4')) || 4
       }
     ),
     lastfm: Object.assign(

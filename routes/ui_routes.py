@@ -2589,6 +2589,12 @@ def _sanitize_config_sections(config: dict) -> dict:
     return cleaned
 
 
+@ui_bp.route("/config/sandbox")
+async def config_sandbox_route():
+    """Algorithm Sandbox: simulate weight changes against existing data."""
+    return await render_template("pages/sandbox.html")
+
+
 @ui_bp.route("/config", methods=["GET", "POST"])
 async def config_editor():
     from helpers.config_helpers import get_config, clear_config_cache
@@ -2716,28 +2722,61 @@ async def logs():
 
 
 @ui_bp.route("/help")
-@ui_bp.route("/help")
 @ui_bp.route("/help/<path:doc_name>")
 async def help_page(doc_name=None):
+    import glob
+
+    try:
+        import markdown
+    except ImportError:
+        markdown = None  # degrade to preformatted text until the dependency is installed
+
     doc_path = os.path.join(os.path.dirname(__file__), "..", "documentation")
+    doc_root = os.path.realpath(doc_path)
+
+    # Recursive listing (top-level + subfolders like Services/) so the
+    # sidebar's "All Documents" list shows everything the route can resolve.
     doc_files = []
     try:
-        doc_files = sorted(f for f in os.listdir(doc_path) if f.endswith(".md"))
+        doc_files = sorted(
+            os.path.relpath(p, doc_root).replace("\\", "/")
+            for p in glob.glob(os.path.join(doc_root, "**", "*.md"), recursive=True)
+        )
     except Exception:
         pass
+
     content = ""
     doc_title = "Help"
     # Bare /help lands on the end-user guide so the Help link never shows an
     # empty page.
-    if not doc_name and os.path.exists(os.path.join(doc_path, "USER_GUIDE.md")):
+    if not doc_name and os.path.exists(os.path.join(doc_root, "USER_GUIDE.md")):
         doc_name = "USER_GUIDE.md"
     if doc_name:
-        doc_name = os.path.basename(doc_name)
-        full_path = os.path.join(doc_path, doc_name)
-        if os.path.exists(full_path):
-            with open(full_path) as f:
-                content = f.read()
-        doc_title = doc_name.replace(".md", "").replace("_", " ").title()
+        doc_name = os.path.normpath(str(doc_name)).replace("\\", "/")
+        full_path = os.path.realpath(os.path.join(doc_root, doc_name))
+        # Path-traversal guard: the resolved file must stay inside the docs
+        # folder (a basename-only lookup would break subfolder docs).
+        if os.path.commonpath([doc_root, full_path]) != doc_root or not os.path.isfile(full_path):
+            content = (
+                "# Document Not Found\n\n"
+                f"The document **{os.path.basename(doc_name)}** does not exist in the\n"
+                "documentation folder.\n\n"
+                "- [📘 User Guide](/help/USER_GUIDE) — how the app works, scoring and settings\n"
+                "- [📖 Documentation Index](/help/README) — all available documents\n"
+            )
+        else:
+            with open(full_path, encoding="utf-8") as f:
+                md_content = f.read()
+            # Render markdown to HTML (the old system converted with the same
+            # extensions; 'toc' also generates heading ids for sidebar anchors).
+            if markdown is not None:
+                try:
+                    content = markdown.markdown(md_content, extensions=["extra", "toc"])
+                except Exception:
+                    content = "<pre>" + md_content + "</pre>"
+            else:
+                content = "<pre>" + md_content + "</pre>"
+        doc_title = os.path.basename(doc_name).replace(".md", "").replace("_", " ").title()
     return await render_template(
         "pages/help.html", content=content, doc_title=doc_title,
         doc_files=doc_files, current_doc=doc_name,

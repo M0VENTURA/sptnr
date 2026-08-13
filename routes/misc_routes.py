@@ -24,6 +24,106 @@ misc_api_bp = Blueprint("misc_api", __name__, url_prefix="/api")
 
 
 # ===========================================================================
+# ALGORITHM SANDBOX — read-only metrics for client-side weight simulation
+# ===========================================================================
+# The sandbox page fetches a flattened, lightweight track payload, then runs
+# the linear weight arithmetic locally so sliders stay frame-rate friendly.
+# Per-album median/MAD of the current raw blend are precomputed here so the
+# browser can mirror the album-relative re-map (50 + z*16.7 below the median,
+# logistic above) without shipping the whole library's distributions.
+
+_SANDBOX_MAX_TRACKS = 30000
+# Default blend used to compute the album reference distribution server-side;
+# mirrors the live popularity weights (config popularity.weights.*).
+_SANDBOX_REF_WEIGHTS = {"lf": 0.55, "lb": 0.35, "age": 0.10}
+
+
+def _median(values: list[float]) -> float:
+    ordered = sorted(values)
+    n = len(ordered)
+    if n == 0:
+        return 0.0
+    mid = n // 2
+    if n % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2.0
+
+
+@misc_api_bp.route("/sandbox/metrics")
+def api_sandbox_metrics():
+    """Flattened track metrics for the Algorithm Sandbox.
+
+    Query params: ``scope`` = ``global`` (default, capped at 30k tracks) |
+    ``recent`` (last-scanned within 14 days) | ``artist`` (requires ``artist``).
+    Each row carries the per-source raw scores, the stored final score + live
+    stars, the confirmed-single flag, and the album's median/MAD of the raw
+    blend (computed with the default weights) so the client can mirror the
+    album-relative re-map.  Nothing is written.
+    """
+    try:
+        scope = str(request.args.get("scope", "global") or "global").strip().lower()
+        artist = str(request.args.get("artist", "") or "").strip()
+
+        where = "COALESCE(final_score, 0) > 0"
+        params: dict[str, Any] = {}
+        if scope == "recent":
+            where += " AND last_scanned >= (NOW() - INTERVAL '14 days')"
+        elif scope == "artist":
+            if not artist:
+                return jsonify({"error": "artist parameter required for scope=artist"}), 400
+            where += " AND LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)"
+            params["artist"] = artist
+        elif scope != "global":
+            return jsonify({"error": "scope must be global, recent or artist"}), 400
+
+        with db_session() as session:
+            rows = session.execute(
+                text(
+                    "SELECT CAST(id AS TEXT) AS id, title, artist, album, "
+                    "COALESCE(lastfm_score, 0) AS lf, COALESCE(listenbrainz_score, 0) AS lb, "
+                    "COALESCE(age_score, 0) AS age, COALESCE(final_score, 0) AS score, "
+                    "COALESCE(stars, 0) AS stars, COALESCE(is_single, 0) AS single "
+                    f"FROM tracks WHERE {where} ORDER BY artist, album, track_number "
+                    f"LIMIT {_SANDBOX_MAX_TRACKS}"
+                ),
+                params,
+            ).fetchall()
+
+        tracks = [dict(r._mapping) for r in rows or []]
+
+        # Per-album reference distribution: raw blend with the DEFAULT weights,
+        # then median + MAD of the album's valid (>0) blends.
+        by_album: dict[str, list[float]] = {}
+        for t in tracks:
+            raw = (t.get("lf") or 0) * _SANDBOX_REF_WEIGHTS["lf"] \
+                + (t.get("lb") or 0) * _SANDBOX_REF_WEIGHTS["lb"] \
+                + (t.get("age") or 0) * _SANDBOX_REF_WEIGHTS["age"]
+            t["raw"] = round(raw, 2)
+            if raw > 0:
+                by_album.setdefault(str(t.get("album") or ""), []).append(raw)
+        for t in tracks:
+            ref = by_album.get(str(t.get("album") or "")) or []
+            if len(ref) >= 3:
+                med = _median(ref)
+                mad = _median([abs(v - med) for v in ref])
+                t["a_med"] = round(med, 2)
+                t["a_mad"] = round(mad, 2)
+            else:
+                t["a_med"] = None
+                t["a_mad"] = None
+
+        return jsonify({
+            "tracks": tracks,
+            "count": len(tracks),
+            "truncated": len(tracks) >= _SANDBOX_MAX_TRACKS,
+            "ref_weights": _SANDBOX_REF_WEIGHTS,
+        })
+    except Exception as exc:
+        logger.error("[sandbox] metrics fetch failed: %s", exc, exc_info=True)
+        return jsonify({"error": str(exc)}), 500
+
+
+# ===========================================================================
 # SEARCH
 # ===========================================================================
 @misc_api_bp.route("/search", methods=["POST"])

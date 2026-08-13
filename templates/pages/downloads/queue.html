@@ -946,6 +946,21 @@ function formatTimestamp(timestamp) {
     return date.toLocaleString();
 }
 
+/** Parse a release-date value ("YYYY-MM-DD...") into a local Date, or null. */
+function parseReleaseDate(value) {
+    if (!value) return null;
+    const m = String(value).match(/(\d{4})-(\d{2})-(\d{2})/);
+    if (!m) return null;
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+}
+
+/** Format a Date as DD/MM/YYYY. */
+function formatDayMonthYear(date) {
+    const dd = String(date.getDate()).padStart(2, '0');
+    const mm = String(date.getMonth() + 1).padStart(2, '0');
+    return `${dd}/${mm}/${date.getFullYear()}`;
+}
+
 // Soulseek result selection functions
 let currentSlskdDownloadId = null;
 
@@ -2696,6 +2711,25 @@ function renderQueueItem(item, statusColor) {
        </button>`
     : '';
 
+  // Retry-pending note: queued items inside a retry window show when the
+  // worker will pick them up again.
+  let retryNote = '';
+  if (item.status === 'queued' && item.next_retry_at) {
+    const retryAt = new Date(item.next_retry_at);
+    if (retryAt.getTime() > Date.now()) {
+      retryNote = `<small class="text-muted d-block"><i class="bi bi-hourglass-split"></i> Retrying ${retryAt.toLocaleString()}</small>`;
+    }
+  }
+
+  // Future release-date badge for pre-release albums in the queue.
+  let releaseBadge = '';
+  if (item.release_date) {
+    const releaseDate = parseReleaseDate(item.release_date);
+    if (releaseDate && releaseDate.getTime() > Date.now()) {
+      releaseBadge = `<span class="badge bg-info text-dark" title="This album has not been released yet — searches wait for the release date"><i class="bi bi-calendar-event"></i> Album Release Date ${formatDayMonthYear(releaseDate)}</span>`;
+    }
+  }
+
   return `
     <div class="list-group-item queue-item">
       <div class="d-flex justify-content-between align-items-start">
@@ -2703,6 +2737,8 @@ function renderQueueItem(item, statusColor) {
           <h6 class="mb-1">${escapeHtml(item.title)}</h6>
           <p class="text-muted small mb-1">${escapeHtml(item.artist)}${item.album ? ' · ' + escapeHtml(item.album) : ''}</p>
           ${item.search_query ? `<small class="text-muted d-block">Search: ${escapeHtml(item.search_query)}</small>` : ''}
+          ${retryNote}
+          ${releaseBadge}
           ${fileHint}
           ${progressBar}
         </div>

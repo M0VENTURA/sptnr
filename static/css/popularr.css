@@ -1331,6 +1331,19 @@ html {
     display: none;
 }
 
+/* ── Algorithm Sandbox: delta card accents ──────────────────────────────── */
+.sandbox-delta.upgrade {
+    border-color: var(--spotify-green, #1db954) !important;
+}
+
+.sandbox-delta.downgrade {
+    border-color: #e74c3c !important;
+}
+
+.sandbox-delta .score-new {
+    font-weight: 600;
+}
+
 /* ── Logs page: sticky filter bar ──────────────────────────────────────── */
 /* The page scrolls inside main; keep search + level pills pinned below the
    navbar so filters stay reachable while reading thousands of lines. */

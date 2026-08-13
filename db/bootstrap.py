@@ -339,6 +339,24 @@ def _reset_stale_scan_states() -> None:
         logging.warning("Stale scan-state reset skipped: %s", exc)
 
 
+def _prune_genre_playlists_at_boot() -> None:
+    """Delete genre playlists whose qualifying pool dropped below the delete
+    threshold (boot hygiene — mirrors the scan-end finalise check).
+
+    Runs in a daemon thread so startup is not blocked by the library-wide
+    aggregation query.  Best-effort; deletion is gated by
+    ``playlists.genre_playlists_delete_enabled``.
+    """
+    def _run() -> None:
+        try:
+            from services.popularity.stages.finalise_stage import prune_genre_playlists_for_deletion
+            prune_genre_playlists_for_deletion()
+        except Exception as exc:
+            logging.warning("Genre playlist prune skipped at boot: %s", exc)
+
+    threading.Thread(target=_run, daemon=True, name="boot-genre-playlist-prune").start()
+
+
 def init_database_and_schema() -> bool:
     # Retry a few times — Postgres may be restarting (schema bootstrap runs
     # immediately after wait_for_db, but Postgres can still be in shutdown
@@ -349,6 +367,7 @@ def init_database_and_schema() -> bool:
             if ensure_full_schema():
                 verify_all_tables_exist()
                 _reset_stale_scan_states()
+                _prune_genre_playlists_at_boot()
                 return True
         except Exception as exc:
             msg = str(exc)
@@ -385,6 +404,7 @@ def _run_deferred_startup_migrations() -> None:
         ensure_full_schema()
         verify_all_tables_exist()
         _reset_stale_scan_states()
+        _prune_genre_playlists_at_boot()
     except Exception as exc:
         logging.error("Deferred schema bootstrap failed: %s", exc, exc_info=True)
 

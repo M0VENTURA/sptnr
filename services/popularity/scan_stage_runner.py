@@ -752,6 +752,17 @@ def run_scan(
     log_unified(f"🚀 {_banner_title} ({total_albums} Album(s) Queued)")
     log_unified("=" * 80)
 
+    # ── Genre playlist deletion check (scan-start) ──────────────────────
+    # Stale genre playlists (pool dropped below the delete threshold) are
+    # cleaned even when the scan never reaches finalise (stopped early, or a
+    # mode that skips playlist generation).  Best-effort — no files are
+    # written by this pass, only deletions.
+    try:
+        from services.popularity.stages.finalise_stage import prune_genre_playlists_for_deletion
+        prune_genre_playlists_for_deletion()
+    except Exception as exc:
+        logger.debug("[scan_runner] Genre playlist prune skipped: %s", exc)
+
     albums_processed = 0
     tracks_processed = 0
     skipped_albums = 0

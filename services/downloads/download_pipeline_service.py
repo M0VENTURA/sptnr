@@ -173,15 +173,42 @@ _SLSKD_TRACKNUM_RE = re.compile(r"\s+-\s+\d{1,3}\s+-\s+")
 # =============================================================================
 
 # Escalating backoff tiers for repeated search misses: 1st → 4h, 2nd → 12h,
-# 3rd → 24h; the 4th consecutive miss abandons automatic retries entirely
-# (the item parks as failed and only a manual Retry re-queues it).
-_BACKOFF_TIER_HOURS = (4, 12, 24)
+# 3rd → 24h.  Once the miss count reaches the number of tiers, automatic
+# retries are abandoned entirely (the item parks as failed and only a manual
+# Retry re-queues it).  Configurable via ``queue.search_backoff_hours``.
+_DEFAULT_BACKOFF_TIER_HOURS = (4, 12, 24)
+
+
+def _search_backoff_hours() -> tuple[int, ...]:
+    """Search-miss backoff tiers (hours) from config (default 4/12/24)."""
+    try:
+        from helpers.config_helpers import get_config
+        raw = (get_config() or {}).get("queue", {}).get("search_backoff_hours") or []
+        tiers = tuple(
+            max(1, int(h)) for h in raw
+            if isinstance(h, (int, float))
+            or (isinstance(h, str) and str(h).strip().isdigit())
+        )
+        return tiers or _DEFAULT_BACKOFF_TIER_HOURS
+    except Exception:
+        return _DEFAULT_BACKOFF_TIER_HOURS
 
 
 def _backoff_hours_for(retry_count: int) -> int:
     """Backoff window for the current (0-based) miss count."""
-    idx = max(0, min(int(retry_count or 0), len(_BACKOFF_TIER_HOURS) - 1))
-    return _BACKOFF_TIER_HOURS[idx]
+    tiers = _search_backoff_hours()
+    idx = max(0, min(int(retry_count or 0), len(tiers) - 1))
+    return tiers[idx]
+
+
+def _pre_release_retry_weekday() -> int:
+    """Weekday (0=Mon..6=Sun) for the weekly pre-release rescan (default 4=Friday)."""
+    try:
+        from helpers.config_helpers import get_config
+        value = int((get_config() or {}).get("queue", {}).get("pre_release_retry_weekday", 4) or 4)
+        return max(0, min(6, value))
+    except Exception:
+        return 4
 
 
 def _fmt_local(dt: datetime) -> str:
@@ -192,9 +219,10 @@ def _fmt_local(dt: datetime) -> str:
         return dt.strftime("%Y-%m-%d %H:%M")
 
 
-def _next_friday_six_am(now_utc: datetime) -> datetime:
-    """Next Friday 06:00 UTC; if it is already Friday past 6am, next week."""
-    days = (4 - now_utc.weekday()) % 7
+def _next_pre_release_six_am(now_utc: datetime) -> datetime:
+    """Next configured weekday 06:00 UTC; if already that day past 6am, next week."""
+    weekday = _pre_release_retry_weekday()
+    days = (weekday - now_utc.weekday()) % 7
     if days == 0 and now_utc.hour >= 6:
         days = 7
     return (now_utc + timedelta(days=days)).replace(hour=6, minute=0, second=0, microsecond=0)
@@ -250,10 +278,12 @@ def _schedule_search_retry(queue_id: int, item: dict, reason: str) -> None:
     now_utc = datetime.now(timezone.utc)
     retry_count = int(item.get("retry_count") or 0)
     if future:
-        next_run = _next_friday_six_am(now_utc)
+        next_run = _next_pre_release_six_am(now_utc)
         status = "pending_release"
-        note = f"{reason} — pre-release, scanning Friday {_fmt_local(next_run)} local"
-    elif retry_count >= len(_BACKOFF_TIER_HOURS):
+        _weekday_names = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+        _day_name = _weekday_names[_pre_release_retry_weekday()]
+        note = f"{reason} — pre-release, scanning {_day_name} {_fmt_local(next_run)} local"
+    elif retry_count >= len(_search_backoff_hours()):
         # 4th+ consecutive miss: stop hammering Soulseek — park as failed;
         # only a manual Retry re-queues the item.
         from db.repositories.queue import mark_failed
