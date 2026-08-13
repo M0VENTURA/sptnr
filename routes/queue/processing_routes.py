@@ -365,10 +365,10 @@ def api_queue_missing_tracks():
                     continue
             queue_ids = list(dict.fromkeys(queue_ids))
 
-        # Fetch release tracks from download matching service
+        # Fetch release tracks from download matching service.  ``get_release_tracks``
+        # returns a LIST of track dicts (not a {tracks: [...]} envelope).
         from services.downloads.download_matching_service import get_release_tracks as _rel_tracks
-        release_meta = _rel_tracks(release_id=release_mbid, source="musicbrainz") or {}
-        release_tracks = release_meta.get("tracks") or []
+        release_tracks = _rel_tracks(release_id=release_mbid, source="musicbrainz") or []
 
         if not release_tracks:
             return _json_response({
@@ -440,7 +440,7 @@ def api_queue_missing_tracks():
                 "disc_number": disc_number,
                 "track_number": track_number,
                 "title": title,
-                "artist": track.get("artist") or release_meta.get("artist") or "",
+                "artist": track.get("artist") or release_tracks[0].get("artist") or "",
                 "duration": track.get("duration") or 0,
                 "recording_mbid": recording_mbid,
             })
@@ -448,8 +448,8 @@ def api_queue_missing_tracks():
         return _json_response({
             "success": True,
             "release_mbid": release_mbid,
-            "release_title": release_meta.get("release_title") or "",
-            "release_artist": release_meta.get("artist") or "",
+            "release_title": "",
+            "release_artist": release_tracks[0].get("artist") or "",
             "total_release_tracks": len(release_tracks),
             "missing_tracks": missing_tracks,
         })
@@ -492,8 +492,7 @@ async def api_queue_import_missing_tracks():
         queue_ids = list(dict.fromkeys(int(v) for v in queue_ids_raw if str(v).strip().isdigit()))
 
         from services.downloads.download_matching_service import get_release_tracks as _rel_tracks
-        release_meta = _rel_tracks(release_id=release_mbid, source="musicbrainz") or {}
-        release_tracks = release_meta.get("tracks") or []
+        release_tracks = _rel_tracks(release_id=release_mbid, source="musicbrainz") or []
         if not release_tracks:
             return _json_response({"success": False, "error": "No MusicBrainz track metadata available"}), 400
 
@@ -517,8 +516,8 @@ async def api_queue_import_missing_tracks():
                     ref_album = row_get(ref, "album", 1) or ""
                     ref_import_group = row_get(ref, "import_group", 3) or ""
 
-            release_title = release_meta.get("release_title") or ref_album
-            release_artist = release_meta.get("artist") or ""
+            release_title = ref_album
+            release_artist = release_tracks[0].get("artist") or ""
             import_group = ref_import_group or f"mbid_{release_mbid}"
 
             # Fetch candidate queue rows

@@ -1743,29 +1743,48 @@ def post_album_star_ratings(
                 track["stars"] = stars
                 total_star_ratings += 1
                 _track_score = float(track.get("popularity_score") or 0)
+                _final_score = float(track.get("final_score") or _track_score or 0)
                 _album_z = _compute_album_z(_track_score, album_scores)[0]
                 _artist_z = _compute_artist_z(_track_score, artist_scores)[0]
+                # Matched single-detection source names (Discogs, MusicBrainz,
+                # Video, Last.fm, ...) from the track's ``single_sources``.
+                _src_names: list[str] = []
+                try:
+                    _src_raw = track.get("single_sources") or ""
+                    if isinstance(_src_raw, str):
+                        _src_parsed = json.loads(_src_raw) if _src_raw.strip() else []
+                    else:
+                        _src_parsed = _src_raw
+                    _src_names = [
+                        str(s.get("source") or "").replace("_", " ")
+                        for s in (_src_parsed or [])
+                        if isinstance(s, dict) and bool(s.get("matched"))
+                    ]
+                except Exception:
+                    _src_names = []
+                _src_part = f", matched=[{', '.join(_src_names)}]" if _src_names else ""
                 # Per-track rating line at INFO so operators can verify the
                 # scoring logic end-to-end (score → z-scores → star band).
                 log_unified(
                     f"[TRACK_RESULT] {artist} - {track.get('title')} → {stars}★ "
-                    f"(score={_track_score:.1f}, album_z={_album_z:.2f}, artist_z={_artist_z:.2f}, "
+                    f"(final_score={_final_score:.1f}, album_z={_album_z:.2f}, artist_z={_artist_z:.2f}, "
                     f"single={track.get('is_single')}/{track.get('single_confidence')}"
                     + (
                         f", era={album_model.get('era')}/R={float(album_model.get('reff') or 0):.2f}"
                         if album_model.get("has_benchmark") else ""
                     )
-                    + ")"
+                    + f"{_src_part})"
                 )
                 logger.debug(
-                    "[finalise_stage] %s - %s → %d★ (score=%.1f, album_z=%.2f, artist_z=%.2f, single=%s/%s%s)",
+                    "[finalise_stage] %s - %s → %d★ (final_score=%.1f, album_z=%.2f, artist_z=%.2f, single=%s/%s%s%s)",
                     artist, track.get("title"), stars,
-                    _track_score,
+                    _final_score,
                     _album_z,
                     _artist_z,
                     track.get("is_single"), track.get("single_confidence"),
                     f", era={album_model.get('era')}/R={float(album_model.get('reff') or 0):.2f}"
                     if album_model.get("has_benchmark") else "",
+                    _src_part,
                 )
 
                 track_id = str(track.get("track_id") or "")

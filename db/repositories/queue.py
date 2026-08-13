@@ -416,7 +416,15 @@ def get_active_queue(limit: int = 200) -> List[Dict[str, Any]]:
                     SELECT *
                     FROM download_queue
                     WHERE status IN ({status_sql})
-                    ORDER BY created_at ASC
+                    ORDER BY created_at ASC,
+                             -- Album tracks are queued in one batch (same
+                             -- created_at) — keep them in track-number order
+                             -- so the queue list under an album folder shows
+                             -- the album's tracks in order instead of the
+                             -- arbitrary insert sequence.
+                             CASE WHEN NULLIF(TRIM(COALESCE(track_number, '')), '') ~ '^\\d+$'
+                                  THEN TRIM(track_number)::integer ELSE 9999 END,
+                             id ASC
                     LIMIT :limit
                 """),
                 {"limit": limit},

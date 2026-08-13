@@ -304,7 +304,18 @@ def run_full_library_scan(force: bool = False):
                 current_artist=name,
             )
 
-            run_artist_scan_pipeline(name, force=force)
+            # A single artist must never abort the whole library scan: wrap it
+            # so a failure logs, records, and the loop continues with the next
+            # artist instead of falling through to the outer ``except``.
+            try:
+                run_artist_scan_pipeline(name, force=force)
+            except Exception as exc:
+                logger.exception(
+                    "[SCAN_PIPELINE] Artist scan crashed for '%s' (continuing): %s",
+                    name,
+                    exc,
+                )
+                log_unified(f"Artist scan failed for '{name}': {exc} — continuing with next artist")
 
             save_artist_scan_checkpoint(name, checkpoint_path)
 

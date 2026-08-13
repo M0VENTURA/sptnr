@@ -11,7 +11,7 @@ from typing import Any
 from quart import Blueprint, jsonify, request, session
 
 from sqlalchemy import text
-from db.engine import db_session
+from db.engine import async_db_session, db_session
 from helpers.config_helpers import get_config
 from helpers.response_helpers import _ok, _fail
 from api_clients.musicbrainz_http import MusicBrainzHttpClient, MUSICBRAINZ_UUID_RE
@@ -23,6 +23,25 @@ logger = logging.getLogger(__name__)
 
 mb_bp = Blueprint("musicbrainz", __name__, url_prefix="/api/musicbrainz")
 _mb_client: MusicBrainzHttpClient | None = None
+
+
+def _quote_ident(identifier: str, bind: Any) -> str:
+    """Safely quote a database identifier for a dynamic SQL clause.
+
+    Request-supplied column names are quoted with the dialect's identifier
+    preparer (double-quoted + escaped), so an attacker-supplied value can
+    never break out of the identifier position and inject SQL.
+    """
+    try:
+        dialect = getattr(bind, "dialect", None)
+        return dialect.identifier_preparer.quote(str(identifier))
+    except Exception:
+        # Fall back to a conservative allow-list when the dialect is
+        # unavailable: reject anything that is not a plain identifier.
+        import re as _re
+        if _re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(identifier)):
+            return f'"{identifier}"'
+        raise ValueError(f"Invalid identifier: {identifier!r}")
 
 
 def _get_mb_client() -> MusicBrainzHttpClient:
@@ -168,9 +187,12 @@ async def api_musicbrainz_tag_update():
     if not (artist and album and title and field_name):
         return jsonify({"error": "Missing required fields"}), 400
     try:
-        with db_session() as session:
-            result = session.execute(
-                text(f"UPDATE tracks SET {field_name} = :value WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album AND title = :title"),
+        async with async_db_session() as session:
+            # ``field_name`` comes from the request body — quote the identifier
+            # via the dialect so an attacker-supplied column can never inject
+            # SQL (previously interpolated raw into the SET clause).
+            result = await session.execute(
+                text(f"UPDATE tracks SET {_quote_ident(field_name, session.get_bind())} = :value WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album AND title = :title"),
                 {"value": field_value, "artist": artist, "album": album, "title": title},
             )
         return jsonify({"success": True, "updated": result.rowcount})
@@ -203,10 +225,17 @@ async def api_musicbrainz_batch_update():
     if not (artist and album and title and tags):
         return jsonify({"error": "Missing required fields"}), 400
     try:
-        with db_session() as session:
-            set_parts = [f"{k} = :{k}" for k in tags]
-            params = {**tags, "artist": artist, "album": album, "title": title}
-            result = session.execute(
+        async with async_db_session() as session:
+            # Column names AND values both come from the request body: quote
+            # every identifier via the dialect and use generated bind names so
+            # neither the SET clause nor the parameter names can inject SQL.
+            set_parts: list[str] = []
+            params: dict[str, Any] = {"artist": artist, "album": album, "title": title}
+            for _i, (_k, _v) in enumerate(tags.items()):
+                bind = f"v{_i}"
+                set_parts.append(f"{_quote_ident(str(_k), session.get_bind())} = :{bind}")
+                params[bind] = _v
+            result = await session.execute(
                 text(f"UPDATE tracks SET {', '.join(set_parts)} WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album AND title = :title"),
                 params,
             )

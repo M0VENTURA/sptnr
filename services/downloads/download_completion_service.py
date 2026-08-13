@@ -262,8 +262,11 @@ def _fuzzy_candidates(
     downloaded files virtually always carry the artist name, and cover the
     metadata-only-match case where the filename itself is unhelpful.
 
-    Falls back to the full file list only when the item has no meaningful
-    title or artist tokens (so metadata-only matches are still found).
+    A queue item with NO meaningful title/artist tokens returns no fuzzy
+    candidates — an unscored file must never be claimable by fuzzing an
+    empty token set (that lets ANY file in the downloads tree match). Such
+    items still match via the exact-path steps (slskd localFilePath /
+    exact filename), which do not depend on tokens.
     """
     try:
         from services.queue.queue_scoring import (
@@ -272,10 +275,13 @@ def _fuzzy_candidates(
         )
         from helpers.normalization_service import normalize_artist
     except Exception:
-        return fs_files
+        return []
 
     tokens: set[str] = set(_tokenize_meaningful(normalize_core_title(item.get("title") or "")))
     tokens |= set(_tokenize_meaningful(normalize_artist(item.get("artist") or "") or ""))
+
+    if not tokens:
+        return []
 
     token_index = fs_index.get("by_token") or {}
     seen: dict[str, dict[str, Any]] = {}
@@ -285,7 +291,7 @@ def _fuzzy_candidates(
 
     if seen:
         return list(seen.values())
-    return fs_files
+    return []
 
 
 def _file_matches_queue_item(
@@ -323,6 +329,93 @@ def _file_matches_queue_item(
         logger.debug("[COMPLETE] filename match failed for %s: %s", file_path, exc)
         is_match = False
     return bool(is_match), "filename"
+
+
+def _claim_file(file_path: str, claimed_files: set[str], downloads_dir: str) -> None:
+    """Record *file_path* as claimed so no other queue item can take it."""
+    try:
+        rel = (
+            os.path.relpath(file_path, downloads_dir)
+            if downloads_dir and os.path.isabs(file_path)
+            else file_path
+        )
+        norm = _normalize_transfer_key(rel)
+        if norm:
+            claimed_files.add(norm)
+            claimed_files.add(os.path.basename(norm))
+    except Exception:
+        pass
+
+
+def _is_file_claimed(file_path: str, claimed_files: set[str], downloads_dir: str) -> bool:
+    """Return True when *file_path* is already claimed by another queue item."""
+    if not claimed_files:
+        return False
+    try:
+        rel = (
+            os.path.relpath(file_path, downloads_dir)
+            if downloads_dir and os.path.isabs(file_path)
+            else file_path
+        )
+        norm = _normalize_transfer_key(rel)
+        return bool(norm and (norm in claimed_files or os.path.basename(norm) in claimed_files))
+    except Exception:
+        return False
+
+
+def _queue_row_references_file(local_path: str, downloads_dir: str) -> bool:
+    """Return True when ANY ``download_queue`` row still references *local_path*.
+
+    Checks every status — including ``downloading`` / ``moving`` — so the
+    orphan sweep never deletes a file a queue item is still waiting on.  A
+    row can reference the same file through several spellings: the absolute
+    ``file_path``, the relative ``found_filename`` (with or without the
+    leading folder), forward/back slashes, differing case, or the bare
+    basename.  Each variant is compared against both columns.
+    """
+    from sqlalchemy import text as _text
+    from db.engine import db_session as _db_session
+
+    try:
+        variants: set[str] = set()
+        for p in (local_path, os.path.normpath(local_path), os.path.realpath(local_path)):
+            variants.add(str(p))
+            variants.add(str(p).replace("\\", "/"))
+            norm = _normalize_transfer_key(str(p))
+            if norm:
+                variants.add(norm)
+        base = os.path.basename(str(local_path))
+        if downloads_dir:
+            try:
+                rel = os.path.relpath(str(local_path), downloads_dir)
+                variants.add(rel)
+                variants.add(rel.replace("\\", "/"))
+                rel_norm = _normalize_transfer_key(rel)
+                if rel_norm:
+                    variants.add(rel_norm)
+            except Exception:
+                pass
+        variants = {v for v in variants if v}
+        if not variants:
+            return False
+        with _db_session() as session:
+            # Exact column equality across the path variants.
+            for v in variants:
+                if session.execute(
+                    _text("SELECT 1 FROM download_queue WHERE file_path = :v OR found_filename = :v LIMIT 1"),
+                    {"v": v},
+                ).fetchone():
+                    return True
+            # Basename-only match (case-insensitive) — a row storing just the
+            # filename in ``found_filename``.
+            if session.execute(
+                _text("SELECT 1 FROM download_queue WHERE LOWER(found_filename) = :b OR LOWER(file_path) = :b LIMIT 1"),
+                {"b": base.lower()},
+            ).fetchone():
+                return True
+    except Exception:
+        return True  # be safe: never delete when unsure
+    return False
 
 
 def _delete_mismatched_download(file_path: str, queue_id: int, reason: str) -> None:
@@ -974,11 +1067,15 @@ def check_completed_downloads() -> dict[str, Any]:
         except Exception as exc:
             logger.debug("[COMPLETE] Could not pre-load claimed files: %s", exc)
 
-        # 4. All items stuck in 'downloading'.
+        # 4. All items stuck in 'downloading', oldest first.  A stable order
+        # is required so the same queue item always gets first claim on a
+        # given file (e.g. the first-added track of a batch grabs the file
+        # whose basename collides) instead of whichever row the planner
+        # happens to return first.
         downloading: list[dict] = []
         try:
             with db_session() as session:
-                rows = session.execute(text("SELECT * FROM download_queue WHERE status = 'downloading'")).fetchall() or []
+                rows = session.execute(text("SELECT * FROM download_queue WHERE status = 'downloading' ORDER BY id")).fetchall() or []
                 downloading = [dict(r._mapping) for r in rows]
         except Exception as exc:
             logger.error("[COMPLETE] Could not fetch downloading items: %s", exc)
@@ -1032,17 +1129,24 @@ def check_completed_downloads() -> dict[str, Any]:
                             or slskd_completed.get(os.path.basename(found_norm))
                         )
                     if abs_path and os.path.isfile(abs_path):
-                        is_match, match_source = _file_matches_queue_item(abs_path, item)
-                        if is_match:
-                            match_found = os.path.relpath(abs_path, downloads_dir)
+                        # A file another queue item already claimed (imported,
+                        # matched, or still downloading) must not be re-matched.
+                        if _is_file_claimed(abs_path, claimed_files, downloads_dir):
+                            logger.debug("[COMPLETE] Queue %s: skipping claimed slskd-completed file: %s", queue_id, abs_path)
+                            abs_path = None
                         else:
-                            logger.info("[COMPLETE] Queue %s: rejecting slskd-completed file (metadata mismatch): %s", queue_id, abs_path)
-                            _delete_mismatched_download(abs_path, queue_id, f"metadata mismatch ({match_source})")
-                            mark_failed(queue_id, "Downloaded file did not match queue item; deleted and rescheduled")
-                            stats["failed"] += 1
-                            log_unified(f"[QUEUE] {item.get('artist') or ''} - {item.get('title') or ''} → failed: downloaded file did not match queue item (deleted + rescheduled)")
-                            _log_queue_event("failed", f"{item.get('artist') or ''} - {item.get('title') or ''} → failed: downloaded file did not match queue item (deleted + rescheduled)", queue_id)
-                            continue
+                            is_match, match_source = _file_matches_queue_item(abs_path, item)
+                            if is_match:
+                                match_found = os.path.relpath(abs_path, downloads_dir)
+                                _claim_file(abs_path, claimed_files, downloads_dir)
+                            else:
+                                logger.info("[COMPLETE] Queue %s: rejecting slskd-completed file (metadata mismatch): %s", queue_id, abs_path)
+                                _delete_mismatched_download(abs_path, queue_id, f"metadata mismatch ({match_source})")
+                                mark_failed(queue_id, "Downloaded file did not match queue item; deleted and rescheduled")
+                                stats["failed"] += 1
+                                log_unified(f"[QUEUE] {item.get('artist') or ''} - {item.get('title') or ''} → failed: downloaded file did not match queue item (deleted + rescheduled)")
+                                _log_queue_event("failed", f"{item.get('artist') or ''} - {item.get('title') or ''} → failed: downloaded file did not match queue item (deleted + rescheduled)", queue_id)
+                                continue
 
                 # 2. Exact filename match against filesystem files (indexed).
                 if match_found is None and found_fn:
@@ -1063,6 +1167,9 @@ def check_completed_downloads() -> dict[str, Any]:
                             continue
                         seen_paths.add(candidate)
                         rel = f["rel_path"].replace("\\", "/")
+                        # Claimed files (other items) are never candidates here.
+                        if _is_file_claimed(candidate, claimed_files, downloads_dir):
+                            continue
                         is_match, match_source = _file_matches_queue_item(candidate, item, rel)
                         if not is_match:
                             _delete_mismatched_download(candidate, queue_id, f"metadata mismatch for exact filename match ({match_source})")
@@ -1072,6 +1179,7 @@ def check_completed_downloads() -> dict[str, Any]:
                             break
                         match_found = f["rel_path"]
                         abs_path = candidate
+                        _claim_file(candidate, claimed_files, downloads_dir)
                         break
 
                 # 3. Fuzzy match against filesystem files (token-indexed).
@@ -1192,19 +1300,16 @@ def check_completed_downloads() -> dict[str, Any]:
                     if real in seen_orphans:
                         continue
                     seen_orphans.add(real)
-                    try:
-                        from sqlalchemy import text as _text
-                        from db.engine import db_session as _db_session
-                        with _db_session() as session:
-                            referenced = session.execute(
-                                _text(
-                                    "SELECT 1 FROM download_queue "
-                                    "WHERE file_path = :path OR found_filename = :name LIMIT 1"
-                                ),
-                                {"path": str(_local), "name": os.path.basename(str(_local))},
-                            ).fetchone() is not None
-                    except Exception:
-                        referenced = True  # be safe: never delete when unsure
+                    # A file is NEVER deleted while any queue row still
+                    # references it — including rows still marked
+                    # ``downloading``/``moving`` (a transfer that completed
+                    # but was not reconciled this cycle is still the item's
+                    # real file, not an orphan).  References are matched on
+                    # several path spellings (absolute, normalized, relative
+                    # to the downloads dir, basename) so a row pointing at
+                    # the same file via a relative/found_filename value is
+                    # still detected.
+                    referenced = _queue_row_references_file(str(_local), downloads_dir)
                     if referenced:
                         continue
                     os.remove(_local)
