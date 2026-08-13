@@ -760,7 +760,11 @@ def run_scan(
     try:
         from services.popularity.stages.finalise_stage import prune_genre_playlists_for_deletion
         prune_genre_playlists_for_deletion()
-    except Exception as exc:
+    except BaseException as exc:
+        # ``BaseException`` (not just ``Exception``) so a SystemExit /
+        # KeyboardInterrupt raised inside the playlist prune cannot kill the
+        # whole scan at startup — the prune is best-effort bookkeeping and
+        # must never prevent the scan itself from starting.
         logger.debug("[scan_runner] Genre playlist prune skipped: %s", exc)
 
     albums_processed = 0
@@ -1206,25 +1210,51 @@ def run_scan(
 
                     def _run_skip_job(job: tuple) -> dict[str, Any] | None:
                         _prepared, _tc = job
-                        return process_track(
-                            track=_prepared,
-                            track_context=_tc,
-                            album_context=_album_context,
-                            album_result=_album_result,
-                            options=_singles_options,
-                            album_lb_listens=None,
-                            artist_max_lf_listeners=0,
-                            artist_lf_context={},
-                            mb_cached_singles=mb_cached_singles,
-                            discogs_cached_singles=discogs_cached_singles,
-                            discogs_cached_promos=discogs_cached_promos,
-                            prefetched_popularity={},
-                        )
+                        try:
+                            return process_track(
+                                track=_prepared,
+                                track_context=_tc,
+                                album_context=_album_context,
+                                album_result=_album_result,
+                                options=_singles_options,
+                                album_lb_listens=None,
+                                artist_max_lf_listeners=0,
+                                artist_lf_context={},
+                                mb_cached_singles=mb_cached_singles,
+                                discogs_cached_singles=discogs_cached_singles,
+                                discogs_cached_promos=discogs_cached_promos,
+                                prefetched_popularity={},
+                            )
+                        except BaseException as _skip_exc:
+                            logger.warning(
+                                "[scan_runner] Skip singles worker crashed for '%s - %s': %s",
+                                artist, album, _skip_exc,
+                            )
+                            return None
+
+                    def _collect_skip_results(_pool: Any, _skip_futures: list[Any]) -> list[dict[str, Any] | None]:
+                        collected: list[dict[str, Any] | None] = []
+                        for _f in _skip_futures:
+                            try:
+                                collected.append(_f.result(timeout=300))
+                            except BaseException as _exc:
+                                logger.warning(
+                                    "[scan_runner] Skip singles result timed out for '%s - %s': %s",
+                                    artist, album, _exc,
+                                )
+                                collected.append(None)
+                        return collected
 
                     if _scan_threads > 1 and len(_skip_jobs) > 1:
-                        with _futures2.ThreadPoolExecutor(max_workers=_scan_threads) as _pool:
+                        _pool = _futures2.ThreadPoolExecutor(max_workers=_scan_threads)
+                        try:
                             _skip_futures = [_pool.submit(_run_skip_job, job) for job in _skip_jobs]
-                            _skip_results = [f.result() for f in _skip_futures]
+                            _skip_results = _collect_skip_results(_pool, _skip_futures)
+                        finally:
+                            try:
+                                _pool.shutdown(wait=False, cancel_futures=True)
+                            except Exception:
+                                pass
                     else:
                         _skip_results = [_run_skip_job(job) for job in _skip_jobs]
                     # Verdicts are persisted inside process_track; the result
@@ -1691,28 +1721,87 @@ def run_scan(
 
             def _run_track_job(job: tuple) -> dict[str, Any] | None:
                 _prepared, _tc, _opts, _frozen = job
-                return process_track(
-                    track=_prepared,
-                    track_context=_tc,
-                    album_context=album_context,
-                    album_result=album_result,
-                    options=_opts,
-                    album_lb_listens=album_lb_listens if album_lb_listens else None,
-                    artist_max_lf_listeners=artist_max_lf,
-                    artist_lf_context=artist_lf_context,
-                    mb_cached_singles=mb_cached_singles,
-                    discogs_cached_singles=discogs_cached_singles,
-                    discogs_cached_promos=discogs_cached_promos,
-                    prefetched_popularity=prefetched_popularity,
-                )
+                try:
+                    return process_track(
+                        track=_prepared,
+                        track_context=_tc,
+                        album_context=album_context,
+                        album_result=album_result,
+                        options=_opts,
+                        album_lb_listens=album_lb_listens if album_lb_listens else None,
+                        artist_max_lf_listeners=artist_max_lf,
+                        artist_lf_context=artist_lf_context,
+                        mb_cached_singles=mb_cached_singles,
+                        discogs_cached_singles=discogs_cached_singles,
+                        discogs_cached_promos=discogs_cached_promos,
+                        prefetched_popularity=prefetched_popularity,
+                    )
+                except BaseException as _track_exc:
+                    # A BaseException (SystemExit/KeyboardInterrupt/GeneratorExit)
+                    # raised inside a worker thread is NOT caught by the
+                    # album-level ``except Exception`` below — it would propagate
+                    # through ``f.result()`` and kill the whole scan thread
+                    # silently, stalling a full library scan at this album with
+                    # no log output.  Convert it to a logged per-track failure so
+                    # the scan continues with the next album.
+                    logger.warning(
+                        "[scan_runner] Track worker crashed for '%s - %s - %s': %s",
+                        artist, album, _prepared.get("title", "?"), _track_exc,
+                    )
+                    try:
+                        log_unified(
+                            f"[TRACK_STAGE] Track worker crashed for "
+                            f"'{_prepared.get('title', '?')}' — skipping ({_track_exc})"
+                        )
+                    except Exception:
+                        pass
+                    return None
+
+            def _collect_track_results(_pool: Any, _track_futures: list[Any]) -> list[dict[str, Any] | None]:
+                """Collect per-track results with a per-track timeout.
+
+                ``future.result(timeout=...)`` prevents a single hung worker
+                (DB connection stall, unexpected long API call) from blocking
+                the scan forever at this album — the previous bare ``result()``
+                had no timeout, so one stuck worker froze the whole full scan
+                with no further log output.
+                """
+                collected: list[dict[str, Any] | None] = []
+                for _f in _track_futures:
+                    try:
+                        collected.append(_f.result(timeout=300))
+                    except BaseException as _exc:
+                        # Includes concurrent.futures.TimeoutError AND worker
+                        # BaseExceptions — both must not kill the scan.
+                        logger.warning(
+                            "[scan_runner] Track result collection failed for '%s - %s': %s",
+                            artist, album, _exc,
+                        )
+                        try:
+                            log_unified(
+                                f"[TRACK_STAGE] Track timed out or failed for "
+                                f"'{artist} - {album}' — skipping ({_exc})"
+                            )
+                        except Exception:
+                            pass
+                        collected.append(None)
+                return collected
 
             _track_results_ordered: list[dict[str, Any] | None] = []
             if _scan_threads > 1 and len(_track_jobs) > 1:
-                with _futures.ThreadPoolExecutor(max_workers=_scan_threads) as _pool:
+                _pool = _futures.ThreadPoolExecutor(max_workers=_scan_threads)
+                try:
                     _track_futures = [_pool.submit(_run_track_job, job) for job in _track_jobs]
-                    # ``result()`` re-raises worker exceptions — the album-level
-                    # handler below catches them exactly like a synchronous call.
-                    _track_results_ordered = [f.result() for f in _track_futures]
+                    _track_results_ordered = _collect_track_results(_pool, _track_futures)
+                finally:
+                    # ``shutdown(wait=False, cancel_futures=True)`` instead of
+                    # the ``with`` context manager: a worker stuck on a network
+                    # call / DB lock must NOT block the scan forever at this
+                    # album during executor teardown.
+                    try:
+                        _pool.shutdown(wait=False, cancel_futures=True)
+                    except Exception:
+                        pass
             else:
                 _track_results_ordered = [_run_track_job(job) for job in _track_jobs]
 
@@ -1803,12 +1892,19 @@ def run_scan(
                     is_va_compilation=bool(album_context.get("is_va_compilation")),
                 )
 
-        except Exception as _album_exc:
+        except BaseException as _album_exc:
             # A failure in ANY part of one album's processing (enrichment, the
             # prefetch, a single track, cover detection, star posting) must never
             # kill the whole scan worker thread — that leaves the progress state
             # stuck as "running" and the scan "fails to resume".  Log, record a
             # failure, and move on to the next album (legacy behaviour).
+            #
+            # ``BaseException`` (not just ``Exception``) so a SystemExit /
+            # KeyboardInterrupt / GeneratorExit surfacing anywhere in an album —
+            # e.g. from a worker thread, a C extension, or ``os._exit`` in a
+            # dependency — cannot silently terminate the whole scan thread.  The
+            # scan continues with the next album; an operator who genuinely wants
+            # to stop uses the dashboard stop button (checked per album).
             logger.warning("[scan_runner] Album failed for '%s - %s': %s", artist, album, _album_exc)
             try:
                 log_unified(f"[POPULARITY] Album '{artist} - {album}' failed ({_album_exc})")
@@ -1853,7 +1949,18 @@ def run_scan(
         if _per_album_posted_keys:
             options["_per_album_posted"] = True
             options["_per_album_posted_keys"] = _per_album_posted_keys
-        finalise_scan(results=results, options=options)
+        try:
+            finalise_scan(results=results, options=options)
+        except BaseException as _finalise_exc:
+            # Finalise (star ratings, Navidrome sync, playlist generation) must
+            # never kill the scan thread after the albums are processed — the
+            # progress state would stay "running" and the scan would look stuck
+            # with no log output.  Log and let the scan mark itself complete.
+            logger.warning("[scan_runner] Finalise failed: %s", _finalise_exc)
+            try:
+                log_unified(f"[POPULARITY] Finalise step failed ({_finalise_exc})")
+            except Exception:
+                pass
 
     update(stage="complete", progress=100, message="Popularity scan complete.", processed=total_albums, total_items=total_albums)
 
