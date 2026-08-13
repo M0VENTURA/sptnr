@@ -187,11 +187,10 @@ async def api_logs_download():
     log_path = resolve_log_file_path(name)
     if not log_path or not os.path.isfile(log_path):
         return jsonify({"error": f"Log not found: {name}"}), 404
-    return await send_file(
-        log_path,
-        as_attachment=True,
-        download_name=os.path.basename(log_path),
-    )
+    # No explicit download name: send_file derives the attachment filename
+    # from the path basename, and resolve_log_file_path already constrains
+    # the file to the logs directory.
+    return await send_file(log_path, as_attachment=True)
 
 
 # =============================================================================

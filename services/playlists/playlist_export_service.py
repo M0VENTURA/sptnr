@@ -145,7 +145,11 @@ def _build_export_entries(playlist_name: str, tracks: list[dict]) -> tuple[list[
 
 
 def _export_worker(job: dict) -> None:
-    zip_path = os.path.join(tempfile.gettempdir(), f"popularr_export_{job['id']}.zip")
+    # Per-job folder so the ZIP basename is the human-friendly playlist name
+    # (send_file derives the attachment filename from the path).
+    export_dir = os.path.join(tempfile.gettempdir(), "popularr_exports", job["id"])
+    os.makedirs(export_dir, exist_ok=True)
+    zip_path = os.path.join(export_dir, f"{safe_arcname(job['name'])}.zip")
     try:
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as archive:
             total = len(job["entries"])

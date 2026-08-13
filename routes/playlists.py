@@ -1093,15 +1093,12 @@ def api_playlists_export_status(job_id: str):
 @playlists_bp.route("/api/playlists/export/download/<job_id>")
 async def api_playlists_export_download(job_id: str):
     """Serve the finished ZIP archive for a completed export job."""
-    from services.playlists.playlist_export_service import get_export_job, safe_arcname
+    from services.playlists.playlist_export_service import get_export_job
     job = get_export_job(str(job_id))
     if not job or job.get("status") != "done" or not job.get("zip_path"):
         return jsonify({"error": "Export not ready"}), 404
-    return await send_file(
-        job["zip_path"],
-        as_attachment=True,
-        download_name=f"{safe_arcname(job.get('name') or 'Playlist')}.zip",
-    )
+    # Attachment filename comes from the path basename (the playlist name).
+    return await send_file(job["zip_path"], as_attachment=True)
 
 
 @playlists_bp.route("/api/playlists/rename", methods=["POST"])

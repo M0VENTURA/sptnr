@@ -143,6 +143,10 @@ function collectFeatureFieldOverrides() {
   return overrides;
 }
 
+// Features keys inherited from the old system — hidden from the UI and
+// dropped from the saved config so they stop accumulating in config.yaml.
+const LEGACY_FEATURE_KEYS = ['dry_run', 'sync', 'force', 'verbose', 'perpetual', 'batchrate', 'full_scan', 'auto_boot_navidrome_scan', 'artist'];
+
 function buildConfigObject() {
   function getValue(id, defaultValue) {
     const el = document.getElementById(id);
@@ -174,7 +178,7 @@ function buildConfigObject() {
     }
   });
 
-  return {
+  const config = {
     navidrome_users: navidrome_users,
     matching: Object.assign(
       {},
@@ -469,6 +473,11 @@ function buildConfigObject() {
       genre_format: getValue('essentia_genre_format', 'parent_child')
     }
   };
+
+  // Legacy feature keys have no readers in the current codebase — never
+  // persist them (they were previously re-saved from pageConfig on every save).
+  LEGACY_FEATURE_KEYS.forEach(key => delete config.features[key]);
+  return config;
 }
 
 // ===== FILE NAME FORMAT PREVIEW =====
@@ -883,52 +892,6 @@ function updateUserTitle(displayNameInput) {
   if (!userCard) return;
   const displayValue = userCard.querySelector('.user-display-value');
   if (displayValue) displayValue.textContent = displayNameInput.value.trim() || 'New User';
-}
-
-// ===== FEATURES & WEIGHTS =====
-
-function saveFeaturesWeights() {
-  const config = buildConfigObject();
-  // buildConfigObject already merges the card's .feature-field inputs (via
-  // collectFeatureFieldOverrides) — this is a no-op safety net for future
-  // fields rendered outside the form.
-  Object.assign(config.features, collectFeatureFieldOverrides());
-
-  const saveBtn = document.getElementById('saveFeaturesBtn');
-  if (!saveBtn) {
-    showToast('Error', 'Save Features button not found', 'error');
-    return;
-  }
-  saveBtn.disabled = true;
-  const originalText = saveBtn.textContent;
-  saveBtn.textContent = 'Saving...';
-
-  fetch('/config/save-json', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(config)
-  })
-  .then(r => r.json())
-  .then(resp => {
-    if (resp.success) {
-      const changed = summarizeChangedSections(config, window.pageConfig);
-      const summary = changed.length
-        ? 'Features saved — updated: ' + changed.join(', ')
-        : 'Features saved (no sections changed)';
-      showToast('Success', summary, 'success');
-      window.pageConfig = config;
-      setTimeout(() => location.reload(), 1000);
-    } else {
-      showToast('Error', resp.error || 'Unknown error', 'error');
-    }
-  })
-  .catch(err => {
-    showToast('Error', 'Network error: ' + err.message, 'error');
-  })
-  .finally(() => {
-    saveBtn.disabled = false;
-    saveBtn.textContent = originalText;
-  });
 }
 
 // ===== ESSENTIA =====

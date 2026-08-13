@@ -452,5 +452,22 @@ async def _generate_queue_log():
 
 
 async def _build_download_response(path, log_type):
+    """Serve a log file as a timestamped ``.txt`` download.
+
+    Copies to a temp export path so the attachment filename is friendly
+    without relying on version-specific ``send_file`` parameters
+    (``download_name`` vs ``attachment_filename``).
+    """
+    import shutil
+    import tempfile
+
     filename = f"{log_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-    return await send_file(path, as_attachment=True, download_name=filename, mimetype="text/plain")
+    export_dir = os.path.join(tempfile.gettempdir(), "popularr_log_exports")
+    try:
+        os.makedirs(export_dir, exist_ok=True)
+        export_path = os.path.join(export_dir, filename)
+        shutil.copyfile(path, export_path)
+    except OSError:
+        # Fallback: serve the original file (attachment name = path basename).
+        return await send_file(path, as_attachment=True, mimetype="text/plain")
+    return await send_file(export_path, as_attachment=True, mimetype="text/plain")
