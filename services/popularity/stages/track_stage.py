@@ -189,11 +189,16 @@ def _strip_album_type_columns(
     return result
 
 
-# "Low listener count" floor for the single-detection secondary lookup: a
-# medium-confidence single whose RELEASE recording sits below the 25-listen
-# credibility floor may be checked against other releases of the song (the
-# real popularity usually sits on the single version's recording).
-LOW_LISTENER_COUNT_THRESHOLD = 25
+# Secondary cross-release ListenBrainz lookup trigger: the pinned release
+# recording's LB count looks fragmented when it sits far below the track's
+# Last.fm audience (LB coverage typically tracks LF).  Fires regardless of
+# single-confidence tier — HIGH singles suffer the same split-MBID
+# fragmentation (e.g. "Poison": 1.04M LF / 0 LB).  The aggregation costs a
+# MusicBrainz recording search per track, so only tracks with a real
+# Last.fm audience qualify; the 5% ratio subsumes any absolute floor for
+# that audience size.
+LB_SECONDARY_MIN_LF_LISTENERS = 5000
+LB_SECONDARY_LF_RATIO = 0.05
 
 
 def _score_track_popularity(
@@ -1133,17 +1138,21 @@ def process_track(
                 # ── Secondary cross-release ListenBrainz lookup ─────────
                 # The album-first release lookup pins each track to THIS
                 # release's recording, so a re-released song keeps its own
-                # listen count.  The one sanctioned exception: a MEDIUM-
-                # confidence single whose release recording has a LOW listen
-                # count — its real popularity usually sits on the single
-                # version's recording (or other split MBIDs).  Only single
-                # detection may trigger this secondary search across other
-                # releases; regular album tracks never aggregate other
-                # releases' counts.
+                # listen count.  When that recording carries far fewer LB
+                # listens than the track's Last.fm audience implies, the
+                # real popularity usually sits on OTHER recordings of the
+                # same song (single version, Greatest Hits, remaster).
+                # Triggered by the proportionality gap — not the single-
+                # confidence tier — so HIGH singles with fragmented MBIDs
+                # get the same cross-release aggregation as MEDIUM ones.
+                # Still scoped to single-detected tracks; regular album
+                # tracks never aggregate other releases' counts.
+                _lf_listeners = int(lastfm_listeners or 0)
+                _lb_listens = int(listenbrainz_listens or 0)
                 _lb_secondary_boosted = False
                 if (
-                    str(sd_result.get("confidence", "low") or "low") == "medium"
-                    and int(listenbrainz_listens or 0) < LOW_LISTENER_COUNT_THRESHOLD
+                    _lf_listeners >= LB_SECONDARY_MIN_LF_LISTENERS
+                    and _lb_listens < _lf_listeners * LB_SECONDARY_LF_RATIO
                     and sd_title and sd_artist
                 ):
                     try:
