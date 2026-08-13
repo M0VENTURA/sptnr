@@ -2716,6 +2716,7 @@ async def logs():
 
 
 @ui_bp.route("/help")
+@ui_bp.route("/help")
 @ui_bp.route("/help/<path:doc_name>")
 async def help_page(doc_name=None):
     doc_path = os.path.join(os.path.dirname(__file__), "..", "documentation")
@@ -2726,6 +2727,10 @@ async def help_page(doc_name=None):
         pass
     content = ""
     doc_title = "Help"
+    # Bare /help lands on the end-user guide so the Help link never shows an
+    # empty page.
+    if not doc_name and os.path.exists(os.path.join(doc_path, "USER_GUIDE.md")):
+        doc_name = "USER_GUIDE.md"
     if doc_name:
         doc_name = os.path.basename(doc_name)
         full_path = os.path.join(doc_path, doc_name)
