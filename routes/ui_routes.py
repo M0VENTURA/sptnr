@@ -1238,6 +1238,18 @@ def _coerce_track_numerics(track: dict[str, Any]) -> dict[str, Any]:
     return track
 
 
+def _values_equal(a: Any, b: Any) -> bool:
+    """Compare a DB value and an incoming form/API value loosely.
+
+    ``None`` and the empty string are treated as equivalent so that forms
+    which always submit every field (e.g. ``album_artist`` left blank) never
+    count as a change when the stored value is already empty.
+    """
+    a = "" if a is None else str(a).strip()
+    b = "" if b is None else str(b).strip()
+    return a == b
+
+
 @ui_bp.route("/album/<path:artist>/<path:album>", methods=["GET", "POST"])
 async def album_detail(artist: str, album: str):
     artist_name = unquote(artist or "").strip()
@@ -2319,6 +2331,12 @@ async def track_detail(track_id: str):
                     # push the same values to every other track on the album
                     # so a per-track edit can never split one release into
                     # two albums.
+                    #
+                    # Only fields whose value really changed are propagated,
+                    # and propagation only touches sibling tracks that still
+                    # hold the old value, so a single-track edit (e.g. fixing
+                    # one bonus track's year) can't clobber a different
+                    # edition/release that merely shares the album name.
                     album_scoped_fields = {
                         "album", "album_artist", "year",
                         "musicbrainz_albumid", "musicbrainz_album_mbid",
@@ -2330,31 +2348,52 @@ async def track_detail(track_id: str):
                     }
                     if album_updates and update_values.get("album"):
                         try:
-                            album_set_clause = ", ".join(
-                                f"{quote_identifier(k)} = :{k}" for k in album_updates
-                            )
-                            album_params = {
-                                **album_updates,
-                                "id": str(track_id),
-                                "old_album": track.get("album"),
-                                "old_album_artist": (
-                                    track.get("album_artist")
-                                    or track.get("albumartist")
-                                    or track.get("artist")
-                                    or ""
-                                ),
-                            }
-                            album_result = db.execute(
-                                text(f"""
-                                    UPDATE tracks
-                                    SET {album_set_clause}
-                                    WHERE CAST(id AS TEXT) <> :id
-                                      AND album = :old_album
-                                      AND COALESCE(NULLIF(album_artist, ''), artist) = :old_album_artist
-                                """),
-                                album_params,
-                            )
-                            album_tracks_updated = album_result.rowcount or 0
+                            raw_row = dict(row._mapping)
+                            old_album = raw_row.get("album")
+                            if old_album:
+                                changed = {
+                                    k: v for k, v in album_updates.items()
+                                    if not _values_equal(v, raw_row.get(k))
+                                }
+                                if changed:
+                                    album_set_clause = ", ".join(
+                                        f"{quote_identifier(k)} = :{k}" for k in changed
+                                    )
+                                    album_params = {
+                                        **changed,
+                                        "id": str(track_id),
+                                        "old_album": old_album,
+                                        "old_album_artist": (
+                                            raw_row.get("album_artist")
+                                            or raw_row.get("artist")
+                                            or ""
+                                        ),
+                                    }
+                                    album_conditions = [
+                                        "CAST(id AS TEXT) <> :id",
+                                        "album = :old_album",
+                                        "COALESCE(NULLIF(album_artist, ''), artist) = :old_album_artist",
+                                    ]
+                                    for k in changed:
+                                        if k in ("album", "album_artist"):
+                                            continue
+                                        old = raw_row.get(k)
+                                        album_params[f"old_{k}"] = (
+                                            "" if old is None else str(old)
+                                        )
+                                        album_conditions.append(
+                                            f"COALESCE(NULLIF({k}::text, ''), '') = :old_{k}"
+                                        )
+                                    album_result = db.execute(
+                                        text(
+                                            "UPDATE tracks SET "
+                                            + album_set_clause
+                                            + " WHERE "
+                                            + " AND ".join(album_conditions)
+                                        ),
+                                        album_params,
+                                    )
+                                    album_tracks_updated = album_result.rowcount or 0
                         except Exception as album_err:
                             logger.debug(
                                 "Album-scoped propagation failed for %s: %s",

@@ -47,6 +47,18 @@ def _parse_flag_bool(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on", "checked"}
 
 
+def _values_equal(a: Any, b: Any) -> bool:
+    """Compare a DB value and an incoming API value loosely.
+
+    ``None`` and the empty string are treated as equivalent so that forms
+    which always submit every field (e.g. ``album_artist: null``) never count
+    as a change when the stored value is already empty.
+    """
+    a = "" if a is None else str(a).strip()
+    b = "" if b is None else str(b).strip()
+    return a == b
+
+
 def _get_track_column_types(session) -> dict[str, str]:
     """Return tracks column name -> normalized data type."""
     try:
@@ -295,9 +307,19 @@ async def api_track_update_metadata():
             updates = _normalize_track_updates(updates, _get_track_column_types(session))
 
             # Album-scoped fields describe the release as a whole. When they
-            # change for one track, push the same values to every other track
-            # on the album so a per-track edit can never split one release
-            # into two albums. Set ``apply_to_album: false`` to opt out.
+            # actually change for one track, push the same values to the other
+            # tracks on the album so a per-track edit can never split one
+            # release into two albums. Set ``apply_to_album: false`` to opt out.
+            #
+            # Two guards keep a single-track edit from clobbering sibling
+            # tracks:
+            #   1. Only fields whose value really changed are propagated — the
+            #      edit modals submit every field, so an unchanged album/year
+            #      must not be re-written onto the rest of the album.
+            #   2. Propagation only touches sibling tracks that still hold the
+            #      old value of the changed field, so e.g. fixing one bonus
+            #      track's year never rewrites a different edition/release
+            #      that merely shares the album name.
             album_scoped_fields = {
                 "album", "album_artist", "year",
                 "musicbrainz_albumid", "musicbrainz_albumartistid",
@@ -310,34 +332,55 @@ async def api_track_update_metadata():
             }
             if apply_to_album and album_updates:
                 try:
-                    current = session.execute(
-                        text("""
-                            SELECT album, COALESCE(NULLIF(album_artist, ''), artist) AS album_artist
-                            FROM tracks
-                            WHERE CAST(id AS TEXT) = :id
-                        """),
+                    current_row = session.execute(
+                        text("SELECT * FROM tracks WHERE CAST(id AS TEXT) = :id"),
                         {"id": track_id},
                     ).fetchone()
-                    if current and current[0]:
-                        set_clause = ", ".join(
-                            f"{k} = :{k}" for k in album_updates
-                        )
-                        result = session.execute(
-                            text(f"""
-                                UPDATE tracks
-                                SET {set_clause}
-                                WHERE CAST(id AS TEXT) <> :id
-                                  AND album = :old_album
-                                  AND COALESCE(NULLIF(album_artist, ''), artist) = :old_album_artist
-                            """),
-                            {
-                                **album_updates,
+                    current = dict(current_row._mapping) if current_row else {}
+                    old_album = current.get("album")
+                    if old_album:
+                        changed = {
+                            k: v for k, v in album_updates.items()
+                            if not _values_equal(v, current.get(k))
+                        }
+                        if changed:
+                            old_album_artist = (
+                                current.get("album_artist")
+                                or current.get("artist")
+                                or ""
+                            )
+                            set_clause = ", ".join(
+                                f"{k} = :{k}" for k in changed
+                            )
+                            conditions = [
+                                "CAST(id AS TEXT) <> :id",
+                                "album = :old_album",
+                                "COALESCE(NULLIF(album_artist, ''), artist) = :old_album_artist",
+                            ]
+                            params = {
+                                **changed,
                                 "id": track_id,
-                                "old_album": current[0],
-                                "old_album_artist": current[1],
-                            },
-                        )
-                        album_tracks_updated = result.rowcount or 0
+                                "old_album": old_album,
+                                "old_album_artist": old_album_artist,
+                            }
+                            for k, v in changed.items():
+                                if k in ("album", "album_artist"):
+                                    continue
+                                old = current.get(k)
+                                params[f"old_{k}"] = "" if old is None else str(old)
+                                conditions.append(
+                                    f"COALESCE(NULLIF({k}::text, ''), '') = :old_{k}"
+                                )
+                            result = session.execute(
+                                text(
+                                    "UPDATE tracks SET "
+                                    + set_clause
+                                    + " WHERE "
+                                    + " AND ".join(conditions)
+                                ),
+                                params,
+                            )
+                            album_tracks_updated = result.rowcount or 0
                 except Exception as album_err:
                     logger.warning(
                         "Album-scoped propagation failed for %s: %s",
