@@ -7,6 +7,7 @@ Welcome to the Popularr documentation repository. This folder contains comprehen
 ```
 documentation/
 ├── README.md                          # This file - Master index
+├── USER_GUIDE.md                      # 📘 End-user guide (how the app works, scoring, settings)
 ├── POPULARR_ARCHITECTURE.md           # System architecture overview
 ├── Services/                          # Services layer documentation
 │   ├── README.md                      # Services documentation index
