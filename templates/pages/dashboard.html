@@ -127,7 +127,7 @@
                             <tr>
                                 <td class="text-truncate" style="max-width: 160px;" title="{{ al.artist }}">{{ al.artist }}</td>
                                 <td class="text-truncate" style="max-width: 220px;" title="{{ al.album }}">
-                                    <a href="{{ url_for('ui.album_detail', artist=al.artist, album=al.album) }}" class="text-decoration-none">
+                                    <a href="{{ url_for('ui.album_detail', album_path=al.artist ~ '/' ~ al.album) }}" class="text-decoration-none">
                                         {{ al.album }}
                                         {% if al.album_type %}<span class="badge bg-secondary-subtle text-secondary-emphasis ms-1">{{ al.album_type }}</span>{% endif %}
                                     </a>
