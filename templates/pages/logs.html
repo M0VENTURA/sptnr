@@ -19,24 +19,26 @@
                 </select>
             </div>
             <div class="col-auto">
-                <button id="refreshLogBtn" class="btn btn-primary btn-sm" title="Reload the log tail"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+                <button id="streamLogBtn" class="btn btn-success btn-sm" title="Stream new log lines live (SSE)"><i class="bi bi-broadcast"></i> <span id="streamLogLabel">Live Stream</span></button>
             </div>
             <div class="col-auto">
-                <button id="streamLogBtn" class="btn btn-outline-success btn-sm" title="Stream new log lines live (SSE)"><i class="bi bi-broadcast"></i> <span id="streamLogLabel">Live Stream</span></button>
-            </div>
-            <div class="col-auto">
-                <button id="downloadLogBtn" class="btn btn-outline-info btn-sm" title="Download the raw log file"><i class="bi bi-download"></i> Download</button>
-            </div>
-            <div class="col-auto">
-                <button id="copyLogBtn" class="btn btn-outline-secondary btn-sm" title="Copy the displayed log contents"><i class="bi bi-clipboard"></i> Copy</button>
-            </div>
-            <div class="col-auto">
-                <button id="clearLogBtn" class="btn btn-warning btn-sm"><i class="bi bi-trash"></i> Clear</button>
+                <div class="dropdown">
+                    <button class="btn btn-outline-secondary btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" title="More log actions">
+                        <i class="bi bi-three-dots-vertical"></i>
+                    </button>
+                    <ul class="dropdown-menu dropdown-menu-end dropdown-menu-dark">
+                        <li><button type="button" class="dropdown-item" id="refreshLogBtn" data-bs-dismiss="dropdown"><i class="bi bi-arrow-clockwise me-2"></i>Refresh</button></li>
+                        <li><button type="button" class="dropdown-item" id="downloadLogBtn" data-bs-dismiss="dropdown"><i class="bi bi-download me-2"></i>Download</button></li>
+                        <li><button type="button" class="dropdown-item" id="copyLogBtn" data-bs-dismiss="dropdown"><i class="bi bi-clipboard me-2"></i>Copy</button></li>
+                        <li><hr class="dropdown-divider"></li>
+                        <li><button type="button" class="dropdown-item text-danger" id="clearLogBtn" data-bs-dismiss="dropdown"><i class="bi bi-trash me-2"></i>Clear</button></li>
+                    </ul>
+                </div>
             </div>
         </div>
     </div>
 
-    <div class="mb-2 d-flex flex-wrap gap-2 align-items-center">
+    <div class="mb-2 d-flex flex-wrap gap-2 align-items-center" id="logFilterRow">
         <div class="input-group input-group-sm" style="max-width: 360px;">
             <span class="input-group-text"><i class="bi bi-search"></i></span>
             <input type="text" id="logFilterInput" class="form-control" placeholder="Filter log output... (e.g. Soilwork, ISRC)" autocomplete="off">
@@ -55,16 +57,12 @@
     </div>
 
     <div class="card">
-        <div class="card-header d-flex justify-content-between align-items-center py-2 px-3">
-            <span class="fw-semibold"><i class="bi bi-terminal"></i> <span id="currentLogLabel">{{ log_files[0].name if log_files else 'No logs' }}</span></span>
-            <div id="tailBanner" class="d-none align-items-center gap-2 flex-wrap">
-                <span id="tailBannerText" class="small text-muted"></span>
-                <button type="button" id="loadFullLogBtn" class="btn btn-sm btn-outline-primary"><i class="bi bi-arrow-down-up"></i> Load Entire Log</button>
-                <button type="button" id="downloadRawBtn" class="btn btn-sm btn-outline-info"><i class="bi bi-download"></i> Download Raw</button>
-            </div>
+        <div class="card-header d-flex justify-content-between align-items-center gap-2 py-1 px-3">
+            <span id="tailBannerText" class="small text-muted text-truncate d-none"></span>
+            <button type="button" id="loadFullLogBtn" class="btn btn-sm btn-outline-secondary flex-shrink-0" title="Load the entire log file" style="padding: 0.1rem 0.45rem;"><i class="bi bi-arrow-down-up"></i></button>
         </div>
         <div class="card-body p-2">
-            <div id="logOutput" class="bg-dark text-light p-3 mb-0" style="height: 600px; overflow-y: scroll; font-family: 'Consolas', 'Courier New', monospace; font-size: 12px; line-height: 1.45; white-space: pre; word-wrap: normal;"></div>
+            <div id="logOutput" class="bg-dark text-light p-3 mb-0" style="height: calc(100dvh - 360px); min-height: 280px; overflow-y: scroll; font-family: 'Consolas', 'Courier New', monospace; font-size: 12px; line-height: 1.45; white-space: pre; word-wrap: normal;"></div>
         </div>
     </div>
 </div>
@@ -73,7 +71,6 @@
 (function () {
     var logOutput = document.getElementById('logOutput');
     var logSelector = document.getElementById('logSelector');
-    var currentLogLabel = document.getElementById('currentLogLabel');
     var refreshBtn = document.getElementById('refreshLogBtn');
     var streamBtn = document.getElementById('streamLogBtn');
     var downloadBtn = document.getElementById('downloadLogBtn');
@@ -81,7 +78,6 @@
     var clearBtn = document.getElementById('clearLogBtn');
     var wrapCheck = document.getElementById('wrapLinesCheck');
     var filterInput = document.getElementById('logFilterInput');
-    var tailBanner = document.getElementById('tailBanner');
     var tailBannerText = document.getElementById('tailBannerText');
 
     var rawLines = [];          // full raw lines of the current view
@@ -172,8 +168,7 @@
         var selected = logSelector.options[logSelector.selectedIndex];
         if (!selected) return;
         var name = selected.value;
-        currentLogLabel.textContent = name;
-        tailBanner.classList.add('d-none');
+        tailBannerText.classList.add('d-none');
         logOutput.innerHTML = '<div class="text-muted small p-2">Loading...</div>';
         fetch('/api/log-file?name=' + encodeURIComponent(name) + '&lines=' + linesFor(name, opts))
             .then(function (r) {
@@ -192,13 +187,11 @@
                 rawLines = (data && data.lines) || [];
                 loadingAll = opts.all || data.truncated === false;
                 if (data.truncated && !opts.all) {
-                    tailBannerText.textContent = 'Showing last ' + rawLines.length + ' lines of ' + name +
-                        (data.total_lines ? ' (' + data.total_lines.toLocaleString() + ' total)' : '') + '.';
-                    tailBanner.classList.remove('d-none');
-                    tailBanner.classList.add('d-flex');
+                    tailBannerText.textContent = 'Viewing ' + rawLines.length.toLocaleString() +
+                        ' / ' + (data.total_lines ? data.total_lines.toLocaleString() : '?') + ' lines';
+                    tailBannerText.classList.remove('d-none');
                 } else {
-                    tailBanner.classList.add('d-none');
-                    tailBanner.classList.remove('d-flex');
+                    tailBannerText.classList.add('d-none');
                 }
                 render();
                 scrollToBottom();
@@ -229,7 +222,7 @@
         streamSource.addEventListener('error', function () {
             // EventSource reconnects automatically; nothing to do here.
         });
-        streamBtn.classList.remove('btn-outline-success');
+        streamBtn.classList.remove('btn-success');
         streamBtn.classList.add('btn-danger');
         document.getElementById('streamLogLabel').textContent = 'Stop';
         refreshBtn.disabled = true;
@@ -237,7 +230,7 @@
 
     function stopStream() {
         if (streamSource) { streamSource.close(); streamSource = null; }
-        streamBtn.classList.add('btn-outline-success');
+        streamBtn.classList.add('btn-success');
         streamBtn.classList.remove('btn-danger');
         document.getElementById('streamLogLabel').textContent = 'Live Stream';
         refreshBtn.disabled = false;
@@ -297,14 +290,8 @@
     // "Load Entire Log" — full-history reload (banner button).
     document.getElementById('loadFullLogBtn')?.addEventListener('click', function () {
         loadingAll = true;
-        tailBanner.classList.add('d-none');
-        tailBanner.classList.remove('d-flex');
+        tailBannerText.classList.add('d-none');
         loadLog({ all: true });
-    });
-    document.getElementById('downloadRawBtn')?.addEventListener('click', function () {
-        var selected = logSelector.options[logSelector.selectedIndex];
-        if (!selected) return;
-        window.location = '/api/logs/download?name=' + encodeURIComponent(selected.value);
     });
 
     logSelector.addEventListener('change', function () {

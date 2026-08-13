@@ -1071,8 +1071,8 @@ def run_scan(
             f"({len(tracks or [])} Tracks)"
         )
 
-        # ── Per-artist singles-title caches (loaded early so the skip path
-        #    can also run singles detection) ───────────────────────────────
+        # ── Per-artist singles-title caches (loaded once per artist and
+        #    reused across every album of that artist) ────────────────────
         _is_compilation_artist = artist.lower() in (
             "various artists", "various artists -", "various",
             "compilation", "soundtrack"
@@ -1118,93 +1118,19 @@ def run_scan(
             skipped_albums += 1
             # Skipped albums still get a lightweight album-type pass so the
             # combined scan (re)sets album types even when the per-track
-            # popularity work is skipped (legacy parity). Reuses stored
-            # verdicts; only albums missing a type hit MusicBrainz.
+            # popularity work is skipped.  Reuses stored verdicts; only
+            # albums missing a type hit MusicBrainz.
             try:
                 from services.popularity.stages.album_stage import ensure_album_type
                 _detected_type = ensure_album_type(album_row, options)
             except Exception as exc:
                 logger.debug("[scan_runner] Album type ensure failed for %s - %s: %s", artist, album, exc)
                 _detected_type = None
-
-            # Singles detection still runs for the album (legacy parity):
-            # skipping the popularity re-fetch must not suppress the per-album
-            # singles output.  A singles-only pass is run so results are
-            # emitted after each album even when the album is otherwise up to
-            # date.
-            if not metadata_only and not popularity_only:
-                try:
-                    _album_context, _track_contexts = prepare_tracks_for_album(
-                        artist=artist,
-                        album=album,
-                        tracks=tracks,
-                        album_artist=album_row.get("album_artist"),
-                        spotify_album_type=album_row.get("spotify_album_type"),
-                        musicbrainz_album_type=album_row.get("musicbrainz_album_type"),
-                    )
-                    _refresh_album_live_context(
-                        album,
-                        _album_context,
-                        _track_contexts,
-                        _detected_type or "",
-                    )
-                    _album_result = {
-                        "album_row": album_row,
-                        "album_context": _album_context,
-                        "detected_album_type": _detected_type or "",
-                        "is_heterogeneous": False,
-                    }
-                    _singles_options = dict(options)
-                    _singles_options["singles_detection_only"] = True
-                    # Skipped-album singles pass: same bounded pool as the main
-                    # per-track loop (singles detection makes real API calls).
-                    import concurrent.futures as _futures2
-                    _skip_jobs = [
-                        (apply_context_fields_to_track(_tc), _tc)
-                        for _tc in _track_contexts
-                    ]
-
-                    def _run_skip_job(job: tuple) -> dict[str, Any] | None:
-                        _prepared, _tc = job
-                        return process_track(
-                            track=_prepared,
-                            track_context=_tc,
-                            album_context=_album_context,
-                            album_result=_album_result,
-                            options=_singles_options,
-                            album_lb_listens=None,
-                            artist_max_lf_listeners=0,
-                            artist_lf_context={},
-                            mb_cached_singles=mb_cached_singles,
-                            discogs_cached_singles=discogs_cached_singles,
-                            discogs_cached_promos=discogs_cached_promos,
-                            prefetched_popularity={},
-                        )
-
-                    if _scan_threads > 1 and len(_skip_jobs) > 1:
-                        with _futures2.ThreadPoolExecutor(max_workers=_scan_threads) as _pool:
-                            _skip_futures = [_pool.submit(_run_skip_job, job) for job in _skip_jobs]
-                            _skip_results = [f.result() for f in _skip_futures]
-                    else:
-                        _skip_results = [_run_skip_job(job) for job in _skip_jobs]
-                    for _tr in _skip_results:
-                        if _tr is not None:
-                            results.append(_tr)
-                            tracks_processed += 1
-                    # Post this (skipped) album's star ratings right away so the
-                    # per-album "Star Ratings - Album ..." summary appears as the
-                    # scan passes it (legacy parity), carrying stored scores.
-                    _album_skip_results = results[_album_start:]
-                    if _album_skip_results:
-                        _artist_scan_results.setdefault(artist, []).extend(_album_skip_results)
-                        _post_album_stars(
-                            artist,
-                            _album_skip_results,
-                            is_compilation=bool(_album_context.get("is_compilation")),
-                            is_va_compilation=bool(_album_context.get("is_va_compilation")),
-                        )
-                except Exception as exc:
-                    logger.debug("[scan_runner] Singles-only pass failed for %s - %s: %s", artist, album, exc)
+            # Nothing else runs for a skipped album: no singles re-detection
+            # (that would re-fire Discogs/MusicBrainz lookups), no result rows
+            # (so finalise never re-posts star ratings or re-syncs Navidrome
+            # with unchanged values) — the stored scores/verdicts stand until
+            # the window passes or the album is scanned forcibly.
             continue
 
         # ── Per-artist progress checkpoint ───────────────────────────────

@@ -1331,6 +1331,18 @@ html {
     display: none;
 }
 
+/* ── Logs page: sticky filter bar ──────────────────────────────────────── */
+/* The page scrolls inside main; keep search + level pills pinned below the
+   navbar so filters stay reachable while reading thousands of lines. */
+#logFilterRow {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    padding: 0.5rem 0.25rem;
+    margin-bottom: 0.75rem !important;
+    background: var(--primary-bg, #121212);
+}
+
 /* Tap-to-open search pills (navbar + dashboard) — the pill is the live
    search entry: clicking focuses it and drops the result flyout below. */
 #navSearchInput,
