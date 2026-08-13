@@ -660,6 +660,20 @@
 
   // ===== Modal lifecycle / public API =====
 
+  // Advanced-filters panel visibility (flyout always renders it; collapse/
+  // expand is driven by the open/Enter/toggle paths).  Defined at IIFE scope
+  // so ``window.openUnifiedSearch`` can call it — a nested declaration inside
+  // the DOMContentLoaded callback is not in its scope chain.
+  function setAdvancedFiltersVisible(visible) {
+    var panel = document.getElementById('unifiedAdvancedFilters');
+    var toggle = document.getElementById('unifiedFiltersToggle');
+    var icon = document.getElementById('unifiedFiltersToggleIcon');
+    if (!panel) return;
+    panel.classList.toggle('d-none', !visible);
+    if (icon) icon.className = 'bi bi-chevron-' + (visible ? 'up' : 'right');
+    if (toggle) toggle.setAttribute('aria-expanded', visible ? 'true' : 'false');
+  }
+
   window.openUnifiedSearch = function (scope, prefill) {
     var modalEl = getModalEl();
     var input = getInputEl();
@@ -790,15 +804,6 @@
     }
 
     // ── Advanced filters collapse / expand ──────────────────────────────
-    function setAdvancedFiltersVisible(visible) {
-      var panel = document.getElementById('unifiedAdvancedFilters');
-      var toggle = document.getElementById('unifiedFiltersToggle');
-      var icon = document.getElementById('unifiedFiltersToggleIcon');
-      if (!panel) return;
-      panel.classList.toggle('d-none', !visible);
-      if (icon) icon.className = 'bi bi-chevron-' + (visible ? 'up' : 'right');
-      if (toggle) toggle.setAttribute('aria-expanded', visible ? 'true' : 'false');
-    }
     var filtersToggle = document.getElementById('unifiedFiltersToggle');
     if (filtersToggle) {
       filtersToggle.addEventListener('click', function () {
