@@ -1172,7 +1172,13 @@
             </div>
         </div>
         
-        <div class="d-flex flex-column flex-md-row gap-2 gap-md-3 mt-4">
+        <div class="d-flex flex-column flex-md-row gap-2 gap-md-3 mt-4 align-items-start">
+            <div class="form-check mt-1 me-auto">
+                <input type="checkbox" class="form-check-input" id="apply_to_album" name="apply_to_album" value="1">
+                <label class="form-check-label small text-muted" for="apply_to_album">
+                    Apply album metadata (album, album artist, year, MBIDs) to all tracks on this album
+                </label>
+            </div>
             <button type="submit" class="btn btn-primary">
                 <i class="bi bi-check-circle"></i> Save Changes
             </button>

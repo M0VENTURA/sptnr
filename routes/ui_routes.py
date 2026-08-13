@@ -2327,16 +2327,16 @@ async def track_detail(track_id: str):
                         params,
                     )
 
-                    # Album-scoped fields describe the release as a whole:
-                    # push the same values to every other track on the album
-                    # so a per-track edit can never split one release into
-                    # two albums.
-                    #
-                    # Only fields whose value really changed are propagated,
-                    # and propagation only touches sibling tracks that still
-                    # hold the old value, so a single-track edit (e.g. fixing
-                    # one bonus track's year) can't clobber a different
-                    # edition/release that merely shares the album name.
+                    # Album-scoped fields describe the release as a whole.
+                    # By default a single-track edit only touches that one
+                    # track (fixing a song that was mis-tagged onto the wrong
+                    # album must not rewrite every sibling on the old album).
+                    # The user opts in to propagating the changed fields to
+                    # every other track on the album via the "apply to album"
+                    # checkbox on the form.
+                    apply_to_album = parse_bool(
+                        form.get("apply_to_album", "")
+                    )
                     album_scoped_fields = {
                         "album", "album_artist", "year",
                         "musicbrainz_albumid", "musicbrainz_album_mbid",
@@ -2346,7 +2346,7 @@ async def track_detail(track_id: str):
                         k: v for k, v in update_values.items()
                         if k in album_scoped_fields
                     }
-                    if album_updates and update_values.get("album"):
+                    if apply_to_album and album_updates and update_values.get("album"):
                         try:
                             raw_row = dict(row._mapping)
                             old_album = raw_row.get("album")
