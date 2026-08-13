@@ -22,6 +22,14 @@
     .step-dot.active { background: var(--spotify-green); box-shadow: 0 0 8px rgba(29,185,84,0.5); }
     .step-dot.done { background: var(--spotify-green); }
     .form-control, .form-select { background: var(--primary-bg); border: 1px solid var(--border-color); color: var(--text-primary); }
+    /* Restore the dropdown chevron wiped by the flat background override */
+    .form-select {
+      background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23adb5bd' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m2 5 6 6 6-6'/%3e%3c/svg%3e");
+      background-repeat: no-repeat;
+      background-position: right 0.75rem center;
+      background-size: 16px 12px;
+      padding-right: 2.5rem;
+    }
     .form-control:focus, .form-select:focus { border-color: var(--spotify-green); box-shadow: 0 0 0 0.2rem rgba(29,185,84,0.25); }
     .btn-primary { background: var(--spotify-green); border: none; color: #000; font-weight: 600; }
     .btn-primary:hover { background: #1ed760; }
@@ -53,7 +61,8 @@
     <p class="text-muted small mb-3">Popularr reads your library from Navidrome and sends star ratings back. Your password is stored in <code>config.yaml</code> only.</p>
     <div class="mb-3">
       <label class="form-label">Navidrome URL</label>
-      <input type="url" class="form-control" id="navUrl" placeholder="http://navidrome:4533" value="{{ defaults.get('nav_url', 'http://navidrome:4533') }}">
+      <input type="url" class="form-control" id="navUrl" placeholder="https://music.yourdomain.com" value="{{ defaults.get('nav_url', 'http://navidrome:4533') }}">
+      <small class="form-text text-muted">Full URL including the scheme — no trailing slash required. Example: <code>https://music.yourdomain.com</code></small>
     </div>
     <div class="row g-3 mb-3">
       <div class="col-sm-6"><label class="form-label">Username</label><input type="text" class="form-control" id="navUser" placeholder="admin" value="{{ defaults.get('nav_user', '') }}"></div>
@@ -92,34 +101,24 @@
     </div>
     <p class="text-muted small mb-3">Enable popularity scoring and recommendations. You can add these later from Config.</p>
     <div class="border rounded p-3 mb-3">
-      <div class="d-flex justify-content-between align-items-center mb-2">
-        <h6 class="mb-0"><i class="bi bi-database-fill text-info"></i> Last.fm</h6>
-        <div class="form-check form-switch mb-0"><input class="form-check-input" type="checkbox" id="lfmEnabled"{% if defaults.get('lfm_enabled') %} checked{% endif %}><label class="form-check-label small" for="lfmEnabled">Enable</label></div>
-      </div>
+      <h6 class="mb-2"><i class="bi bi-database-fill text-info"></i> Last.fm</h6>
       <input type="text" class="form-control form-control-sm" id="lfmApiKey" placeholder="API Key" value="{{ defaults.get('lfm_api_key', '') }}">
+      <small class="form-text text-muted">Get your API account at <a href="https://www.last.fm/api/account/create" target="_blank" rel="noopener">last.fm/api/account/create</a></small>
     </div>
     <div class="border rounded p-3 mb-3">
-      <div class="d-flex justify-content-between align-items-center mb-2">
-        <h6 class="mb-0"><i class="bi bi-vinyl"></i> Discogs</h6>
-        <div class="form-check form-switch mb-0"><input class="form-check-input" type="checkbox" id="dgEnabled"{% if defaults.get('dg_enabled') %} checked{% endif %}><label class="form-check-label small" for="dgEnabled">Enable</label></div>
-      </div>
+      <h6 class="mb-2"><i class="bi bi-vinyl"></i> Discogs</h6>
       <input type="text" class="form-control form-control-sm" id="dgToken" placeholder="Personal Access Token" value="{{ defaults.get('dg_token', '') }}">
+      <small class="form-text text-muted">Generate a token at <a href="https://www.discogs.com/settings/developers" target="_blank" rel="noopener">discogs.com/settings/developers</a></small>
     </div>
     <div class="border rounded p-3 mb-3">
-      <div class="d-flex justify-content-between align-items-center mb-2">
-        <h6 class="mb-0"><i class="bi bi-headphones text-secondary"></i> ListenBrainz</h6>
-        <div class="form-check form-switch mb-0"><input class="form-check-input" type="checkbox" id="lbEnabled"{% if defaults.get('lb_enabled', True) %} checked{% endif %}><label class="form-check-label small" for="lbEnabled">Enable</label></div>
-      </div>
+      <h6 class="mb-2"><i class="bi bi-headphones text-secondary"></i> ListenBrainz</h6>
       <input type="text" class="form-control form-control-sm" id="lbToken" placeholder="User Token" value="{{ defaults.get('lb_token', '') }}">
       <small class="form-text text-muted">Get your token from <a href="https://listenbrainz.org/settings/" target="_blank" rel="noopener">listenbrainz.org/settings</a></small>
     </div>
 
     <!-- Soulseek / slskd -->
     <div class="border rounded p-3 mb-3">
-      <div class="d-flex justify-content-between align-items-center mb-2">
-        <h6 class="mb-0"><i class="bi bi-music-note-beamed text-warning"></i> Soulseek (slskd)</h6>
-        <div class="form-check form-switch mb-0"><input class="form-check-input" type="checkbox" id="slskdEnabled"{% if defaults.get('slskd_enabled') %} checked{% endif %}><label class="form-check-label small" for="slskdEnabled">Enable</label></div>
-      </div>
+      <h6 class="mb-2"><i class="bi bi-music-note-beamed text-warning"></i> Soulseek (slskd)</h6>
       <div class="row g-2">
         <div class="col-sm-6"><input type="url" class="form-control form-control-sm" id="slskdUrl" placeholder="http://slskd:5030" value="{{ defaults.get('slskd_url', 'http://slskd:5030') }}"></div>
         <div class="col-sm-6"><input type="password" class="form-control form-control-sm" id="slskdApiKey" placeholder="API Key" value="{{ defaults.get('slskd_api_key', '') }}"></div>
@@ -129,7 +128,7 @@
 
     <div class="d-flex justify-content-between">
       <button class="btn btn-outline-secondary" onclick="goToStep(1)"><i class="bi bi-arrow-left"></i> Back</button>
-      <button class="btn btn-primary" onclick="goToNextStep(3,this)">Skip & Continue <i class="bi bi-arrow-right"></i></button>
+      <button class="btn btn-primary wizard-next-btn" onclick="goToNextStep(3,this)">Skip Step <i class="bi bi-arrow-right"></i></button>
     </div>
   </div>
 
@@ -147,9 +146,11 @@
         <label class="form-check-label" for="essentiaEnabled"><strong>Enable Essentia Analysis</strong></label>
       </div>
       <div id="essentiaOptions" class="d-none mt-3">
-        <button class="btn btn-sm btn-outline-primary mb-2" onclick="downloadEssentiaModels()"><i class="bi bi-cloud-download"></i> Download Models (~87 MB)</button>
-        <span id="essentiaDownloadStatus" class="ms-2 small text-muted"></span>
-        <div class="progress mb-2 d-none" id="essentiaProgress" style="height:6px"><div class="progress-bar" id="essentiaProgressBar" style="width:0%"></div></div>
+        <div class="d-flex align-items-center flex-wrap gap-2 mb-2">
+          <button class="btn btn-sm btn-outline-primary" id="essentiaDownloadBtn" onclick="downloadEssentiaModels()"><i class="bi bi-cloud-download"></i> Download Models (~87 MB)</button>
+          <span id="essentiaDownloadStatus" class="small text-muted"></span>
+          <div class="progress d-none flex-grow-1" id="essentiaProgress" style="height:6px;min-width:120px"><div class="progress-bar" id="essentiaProgressBar" style="width:0%"></div></div>
+        </div>
         <div class="row g-2">
           <div class="col-6"><div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="essentiaMoods"{% if defaults.get('essentia_tag_moods', True) %} checked{% endif %}><label class="form-check-label small" for="essentiaMoods">Detect Moods</label></div></div>
           <div class="col-6"><div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="essentiaGenres"{% if defaults.get('essentia_tag_genres') %} checked{% endif %}><label class="form-check-label small" for="essentiaGenres">Detect Genres</label></div></div>
@@ -158,7 +159,7 @@
     </div>
     <div class="d-flex justify-content-between">
       <button class="btn btn-outline-secondary" onclick="goToStep(2)"><i class="bi bi-arrow-left"></i> Back</button>
-      <button class="btn btn-primary" onclick="goToNextStep(4,this)">Skip & Continue <i class="bi bi-arrow-right"></i></button>
+      <button class="btn btn-primary wizard-next-btn" onclick="goToNextStep(4,this)">Skip Step <i class="bi bi-arrow-right"></i></button>
     </div>
   </div>
 
@@ -206,7 +207,7 @@
     </div>
     <div class="d-flex justify-content-between">
       <button class="btn btn-outline-secondary" onclick="goToStep(3)"><i class="bi bi-arrow-left"></i> Back</button>
-      <button class="btn btn-primary" onclick="goToNextStep(5,this)">Skip & Continue <i class="bi bi-arrow-right"></i></button>
+      <button class="btn btn-primary wizard-next-btn" onclick="goToNextStep(5,this)">Skip Step <i class="bi bi-arrow-right"></i></button>
     </div>
   </div>
 
@@ -307,7 +308,7 @@
     </div>
     <div class="d-flex justify-content-between">
       <button class="btn btn-outline-secondary" onclick="goToStep(4)"><i class="bi bi-arrow-left"></i> Back</button>
-      <button class="btn btn-primary" onclick="goToNextStep(6,this)">Skip & Finish <i class="bi bi-arrow-right"></i></button>
+      <button class="btn btn-primary" data-restore-label='Finish Setup <i class="bi bi-arrow-right"></i>' onclick="goToNextStep(6,this)">Finish Setup <i class="bi bi-arrow-right"></i></button>
     </div>
   </div>
 
@@ -344,21 +345,42 @@ async function testConnection() {
   try {
     const r=await fetch('/api/test-navidrome-connection',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({base_url:document.getElementById('navUrl').value,username:document.getElementById('navUser').value,password:document.getElementById('navPass').value})});
     const d=await r.json();
-    if(d.success){status.textContent=d.message;status.className='ms-2 small text-success';}else{
+    if(d.success){status.textContent=d.message;status.className='ms-2 small text-success';showToast(d.message||'Connection successful','success');}else{
       let msg=d.error;
       if(d.detail) msg+=' ('+d.detail+')';
-      status.textContent=msg;status.className='ms-2 small text-danger';
+      status.textContent=msg;status.className='ms-2 small text-danger';showToast(msg,'error');
     }
-  }catch(e){status.textContent='Network error: '+e.message;status.className='ms-2 small text-danger';}
+  }catch(e){status.textContent='Network error: '+e.message;status.className='ms-2 small text-danger';showToast('Network error: '+e.message,'error');}
   btn.disabled=false;
 }
-function goToStep(n) { for(let i=1;i<=6;i++) document.getElementById('step'+i).classList.toggle('d-none',i!==n); document.querySelectorAll('.step-dot').forEach(d=>{const s=parseInt(d.dataset.step);d.classList.toggle('active',s===n);d.classList.toggle('done',s<n);}); if(n===6) updateSummary(); }
+function goToStep(n) { for(let i=1;i<=6;i++){const card=document.getElementById('step'+i);card.classList.toggle('d-none',i!==n);if(i===n) refreshStepButton(card);} document.querySelectorAll('.step-dot').forEach(d=>{const s=parseInt(d.dataset.step);d.classList.toggle('active',s===n);d.classList.toggle('done',s<n);}); if(n===6) updateSummary(); }
+
+/** True when the user has entered anything on this step (vs. the pre-filled defaults). */
+function stepButtonDirty(card) {
+  let dirty=false;
+  card.querySelectorAll('input,select,textarea').forEach(el=>{
+    if(el.type==='checkbox'||el.type==='radio'){if(el.checked!==el.defaultChecked)dirty=true;}
+    else if(el.value!==el.defaultValue)dirty=true;
+  });
+  return dirty;
+}
+
+/** Dynamic label: "Skip Step" until the user types/flips a toggle → "Save & Continue". */
+function refreshStepButton(card) {
+  const btn=card&&card.querySelector('.wizard-next-btn');
+  if(!btn)return;
+  btn.innerHTML=stepButtonDirty(card)?'Save & Continue <i class="bi bi-arrow-right"></i>':'Skip Step <i class="bi bi-arrow-right"></i>';
+}
 
 /** Build a config object from the current form state (all steps). */
 function buildSetupConfig() {
   const pgHost=document.getElementById('pgHost').value.trim();
+  const lfmKey=document.getElementById('lfmApiKey').value.trim();
+  const dgToken=document.getElementById('dgToken').value.trim();
   const lbToken=document.getElementById('lbToken').value.trim();
-  const config={navidrome_users:[{user:document.getElementById('navUser').value,display_name:document.getElementById('navUser').value,base_url:document.getElementById('navUrl').value,pass:document.getElementById('navPass').value,listenbrainz_user_token:lbToken}],api_integrations:{lastfm:{enabled:document.getElementById('lfmEnabled').checked,api_key:document.getElementById('lfmApiKey').value},discogs:{enabled:document.getElementById('dgEnabled').checked,token:document.getElementById('dgToken').value},musicbrainz:{enabled:true},listenbrainz:{enabled:document.getElementById('lbEnabled').checked},audiodb:{enabled:false}},slskd:{enabled:document.getElementById('slskdEnabled').checked,web_url:document.getElementById('slskdUrl').value,api_key:document.getElementById('slskdApiKey').value}};
+  const slskdKey=document.getElementById('slskdApiKey').value.trim();
+  // Services are enabled by the presence of a key/token — no separate toggles.
+  const config={navidrome_users:[{user:document.getElementById('navUser').value,display_name:document.getElementById('navUser').value,base_url:document.getElementById('navUrl').value,pass:document.getElementById('navPass').value,listenbrainz_user_token:lbToken}],api_integrations:{lastfm:{enabled:!!lfmKey,api_key:lfmKey},discogs:{enabled:!!dgToken,token:dgToken},musicbrainz:{enabled:true},listenbrainz:{enabled:!!lbToken},audiodb:{enabled:false}},slskd:{enabled:!!slskdKey,web_url:document.getElementById('slskdUrl').value,api_key:slskdKey}};
   if(pgHost){config.PG_HOST=pgHost;config.PG_PORT=document.getElementById('pgPort').value.trim()||'5432';config.PG_USER=document.getElementById('pgUser').value.trim()||'popularr';config.PG_PASSWORD=document.getElementById('pgPass').value;config.PG_DATABASE=document.getElementById('pgDb').value.trim()||'popularr';}
   if(document.getElementById('essentiaEnabled').checked) config.essentia={script_path:'/opt/Essentia-to-Metadata/tag_music.py',models_dir:'/opt/essentia_models',mood_threshold:0.005,per_file_timeout:300,tag_moods:document.getElementById('essentiaMoods').checked,tag_genres:document.getElementById('essentiaGenres').checked,parse_json_features:true,delete_json_after_import:true};
   config.downloads={file_name_format:document.getElementById('setupFileNameFormat').value.trim()||'{album_artist}/{year} - {album}/{track_number}. {artist} - {title}',conversion:{enabled:document.getElementById('setupConversionEnabled').checked,mode:document.getElementById('setupConversionMode').value,mp3_bitrate_kbps:parseInt(document.getElementById('setupConversionBitrate').value)||320,original_handling:'move_to_original',original_subfolder:'Original'},quality_filter:{enabled:document.getElementById('setup_quality_filter').checked,reject_others:true,bitrate_tolerance:5,priorities:[{format:'flac',bitrate_kbps:null},{format:'mp3',bitrate_kbps:320}]}};
@@ -382,36 +404,54 @@ async function goToNextStep(n, btn) {
   btn.innerHTML='<span class="spinner-border spinner-border-sm me-2"></span>Saving…';
   await savePartialConfig();
   goToStep(n);
+  btn.disabled=false;
+  if(btn.classList.contains('wizard-next-btn')) refreshStepButton(btn.closest('.step-card'));
+  else btn.innerHTML=btn.dataset.restoreLabel||'<i class="bi bi-arrow-right"></i> Next';
 }
 function toggleEssentiaOptions() { const e=document.getElementById('essentiaEnabled').checked; document.getElementById('essentiaOptions').classList.toggle('d-none',!e); if(e) checkEssentiaModels(); }
 function toggleConversionOptions() { document.getElementById('setupConversionOptions').classList.toggle('d-none',!document.getElementById('setupConversionEnabled').checked); }
-async function checkEssentiaModels() { try{const r=await fetch('/api/essentia/download-status');const d=await r.json();const btn=document.querySelector('#essentiaOptions .btn-outline-primary');const status=document.getElementById('essentiaDownloadStatus');if(d.status==='installed'){if(btn){btn.disabled=true;btn.innerHTML='<i class=\"bi bi-check-circle\"></i> Models Installed';btn.classList.remove('btn-outline-primary');btn.classList.add('btn-outline-success');}if(status)status.textContent='✅ '+d.file_count+' model files ready';}else{if(btn){btn.disabled=false;btn.innerHTML='<i class=\"bi bi-cloud-download\"></i> Download Models (~87 MB)';btn.classList.remove('btn-outline-success');btn.classList.add('btn-outline-primary');}}}catch(e){}}
+async function checkEssentiaModels() { try{const r=await fetch('/api/essentia/download-status');const d=await r.json();const btn=document.getElementById('essentiaDownloadBtn');const status=document.getElementById('essentiaDownloadStatus');if(d.status==='installed'){if(btn){btn.disabled=true;btn.innerHTML='<i class=\"bi bi-check-circle\"></i> Models Installed';btn.classList.remove('btn-outline-primary');btn.classList.add('btn-outline-success');}if(status)status.textContent='✅ '+d.file_count+' model files ready';}else{if(btn){btn.disabled=false;btn.innerHTML='<i class=\"bi bi-cloud-download\"></i> Download Models (~87 MB)';btn.classList.remove('btn-outline-success');btn.classList.add('btn-outline-primary');}}}catch(e){}}
 async function downloadEssentiaModels() {
-  const btn=event.target, status=document.getElementById('essentiaDownloadStatus'), prog=document.getElementById('essentiaProgress'), bar=document.getElementById('essentiaProgressBar');
-  btn.disabled=true; prog.classList.remove('d-none');
+  const btn=document.getElementById('essentiaDownloadBtn'), status=document.getElementById('essentiaDownloadStatus'), prog=document.getElementById('essentiaProgress'), bar=document.getElementById('essentiaProgressBar');
+  // Fade the button to a disabled state instead of removing it — the layout
+  // never shifts while the download is running.
+  btn.disabled=true; btn.classList.add('opacity-50'); btn.innerHTML='<span class=\"spinner-border spinner-border-sm me-1\"></span>Downloading…';
+  prog.classList.remove('d-none');
+  const restoreBtn=()=>{btn.disabled=false;btn.classList.remove('opacity-50');btn.innerHTML='<i class=\"bi bi-cloud-download\"></i> Download Models (~87 MB)';};
 
   // Check if models are already installed before downloading
   try {
     const pre=await(await fetch('/api/essentia/download-status')).json();
-    if(pre.status==='installed'){status.textContent='✅ Already installed ('+pre.file_count+' files)';bar.style.width='100%';bar.classList.add('bg-success');checkEssentiaModels();btn.disabled=false;return;}
+    if(pre.status==='installed'){status.textContent='✅ Already installed ('+pre.file_count+' files)';bar.style.width='100%';bar.classList.add('bg-success');restoreBtn();checkEssentiaModels();return;}
   } catch(e){}
 
   status.textContent='Starting download...'; bar.style.width='10%';
   try {
     await fetch('/api/essentia/download-models',{method:'POST'});
     status.textContent='Downloading...'; bar.style.width='50%';
-    for(let i=0;i<60;i++){await new Promise(r=>setTimeout(r,5000));try{const r=await(await fetch('/api/essentia/download-status')).json();if(r.status==='installed'||r.status==='complete'){status.textContent='✅ Ready';bar.style.width='100%';bar.classList.add('bg-success');checkEssentiaModels();return;}if(r.status==='idle'){status.textContent='✅ Ready';bar.style.width='100%';bar.classList.add('bg-success');checkEssentiaModels();return;}}catch(e){}}
-    status.textContent='Timed out — may continue in background.';
-  } catch(e) { status.textContent='Failed: '+e.message; bar.classList.add('bg-danger'); }
+    for(let i=0;i<60;i++){await new Promise(r=>setTimeout(r,5000));try{const r=await(await fetch('/api/essentia/download-status')).json();if(r.status==='installed'||r.status==='complete'){status.textContent='✅ Ready';bar.style.width='100%';bar.classList.add('bg-success');restoreBtn();checkEssentiaModels();return;}if(r.status==='idle'){status.textContent='✅ Ready';bar.style.width='100%';bar.classList.add('bg-success');restoreBtn();checkEssentiaModels();return;}}catch(e){}}
+    status.textContent='Timed out — may continue in background.'; restoreBtn();
+  } catch(e) { status.textContent='Failed: '+e.message; bar.classList.add('bg-danger'); restoreBtn(); }
 }
 
 // Check Essentia model status on page load if Essentia is enabled
-document.addEventListener('DOMContentLoaded', function() { if(document.getElementById('essentiaEnabled').checked) toggleEssentiaOptions(); if(document.getElementById('setupConversionEnabled').checked) toggleConversionOptions(); });
+document.addEventListener('DOMContentLoaded', function() {
+  if(document.getElementById('essentiaEnabled').checked) toggleEssentiaOptions();
+  if(document.getElementById('setupConversionEnabled').checked) toggleConversionOptions();
+  // Dynamic "Skip Step" → "Save & Continue" labels (steps 2-4)
+  document.querySelectorAll('.step-card').forEach(card=>{
+    if(!card.querySelector('.wizard-next-btn'))return;
+    const refresh=()=>refreshStepButton(card);
+    card.addEventListener('input',refresh);
+    card.addEventListener('change',refresh);
+    refreshStepButton(card);
+  });
+});
 function updateSummary() {
   document.getElementById('summaryNavidrome').innerHTML='<strong>'+(document.getElementById('navUser').value||'username')+'</strong> @ '+(document.getElementById('navUrl').value||'not set');
   const pgHost=document.getElementById('pgHost').value.trim();
   document.getElementById('summaryDatabase').innerHTML=pgHost?'<strong>PostgreSQL</strong> @ '+pgHost+'/'+(document.getElementById('pgDb').value||'popularr'):'<span class="text-muted">PostgreSQL (container defaults)</span>';
-  const apis=[]; if(document.getElementById('lfmEnabled').checked) apis.push('Last.fm'); if(document.getElementById('dgEnabled').checked) apis.push('Discogs'); if(document.getElementById('lbEnabled').checked) apis.push('ListenBrainz'); if(document.getElementById('slskdEnabled').checked) apis.push('Soulseek');
+  const apis=[]; if(document.getElementById('lfmApiKey').value.trim()) apis.push('Last.fm'); if(document.getElementById('dgToken').value.trim()) apis.push('Discogs'); if(document.getElementById('lbToken').value.trim()) apis.push('ListenBrainz'); if(document.getElementById('slskdApiKey').value.trim()) apis.push('Soulseek');
   document.getElementById('summaryApis').textContent=apis.length?apis.join(', '):'None enabled';
   document.getElementById('summaryEssentia').textContent=document.getElementById('essentiaEnabled').checked?'Will be enabled':'Not enabled';
   const fmt=document.getElementById('setupFileNameFormat').value.trim()||'{album_artist}/{year} - {album}/{track_number}. {artist} - {title}';

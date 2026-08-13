@@ -329,7 +329,7 @@
           {% set feature_groups = {
             'General Operation': ['dry_run', 'sync', 'force', 'verbose', 'perpetual', 'batchrate', 'full_scan', 'auto_boot_navidrome_scan', 'artist'],
             'Scan Behaviour': ['cover_detection_enabled'],
-            'Single Detection & Scoring': ['album_skip_days', 'album_skip_min_tracks'],
+            'Single Detection & Scoring': ['album_skip_min_tracks'],
             'Single Detection Sources': ['source_discogs_confidence', 'source_musicbrainz_confidence', 'source_musicbrainz_compilation_confidence', 'source_discogs_video_confidence', 'source_lastfm_confidence', 'source_radio_edit_confidence']
           } %}
           {% set source_confidence_fields = ['source_discogs_confidence', 'source_musicbrainz_confidence', 'source_musicbrainz_compilation_confidence', 'source_discogs_video_confidence', 'source_lastfm_confidence', 'source_radio_edit_confidence'] %}
@@ -344,7 +344,6 @@
             'auto_boot_navidrome_scan': 'Scan Navidrome metadata on app startup.',
             'artist': 'Comma-separated list of artist names to prioritize.',
             'cover_detection_enabled': 'Flag cover songs during scans (MusicBrainz work-history lookup + "(Artist Cover)" renames). Turn off to skip the per-track cover pass entirely.',
-            'album_skip_days': 'Days before rescanning an album.',
             'album_skip_min_tracks': 'Minimum tracks for a valid album.',
             'source_discogs_confidence': 'How much a Discogs single/EP release match counts toward the single-detection confidence (high/medium/low). "Low" excludes the source entirely.',
             'source_musicbrainz_confidence': 'How much a MusicBrainz release-group single match counts toward single-detection confidence.',
@@ -409,8 +408,10 @@
           {# Remaining ungrouped features #}
           {% set grouped_keys = [] %}
           {% for gk in feature_groups.values() %}{% for k in gk %}{% set _ = grouped_keys.append(k) %}{% endfor %}{% endfor %}
+          {# Keys that moved to dedicated cards (Scan Skip Behaviour) — never shown here #}
+          {% set moved_feature_keys = ['album_skip_days', 'skip_unchanged_albums'] %}
           {% for key, value in config.get('features', {}).items() %}
-          {% if key not in grouped_keys %}
+          {% if key not in grouped_keys and key not in moved_feature_keys %}
           <div class="col-md-4">
             <label class="form-label">{{ key|replace('_', ' ')|title }}</label>
             <div class="text-muted small mb-1">(Custom feature)</div>
@@ -1297,6 +1298,38 @@
     </div>
   </div>
 
+  <!-- Scan Skip Behaviour Section -->
+  <div class="card shadow-sm mb-3" id="scan-skip-behaviour">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-skip-forward-circle"></i> Scan Skip Behaviour</h5>
+      <small class="text-muted">Control when the popularity scan skips albums that were already scanned</small>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12 col-sm-6 col-lg-4">
+          <label class="form-label form-label-sm">Rescan Skip Window (days)</label>
+          <input type="number" step="1" min="0" max="365" class="form-control form-control-sm feature-field" name="feature_album_skip_days" value="{{ config.get('features', {}).get('album_skip_days', 7) }}">
+          <small class="form-text text-muted">Albums scanned within this many days are skipped on the next scan. Set to <strong>0 to always rescan</strong> every album. Default: <strong>7</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-4">
+          <label class="form-label form-label-sm">Skip Unchanged Albums</label>
+          <select class="form-select form-select-sm feature-field" name="feature_skip_unchanged_albums">
+            <option value="true" {% if config.get('features', {}).get('skip_unchanged_albums', True) %}selected{% endif %}>True</option>
+            <option value="false" {% if not config.get('features', {}).get('skip_unchanged_albums', True) %}selected{% endif %}>False</option>
+          </select>
+          <small class="form-text text-muted">Skip albums whose tracks are all already scored and singles-assessed, even inside the window. Default: <strong>True</strong></small>
+        </div>
+      </div>
+      <div class="alert alert-secondary mb-0 mt-3 py-2">
+        <small class="text-muted">
+          <strong>How it works:</strong> after each scan, an album is only re-scanned once the window has passed.
+          Set the window to <strong>0</strong> and every scan re-processes the whole library (slower, more API calls).
+          A forced scan or an individual album scan always re-scans regardless of these settings.
+        </small>
+      </div>
+    </div>
+  </div>
+
   <!-- Single Detection & Star Ratings Section -->
   <div class="card shadow-sm mb-3" id="single-detection-zscore">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
@@ -1665,65 +1698,112 @@
       <h5 class="mb-0"><i class="bi bi-music-note-beamed"></i> Essential Playlists</h5>
       <small class="text-muted">Auto-generated per-artist highlight playlists written into the Playlists folder during popularity scans</small>
     </div>
-    <div class="card-body">
-      <div class="form-check form-switch mb-3">
-        <input class="form-check-input" type="checkbox" id="playlists_essential_enabled" {% if config.get('playlists', {}).get('essential_playlists_enabled', True) %}checked{% endif %}>
-        <label class="form-check-label" for="playlists_essential_enabled"><strong>Create Essential Playlists During Scans</strong></label>
+    <div class="card-body config-section">
+
+      <!-- 1. Feature toggles — each switch stays bound to its description -->
+      <div class="setting-card">
+        <div class="setting-info">
+          <label class="setting-title" for="playlists_essential_enabled">Create Essential Playlists During Scans</label>
+          <p class="setting-description">Auto-generated per-artist highlight playlists written into the Playlists folder during popularity scans.</p>
+        </div>
+        <div class="setting-control">
+          <div class="form-check form-switch m-0">
+            <input class="form-check-input" type="checkbox" id="playlists_essential_enabled" {% if config.get('playlists', {}).get('essential_playlists_enabled', True) %}checked{% endif %}>
+          </div>
+        </div>
       </div>
-      <div class="form-check form-switch mb-3">
-        <input class="form-check-input" type="checkbox" id="playlists_essential_include_featured" {% if config.get('playlists', {}).get('essential_include_featured', True) %}checked{% endif %}>
-        <label class="form-check-label" for="playlists_essential_include_featured"><strong>Include Featured Appearances</strong></label>
-        <small class="form-text text-muted">A 4★/5★ track like "Powerwolf feat. Unleash The Archers" also lands on Unleash The Archers' Essential Collection (in addition to Powerwolf's).</small>
+
+      <div class="setting-card">
+        <div class="setting-info">
+          <label class="setting-title" for="playlists_essential_include_featured">Include Featured Appearances</label>
+          <p class="setting-description">A 4★/5★ track like "Powerwolf feat. Unleash The Archers" also lands on Unleash The Archers' Essential Collection (in addition to Powerwolf's).</p>
+        </div>
+        <div class="setting-control">
+          <div class="form-check form-switch m-0">
+            <input class="form-check-input" type="checkbox" id="playlists_essential_include_featured" {% if config.get('playlists', {}).get('essential_include_featured', True) %}checked{% endif %}>
+          </div>
+        </div>
       </div>
-      <hr class="my-3">
-      <div class="form-check form-switch mb-2">
-        <input class="form-check-input" type="checkbox" id="playlists_genre_playlists_enabled" {% if config.get('playlists', {}).get('genre_playlists_enabled', True) %}checked{% endif %}>
-        <label class="form-check-label" for="playlists_genre_playlists_enabled"><strong>Create Genre Top-Tracks Playlists</strong></label>
-        <small class="form-text text-muted">Library-wide <code>{Genre} - Top Tracks.m3u</code> playlists generated once per scan: every track at or above the Minimum Stars is assigned its top weighted genres, each genre pool is sorted by stars then final score and capped at the Top N, and a playlist is only created when the genre clears the Create Threshold.</small>
+
+      <div class="setting-card">
+        <div class="setting-info">
+          <label class="setting-title" for="playlists_genre_playlists_enabled">Create Genre Top-Tracks Playlists</label>
+          <p class="setting-description">Library-wide <code>{Genre} - Top Tracks.m3u</code> playlists generated once per scan: every track at or above the Minimum Stars is assigned its top weighted genres, each genre pool is sorted by stars then final score and capped at the Top N, and a playlist is only created when the genre clears the Create Threshold.</p>
+        </div>
+        <div class="setting-control">
+          <div class="form-check form-switch m-0">
+            <input class="form-check-input" type="checkbox" id="playlists_genre_playlists_enabled" {% if config.get('playlists', {}).get('genre_playlists_enabled', True) %}checked{% endif %}>
+          </div>
+        </div>
       </div>
-      <div class="form-check form-switch mb-2">
-        <input class="form-check-input" type="checkbox" id="playlists_new_music_enabled" {% if config.get('playlists', {}).get('new_music_playlist_enabled', True) %}checked{% endif %}>
-        <label class="form-check-label" for="playlists_new_music_enabled"><strong>Create New Music Playlist</strong></label>
-        <small class="form-text text-muted">Rolling library-wide <code>New Music.m3u</code>: the most recently added 4★/5★ tracks (added to Navidrome, not recently rated), newest first, capped at 100 — created once 100 tracks qualify, with newer additions pushing older ones out on each scan.</small>
+
+      <div class="setting-card">
+        <div class="setting-info">
+          <label class="setting-title" for="playlists_new_music_enabled">Create New Music Playlist</label>
+          <p class="setting-description">Rolling library-wide <code>New Music.m3u</code>: the most recently added 4★/5★ tracks (added to Navidrome, not recently rated), newest first, capped at 100 — created once 100 tracks qualify, with newer additions pushing older ones out on each scan.</p>
+        </div>
+        <div class="setting-control">
+          <div class="form-check form-switch m-0">
+            <input class="form-check-input" type="checkbox" id="playlists_new_music_enabled" {% if config.get('playlists', {}).get('new_music_playlist_enabled', True) %}checked{% endif %}>
+          </div>
+        </div>
       </div>
-      <div class="form-check form-switch mb-2">
-        <input class="form-check-input" type="checkbox" id="playlists_genre_delete_enabled" {% if config.get('playlists', {}).get('genre_playlists_delete_enabled', True) %}checked{% endif %}>
-        <label class="form-check-label" for="playlists_genre_delete_enabled"><strong>Delete Genre Playlists Below Threshold</strong></label>
-        <small class="form-text text-muted">Removes a genre playlist once its qualifying track count drops below the Delete Threshold (and cleans up stale files from name-template changes).</small>
+
+      <div class="setting-card">
+        <div class="setting-info">
+          <label class="setting-title" for="playlists_genre_delete_enabled">Delete Genre Playlists Below Threshold</label>
+          <p class="setting-description">Removes a genre playlist once its qualifying track count drops below the Delete Threshold (and cleans up stale files from name-template changes).</p>
+        </div>
+        <div class="setting-control">
+          <div class="form-check form-switch m-0">
+            <input class="form-check-input" type="checkbox" id="playlists_genre_delete_enabled" {% if config.get('playlists', {}).get('genre_playlists_delete_enabled', True) %}checked{% endif %}>
+          </div>
+        </div>
       </div>
-      <div class="row g-3 mb-3">
-        <div class="col-6 col-sm-4 col-lg-2">
-          <label class="form-label form-label-sm">Create Threshold</label>
+
+      <!-- 2. Thresholds & limits — auto-reflowing grid -->
+      <div class="thresholds-grid">
+        <div class="input-card">
+          <label for="playlists_genre_create_threshold">Create Threshold</label>
           <input type="number" step="1" min="1" max="5000" class="form-control form-control-sm" id="playlists_genre_create_threshold" placeholder="100" value="{{ config.get('playlists', {}).get('genre_playlists_create_threshold', 100) }}">
-          <small class="form-text text-muted">Create/refresh a genre playlist only when it has more than this many qualifying tracks. Default: <strong>100</strong></small>
+          <span class="help-text">Create/refresh a genre playlist only when it has more than this many qualifying tracks. Default: <strong>100</strong></span>
         </div>
-        <div class="col-6 col-sm-4 col-lg-2">
-          <label class="form-label form-label-sm">Delete Threshold</label>
+        <div class="input-card">
+          <label for="playlists_genre_delete_threshold">Delete Threshold</label>
           <input type="number" step="1" min="1" max="5000" class="form-control form-control-sm" id="playlists_genre_delete_threshold" placeholder="80" value="{{ config.get('playlists', {}).get('genre_playlists_delete_threshold', 80) }}">
-          <small class="form-text text-muted">Delete a genre playlist when it drops below this many qualifying tracks. Default: <strong>80</strong></small>
+          <span class="help-text">Delete a genre playlist when it drops below this many qualifying tracks. Default: <strong>80</strong></span>
         </div>
-        <div class="col-6 col-sm-4 col-lg-2">
-          <label class="form-label form-label-sm">Top N Tracks</label>
+        <div class="input-card">
+          <label for="playlists_genre_top_n">Top N Tracks</label>
           <input type="number" step="50" min="10" max="5000" class="form-control form-control-sm" id="playlists_genre_top_n" placeholder="500" value="{{ config.get('playlists', {}).get('genre_playlists_top_n', 500) }}">
-          <small class="form-text text-muted">Max tracks per genre playlist. Default: <strong>500</strong></small>
+          <span class="help-text">Max tracks per genre playlist. Default: <strong>500</strong></span>
         </div>
-        <div class="col-6 col-sm-4 col-lg-2">
-          <label class="form-label form-label-sm">Minimum Stars</label>
+        <div class="input-card">
+          <label for="playlists_genre_min_stars">Minimum Stars</label>
           <input type="number" step="1" min="1" max="5" class="form-control form-control-sm" id="playlists_genre_min_stars" placeholder="4" value="{{ config.get('playlists', {}).get('genre_playlists_min_stars', 4) }}">
-          <small class="form-text text-muted">Only tracks rated at least this many stars qualify. Default: <strong>4</strong></small>
+          <span class="help-text">Only tracks rated at least this many stars qualify. Default: <strong>4</strong></span>
         </div>
-        <div class="col-6 col-sm-4 col-lg-2">
-          <label class="form-label form-label-sm">Genres Per Track</label>
+        <div class="input-card">
+          <label for="playlists_genre_max_genres">Genres Per Track</label>
           <input type="number" step="1" min="1" max="10" class="form-control form-control-sm" id="playlists_genre_max_genres" placeholder="3" value="{{ config.get('playlists', {}).get('genre_playlists_max_genres', 3) }}">
-          <small class="form-text text-muted">How many top weighted genres each track may appear in. Default: <strong>3</strong></small>
-        </div>
-        <div class="col-12 col-sm-8 col-lg-6">
-          <label class="form-label form-label-sm">Genre Playlist Name Template</label>
-          <input type="text" class="form-control form-control-sm" id="playlists_genre_name_template" placeholder="{genre} - Top Tracks" value="{{ config.get('playlists', {}).get('genre_playlists_name_template', '{genre} - Top Tracks') }}">
-          <small class="form-text text-muted">Supports the <code>{genre}</code> placeholder. Default: <strong>{genre} - Top Tracks</strong></small>
+          <span class="help-text">How many top weighted genres each track may appear in. Default: <strong>3</strong></span>
         </div>
       </div>
-      <div class="alert alert-secondary mb-3 py-2">
+
+      <!-- 3. Naming templates — full-width input cards -->
+      <div class="input-card naming-card">
+        <label for="playlists_genre_name_template">Genre Playlist Name Template</label>
+        <input type="text" class="form-control" id="playlists_genre_name_template" placeholder="{genre} - Top Tracks" value="{{ config.get('playlists', {}).get('genre_playlists_name_template', '{genre} - Top Tracks') }}">
+        <span class="help-text">Supports the <code>{genre}</code> placeholder. Default: <strong>{genre} - Top Tracks</strong></span>
+      </div>
+      <div class="input-card naming-card">
+        <label for="playlists_essential_name_template">Essential Playlist Name Template</label>
+        <input type="text" class="form-control" id="playlists_essential_name_template" placeholder="{artist} - Essential Collection" value="{{ config.get('playlists', {}).get('essential_name_template', '{artist} - Essential Collection') }}">
+        <span class="help-text">Supports the <code>{artist}</code> placeholder. Default: <strong>{artist} - Essential Collection</strong></span>
+      </div>
+
+      <!-- How it works -->
+      <div class="alert alert-secondary mb-0 py-2">
         <small class="text-muted">
           <strong>How it works:</strong> after each popularity scan, every artist with more than
           <strong>12 unique 4★/5★ tracks</strong> gets an <code>{name}.m3u</code> written to
@@ -1735,13 +1815,6 @@
           are included in the featured artist's collection. Changing the name
           template automatically cleans up stale files from older scans.
         </small>
-      </div>
-      <div class="row g-3">
-        <div class="col-12 col-sm-6 col-lg-4">
-          <label class="form-label form-label-sm">Playlist Name Template</label>
-          <input type="text" class="form-control form-control-sm" id="playlists_essential_name_template" placeholder="{artist} - Essential Collection" value="{{ config.get('playlists', {}).get('essential_name_template', '{artist} - Essential Collection') }}">
-          <small class="form-text text-muted">Supports the <code>{artist}</code> placeholder. Default: <strong>{artist} - Essential Collection</strong></small>
-        </div>
       </div>
     </div>
   </div>

@@ -1108,7 +1108,7 @@ def run_scan(
                 if was_album_scanned(artist, album, scan_type, skip_days):
                     skip_album = True
                     log_unified(f"Popularity Scan - Skipping album \"{str(album or '').strip()}\" (scanned within last {skip_days} days)")
-                elif tracks:
+                elif get_feature("skip_unchanged_albums", True) and tracks:
                     all_scored = all(float(t.get("final_score") or 0) > 0 for t in tracks)
                     all_assessed = all(t.get("single_detection_last_updated") for t in tracks)
                     if all_scored and all_assessed:
