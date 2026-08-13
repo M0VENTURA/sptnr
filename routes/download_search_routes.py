@@ -113,9 +113,18 @@ async def slskd_search():
     api_key = slskd_config.get("api_key", "")
     try:
         from api_clients.slskd_http import SlskdHttpClient
+        from services.downloads.slskd_service import SlskdService
         client = SlskdHttpClient(web_url, api_key)
+        # Free the single search slot before starting a manual search so a
+        # leftover completed/stuck search cannot force an HTTP 429 (legacy
+        # parity: _clear_stale_slskd_searches).
+        try:
+            SlskdService(http_client=client).clear_stale_searches(budget_seconds=6)
+        except Exception:
+            pass
         started = time.time()
-        search_id = client.start_search(query, timeout=20)
+        slskd_service = SlskdService(http_client=client)
+        search_id = slskd_service.start_search(query, timeout=20)
         if search_id:
             with _manual_search_lock:
                 _manual_search_state[search_id] = {
