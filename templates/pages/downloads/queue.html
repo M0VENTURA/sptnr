@@ -2193,8 +2193,10 @@ async function loadQueueStatus() {
     const importedData = importedResp && importedResp.ok ? await importedResp.json() : { success: false };
     const imported = importedData.success ? (importedData.imported || []) : [];
 
-    // Separate items by status
-    const active = data.active.filter(item => ['queued', 'searching', 'processing', 'downloading'].includes(item.status));
+    // Separate items by status.  backed_off / pending_release are PENDING
+    // states (waiting to return to the queue once their retry window passes)
+    // and stay visible in the active list.
+    const active = data.active.filter(item => ['queued', 'searching', 'processing', 'downloading', 'backed_off', 'pending_release'].includes(item.status));
     // A stuck 'moving' item must always be visible so the user can reset it —
     // it may have lost its file_path reference during a crashed move.
     const completed = data.completed.filter(item => item.status === 'moving'
@@ -2665,6 +2667,7 @@ function renderQueueItem(item, statusColor) {
     imported: 'complete',
     in_collection: 'complete',
     pending_release: 'pending',
+    backed_off: 'pending',
     unmatched: 'pending'
   }[item.status] || 'queued';
 
@@ -2730,10 +2733,10 @@ function renderQueueItem(item, statusColor) {
        </button>`
     : '';
 
-  // Retry-pending note: queued items inside a retry window show when the
-  // worker will pick them up again.
+  // Retry-pending note: queued / backed-off items inside a retry window show
+  // when the worker will pick them up again.
   let retryNote = '';
-  if (item.status === 'queued' && item.next_retry_at) {
+  if ((item.status === 'queued' || item.status === 'backed_off') && item.next_retry_at) {
     const retryAt = new Date(item.next_retry_at);
     if (retryAt.getTime() > Date.now()) {
       retryNote = `<small class="text-muted d-block"><i class="bi bi-hourglass-split"></i> Retrying ${retryAt.toLocaleString()}</small>`;

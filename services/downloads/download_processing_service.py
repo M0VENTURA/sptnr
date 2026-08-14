@@ -594,7 +594,7 @@ def process_queue_item(item: dict[str, Any]) -> dict[str, Any]:
         http_client = get_slskd_client()
         if http_client is None:
             logger.warning(
-                "Soulseek unavailable — marking queue item %s as failed",
+                "Soulseek unavailable — returning queue item %s to queue (pending auto retry)",
                 queue_id,
             )
             try:
@@ -605,9 +605,9 @@ def process_queue_item(item: dict[str, Any]) -> dict[str, Any]:
                 log_queue_event("failed", _queue_msg, queue_id=queue_id)
             except Exception:
                 pass
-            # mark_failed (not a raw status update) sets next_retry_at so the
-            # retry scheduler backs off instead of requeueing this item on
-            # every worker cycle while slskd stays down.
+            # mark_failed (not a raw status update) sends the item back to
+            # 'queued' with next_retry_at set so it re-enters the queue
+            # automatically after the retry delay while slskd stays down.
             mark_failed(queue_id, "soulseek_unavailable")
             return {
                 "success": False,

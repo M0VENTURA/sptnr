@@ -1276,17 +1276,33 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict:
         from sqlalchemy import text
         import difflib as _difflib
 
-        # Resolve the best concrete release in the group, then its tracklist.
-        best = get_musicbrainz_best_release(artist, album, rg_mbid)
-        best_release = (best or {}).get("best_release")
-        release_id = (best_release or {}).get("id") or rg_mbid
-        # ``fetch_musicbrainz_release_metadata`` needs a concrete RELEASE MBID
-        # (a release-group 404s on /ws/2/release/{id}) — resolve the group to
-        # a real release when best-release resolution came up empty.
-        if not (best_release or {}).get("id"):
-            resolved = resolve_release_id(rg_mbid)
-            if resolved and resolved != rg_mbid:
-                release_id = resolved
+        # Resolve a concrete RELEASE MBID for the tracklist fetch.  The input
+        # (``rg_mbid``) can be either a release-GROUP MBID (the shared search
+        # modal hands back the group) or a concrete RELEASE MBID (older lookup
+        # flows handed back a release).  A release id is used directly —
+        # browsing it as if it were a group 404s and wastes a slow round-trip;
+        # group ids go through the best-release resolver so the right
+        # edition's tracklist is compared.
+        _direct = None
+        try:
+            _direct = get_shared_mb_client().get_release(rg_mbid, inc="")
+        except Exception:
+            _direct = None
+
+        if _direct and _direct.get("id"):
+            release_id = rg_mbid
+        else:
+            best = get_musicbrainz_best_release(artist, album, rg_mbid)
+            best_release = (best or {}).get("best_release")
+            release_id = (best_release or {}).get("id") or rg_mbid
+            # ``fetch_musicbrainz_release_metadata`` needs a concrete RELEASE
+            # MBID (a release-group 404s on /ws/2/release/{id}) — resolve the
+            # group to a real release when best-release resolution came up
+            # empty.
+            if not (best_release or {}).get("id"):
+                resolved = resolve_release_id(rg_mbid)
+                if resolved and resolved != rg_mbid:
+                    release_id = resolved
 
         mb_release = fetch_musicbrainz_release_metadata(release_id)
         if not mb_release:

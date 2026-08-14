@@ -395,12 +395,14 @@ def get_queue_status_counts() -> Dict[str, int]:
 
 
 def get_active_queue(limit: int = 200) -> List[Dict[str, Any]]:
-    """Get non-terminal queue items (active statuses + failed).
+    """Get non-terminal queue items (active statuses + failed + pending retry).
 
     Active statuses come from the canonical ``ACTIVE_QUEUE_STATUSES`` set so
     the list always matches the status counts.  Failed items are included
     because the queue page splits them out of the active list client-side
-    (mirrors the legacy API payload).
+    (mirrors the legacy API payload).  ``PENDING_RETRY_STATUSES`` (backed_off
+    / pending_release) are included so items waiting to return to the queue
+    stay visible while their retry window passes.
 
     Strict queue vs. local-disk boundary: rows whose ``source`` is
     ``local``/``discovered`` represent ambient disk folders picked up by the
@@ -408,11 +410,17 @@ def get_active_queue(limit: int = 200) -> List[Dict[str, Any]]:
     and are always excluded here, regardless of status, so local disk folders
     never bleed into the active search/download queue.
     """
-    from services.queue.queue_constraints import ACTIVE_QUEUE_STATUSES, FAILED_STATUSES
+    from services.queue.queue_constraints import (
+        ACTIVE_QUEUE_STATUSES,
+        FAILED_STATUSES,
+        PENDING_RETRY_STATUSES,
+    )
     # Inline the statuses rather than binding a list parameter — psycopg2
     # cannot adapt a Python list for ``ANY(:statuses)`` and the resulting
     # exception was silently swallowed, returning an empty list.
-    status_sql = ", ".join(f"'{s}'" for s in sorted(ACTIVE_QUEUE_STATUSES | FAILED_STATUSES))
+    status_sql = ", ".join(
+        f"'{s}'" for s in sorted(ACTIVE_QUEUE_STATUSES | FAILED_STATUSES | PENDING_RETRY_STATUSES)
+    )
     try:
         with db_session() as session:
             result = session.execute(
@@ -474,19 +482,20 @@ def get_ready_for_processing(limit: int = 100) -> List[Dict]:
 
 
 def requeue_due_failed_items(limit: int = 50) -> List[Dict[str, Any]]:
-    """Requeue failed items whose retry window has arrived.
+    """Requeue legacy ``failed`` rows whose retry window has arrived.
+
+    New failures never land in ``failed`` — ``mark_failed`` returns them to
+    ``queued`` with a future ``next_retry_at`` so the worker picks them up
+    automatically.  This function is a safety net that sweeps any pre-change
+    ``failed`` rows back into the queue so nothing is ever left stuck in a
+    terminal ``failed`` state.
 
     Eligible items: ``status = 'failed'`` with (``next_retry_at`` unset or
     due).  Each requeued item gets ``retry_count + 1`` and
     ``next_retry_at = now + retry_delay_minutes`` so repeated failures back
-    off (legacy retry-scheduler parity).
-
-    No item is ever left permanently stuck in ``failed``: unlike earlier
-    behaviour that stopped at ``max_retries``, every failed item keeps
-    flowing back into the queue once its retry window arrives.  Items not
-    yet due remain ``failed`` (i.e. "pending") until ``next_retry_at``, then
-    are requeued automatically.  The configured ``queue.retry_delay_minutes``
-    (default 30) governs how long an item sits pending between attempts.
+    off (legacy retry-scheduler parity).  The configured
+    ``queue.retry_delay_minutes`` (default 30) governs how long an item sits
+    pending between attempts.
     """
     requeued: List[Dict[str, Any]] = []
     try:
@@ -695,24 +704,23 @@ def _queue_retry_defaults() -> tuple[int, int]:
 
 
 def mark_failed(queue_id: int, reason: str) -> Optional[Dict[str, Any]]:
-    """Mark a queue item failed with a reason.
+    """Record a failed processing attempt and schedule the automatic retry.
 
-    Retryable failures return to ``queued`` with ``next_retry_at`` refreshed
-    to now + retry delay — the worker only picks the item up once the retry
-    window passes, so it reads as queued in the UI instead of sitting in a
-    dead ``failed`` state.  Items that have exhausted ``max_retries`` stay
-    ``failed`` for manual retry.
+    A failure NEVER parks the item in a terminal ``failed`` state: it
+    returns to ``queued`` with ``next_retry_at`` set to now + retry delay,
+    so the worker automatically picks it up again once the retry window
+    passes (the queue page shows a "Retrying …" note while it waits).
+    ``retry_count`` is bumped each time and ``failure_reason`` records why,
+    so ``queue.failure_retry_delay_minutes`` / ``retry_delay_minutes``
+    govern the backoff cadence.
     """
-    delay, max_retries = _queue_retry_defaults()
+    delay = _queue_retry_defaults()[0]
     try:
         with db_session() as session:
             session.execute(
                 text("""
                     UPDATE download_queue
-                    SET status = CASE
-                            WHEN retry_count + 1 >= COALESCE(max_retries, :max_retries) THEN 'failed'
-                            ELSE 'queued'
-                        END,
+                    SET status = 'queued',
                         failure_reason = :reason,
                         retry_count = retry_count + 1,
                         next_retry_at = CURRENT_TIMESTAMP
@@ -720,7 +728,7 @@ def mark_failed(queue_id: int, reason: str) -> Optional[Dict[str, Any]]:
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = :qid
                 """),
-                {"qid": queue_id, "reason": reason, "delay": delay, "max_retries": max_retries},
+                {"qid": queue_id, "reason": reason, "delay": delay},
             )
         return {"success": True, "id": queue_id}
     except Exception as exc:

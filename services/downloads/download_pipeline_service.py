@@ -178,9 +178,10 @@ _SLSKD_TRACKNUM_RE = re.compile(r"\s+-\s+\d{1,3}\s+-\s+")
 # =============================================================================
 
 # Escalating backoff tiers for repeated search misses: 1st → 4h, 2nd → 12h,
-# 3rd → 24h.  Once the miss count reaches the number of tiers, automatic
-# retries are abandoned entirely (the item parks as failed and only a manual
-# Retry re-queues it).  Configurable via ``queue.search_backoff_hours``.
+# 3rd → 24h.  Once the miss count reaches the number of tiers, the longest
+# tier is reused forever — search misses are never abandoned to ``failed``
+# and always return to the queue automatically.
+# Configurable via ``queue.search_backoff_hours``.
 _DEFAULT_BACKOFF_TIER_HOURS = (4, 12, 24)
 
 
@@ -266,8 +267,14 @@ def _resolve_item_release_date(item: dict) -> str | None:
 
 
 def _schedule_search_retry(queue_id: int, item: dict, reason: str) -> None:
-    """Park a search-miss for later: pre-release items scan every Friday
-    06:00 UTC; released items back off ``_SEARCH_BACKOFF_HOURS`` hours."""
+    """Park a search-miss for later; the item always returns to the queue.
+
+    Pre-release items scan every configured weekday 06:00 UTC
+    (``pending_release``); released items back off through escalating tiers
+    (``_search_backoff_hours`` — 4h/12h/24h, then stay at the longest tier).
+    Items are never parked in ``failed``: they always come back to the queue
+    automatically.
+    """
     from db.repositories.queue import schedule_queue_retry
 
     artist = (item.get("artist") or "").strip()
@@ -288,15 +295,10 @@ def _schedule_search_retry(queue_id: int, item: dict, reason: str) -> None:
         _weekday_names = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
         _day_name = _weekday_names[_pre_release_retry_weekday()]
         note = f"{reason} — pre-release, scanning {_day_name} {_fmt_local(next_run)} local"
-    elif retry_count >= len(_search_backoff_hours()):
-        # 4th+ consecutive miss: stop hammering Soulseek — park as failed;
-        # only a manual Retry re-queues the item.
-        from db.repositories.queue import mark_failed
-        mark_failed(queue_id, f"{reason} — abandoned after {retry_count + 1} attempts (manual retry)")
-        log_unified(f"[QUEUE] {artist} - {title} → {reason} — abandoned after {retry_count + 1} attempts (manual retry)")
-        _log_queue_event("failed", f"{artist} - {title} → abandoned after {retry_count + 1} attempts (manual retry)", queue_id)
-        return
     else:
+        # Search misses keep backing off through the tiers forever (the last
+        # tier is reused once exhausted) — the item is never abandoned to
+        # 'failed' and always returns to the queue automatically.
         hours = _backoff_hours_for(retry_count)
         next_run = now_utc + timedelta(hours=hours)
         status = "backed_off"

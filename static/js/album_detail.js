@@ -39,9 +39,45 @@ var _pageData = window._pageData || {};
     }
     // ─────────────────────────────────────────────────────────────────────────
 
+    // "Lookup on MusicBrainz" — reuses the shared MusicBrainz release search
+    // component (the same one wired into the download queue's matched-folders
+    // flow) so every lookup in the app follows the same selection contract.
+    // On selection the release-group MBID is applied to the album form and the
+    // official tracklist comparison is triggered.
     function openAlbumLookupModal() {
-        const modal = new bootstrap.Modal(document.getElementById('albumLookupModal'));
-        modal.show();
+        const artist = _pageData.artistName || '';
+        const album = _pageData.albumName || '';
+
+        window._mbSearchCallback = function (selected) {
+            window._mbSearchCallback = null;
+            if (!selected) return;
+            const group = selected.release || {};
+            // The shared component hands back the release-GROUP MBID in
+            // selected.id (or selected.release.id); a concrete release id is
+            // only present when a specific release was chosen from the list.
+            const rgMbid = group.id || selected.id;
+            const releaseMbid = (selected.id && selected.id !== rgMbid) ? selected.id : '';
+            const year = (group.first_release_date || '').toString().split('-')[0] || '';
+            const albumType = _buildAlbumType(group.primary_type, group.secondary_types);
+            const cover = group.cover_art_url || '';
+            populateAlbumFields(
+                selected.title || group.title || album,
+                year,
+                albumType,
+                releaseMbid,
+                '',
+                cover,
+                '',
+                rgMbid
+            );
+        };
+
+        if (typeof window.populateMusicBrainzSearch === 'function') {
+            window.populateMusicBrainzSearch(artist, album, '', '');
+        }
+        if (typeof window.showMusicBrainzModal === 'function') {
+            window.showMusicBrainzModal();
+        }
     }
 
     // Search button of the album lookup modal — uses the modal's artist/album
@@ -1119,9 +1155,14 @@ var _pageData = window._pageData || {};
     
     // Album metadata form population function
     function populateAlbumFields(title, year, albumType, mbid, discogsId, coverArtUrl, genres, releaseGroupMbid) {
-        // Close any open lookup modals
-        const lookupModal = bootstrap.Modal.getInstance(document.getElementById('albumLookupModal'));
-        if (lookupModal) lookupModal.hide();
+        // Close any open lookup modals (the shared MB modal lives in base.html;
+        // the legacy albumLookupModal include was removed when lookups moved to
+        // the shared component — guard in case a stale build still has it).
+        const lookupEl = document.getElementById('albumLookupModal');
+        if (lookupEl) {
+            const lookupModal = bootstrap.Modal.getInstance(lookupEl);
+            if (lookupModal) lookupModal.hide();
+        }
         const pickerModal = bootstrap.Modal.getInstance(document.getElementById('releasePickerModal'));
         if (pickerModal) pickerModal.hide();
         

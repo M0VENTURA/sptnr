@@ -75,6 +75,15 @@ FAILED_STATUSES: frozenset[str] = frozenset({
     "deleted",
 })
 
+# Statuses where an item is parked waiting for its retry window before it
+# returns to the active queue automatically (``backed_off`` = a search or
+# download failed and the item is cooling off; ``pending_release`` = awaiting
+# the release date).  These are PENDING states — never terminal ``failed``.
+PENDING_RETRY_STATUSES: frozenset[str] = frozenset({
+    "backed_off",
+    "pending_release",
+})
+
 TERMINAL_QUEUE_STATUSES: frozenset[str] = frozenset({
     "completed",
     "failed",
@@ -211,7 +220,7 @@ STATUS_DISPLAY_CONFIG: dict[str, dict[str, str]] = {
         "icon": "search",
     },
     "backed_off": {
-        "label": "Cooling Off",
+        "label": "Pending",
         "css": "bg-secondary",
         "icon": "hourglass-split",
     },
@@ -268,6 +277,7 @@ __all__ = [
     "COMPLETED_QUEUE_STATUSES",
     "COLLECTION_STATUSES",
     "FAILED_STATUSES",
+    "PENDING_RETRY_STATUSES",
     "TERMINAL_QUEUE_STATUSES",
     "ALL_QUEUE_STATUSES",
     "STATUS_DISPLAY_CONFIG",

@@ -694,7 +694,8 @@ function queueStatusPill(st, item) {
     queued: ['queued', '🟡 Queued'],
     complete: ['complete', '🟢 Complete'],
     moving: ['complete', '🟢 Moving'],
-    pending_release: ['pending', '🔘 Pending']
+    pending_release: ['pending', '🔘 Pending'],
+    backed_off: ['pending', '🔘 Pending']
   };
   var cfg = map[st] || ['queued', '🟡 ' + escapeHtml(st)];
   var label = cfg[1];
