@@ -22,9 +22,10 @@ All heavy logic lives in:
 """
 
 import os
-import secrets
 
 from quart import Quart
+
+from helpers.secret_key import resolve_secret_key
 
 from helpers.logging_config import setup_logging
 from db.bootstrap import init_database_and_schema
@@ -79,7 +80,11 @@ if _sqlalchemy_available:
 
 
 app = Quart(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(16))
+# Secret key must be IDENTICAL across all hypercorn workers.  Quart signs the
+# session cookie with this key; if every worker rolls its own random value,
+# a request served by worker A carries a cookie worker B cannot validate and
+# the user is bounced back to login on every page navigation.
+app.secret_key = resolve_secret_key()
 app.config["PERMANENT_SESSION_LIFETIME"] = 86400
 
 CONFIG_PATH = os.environ.get("CONFIG_PATH") or "/config/config.yaml"
