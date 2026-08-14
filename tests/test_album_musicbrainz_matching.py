@@ -318,3 +318,23 @@ def test_compare_musicbrainz_release_case_insensitive_lookup(monkeypatch, mb_env
     by_num = {c["mb_track_number"]: c for c in result["comparison"]}
     assert by_num[1]["matched"] is True
     assert by_num[2]["matched"] is True
+
+
+def test_compare_library_query_is_postgres_portable():
+    """Regression: ``disc_number`` / ``track_number`` are TEXT columns in
+    PostgreSQL, so ``compare_musicbrainz_release``'s library query must not
+    COALESCE them with integer literals.  ``COALESCE(disc_number, 1)`` fails
+    on Postgres with "COALESCE types text and integer cannot be matched";
+    the exception was swallowed and surfaced as the misleading "No library
+    tracks found for this album" — even though the album page (which uses
+    string literals) showed tracks.  SQLite can't catch this (loose typing),
+    so the SQL is asserted directly."""
+    import services.enrichment.musicbrainz_service as svc
+
+    sql = svc._COMPARE_LIBRARY_TRACKS_SQL
+    # Must use string literals so the query runs on PostgreSQL.
+    assert "COALESCE(disc_number, '1')" in sql
+    assert "COALESCE(track_number, '999')" in sql
+    # The exact regressions must never come back.
+    assert "COALESCE(disc_number, 1)" not in sql
+    assert "COALESCE(track_number, 999)" not in sql

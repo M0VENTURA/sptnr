@@ -92,7 +92,7 @@ def fetch_album_tracklist(conn: Any = None, artist: str = "", album: str = ""):
             WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
               AND album = :album
             ORDER BY COALESCE(disc_number, '1'),
-                     COALESCE(track_number, 999),
+                     COALESCE(track_number, '999'),
                      title
         """), {"artist": artist, "album": album})
         return result.fetchall() or []

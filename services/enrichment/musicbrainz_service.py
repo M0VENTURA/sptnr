@@ -50,6 +50,23 @@ from helpers.normalization_service import (
 logger = logging.getLogger(__name__)
 
 
+# Library-track query used by ``compare_musicbrainz_release``.  Kept as a
+# module constant so tests can assert it stays portable across SQLite (test
+# runs) and PostgreSQL (production): ``disc_number`` / ``track_number`` are
+# TEXT columns, so COALESCE must use string literals — integer literals make
+# PostgreSQL raise "COALESCE types text and integer cannot be matched",
+# which was silently swallowed and surfaced as the misleading "No library
+# tracks found for this album".
+_COMPARE_LIBRARY_TRACKS_SQL = """
+    SELECT id, title, track_number, disc_number, artist, year,
+           mbid, file_path, duration, mb_ignored_fields
+    FROM tracks
+    WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)
+      AND LOWER(COALESCE(album, '')) = LOWER(:album)
+    ORDER BY COALESCE(disc_number, '1'), COALESCE(track_number, '999')
+"""
+
+
 def _similarity(a: str, b: str) -> float:
     """String similarity on a 0-1 scale (shared ``fuzzy_match_score``)."""
     from services.popularity.popularity_math import fuzzy_match_score
@@ -1319,19 +1336,32 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict:
         try:
             with db_session() as session:
                 result = session.execute(
-                    text("""
-                        SELECT id, title, track_number, disc_number, artist, year,
-                               mbid, file_path, duration, mb_ignored_fields
-                        FROM tracks
-                        WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)
-                          AND LOWER(COALESCE(album, '')) = LOWER(:album)
-                        ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 999)
-                    """),
+                    text(_COMPARE_LIBRARY_TRACKS_SQL),
                     {"artist": artist, "album": album},
                 )
                 library_tracks = [dict(r._mapping) for r in result.fetchall()]
         except Exception as exc:
             logger.debug("[MB_COMPARE] library track fetch failed: %s", exc)
+
+        # ``disc_number`` / ``track_number`` are TEXT columns in PostgreSQL.
+        # The old ``COALESCE(disc_number, 1)`` integer literals made the whole
+        # query fail on Postgres ("COALESCE types text and integer cannot be
+        # matched") — the exception was swallowed above and surfaced as the
+        # misleading "No library tracks found for this album".  String
+        # literals keep the query portable (SQLite tests + Postgres); the
+        # Python sort below restores numeric disc/track ordering.
+        def _disc_track_key(t: dict[str, Any]) -> tuple[int, int]:
+            def _num(v: Any, default: int) -> int:
+                s = str(v or "").strip()
+                if not s:
+                    return default
+                try:
+                    return int(s.split("/")[0].strip())
+                except (TypeError, ValueError):
+                    return default
+            return (_num(t.get("disc_number"), 1), _num(t.get("track_number"), 999))
+
+        library_tracks.sort(key=_disc_track_key)
 
         if not library_tracks:
             return {
