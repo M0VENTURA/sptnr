@@ -72,6 +72,12 @@ var _pageData = window._pageData || {};
             );
         };
 
+        // The shared /api/musicbrainz/search endpoint strips release-groups
+        // already in the library by default (discovery mode). This lookup
+        // targets the album we're already viewing, so include owned releases
+        // — otherwise every match is filtered out and the modal shows
+        // "No results found".
+        window._mbSearchIncludeOwned = true;
         if (typeof window.populateMusicBrainzSearch === 'function') {
             window.populateMusicBrainzSearch(artist, album, '', '');
         }
