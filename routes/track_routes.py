@@ -293,47 +293,52 @@ def api_toggle_manual_single(track_id):
 
 
 # ---------------------------------------------------------------------------
-# POST /api/track/favourite
+# Track favourites (bookmarks-backed)
 # ---------------------------------------------------------------------------
+# Split into dedicated GET / POST / DELETE handlers (previously one overloaded
+# handler dispatched on request.method).
 
-@track_bp.route("/favourite", methods=["GET", "POST", "DELETE"])
-async def api_track_favourite():
-    """Check, add, or remove a track from favourites."""
-    if request.method == "GET":
-        track_id = request.args.get("track_id", "").strip()
-        if not track_id:
-            return jsonify({"error": "track_id required"}), 400
-        with db_session() as session:
-            result = session.execute(
-                text("SELECT 1 FROM bookmarks WHERE type = 'track_favourite' AND LOWER(name) = LOWER(:id) LIMIT 1"),
-                {"id": track_id},
-            )
-            return jsonify({"success": True, "is_favourite": result.fetchone() is not None}), 200
+@track_bp.get("/favourite")
+async def api_track_favourite_get():
+    """Check whether a track is favourited."""
+    track_id = request.args.get("track_id", "").strip()
+    if not track_id:
+        return jsonify({"error": "track_id required"}), 400
+    with db_session() as session:
+        result = session.execute(
+            text("SELECT 1 FROM bookmarks WHERE type = 'track_favourite' AND LOWER(name) = LOWER(:id) LIMIT 1"),
+            {"id": track_id},
+        )
+        return jsonify({"success": True, "is_favourite": result.fetchone() is not None}), 200
 
-    if request.method == "POST":
-        data = (await request.get_json()) or {}
-        track_id = str(data.get("track_id") or "").strip()
-        if not track_id:
-            return jsonify({"error": "track_id required"}), 400
-        with db_session() as session:
-            session.execute(
-                text("INSERT INTO bookmarks (type, name) VALUES ('track_favourite', :id) ON CONFLICT DO NOTHING"),
-                {"id": track_id},
-            )
-        return jsonify({"success": True, "is_favourite": True}), 200
 
-    if request.method == "DELETE":
-        track_id = request.args.get("track_id", "").strip()
-        if not track_id:
-            return jsonify({"error": "track_id required"}), 400
-        with db_session() as session:
-            session.execute(
-                text("DELETE FROM bookmarks WHERE type = 'track_favourite' AND LOWER(name) = LOWER(:id)"),
-                {"id": track_id},
-            )
-        return jsonify({"success": True, "is_favourite": False}), 200
+@track_bp.post("/favourite")
+async def api_track_favourite_add():
+    """Add a track to favourites."""
+    data = (await request.get_json()) or {}
+    track_id = str(data.get("track_id") or "").strip()
+    if not track_id:
+        return jsonify({"error": "track_id required"}), 400
+    with db_session() as session:
+        session.execute(
+            text("INSERT INTO bookmarks (type, name) VALUES ('track_favourite', :id) ON CONFLICT DO NOTHING"),
+            {"id": track_id},
+        )
+    return jsonify({"success": True, "is_favourite": True}), 200
 
-    return jsonify({"error": "Unsupported method"}), 405
+
+@track_bp.delete("/favourite")
+async def api_track_favourite_remove():
+    """Remove a track from favourites."""
+    track_id = request.args.get("track_id", "").strip()
+    if not track_id:
+        return jsonify({"error": "track_id required"}), 400
+    with db_session() as session:
+        session.execute(
+            text("DELETE FROM bookmarks WHERE type = 'track_favourite' AND LOWER(name) = LOWER(:id)"),
+            {"id": track_id},
+        )
+    return jsonify({"success": True, "is_favourite": False}), 200
 
 
 # ---------------------------------------------------------------------------

@@ -134,7 +134,15 @@ async def login():
                 if not base_url:
                     continue
                 try:
-                    client = NavidromeClient(base_url=base_url, username=username, password=password)
+                    # Try password-based auth first (some Navidrome setups
+                    # reject token auth), then fall back to token auth —
+                    # mirroring the setup wizard's connection test.
+                    client = NavidromeClient(base_url=base_url, username=username, password=password, use_token_auth=False)
+                    if client.ping():
+                        session["username"] = username
+                        await flash(f"Welcome back, {username}!", "success")
+                        return redirect(url_for("ui.dashboard"))
+                    client = NavidromeClient(base_url=base_url, username=username, password=password, use_token_auth=True)
                     if client.ping():
                         session["username"] = username
                         await flash(f"Welcome back, {username}!", "success")

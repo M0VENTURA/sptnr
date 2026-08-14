@@ -35,7 +35,13 @@ from api_clients import session
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_RETRIES = 2
+# The shared ``session`` (``create_retry_client(retries=3)``) already retries
+# connection errors and retryable statuses internally with backoff.  Keep the
+# client-level retry count at 0 so we never double-retry (up to 9 attempts)
+# during high-contention windows (e.g. DB pool exhaustion cascades).  The
+# loop below still handles non-retryable statuses (fail fast) and surfaces
+# the final error in the log.
+_DEFAULT_RETRIES = 0
 _RETRYABLE_STATUSES = frozenset({429, 502, 503, 504})
 # Permanently-unavailable endpoints (e.g. `getSongs`, which Navidrome does not
 # implement) must fail fast instead of retrying and spamming the log.
@@ -582,8 +588,13 @@ class NavidromeClient:
             True when the server responds and credentials are valid.
         """
         try:
+            # ``_get_subsonic_response`` already unwraps the outer
+            # ``subsonic-response`` key, so ``data`` is the inner dict
+            # (e.g. ``{"status": "ok", "version": ...}``).  Reading the
+            # ``subsonic-response`` key again here would always miss and
+            # make ping() return False even for valid credentials.
             data = self._get_subsonic_response("ping", timeout=10)
-            status = data.get("subsonic-response", {}).get("status")
+            status = data.get("status")
             return status == "ok"
         except Exception as exc:
             logger.debug("Navidrome ping failed: %s", exc)

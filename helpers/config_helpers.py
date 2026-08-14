@@ -206,6 +206,7 @@ def get_config() -> dict:
         "database_url": s.database_url,
         "db_pool_size": s.db_pool_size,
         "db_pool_overflow": s.db_pool_overflow,
+        "db_pool_timeout": s.db_pool_timeout,
         "music_root": s.music_root,
         "music_folder": s.music_folder,
         "downloads_folder": s.downloads_folder,

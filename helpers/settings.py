@@ -52,8 +52,9 @@ class Settings(BaseSettings):
     pg_password: str = Field(default="", description="PostgreSQL password")
     pg_database: str = Field(default="popularr", description="PostgreSQL database name")
     database_url: str = Field(default="", description="Full connection string (overrides all PG_* vars)")
-    db_pool_size: int = Field(default=5, description="SQLAlchemy pool size")
-    db_pool_overflow: int = Field(default=10, description="SQLAlchemy max overflow")
+    db_pool_size: int = Field(default=10, description="SQLAlchemy pool size (baseline connections kept open)")
+    db_pool_overflow: int = Field(default=20, description="SQLAlchemy max overflow (extra connections on demand)")
+    db_pool_timeout: int = Field(default=30, description="Seconds to wait for a pooled connection before erroring")
 
     # ── Navidrome ─────────────────────────────────────────────────────────
     nav_url: str = Field(default="", description="Navidrome server URL")

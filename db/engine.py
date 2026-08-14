@@ -151,10 +151,14 @@ def get_engine() -> Engine:
         kwargs["poolclass"] = NullPool
         kwargs["connect_args"] = {"check_same_thread": False}
     else:
-        # PostgreSQL gets a small connection pool
+        # PostgreSQL gets a connection pool sized to scan concurrency
+        # (up to 8 parallel track workers plus background services) with
+        # an explicit pool_timeout so contention fails fast instead of
+        # hanging and cascading (e.g. Navidrome scan-status timeouts).
         kwargs["poolclass"] = QueuePool
-        kwargs["pool_size"] = int(os.environ.get("DB_POOL_SIZE", "5"))
-        kwargs["max_overflow"] = int(os.environ.get("DB_POOL_OVERFLOW", "10"))
+        kwargs["pool_size"] = int(os.environ.get("DB_POOL_SIZE", "10"))
+        kwargs["max_overflow"] = int(os.environ.get("DB_POOL_OVERFLOW", "20"))
+        kwargs["pool_timeout"] = int(os.environ.get("DB_POOL_TIMEOUT", "30"))
         kwargs["pool_pre_ping"] = True  # verify connections before use
 
     _ENGINE = create_engine(url, **kwargs)
@@ -207,8 +211,9 @@ def get_async_engine() -> Any:
         "future": True,
     }
     if not url.startswith("sqlite:"):
-        kwargs["pool_size"] = int(os.environ.get("DB_POOL_SIZE", "5"))
-        kwargs["max_overflow"] = int(os.environ.get("DB_POOL_OVERFLOW", "10"))
+        kwargs["pool_size"] = int(os.environ.get("DB_POOL_SIZE", "10"))
+        kwargs["max_overflow"] = int(os.environ.get("DB_POOL_OVERFLOW", "20"))
+        kwargs["pool_timeout"] = int(os.environ.get("DB_POOL_TIMEOUT", "30"))
         kwargs["pool_pre_ping"] = True
 
     _ASYNC_ENGINE = create_async_engine(url, **kwargs)
