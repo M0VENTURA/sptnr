@@ -15,6 +15,11 @@ import os
 import pytest
 
 os.environ.setdefault("CONFIG_PATH", "/dev/null")
+# The app bootstraps its log file at import time (``ensure_default_log_files``);
+# point it at a writable scratch path so test environments without /config do
+# not blow up on import.
+import tempfile
+os.environ.setdefault("LOG_PATH", os.path.join(tempfile.mkdtemp(), "app.log"))
 # Production is PostgreSQL-only; an explicit DATABASE_URL keeps the unit
 # test suite self-contained on an in-memory SQLite engine.
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")

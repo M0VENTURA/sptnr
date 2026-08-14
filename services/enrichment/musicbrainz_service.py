@@ -1695,8 +1695,13 @@ def _get_local_track_count(artist: str, album: str) -> int:
         from db.engine import db_session
         from sqlalchemy import text
         with db_session() as session:
+            # Case-insensitive + NULL-safe matching, mirroring the album-detail
+            # page route query — the URL-decoded artist/album names frequently
+            # differ in case from the stored values, and an exact match would
+            # report 0 tracks (confidence 0.5 → "not confident enough" on the
+            # album page's auto-match).
             result = session.execute(
-                text("SELECT COUNT(*) AS cnt FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album"),
+                text("SELECT COUNT(*) AS cnt FROM tracks WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist) AND LOWER(COALESCE(album, '')) = LOWER(:album)"),
                 {"artist": artist, "album": album},
             )
             row = result.fetchone()
