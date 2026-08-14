@@ -118,27 +118,35 @@ async def login():
         cfg = get_config()
         nav_users = cfg.get("navidrome_users", [])
 
-        # Try verifying against Navidrome first (live check)
+        # Credentials are verified LIVE against Navidrome only.  There is
+        # deliberately NO plaintext-password fallback against the stored
+        # Navidrome password in config.yaml: the stored password exists so
+        # the app can call Navidrome's API, it is not a login credential.
+        # Comparing the submitted password to it would (a) keep a plaintext
+        # credential comparison in the auth path and (b) let login succeed
+        # while Navidrome is unreachable.  If Navidrome is down the login
+        # simply fails — which is correct, because nothing in the app works
+        # without Navidrome anyway.
         from api_clients.navidrome import NavidromeClient
         for user in nav_users:
             if user.get("user") == username:
                 base_url = str(user.get("base_url", "")).rstrip("/")
-                if base_url:
-                    try:
-                        client = NavidromeClient(base_url=base_url, username=username, password=password)
-                        if client.ping():
-                            session["username"] = username
-                            await flash(f"Welcome back, {username}!", "success")
-                            return redirect(url_for("ui.dashboard"))
-                    except Exception:
-                        pass
-                # Fallback: check against stored password
-                if user.get("pass") == password:
-                    session["username"] = username
-                    await flash(f"Welcome back, {username}!", "success")
-                    return redirect(url_for("ui.dashboard"))
+                if not base_url:
+                    continue
+                try:
+                    client = NavidromeClient(base_url=base_url, username=username, password=password)
+                    if client.ping():
+                        session["username"] = username
+                        await flash(f"Welcome back, {username}!", "success")
+                        return redirect(url_for("ui.dashboard"))
+                except Exception:
+                    logger.debug("Login ping failed for %s", username, exc_info=True)
 
-        await flash("Invalid credentials", "error")
+        await flash(
+            "Invalid credentials — could not verify against Navidrome. "
+            "Check that Navidrome is reachable and your username/password are correct.",
+            "error",
+        )
         return await render_template("auth/login.html")
     return await render_template("auth/login.html")
 
