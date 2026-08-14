@@ -308,11 +308,18 @@ def _register_default_jobs(scheduler: BackgroundScheduler, cfg: dict[str, Any]) 
             float(watcher.get("scan_interval", 60) or 60),
         )
         try:
-            from services.queue.queue_orchestrator import process_next_batch
+            # process_cycle (not process_next_batch) so the queue tick also
+            # runs the maintenance hooks — most importantly the retry
+            # scheduler (failed → queued) and the completion/cleanup checks.
+            # With process_next_batch alone, requeue_due_failed_items only
+            # ran inside the standalone queue_worker.py process, so failed
+            # items never returned to the retry loop when the worker wasn't
+            # running (e.g. APScheduler-only deployments).
+            from services.queue.queue_orchestrator import process_cycle
             _put(
                 "download_queue_processor", "Process download queue",
                 IntervalTrigger(seconds=interval_seconds),
-                func=process_next_batch,
+                func=process_cycle,
                 max_instances=1,
                 coalesce=True,
                 misfire_grace_time=30,
