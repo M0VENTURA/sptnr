@@ -11,6 +11,7 @@ Architecture rules:
 
 from routes.downloads import downloads_bp
 from routes.playlists import playlists_bp
+from routes.favourites import favourites_bp
 from routes.album_routes import album_bp
 from routes.artist_routes import artist_bp
 from routes.analytics import analytics_bp
@@ -39,6 +40,7 @@ from routes.queue import (
 def register_all_blueprints(app):
     app.register_blueprint(downloads_bp)
     app.register_blueprint(playlists_bp)
+    app.register_blueprint(favourites_bp)
     app.register_blueprint(album_bp, url_prefix="/api/album")
     app.register_blueprint(artist_bp)
     app.register_blueprint(analytics_bp)

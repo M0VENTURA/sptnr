@@ -109,13 +109,17 @@ def _release_cover_art_url(release_group: dict[str, Any]) -> str:
 def _build_missing_release_items(
     release_groups: list[dict[str, Any]],
     existing_norm: set[str],
-    include_singles_current_year_only: bool = True,
+    include_singles_current_year_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Filter release-groups into missing-release items.
 
-    Excludes releases already in the library, non album/ep/single primary
-    types, Live Album / Remix categories, and (by default) singles older than
-    the current calendar year — mirroring the legacy scanner.
+    Includes ALL release types the artist page displays: Albums, Live Albums,
+    Remix Albums, Compilations, EPs and Singles.  Excludes releases already
+    in the library and non album/ep/single primary types.
+
+    ``include_singles_current_year_only`` is a legacy escape hatch that can
+    be re-enabled to only surface current-year singles; it defaults to False
+    so the full singles catalogue is populated.
     """
     from datetime import datetime
 
@@ -134,10 +138,9 @@ def _build_missing_release_items(
             continue
 
         category = _categorize_release(rg)
-        if category in ("Live Album", "Remix"):
-            continue
 
-        # Only include singles released in the current calendar year.
+        # Only include singles released in the current calendar year when the
+        # legacy flag is explicitly enabled (default: include all singles).
         if category == "Single" and include_singles_current_year_only:
             first_release = (rg.get("first-release-date") or rg.get("first_release_date") or "")
             try:

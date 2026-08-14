@@ -1925,6 +1925,19 @@ def post_album_star_ratings(
         except Exception as log_exc:
             logger.debug("[finalise_stage] Album progress log failed: %s", log_exc)
 
+        # Per-user heart rating floor: any track hearted by a configured
+        # Navidrome user never drops below the configured floor (e.g. 4★).
+        # Applied AFTER the algorithm so personal taste overrides the
+        # popularity-based band, and BEFORE the Navidrome sync so the raised
+        # ratings propagate.
+        try:
+            from services.favourites_service import apply_favourite_rating_floor
+            _floored = apply_favourite_rating_floor(artist, album)
+            if _floored:
+                log_unified(f"♥ {_floored} hearted track(s) raised to the favourite rating floor")
+        except Exception as _floor_err:
+            logger.debug("[finalise_stage] Favourite rating floor skipped: %s", _floor_err)
+
         # Sync to Navidrome — every rated track (old-system parity:
         # 1★/2★ ratings and downgrades must propagate too).
         if options.get("sync_navidrome", True):

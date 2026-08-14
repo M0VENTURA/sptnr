@@ -654,6 +654,9 @@
                     {% endif %}
                     <div class="d-flex align-items-center gap-2 mt-1 ps-2">
                         <span class="text-warning text-nowrap" style="font-size: 0.85rem;">{% if track.stars %}{% for i in range(track.stars) %}★{% endfor %}{% else %}<span class="text-muted">—</span>{% endif %}</span>
+                        {% if not _queued %}
+                        <button class="btn btn-sm row-icon-btn track-heart-btn" data-track-id="{{ track.id }}" title="Heart this track (syncs to your Navidrome favourites)"><i class="bi bi-heart"></i></button>
+                        {% endif %}
                         <span class="ms-auto d-flex align-items-center gap-1">
                             {% if _queued %}
                             {% set _fp = track.file_path or '' %}
@@ -700,6 +703,9 @@
                         <span class="badge badge-success">{% for i in range(track.stars) %}★{% endfor %}</span>
                     {% else %}
                         <span class="text-muted">—</span>
+                    {% endif %}
+                    {% if not _queued %}
+                    <button class="btn btn-sm row-icon-btn track-heart-btn ms-1" data-track-id="{{ track.id }}" title="Heart this track (syncs to your Navidrome favourites)"><i class="bi bi-heart"></i></button>
                     {% endif %}
                 </td>
                 <td class="d-none d-md-table-cell">

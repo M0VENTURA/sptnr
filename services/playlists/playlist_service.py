@@ -303,6 +303,57 @@ def refresh_all_playlists_from_db():
         return count
 
 
+def create_or_update_loved_tracks_playlist() -> dict:
+    """Build a per-user 'Loved Tracks' .nsp playlist from hearted tracks.
+
+    Uses the ACTIVE user's favourites (``user_favourites`` entity_type=track).
+    Creates/updates ``Loved Tracks.nsp`` in the Playlists directory so
+    Navidrome picks it up as a smart playlist.  Returns the playlist entry
+    (name/file_path/track_count) or an error dict.
+    """
+    from services.favourites_service import favourite_ids
+    try:
+        hearted = favourite_ids("track")
+        if not hearted:
+            return {"success": True, "track_count": 0, "note": "no hearted tracks"}
+
+        with db_session() as session:
+            rows = session.execute(
+                text("""
+                    SELECT id, title, artist FROM tracks
+                    WHERE CAST(id AS TEXT) IN (SELECT value FROM json_each(:ids))
+                    ORDER BY title
+                """),
+                {"ids": json.dumps(hearted)},
+            ).fetchall() or []
+
+        tracks = [
+            {
+                "id": str(r[0]),
+                "title": str(r[1] or ""),
+                "artist": str(r[2] or ""),
+                "rating": 5,
+            }
+            for r in rows
+        ]
+
+        playlist_name = "Loved Tracks"
+        data = {
+            "name": playlist_name,
+            "comment": "Heart tracks in Popularr to build this playlist (synced with Navidrome favourites)",
+            "rules": {},
+            "tracks": tracks,
+        }
+        ok = create_nsp_file(playlist_name, data)
+        if not ok:
+            return {"success": False, "error": "Failed to write Loved Tracks playlist"}
+        return {"success": True, "track_count": len(tracks), "name": playlist_name,
+                "file_path": playlist_path(playlist_name)}
+    except Exception as exc:
+        logger.warning("[PLAYLISTS] Loved Tracks playlist generation failed: %s", exc)
+        return {"success": False, "error": str(exc)}
+
+
 logger = logging.getLogger(__name__)
 
 

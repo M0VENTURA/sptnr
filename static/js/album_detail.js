@@ -3920,4 +3920,110 @@ document.addEventListener('DOMContentLoaded', function () {
     initAlbumGenreClamp();
 });
 
+// ============================================================================
+// PER-USER TRACK HEARTS (Navidrome star sync)
+// ============================================================================
+
+// Hearted track IDs for the ACTIVE user (loaded once per page view).
+let _heartedTrackIds = new Set();
+
+async function loadHeartedTrackIds() {
+    try {
+        const resp = await fetch('/api/favourites/ids?entity_type=track');
+        const data = await resp.json();
+        if (data && data.success && Array.isArray(data.ids)) {
+            _heartedTrackIds = new Set(data.ids);
+        }
+    } catch (err) {
+        console.error('Failed to load hearted tracks:', err);
+    }
+}
+
+function _heartIcon(hearted) {
+    return hearted ? '<i class="bi bi-heart-fill text-danger"></i>' : '<i class="bi bi-heart"></i>';
+}
+
+function refreshTrackHeartButtons() {
+    document.querySelectorAll('.track-heart-btn').forEach(function (btn) {
+        const trackId = btn.getAttribute('data-track-id');
+        const hearted = _heartedTrackIds.has(trackId);
+        btn.innerHTML = _heartIcon(hearted);
+        btn.classList.toggle('hearted', hearted);
+        btn.setAttribute('aria-pressed', hearted ? 'true' : 'false');
+    });
+}
+
+async function toggleTrackHeart(btn) {
+    const trackId = btn.getAttribute('data-track-id');
+    if (!trackId) return;
+
+    const currentlyHearted = _heartedTrackIds.has(trackId);
+    const nextHearted = !currentlyHearted;
+
+    // Optimistic update.
+    if (nextHearted) {
+        _heartedTrackIds.add(trackId);
+    } else {
+        _heartedTrackIds.delete(trackId);
+    }
+    refreshTrackHeartButtons();
+
+    try {
+        const resp = await fetch('/api/favourites/toggle', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                entity_type: 'track',
+                entity_id: trackId,
+                navidrome_id: trackId,
+                is_favourite: nextHearted,
+            }),
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data || !data.success) {
+            // Revert the optimistic update on failure.
+            if (nextHearted) {
+                _heartedTrackIds.delete(trackId);
+            } else {
+                _heartedTrackIds.add(trackId);
+            }
+            refreshTrackHeartButtons();
+            const msg = (data && data.error) || 'Failed to update heart';
+            if (typeof showToastMsg === 'function') {
+                showToastMsg(msg, true);
+            } else {
+                alert(msg);
+            }
+            return;
+        }
+        // If Navidrome sync failed, surface a gentle warning but keep the
+        // local heart state (it will re-sync on the next background pull).
+        if (data.navidrome_synced === false) {
+            console.warn('Heart saved locally but Navidrome sync failed for track', trackId);
+        }
+    } catch (err) {
+        // Network error — revert.
+        if (nextHearted) {
+            _heartedTrackIds.delete(trackId);
+        } else {
+            _heartedTrackIds.add(trackId);
+        }
+        refreshTrackHeartButtons();
+        console.error('Toggle heart error:', err);
+    }
+}
+
+document.addEventListener('click', function (e) {
+    const btn = e.target.closest('.track-heart-btn');
+    if (btn) {
+        e.preventDefault();
+        toggleTrackHeart(btn);
+    }
+});
+
+document.addEventListener('DOMContentLoaded', function () {
+    loadHeartedTrackIds().then(refreshTrackHeartButtons);
+});
+
+
 

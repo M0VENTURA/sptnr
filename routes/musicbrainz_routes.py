@@ -538,9 +538,41 @@ async def api_musicbrainz_search():
 
             raw = client.get("release-group/", params={
                 "query": mb_query,
+                "fmt": "json",
                 "limit": 50 if artist_only else 20,
             })
             raw_groups = raw.get("release-groups", []) if isinstance(raw.get("release-groups"), list) else []
+
+            # ── Artist+album fallback (legacy parity) ─────────────────────
+            # MusicBrainz's release-group index applies strict phrase matching
+            # on quoted ``artist:"…" AND releasegroup:"…"`` queries, so a
+            # multi-word artist + a generic album title ("spice girls" +
+            # "greatest hits") can return zero hits even when the release
+            # exists (e.g. the group is titled "Greatest Hits (Deluxe)" or
+            # the artist credit differs slightly).  When a structured artist
+            # search comes up empty, retry with artist-only so the user always
+            # sees the artist's releases (old_system did the same).
+            if not raw_groups and artist and not artist_only:
+                try:
+                    artist_only_query = f'artist:"{_esc(artist)}"'
+                    raw_fallback = client.get("release-group/", params={
+                        "query": artist_only_query,
+                        "fmt": "json",
+                        "limit": 20,
+                    })
+                    raw_groups = (
+                        raw_fallback.get("release-groups", [])
+                        if isinstance(raw_fallback.get("release-groups"), list)
+                        else []
+                    )
+                    if raw_groups:
+                        logger.info(
+                            "[MB_SEARCH] Combined query '%s' returned 0 — falling back to artist-only for '%s'",
+                            mb_query, artist,
+                        )
+                except Exception as exc:
+                    logger.debug("[MB_SEARCH] Artist-only fallback failed: %s", exc)
+
             for rg in raw_groups:
                 rgid = str(rg.get("id") or "")
                 if not rgid:

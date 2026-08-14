@@ -336,7 +336,11 @@ async function renderUnmatchedFolders(options) {
       return '<div class="list-group-item">' +
         '<div class="d-flex justify-content-between align-items-start gap-2">' +
         '<div class="flex-grow-1" style="min-width:0;">' +
-        '<div class="text-truncate"><i class="bi bi-folder2 me-1 text-muted"></i><strong>' + escapeHtml(f.display_name || f.name || 'Unknown') + '</strong>' + statusBadge + '</div>' + fileHtml +
+        '<div class="text-truncate"><i class="bi bi-folder2 me-1 text-muted"></i><strong>' + escapeHtml(f.display_name || f.name || 'Unknown') + '</strong>' + statusBadge + '</div>' +
+        (f.artist && f.album
+          ? '<div class="text-muted small mt-1"><i class="bi bi-person me-1"></i>' + escapeHtml(f.artist) + ' — <i class="bi bi-disc me-1"></i>' + escapeHtml(f.album) + '</div>'
+          : '') +
+        fileHtml +
         (isAssociated && f.match ? '<div class="text-muted small mt-1"><i class="bi bi-music-note-beamed me-1"></i>' + escapeHtml(f.match.release_title || f.match.artist || '') + (f.match.artist ? ' · ' + escapeHtml(f.match.artist) : '') + '</div>' : '') +
         '</div>' +
         '<div class="d-flex flex-shrink-0 gap-1 flex-wrap justify-content-end">' + actionsHtml +

@@ -476,11 +476,17 @@ def get_ready_for_processing(limit: int = 100) -> List[Dict]:
 def requeue_due_failed_items(limit: int = 50) -> List[Dict[str, Any]]:
     """Requeue failed items whose retry window has arrived.
 
-    Eligible items: ``status = 'failed'`` with ``retry_count`` below
-    ``max_retries`` and (``next_retry_at`` unset or due).  Each requeued
-    item gets ``retry_count + 1`` and ``next_retry_at = now + delay`` so
-    repeated failures back off (legacy retry-scheduler parity).  Items past
-    ``max_retries`` stay failed and are left for manual retry.
+    Eligible items: ``status = 'failed'`` with (``next_retry_at`` unset or
+    due).  Each requeued item gets ``retry_count + 1`` and
+    ``next_retry_at = now + retry_delay_minutes`` so repeated failures back
+    off (legacy retry-scheduler parity).
+
+    No item is ever left permanently stuck in ``failed``: unlike earlier
+    behaviour that stopped at ``max_retries``, every failed item keeps
+    flowing back into the queue once its retry window arrives.  Items not
+    yet due remain ``failed`` (i.e. "pending") until ``next_retry_at``, then
+    are requeued automatically.  The configured ``queue.retry_delay_minutes``
+    (default 30) governs how long an item sits pending between attempts.
     """
     requeued: List[Dict[str, Any]] = []
     try:
@@ -491,7 +497,6 @@ def requeue_due_failed_items(limit: int = 50) -> List[Dict[str, Any]]:
                     FROM download_queue
                     WHERE status = 'failed'
                       AND file_path IS NULL
-                      AND retry_count < COALESCE(max_retries, 5)
                       AND (next_retry_at IS NULL OR next_retry_at <= CURRENT_TIMESTAMP)
                     ORDER BY updated_at ASC
                     LIMIT :limit

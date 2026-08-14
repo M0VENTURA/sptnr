@@ -664,7 +664,7 @@ window.addBookmark = function(type, name, artist, album, trackId) {
   });
 };
 
-// Toggle the track favourite heart (bookmarks-backed, no page reload).
+// Toggle the track favourite heart (per-user Navidrome star sync, no reload).
 window.toggleTrackFavourite = function(trackId) {
   var icon = document.getElementById('trackFavouriteIcon');
   if (!icon || !trackId) return;
@@ -674,18 +674,32 @@ window.toggleTrackFavourite = function(trackId) {
     icon.classList.add(fav ? 'bi-heart-fill' : 'bi-heart');
   }
 
-  fetch('/api/track/favourite?track_id=' + encodeURIComponent(trackId))
+  // Read the current per-user state, then toggle it.
+  fetch('/api/favourites/state?entity_type=track&entity_id=' + encodeURIComponent(trackId))
     .then(function (r) { return r.json(); })
     .then(function (data) {
-      if (data.is_favourite) {
-        return fetch('/api/track/favourite?track_id=' + encodeURIComponent(trackId), { method: 'DELETE' })
-          .then(function () { setState(false); });
-      }
-      return fetch('/api/track/favourite', {
+      var isFav = !!(data && data.is_favourite);
+      return fetch('/api/favourites/toggle', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ track_id: trackId })
-      }).then(function () { setState(true); });
+        body: JSON.stringify({
+          entity_type: 'track',
+          entity_id: trackId,
+          navidrome_id: trackId,
+          is_favourite: !isFav
+        })
+      });
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (data && data.success) {
+        setState(!!data.is_favourite);
+        if (data.navidrome_synced === false) {
+          console.warn('Track heart saved locally but Navidrome sync failed:', trackId);
+        }
+      } else {
+        console.error('Track favourite toggle failed:', data && data.error);
+      }
     })
     .catch(function (error) {
       console.error('Error toggling track favourite:', error);

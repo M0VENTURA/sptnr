@@ -2522,28 +2522,34 @@ async def track_detail(track_id: str):
                         rec_err,
                     )
 
-            # Favourite status.  Tracks are favourited as bookmark rows with
-            # type='track_favourite' and name=<track id> (see track_routes.py);
-            # the bookmarks table has no track_id column.
+            # Favourite status — per-user Navidrome star sync (heart).  Falls
+            # back to the legacy bookmark row (type='track_favourite',
+            # name=<track id>) when the per-user system is unavailable.
             is_track_favourite = False
             try:
-                fav_result = db.execute(
-                    text("""
-                        SELECT 1
-                        FROM bookmarks
-                        WHERE type = 'track_favourite'
-                          AND LOWER(name) = LOWER(:track_id)
-                        LIMIT 1
-                    """),
-                    {"track_id": str(track_id)},
-                )
-                is_track_favourite = fav_result.fetchone() is not None
-            except Exception as fav_err:
-                logger.debug(
-                    "Track favourite check failed for %s: %s",
-                    track_id,
-                    fav_err,
-                )
+                from services.favourites_service import is_favourite as _user_is_favourite
+                is_track_favourite = _user_is_favourite("track", str(track_id))
+            except Exception:
+                pass
+            if not is_track_favourite:
+                try:
+                    fav_result = db.execute(
+                        text("""
+                            SELECT 1
+                            FROM bookmarks
+                            WHERE type = 'track_favourite'
+                              AND LOWER(name) = LOWER(:track_id)
+                            LIMIT 1
+                        """),
+                        {"track_id": str(track_id)},
+                    )
+                    is_track_favourite = fav_result.fetchone() is not None
+                except Exception as fav_err:
+                    logger.debug(
+                        "Track favourite check failed for %s: %s",
+                        track_id,
+                        fav_err,
+                    )
 
         genre_sources = {}
         try:

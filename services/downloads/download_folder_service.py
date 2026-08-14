@@ -138,6 +138,64 @@ def _imported_source_paths() -> set[str]:
     return imported
 
 
+def _read_audio_metadata(folder_path: str, file_name: str) -> dict:
+    """Read artist/album/title from an audio file's embedded tags.
+
+    Best-effort: returns ``{"artist": str, "album": str, "title": str}`` —
+    empty strings when tags are missing or unreadable.  Files without
+    metadata fall back to folder-path grouping in ``get_unmatched_folders``.
+    """
+    try:
+        from helpers.metadata_reader import read_mp3_metadata
+        full = os.path.join(folder_path, file_name)
+        meta = read_mp3_metadata(full) or {}
+        return {
+            "artist": str(meta.get("artist") or "").strip(),
+            "album": str(meta.get("album") or "").strip(),
+            "title": str(meta.get("title") or "").strip(),
+        }
+    except Exception as exc:
+        logger.debug("[FOLDER] Metadata read failed for %s/%s: %s", folder_path, file_name, exc)
+        return {"artist": "", "album": "", "title": ""}
+
+
+def _derive_folder_group(folder_name: str, files: list[dict]) -> dict:
+    """Derive a grouping key for a Matched-Folders entry.
+
+    Groups by the Artist / Album found in the audio files' embedded metadata
+    when consistent across the folder; folders without usable metadata (or
+    with mixed albums) group by their folder path instead.  Returns
+    ``{"artist": str, "album": str, "group_key": str}``.
+    """
+    artists: set[str] = set()
+    albums: set[str] = set()
+    for f in files:
+        if not f.get("is_audio"):
+            continue
+        if f.get("artist"):
+            artists.add(str(f["artist"]))
+        if f.get("album"):
+            albums.add(str(f["album"]))
+
+    # Consistent single artist + album → group by metadata.
+    if len(artists) == 1 and len(albums) == 1:
+        artist = next(iter(artists))
+        album = next(iter(albums))
+        if artist and album:
+            return {
+                "artist": artist,
+                "album": album,
+                "group_key": f"{artist} :: {album}",
+            }
+
+    # Fallback: group by the folder path.
+    return {
+        "artist": "",
+        "album": "",
+        "group_key": folder_name,
+    }
+
+
 def get_unmatched_folders() -> dict:
     """List folders under the downloads directory that are NOT tracked as
     MusicBrainz releases (the monitor page's "Matched Folders in Downloads"
@@ -169,6 +227,12 @@ def get_unmatched_folders() -> dict:
                 continue
 
             files = _get_files_in_folder(full)
+            # Read embedded Artist/Album metadata for each audio file so the
+            # Matched Folders list can group by metadata (falling back to the
+            # folder path for files without tags).
+            for f in files:
+                if f.get("is_audio"):
+                    f.update(_read_audio_metadata(full, f.get("name") or ""))
             audio = [f for f in files if f.get("is_audio")]
             # Matched = every audio file's source path was imported to the
             # library (the import moves files, so remaining audio means the
@@ -177,6 +241,7 @@ def get_unmatched_folders() -> dict:
                 os.path.normpath(os.path.join(full, f["name"])) in imported
                 for f in audio
             ) if audio else False
+            group = _derive_folder_group(entry, files)
             folders.append({
                 "type": "unmatched",
                 "name": full,
@@ -188,7 +253,21 @@ def get_unmatched_folders() -> dict:
                 "status": "matched" if matched else "unmatched",
                 "match": None,
                 "release_mbid": None,
+                "artist": group["artist"],
+                "album": group["album"],
+                "group_key": group["group_key"],
             })
+
+        # Sort by metadata group: artist then album (metadata-derived groups
+        # first, folders without metadata grouped by path after).
+        folders.sort(
+            key=lambda x: (
+                not bool(x.get("artist") and x.get("album")),
+                str(x.get("artist") or "").lower(),
+                str(x.get("album") or "").lower(),
+                str(x.get("display_name") or "").lower(),
+            )
+        )
 
         # Merge stored folder → release associations so the Matched Folders
         # UI can render the two-state flow: folders with an association show

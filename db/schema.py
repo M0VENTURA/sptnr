@@ -91,6 +91,19 @@ TABLES_TO_ENSURE: dict[str, str] = {
             CONSTRAINT uq_folder_matches_folder_path UNIQUE (folder_path)
         )
     """,
+    "user_favourites": """
+        CREATE TABLE IF NOT EXISTS user_favourites (
+            id BIGSERIAL PRIMARY KEY,
+            username TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            navidrome_id TEXT,
+            is_favourite BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT uq_user_favourites_entity UNIQUE (username, entity_type, entity_id)
+        )
+    """,
     "musicbrainz_releases": """
         CREATE TABLE IF NOT EXISTS musicbrainz_releases (
             id BIGSERIAL PRIMARY KEY, release_id TEXT NOT NULL UNIQUE, 
@@ -310,6 +323,10 @@ COLUMN_REGISTRY: dict[str, dict[str, str]] = {
         "release_year": "INTEGER", "status": "TEXT DEFAULT 'matched'",
         "updated_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
     },
+    "user_favourites": {
+        "navidrome_id": "TEXT", "is_favourite": "BOOLEAN DEFAULT FALSE",
+        "updated_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+    },
     "upcoming_releases": {
         "release_year": "INTEGER",
         "source_key": "TEXT",
@@ -347,6 +364,7 @@ INDEXES_TO_ENSURE: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_mb_release_tracks_release ON musicbrainz_release_tracks(release_id)",
     "CREATE INDEX IF NOT EXISTS idx_mb_release_tracks_status ON musicbrainz_release_tracks(release_id, status)",
     "CREATE INDEX IF NOT EXISTS idx_folder_matches_folder_path ON folder_matches (folder_path)",
+    "CREATE INDEX IF NOT EXISTS idx_user_favourites_user ON user_favourites (username, entity_type)",
 )
 
 # =============================================================================

@@ -791,6 +791,11 @@
           <input type="number" class="form-control" id="daily_musicbrainz_release_per_artist_limit" placeholder="100" value="{{ config.get('features', {}).get('daily_musicbrainz_release_per_artist_limit', 100) }}" min="10" max="250">
           <div class="form-text">Max releases fetched per artist per run.</div>
         </div>
+        <div class="col-12 col-md-3">
+          <label class="form-label">Global Discovery Limit</label>
+          <input type="number" class="form-control" id="daily_musicbrainz_release_global_limit" placeholder="50" value="{{ config.get('features', {}).get('daily_musicbrainz_release_global_limit', 50) }}" min="0" max="250">
+          <div class="form-text">Upcoming releases found from ANY artist (not just your collection). Set 0 to disable.</div>
+        </div>
       </div>
     </div>
   </div>
