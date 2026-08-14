@@ -186,7 +186,24 @@ def get_unmatched_folders() -> dict:
                 "file_count": len(files),
                 "total_size": sum(f.get("size", 0) for f in files),
                 "status": "matched" if matched else "unmatched",
+                "match": None,
+                "release_mbid": None,
             })
+
+        # Merge stored folder → release associations so the Matched Folders
+        # UI can render the two-state flow: folders with an association show
+        # ``[Change Match] [Confirm Match]`` instead of ``[Match]``.
+        try:
+            from db.repositories.folder_match_repository import get_all_folder_matches
+            match_rows = {os.path.normpath(m.get("folder_path") or ""): m for m in get_all_folder_matches()}
+            for folder in folders:
+                stored = match_rows.get(os.path.normpath(str(folder.get("name") or "")))
+                if stored:
+                    folder["match"] = stored
+                    folder["release_mbid"] = stored.get("release_mbid")
+                    folder["status"] = "matched"
+        except Exception as exc:
+            logger.debug("[UNMATCHED_FOLDERS] folder-match merge skipped: %s", exc)
 
         return {"success": True, "count": len(folders), "folders": folders}
     except Exception as exc:
@@ -260,11 +277,112 @@ def _extract_mb_id(value: str) -> str:
     return match.group(0) if match else ""
 
 
+def associate_folder_to_release(folder_path: str, mb_id: str) -> dict:
+    """PHASE 1 of the two-phase folder-match flow: record the folder → release
+    association WITHOUT moving any files.
+
+    ``mb_id`` accepts a MusicBrainz release or release-group URL/ID.  The
+    release is resolved so the association carries the canonical title/artist/
+    year (used to pre-fill the "Confirm Match" card), but no audio file is
+    tagged, formatted, or moved — the folder stays fully passive on disk.
+
+    Returns:
+        ``{"success": True, "match": {...}, "release_mbid": ...}`` on success,
+        or ``{"success": False, "error": ...}``.
+    """
+    try:
+        mb_id = _extract_mb_id(mb_id)
+        if not mb_id:
+            return {"success": False, "error": "A MusicBrainz release/release-group URL or ID is required"}
+
+        downloads_dir = resolve_downloads_dir()
+        folder_abs = os.path.abspath(folder_path or "")
+        downloads_abs = os.path.abspath(downloads_dir or "")
+        if not is_path_under_directory(folder_abs, downloads_abs) or folder_abs == downloads_abs:
+            return {"success": False, "error": f"Unsafe folder path: {folder_path}"}
+        if not os.path.isdir(folder_abs):
+            return {"success": False, "error": f"Folder not found: {folder_path}"}
+
+        from api_clients.musicbrainz_http import MusicBrainzHttpClient
+        from db.repositories.folder_match_repository import upsert_folder_match
+
+        client = MusicBrainzHttpClient()
+
+        # Resolve release metadata (release-group IDs resolve via a
+        # representative release; release IDs are used directly).
+        release_data = client.get_release(mb_id, inc="artist-credits+recordings+media", timeout=15.0)
+        release_mbid = mb_id
+        if not release_data:
+            rg = client.get_release_group(mb_id, timeout=15.0)
+            if not rg:
+                return {"success": False, "error": "MusicBrainz could not resolve that release/release-group"}
+            release_search = client.get(
+                "release",
+                params={"release-group": mb_id, "limit": 1, "fmt": "json"},
+                timeout=15.0,
+            )
+            releases = (release_search or {}).get("releases") or []
+            if not releases:
+                return {"success": False, "error": "No release found for that release-group"}
+            release_mbid = releases[0]["id"]
+            release_data = client.get_release(release_mbid, inc="artist-credits+recordings+media", timeout=15.0)
+
+        artist_credit = release_data.get("artist-credit") or []
+        album_artist = " ".join(
+            str(part.get("name") or part if isinstance(part, dict) else part)
+            for part in artist_credit
+        ).strip() or "Unknown Artist"
+        album = (release_data.get("title") or "").strip() or "Unknown Album"
+        year_raw = (release_data.get("date") or "")[:4]
+        try:
+            year = int(year_raw) if year_raw.isdigit() else None
+        except Exception:
+            year = None
+
+        stored = upsert_folder_match(
+            folder_path=folder_abs,
+            release_mbid=release_mbid,
+            release_title=album,
+            artist=album_artist,
+            release_year=year,
+            status="matched",
+        )
+        if stored is None:
+            return {"success": False, "error": "Could not store folder match"}
+
+        logger.info(
+            "[FOLDER_MATCH] Associated %s → '%s - %s' (%s) — awaiting confirmation (no files moved)",
+            folder_abs, album_artist, album, year,
+        )
+        return {
+            "success": True,
+            "match": stored,
+            "release_mbid": release_mbid,
+            "album_artist": album_artist,
+            "album": album,
+            "year": year,
+        }
+    except Exception as exc:
+        logger.error("[FOLDER_MATCH] Associate error: %s", exc, exc_info=True)
+        return {"success": False, "error": str(exc)}
+
+
 def match_folder_to_release(folder_path: str, mb_id: str) -> dict:
-    """Copy an unmatched download folder into the library as a MusicBrainz
-    release, using the configured naming convention, then delete the folder.
+    """PHASE 2 (confirm) of the two-phase folder-match flow.
+
+    Executes the full migration pipeline for an already-associated folder:
+    1. Writes MusicBrainz tags to the files (via ``move_track_to_library``).
+    2. Formats the destination path using the configured naming convention.
+    3. Moves the folder's audio files into the music library.
+    4. Removes the folder from the Matched Folders list (deletes the
+       ``folder_matches`` association and the staging folder).
 
     ``mb_id`` accepts a MusicBrainz release or release-group URL/ID.
+
+    Backward compatible: callers that only ever did "match → move" (the old
+    one-step flow) can keep calling this directly; the two-phase UI calls
+    ``associate_folder_to_release`` first (phase 1, no move) and this
+    function as ``POST /api/downloads/confirm-match`` (phase 2).
     """
     try:
         mb_id = _extract_mb_id(mb_id)
@@ -391,8 +509,16 @@ def match_folder_to_release(folder_path: str, mb_id: str) -> dict:
         except Exception as exc:
             errors.append(f"folder cleanup: {exc}")
 
+        # The confirm step is complete — drop the folder → release association
+        # so the folder no longer appears in the Matched Folders list.
+        try:
+            from db.repositories.folder_match_repository import delete_folder_match
+            delete_folder_match(folder_abs)
+        except Exception as exc:
+            logger.debug("[FOLDER_MATCH] association cleanup skipped: %s", exc)
+
         logger.info(
-            "[FOLDER_MATCH] Matched %s → '%s - %s' (%s): %d file(s) moved",
+            "[FOLDER_MATCH] Confirmed %s → '%s - %s' (%s): %d file(s) moved",
             folder_abs, album_artist, album, year, moved,
         )
         return {

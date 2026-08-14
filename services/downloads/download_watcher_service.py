@@ -74,14 +74,18 @@ def scan_downloads_folder() -> list[dict[str, Any]]:
                 match_result = _handle_queue_match(file_path, metadata, queue_item)
                 results.append(match_result)
             else:
-                # No matching queue item — queue as unmatched for enrichment.
-                _queue_unmatched(file_path, metadata)
+                # Strict queue vs. local-disk boundary: a file with no active
+                # queue item is an ambient disk folder — it must NEVER be
+                # injected into the active search/download queue.  It stays
+                # fully passive and is surfaced by the Matched Folders
+                # section (get_unmatched_folders scans the disk directly).
                 results.append({
-                    "status": "queued",
+                    "status": "skipped",
                     "filename": file_info.filename,
                     "artist": artist,
                     "album": album,
                     "title": title,
+                    "note": "no active queue item — left in Matched Folders (passive)",
                 })
 
         except Exception as exc:
@@ -184,19 +188,3 @@ def _handle_queue_match(
     else:
         return {"status": "error", "filename": os.path.basename(file_path),
                 "error": verify_result.get("error", "Move failed")}
-
-
-def _queue_unmatched(file_path: str, metadata: dict) -> None:
-    """Add an unmatched file to the queue for MusicBrainz enrichment."""
-    from db.repositories.queue import insert_queue_item
-
-    try:
-        insert_queue_item(
-            artist=(metadata.get("artist") or "").strip(),
-            title=(metadata.get("title") or "").strip(),
-            album=(metadata.get("album") or "").strip(),
-            source="local",
-            status="unmatched",
-        )
-    except Exception as exc:
-        logger.debug("Failed to queue unmatched file %s: %s", file_path, exc)

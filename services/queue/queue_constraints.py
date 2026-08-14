@@ -18,12 +18,17 @@ from __future__ import annotations
 # QUEUE STATUS GROUPS
 # =============================================================================
 
+# Active queue = ONLY active search/download/transfer work.  ``unmatched`` /
+# ``discovered`` are passive local-disk states (folders waiting in the
+# Matched Folders section) and must NEVER appear in the active queue — local
+# disk folders are injected into ``download_queue`` as ``unmatched`` by the
+# watcher/discovery flow, and allowing them here bleeds ambient disk folders
+# into the search/download queue (the "strict queue vs. local disk" boundary).
 ACTIVE_QUEUE_STATUSES: frozenset[str] = frozenset({
     "queued",
     "searching",
     "processing",
     "downloading",
-    "unmatched",
     "queried",
     "copy_recommended",
     "moving",

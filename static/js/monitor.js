@@ -315,18 +315,31 @@ async function renderUnmatchedFolders(options) {
           '</ul>';
       }
       // Slim pill sits inline with the folder title; actions stay side-by-side
-      // in a fixed right column (Match green / Delete red outline).
+      // in a fixed right column.
+      var isAssociated = !!(f.match || f.release_mbid);
       var statusBadge = matched
         ? '<span class="badge status-pill status-complete ms-2" title="All files were imported to the library">Matched ✓</span>'
-        : '<span class="badge status-pill status-queued ms-2">' + (f.audio_count || 0) + ' audio</span>';
+        : (isAssociated
+            ? '<span class="badge status-pill status-active ms-2" title="Matched to a MusicBrainz release — confirm to move into your library"><i class="bi bi-link-45deg"></i> Matched</span>'
+            : '<span class="badge status-pill status-queued ms-2">' + (f.audio_count || 0) + ' audio</span>');
+      // Two-state action column:
+      //  - Unmatched:  [ 🔍 Match ] [ 🗑️ Delete ]  (Match opens the MB search modal)
+      //  - Matched:    [ 🔄 Change Match ] [ ✅ Confirm Match ] [ 🗑️ Delete ]
+      var actionsHtml = '';
+      if (isAssociated) {
+        actionsHtml += '<button class="btn btn-sm btn-outline-warning py-0 unmatched-change-match-btn" data-path="' + escapeHtml(f.name) + '" title="Choose a different MusicBrainz release for this folder"><i class="bi bi-arrow-repeat"></i> Change Match</button>';
+        actionsHtml += '<button class="btn btn-sm btn-success py-0 unmatched-confirm-btn" data-path="' + escapeHtml(f.name) + '" data-mbid="' + escapeHtml(f.release_mbid || '') + '" title="Write tags, format the path and move this folder into /music"><i class="bi bi-check-lg"></i> Confirm Match</button>';
+      } else {
+        actionsHtml += '<button class="btn btn-sm btn-outline-primary py-0 unmatched-match-btn" data-path="' + escapeHtml(f.name) + '" title="Search MusicBrainz and match this folder to a release (no files are moved until you confirm)"><i class="bi bi-search"></i> Match</button>';
+      }
+      actionsHtml += '<button class="btn btn-sm btn-outline-danger py-0 unmatched-delete-btn" data-path="' + escapeHtml(f.name) + '" title="Delete this folder from the downloads folder"><i class="bi bi-trash3"></i> Delete</button>';
       return '<div class="list-group-item">' +
         '<div class="d-flex justify-content-between align-items-start gap-2">' +
         '<div class="flex-grow-1" style="min-width:0;">' +
         '<div class="text-truncate"><i class="bi bi-folder2 me-1 text-muted"></i><strong>' + escapeHtml(f.display_name || f.name || 'Unknown') + '</strong>' + statusBadge + '</div>' + fileHtml +
+        (isAssociated && f.match ? '<div class="text-muted small mt-1"><i class="bi bi-music-note-beamed me-1"></i>' + escapeHtml(f.match.release_title || f.match.artist || '') + (f.match.artist ? ' · ' + escapeHtml(f.match.artist) : '') + '</div>' : '') +
         '</div>' +
-        '<div class="d-flex flex-shrink-0 gap-1">' +
-        '<button class="btn btn-sm btn-outline-primary py-0 unmatched-match-btn" data-path="' + escapeHtml(f.name) + '" title="Copy into the library as a MusicBrainz release (uses the naming convention from Settings)"><i class="bi bi-link-45deg"></i> Match</button>' +
-        '<button class="btn btn-sm btn-outline-danger py-0 unmatched-delete-btn" data-path="' + escapeHtml(f.name) + '" title="Delete this folder from the downloads folder"><i class="bi bi-trash3"></i> Delete</button>' +
+        '<div class="d-flex flex-shrink-0 gap-1 flex-wrap justify-content-end">' + actionsHtml +
         '</div></div></div>';
     }).join('') + '</div>';
   }
@@ -385,24 +398,51 @@ async function deleteAllEmptyFolders(btn) {
 
 function attachUnmatchedFolderActions(listEl) {
   if (!listEl) return;
+
+  // Phase 1 — "Match": open the shared MusicBrainz search modal pre-populated
+  // with the folder's detected artist/album (no files are moved yet).  The
+  // selected release is associated via POST /api/downloads/folder/associate.
   listEl.querySelectorAll('.unmatched-match-btn').forEach(function(btn) {
+    if (btn.getAttribute('data-bound')) return;
+    btn.setAttribute('data-bound', '1');
+    btn.addEventListener('click', function() {
+      var folderPath = btn.getAttribute('data-path');
+      openFolderMbSearch(folderPath, false);
+    });
+  });
+
+  // "Change Match": re-open the MB search modal to pick a different release.
+  listEl.querySelectorAll('.unmatched-change-match-btn').forEach(function(btn) {
+    if (btn.getAttribute('data-bound')) return;
+    btn.setAttribute('data-bound', '1');
+    btn.addEventListener('click', function() {
+      var folderPath = btn.getAttribute('data-path');
+      openFolderMbSearch(folderPath, false);
+    });
+  });
+
+  // Phase 2 — "Confirm Match": run the full migration pipeline
+  // (tag → format path → move to /music → remove from list) via
+  // POST /api/downloads/confirm-match with the stored release_mbid.
+  listEl.querySelectorAll('.unmatched-confirm-btn').forEach(function(btn) {
     if (btn.getAttribute('data-bound')) return;
     btn.setAttribute('data-bound', '1');
     btn.addEventListener('click', async function() {
       var folderPath = btn.getAttribute('data-path');
-      var mbId = prompt('Paste a MusicBrainz release or release-group URL/ID for this folder (e.g. https://musicbrainz.org/release/xxxx or release-group/xxxx):');
-      if (!mbId) return;
+      var releaseMbid = btn.getAttribute('data-mbid');
+      if (!folderPath || !releaseMbid) return;
+      if (!confirm('Confirm this match?\n\nThis will write MusicBrainz tags, format the path, and move the files into your music library.\n\n' + folderPath)) return;
       btn.disabled = true;
       try {
-        var data = await fetchJsonOrThrow('/api/downloads/folder/match', {
+        var data = await fetchJsonOrThrow('/api/downloads/confirm-match', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ folder_path: folderPath, mb_id: mbId.trim() }),
+          body: JSON.stringify({ folder_path: folderPath, release_mbid: releaseMbid }),
         });
         if (data.success) {
-          showToastMsg('Matched ' + data.moved + ' file(s) to "' + (data.album_artist || '') + ' - ' + (data.album || '') + '" (' + (data.year || '') + '). Folder deleted from downloads.', false);
+          showToastMsg('Confirmed — moved ' + data.moved + ' file(s) to "' + (data.album_artist || '') + ' - ' + (data.album || '') + '" (' + (data.year || '') + '). Folder removed from Matched Folders.', false);
         } else {
-          showToastMsg(data.error || 'Match failed', true);
+          showToastMsg(data.error || 'Confirm match failed', true);
         }
       } catch (error) {
         showToastMsg('Network error: ' + error.message, true);
@@ -414,6 +454,7 @@ function attachUnmatchedFolderActions(listEl) {
       }
     });
   });
+
   listEl.querySelectorAll('.unmatched-delete-btn').forEach(function(btn) {
     if (btn.getAttribute('data-bound')) return;
     btn.setAttribute('data-bound', '1');
@@ -438,6 +479,62 @@ function attachUnmatchedFolderActions(listEl) {
       }
     });
   });
+}
+
+// Open the shared MusicBrainz search modal pre-populated for a disk folder,
+// then associate the selected release (Phase 1 — no files move).
+function openFolderMbSearch(folderPath, isChange) {
+  // Best-effort pre-fill: parse artist / album from the folder path.
+  // The folder is <downloads>/<Artist - Album (Year)> most of the time.
+  var parts = (folderPath || '').split(/[\\/]/).filter(Boolean);
+  var leaf = parts[parts.length - 1] || '';
+  var artist = '', album = leaf;
+  var m = leaf.match(/^(.*?)\s*-\s*(.+?)(?:\s*\((\d{4})\))?\s*$/);
+  if (m && m[1] && m[2]) {
+    artist = m[1].trim();
+    album = m[2].trim();
+  }
+
+  // Remember the target folder so the selection callback can associate it.
+  window._folderMatchTarget = { folder_path: folderPath, is_change: !!isChange };
+
+  window._mbSearchCallback = function(selected) {
+    var target = window._folderMatchTarget || {};
+    window._folderMatchTarget = null;
+    var folder = target.folder_path || folderPath;
+    var releaseId = selected && (selected.id || (selected.release && selected.release.id));
+    if (!releaseId) {
+      showToastMsg('No release selected — folder not matched.', true);
+      return;
+    }
+    fetch('/api/downloads/folder/associate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ folder_path: folder, mb_id: releaseId }),
+    })
+    .then(function(resp) { return resp.json(); })
+    .then(function(data) {
+      if (data && data.success) {
+        showToastMsg('Matched to "' + (data.album || '') + '" (' + (data.artist || '') + '). Press Confirm Match to move the files into your library.', false);
+      } else {
+        showToastMsg((data && data.error) || 'Match failed', true);
+      }
+      if (typeof window.loadFolderGroups === 'function') {
+        window.loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true });
+      }
+    })
+    .catch(function(err) {
+      showToastMsg('Network error: ' + err.message, true);
+    });
+  };
+
+  // Show the modal and pre-fill the artist/album fields, then auto-search.
+  if (typeof window.populateMusicBrainzSearch === 'function') {
+    window.populateMusicBrainzSearch(artist, album, '', '');
+  }
+  if (typeof window.showMusicBrainzModal === 'function') {
+    window.showMusicBrainzModal();
+  }
 }
 
 // ===== Queue group expansion state (shared with downloads.js) =====

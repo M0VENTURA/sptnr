@@ -398,11 +398,15 @@ def get_active_queue(limit: int = 200) -> List[Dict[str, Any]]:
     """Get non-terminal queue items (active statuses + failed).
 
     Active statuses come from the canonical ``ACTIVE_QUEUE_STATUSES`` set so
-    the list always matches the status counts — items in ``unmatched``,
-    ``queried``, ``copy_recommended`` or ``moving`` used to appear in the
-    counts but never in the rendered list. Failed items are included because
-    the queue page splits them out of the active list client-side (mirrors
-    the legacy API payload).
+    the list always matches the status counts.  Failed items are included
+    because the queue page splits them out of the active list client-side
+    (mirrors the legacy API payload).
+
+    Strict queue vs. local-disk boundary: rows whose ``source`` is
+    ``local``/``discovered`` represent ambient disk folders picked up by the
+    watcher/discovery flow — they are PASSIVE (the Matched Folders section)
+    and are always excluded here, regardless of status, so local disk folders
+    never bleed into the active search/download queue.
     """
     from services.queue.queue_constraints import ACTIVE_QUEUE_STATUSES, FAILED_STATUSES
     # Inline the statuses rather than binding a list parameter — psycopg2
@@ -416,6 +420,7 @@ def get_active_queue(limit: int = 200) -> List[Dict[str, Any]]:
                     SELECT *
                     FROM download_queue
                     WHERE status IN ({status_sql})
+                      AND LOWER(COALESCE(source, '')) NOT IN ('local', 'discovered')
                     ORDER BY created_at ASC,
                              -- Album tracks are queued in one batch (same
                              -- created_at) — keep them in track-number order

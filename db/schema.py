@@ -77,6 +77,20 @@ TABLES_TO_ENSURE: dict[str, str] = {
             notes TEXT, selected_result JSONB, results JSONB
         )
     """,
+    "folder_matches": """
+        CREATE TABLE IF NOT EXISTS folder_matches (
+            id BIGSERIAL PRIMARY KEY,
+            folder_path TEXT NOT NULL,
+            release_mbid TEXT NOT NULL,
+            release_title TEXT,
+            artist TEXT,
+            release_year INTEGER,
+            status TEXT DEFAULT 'matched',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT uq_folder_matches_folder_path UNIQUE (folder_path)
+        )
+    """,
     "musicbrainz_releases": """
         CREATE TABLE IF NOT EXISTS musicbrainz_releases (
             id BIGSERIAL PRIMARY KEY, release_id TEXT NOT NULL UNIQUE, 
@@ -291,6 +305,11 @@ COLUMN_REGISTRY: dict[str, dict[str, str]] = {
         "result_count": "INTEGER DEFAULT 0", "duration_seconds": "REAL",
         "notes": "TEXT", "selected_result": "JSONB", "results": "JSONB",
     },
+    "folder_matches": {
+        "release_mbid": "TEXT", "release_title": "TEXT", "artist": "TEXT",
+        "release_year": "INTEGER", "status": "TEXT DEFAULT 'matched'",
+        "updated_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+    },
     "upcoming_releases": {
         "release_year": "INTEGER",
         "source_key": "TEXT",
@@ -327,6 +346,7 @@ INDEXES_TO_ENSURE: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_mb_releases_created ON musicbrainz_releases(created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_mb_release_tracks_release ON musicbrainz_release_tracks(release_id)",
     "CREATE INDEX IF NOT EXISTS idx_mb_release_tracks_status ON musicbrainz_release_tracks(release_id, status)",
+    "CREATE INDEX IF NOT EXISTS idx_folder_matches_folder_path ON folder_matches (folder_path)",
 )
 
 # =============================================================================

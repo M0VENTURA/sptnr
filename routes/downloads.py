@@ -95,6 +95,44 @@ async def api_match_folder_to_release():
     return jsonify(await asyncio.to_thread(match_folder_to_release, folder_path, mb_id))
 
 
+@downloads_bp.route("/api/downloads/folder/associate", methods=["POST"])
+async def api_associate_folder_to_release():
+    """Phase 1 of the two-phase folder-match flow: record the folder → release
+    association WITHOUT moving any files.  The folder stays passive on disk;
+    the user later presses ``Confirm Match`` to run the move pipeline."""
+    payload = (await request.get_json(silent=True)) or {}
+    folder_path = (payload.get("folder_path") or "").strip()
+    mb_id = (payload.get("mb_id") or payload.get("mbid") or "").strip()
+    if not folder_path or not mb_id:
+        return jsonify({"success": False, "error": "folder_path and mb_id (release/release-group URL or ID) are required"}), 400
+    from services.downloads.download_folder_service import associate_folder_to_release
+    # Filesystem + DB work — offload so the event loop stays responsive.
+    return jsonify(await asyncio.to_thread(associate_folder_to_release, folder_path, mb_id))
+
+
+@downloads_bp.route("/api/downloads/confirm-match", methods=["POST"])
+async def api_confirm_folder_match():
+    """Phase 2 of the two-phase folder-match flow: confirm an associated
+    folder — write tags, format the path, move the files to /music and
+    remove the folder from the Matched Folders list.
+
+    Takes ``folder_path`` and ``release_mbid`` (or ``mb_id``).
+    """
+    payload = (await request.get_json(silent=True)) or {}
+    folder_path = (payload.get("folder_path") or "").strip()
+    release_mbid = (
+        payload.get("release_mbid")
+        or payload.get("mb_id")
+        or payload.get("mbid")
+        or ""
+    ).strip()
+    if not folder_path or not release_mbid:
+        return jsonify({"success": False, "error": "folder_path and release_mbid are required"}), 400
+    from services.downloads.download_folder_service import match_folder_to_release
+    # Filesystem + DB work — offload so the event loop stays responsive.
+    return jsonify(await asyncio.to_thread(match_folder_to_release, folder_path, release_mbid))
+
+
 @downloads_bp.route("/api/downloads/folder/delete", methods=["POST"])
 async def api_delete_download_folder():
     """Delete a folder under the downloads directory (safety-railed)."""
