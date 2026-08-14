@@ -28,13 +28,16 @@ from services.enrichment.musicbrainz_service import (
 
 # Popularity
 from services.popularity.popularity_math import (
+    apply_log_ratio_audit_to_stored_score,
     calculate_combined_popularity_score,
     calculate_listenbrainz_percentile,
     evaluate_listenbrainz_validity,
+    evaluate_log_ratio_deviation,
     fmt_count as _fmt_count,
 )
 from services.popularity.popularity_config import (
     get_live_weight_penalty,
+    get_log_ratio_config,
     get_metadata_score_floor,
     get_single_boost,
     resolve_weights,
@@ -211,6 +214,7 @@ def _score_track_popularity(
     artist_max_lf_listeners: int,
     album_lb_listens: list[int] | None,
     album_context: dict[str, Any],
+    album_tracks: list[dict[str, Any]] | None = None,
     prefetched_popularity: dict[str, dict[str, Any]] | None,
     release_date: str | None,
     is_single: bool,
@@ -333,6 +337,59 @@ def _score_track_popularity(
     except Exception as exc:
         logger.debug("[track_stage] LB realism check failed for %s: %s", track_id, exc)
 
+    # ── Log-Ratio Median Deviation (Log-MAD) audit ─────────────────────
+    # Cross-platform playcount validation.  Raw LF/LB counts are not
+    # comparable directly (LF is often 10-50x LB), so the audit compares
+    # this track's ``log10(LF/LB)`` ratio against the ALBUM's median log
+    # ratio: a track deviating by more than the divergence threshold (~7x)
+    # is a TARGETED source failure — a tag/punctuation split collapsed LF
+    # (REJECT_LF) or a missing/wrong recording MBID collapsed LB
+    # (REJECT_LB) — not a legitimate deep cut (low on BOTH platforms stays
+    # inside the album's ratio spread).  The pairs come from the album's
+    # loaded track dicts (stored LF/LB counts), with THIS track's pair
+    # replaced by its fresh counts so the median reflects current data.
+    # Confirmed singles are NOT exempt here: their cross-release LB
+    # aggregation is re-audited with the adopted count and either scores
+    # normally (LB now proportional) or falls back to Last.fm only.
+    _lr_cfg = get_log_ratio_config()
+    _audit_verdict = "VALID"
+    if _lr_cfg.get("enabled", True):
+        try:
+            _album_pairs: list[tuple[int, int]] = []
+            _cur_norm = normalize_for_aggregation(str(title or ""))
+            for _at in (album_tracks or []):
+                _lfv = int(_at.get("lastfm_listeners") or 0)
+                _lbv = int(_at.get("listenbrainz_listens") or 0)
+                if _lfv <= 0 or _lbv <= 0:
+                    continue
+                if normalize_for_aggregation(str(_at.get("title") or "")) == _cur_norm:
+                    # This track's own pair uses its FRESH counts.
+                    if lastfm_listeners > 0 and listenbrainz_listens > 0:
+                        _album_pairs.append((int(lastfm_listeners), int(listenbrainz_listens)))
+                    continue
+                _album_pairs.append((_lfv, _lbv))
+            _audit_verdict = evaluate_log_ratio_deviation(
+                lastfm_listeners=lastfm_listeners,
+                listenbrainz_listens=listenbrainz_listens,
+                album_lf_lb_pairs=_album_pairs or None,
+                divergence_threshold=float(_lr_cfg.get("divergence_threshold", 0.85)),
+                reject_lf_min_lb=int(_lr_cfg.get("reject_lf_min_lb", 50)),
+                reject_lb_min_lf=int(_lr_cfg.get("reject_lb_min_lf", 100)),
+            )
+            if _audit_verdict != "VALID":
+                log_unified(
+                    f"[TRACK_STAGE] Log-MAD audit {_audit_verdict} for \"{title}\" ({artist}): "
+                    f"LF={_fmt_count(lastfm_listeners)}, LB={_fmt_count(listenbrainz_listens)} — "
+                    f"{'scoring on ListenBrainz only' if _audit_verdict == 'REJECT_LF' else 'scoring on Last.fm only'}"
+                )
+                # REJECT_LF means ListenBrainz is the trustworthy side — keep
+                # its count even if the (cruder) realism check flagged it.
+                if _audit_verdict == "REJECT_LF":
+                    _score_lb = listenbrainz_listens
+        except Exception as exc:
+            logger.debug("[track_stage] Log-MAD audit failed for %s: %s", track_id, exc)
+            _audit_verdict = "VALID"
+
     score_data = calculate_combined_popularity_score(
         lastfm_listeners=lastfm_listeners,
         lastfm_artist_max_listeners=artist_max_lf_listeners,
@@ -346,6 +403,7 @@ def _score_track_popularity(
         is_featured_track=is_featured_track,
         is_live_track=is_live_track,
         lastfm_weight_override=lastfm_weight_override,
+        source_audit=_audit_verdict,
         single_boost=cfg_single_boost,
         metadata_score_floor=cfg_floor,
         live_weight_penalty=cfg_live_penalty,
@@ -372,6 +430,7 @@ def process_track(
     album_lb_listens: list[int] | None = None,
     artist_max_lf_listeners: int = 0,
     artist_lf_context: dict[str, Any] | None = None,
+    album_tracks: list[dict[str, Any]] | None = None,
     mb_cached_singles: set | None = None,
     discogs_cached_singles: set | None = None,
     discogs_cached_promos: set | None = None,
@@ -443,6 +502,57 @@ def process_track(
         lastfm_listeners = _as_int(track.get("lastfm_listeners") or 0)
         listenbrainz_listens = _as_int(track.get("listenbrainz_listens") or 0)
         lb_percentile = float(track.get("lb_percentile") or 0)
+
+        # ── Log-MAD audit on the STORED score ───────────────────────────
+        # Tracks scored BEFORE the cross-platform audit feature keep their
+        # stored blend (equal platform trust), so a targeted source failure
+        # (a tag/punctuation split collapsed LF, or a missing/wrong recording
+        # MBID collapsed LB) keeps a wrong score until a full rescan.  A
+        # singles scan revisiting the album re-runs the audit on the stored
+        # LF/LB counts and, when flagged, re-blends the stored per-source
+        # scores — the fix reaches previously-scored tracks without waiting
+        # for a full rescan.  Confirmed singles are audited too (their stored
+        # score was computed with equal platform trust, exactly the case this
+        # fixes); the per-source scores are re-blended, never re-fetched.
+        try:
+            _lr_cfg = get_log_ratio_config()
+            if _lr_cfg.get("enabled", True):
+                _album_pairs_stored: list[tuple[int, int]] = []
+                for _at in (album_tracks or []):
+                    _lfv = int(_at.get("lastfm_listeners") or 0)
+                    _lbv = int(_at.get("listenbrainz_listens") or 0)
+                    if _lfv > 0 and _lbv > 0:
+                        _album_pairs_stored.append((_lfv, _lbv))
+                _audit_verdict, _audit_score = apply_log_ratio_audit_to_stored_score(
+                    lastfm_listeners=lastfm_listeners,
+                    listenbrainz_listens=listenbrainz_listens,
+                    album_lf_lb_pairs=_album_pairs_stored or None,
+                    lastfm_score=float(track.get("lastfm_score") or 0),
+                    listenbrainz_score=float(track.get("listenbrainz_score") or 0),
+                    age_score=float(track.get("age_score") or 0),
+                    divergence_threshold=float(_lr_cfg.get("divergence_threshold", 0.85)),
+                )
+                if _audit_score is not None:
+                    _audited_final = float(_audit_score["combined_score"] or 0)
+                    if _audited_final <= 0:
+                        # No usable per-source scores stored (columns empty for
+                        # older tracks) — keep the stored combined score; the
+                        # verdict is logged but cannot re-blend missing
+                        # evidence without clobbering a valid stored score.
+                        _audited_final = float(score_data.get("combined_score") or 0)
+                    _audit_score["combined_score"] = round(_audited_final, 3)
+                    score_data.update(_audit_score)
+                    update_payload["final_score"] = _audited_final
+                    update_payload["popularity"] = _audited_final
+                    log_unified(
+                        f"[TRACK_STAGE] Log-MAD audit {_audit_verdict} re-scored \"{track_title}\" "
+                        f"({track_artist}) from stored data: "
+                        f"LF={_fmt_count(lastfm_listeners)}, LB={_fmt_count(listenbrainz_listens)} "
+                        f"→ {_audited_final:.1f} "
+                        f"({'scoring on ListenBrainz (+ age) only' if _audit_verdict == 'REJECT_LF' else 'scoring on Last.fm only'})"
+                    )
+        except Exception as _lr_exc:
+            logger.debug("[track_stage] Log-MAD stored audit failed for %s: %s", track_id, _lr_exc)
 
     # -------------------------------------------------------------------------
     # 1. POPULARITY (via updated api_clients)
@@ -862,6 +972,7 @@ def process_track(
                     artist_max_lf_listeners=artist_max_lf_listeners,
                     album_lb_listens=album_lb_listens,
                     album_context=album_context,
+                    album_tracks=album_tracks,
                     prefetched_popularity=prefetched_popularity,
                     release_date=release_date,
                     is_single=bool(prior_single or effective_track.get("is_single")),
@@ -1196,6 +1307,7 @@ def process_track(
                                     artist_max_lf_listeners=artist_max_lf_listeners,
                                     album_lb_listens=album_lb_listens,
                                     album_context=album_context,
+                                    album_tracks=album_tracks,
                                     prefetched_popularity=prefetched_popularity,
                                     release_date=_as_str(
                                         effective_track.get("year") or effective_track.get("release_year")

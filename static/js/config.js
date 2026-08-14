@@ -375,6 +375,10 @@ function buildConfigObject() {
         live_weight_penalty: parseFloat(getValue('live_weight_penalty', '0.5')) || 0.5,
         single_organic_floor_score: parseFloat(getValue('single_organic_floor_score', '45.0')) || 45.0,
         single_organic_floor_listeners: parseFloat(getValue('single_organic_floor_listeners', '1000')) || 1000,
+        log_ratio_enabled: getChecked('log_ratio_enabled', true),
+        log_ratio_divergence_threshold: parseFloat(getValue('log_ratio_divergence_threshold', '0.85')) || 0.85,
+        log_ratio_reject_lf_min_lb: parseInt(getValue('log_ratio_reject_lf_min_lb', '50'), 10) || 50,
+        log_ratio_reject_lb_min_lf: parseInt(getValue('log_ratio_reject_lb_min_lf', '100'), 10) || 100,
         star_5: {
           album_z: parseNumber('star5_album_z', 1.0),
           artist_z: parseNumber('star5_artist_z', 1.2)
