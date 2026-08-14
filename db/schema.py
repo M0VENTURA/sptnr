@@ -61,6 +61,7 @@ TABLES_TO_ENSURE: dict[str, str] = {
             artist TEXT NOT NULL,
             title TEXT NOT NULL,
             release_type TEXT,
+            category TEXT,
             source TEXT NOT NULL,
             release_id TEXT,
             year INTEGER,
@@ -304,7 +305,7 @@ COLUMN_REGISTRY: dict[str, dict[str, str]] = {
     },
     "musicbrainz_releases": {"album_artist": "TEXT", "genres": "TEXT", "cover_art_url": "TEXT", "release_source": "TEXT"},
     "musicbrainz_release_tracks": {"composer": "TEXT", "album_artist": "TEXT", "year": "TEXT"},
-    "artist_release_cache": {"is_promo": "BOOLEAN DEFAULT FALSE"},
+    "artist_release_cache": {"is_promo": "BOOLEAN DEFAULT FALSE", "category": "TEXT"},
     "track_popularity_cache": {"lastfm_tags": "TEXT"},
     "scan_history": {
         "scan_type": "TEXT", "artist": "TEXT", "album": "TEXT",

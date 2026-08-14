@@ -30,6 +30,100 @@ CACHE_FRESH_HOURS = 24 * 7
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _derive_musicbrainz_category(release_group: dict[str, Any]) -> str:
+    """Derive the artist-page display category from a MusicBrainz release-group.
+
+    Mirrors ``_categorize_release`` in ``services.metadata.artist_scan_service``
+    so the cache-driven gap detection stores the same categories as the
+    dedicated missing-releases scan.  Secondary types (Live, Compilation,
+    Remix) are honoured, otherwise a live album / compilation would fall
+    through as a plain "Album" and appear under Studio Albums on the artist
+    page.
+    """
+    primary = str(release_group.get("primary-type") or release_group.get("primary_type") or "").lower()
+    if primary not in ("album", "ep", "single"):
+        return "Album"
+
+    secondary = [
+        s.lower()
+        for s in (release_group.get("secondary-types") or release_group.get("secondary_types") or [])
+    ]
+
+    if "single" in secondary:
+        return "Single"
+    if "ep" in secondary:
+        return "EP"
+    if primary == "ep":
+        return "EP"
+    if primary == "single":
+        return "Single"
+    if "compilation" in secondary:
+        return "Compilation"
+    if "live" in secondary:
+        return "Live Album"
+    if "remix" in secondary:
+        return "Remix"
+    return "Album"
+
+
+def _derive_discogs_category(fmt_tokens: str) -> str:
+    """Derive the artist-page display category from Discogs format tokens.
+
+    Discogs format strings carry the secondary type as an explicit token
+    ("CD, Album, Live", "2xLP, Compilation", "CD, Album, Remix") — honour it
+    so live albums / compilations / remixes are not flattened into "Album".
+    """
+    tokens = set((fmt_tokens or "").lower().split())
+    if "compilation" in tokens or "soundtrack" in tokens:
+        return "Compilation"
+    if "live" in tokens:
+        return "Live Album"
+    if "remix" in tokens:
+        return "Remix"
+    if "ep" in tokens:
+        return "EP"
+    if "single" in tokens:
+        return "Single"
+    return "Album"
+
+
+def _fallback_release_category(title: str) -> str:
+    """Conservative title-based category for cache rows persisted without one.
+
+    Rows written before the ``category`` column existed (or from sources that
+    did not expose a secondary type) only carry ``release_type`` — a live
+    album / compilation / remix stored as plain ``album`` would otherwise be
+    flattened into the Studio Albums bucket on the artist page.  Mirrors the
+    legacy artist-page heuristics (``_derive_release_bucket``) using the same
+    format-tag markers the in-library classifier trusts.
+    """
+    try:
+        from services.catalog.album_classification_service import (
+            detect_greatest_hits_album,
+            is_live_album_enhanced,
+        )
+    except Exception:
+        detect_greatest_hits_album = None
+        is_live_album_enhanced = None
+
+    text = (title or "").lower()
+    if (
+        "compilation" in text
+        or "soundtrack" in text
+        or (detect_greatest_hits_album and detect_greatest_hits_album(title, ""))
+    ):
+        return "Compilation"
+    if (
+        (is_live_album_enhanced and is_live_album_enhanced(title))
+        or "unplugged" in text
+        or "in concert" in text
+    ):
+        return "Live Album"
+    if "remix" in text:
+        return "Remix"
+    return "Album"
+
+
 def _cache_has_source(artist: str, source: str) -> bool:
     """True when the artist's release cache holds rows from ``source``."""
     try:
@@ -84,7 +178,7 @@ def get_cached_artist_release_rows(artist: str, source: str = "discogs") -> list
         with db_session() as session:
             result = session.execute(
                 text("""
-                    SELECT artist, title, release_type, source, release_id, year, is_promo
+                    SELECT artist, title, release_type, source, release_id, year, is_promo, category
                     FROM artist_release_cache
                     WHERE LOWER(artist) = LOWER(:artist) AND source = :source
                 """),
@@ -136,6 +230,7 @@ def upsert_artist_release_rows(artist: str, releases: list[dict[str, Any]]) -> N
             "artist": artist,
             "title": title,
             "rtype": rtype,
+            "category": _derive_discogs_category(_release_format_key(rel.get("format"))),
             "source": "discogs",
             "release_id": str(rel.get("id") or "").strip() or None,
             "year": year,
@@ -154,10 +249,11 @@ def _upsert_releases(artist: str, rows: list[dict[str, Any]]) -> None:
                 session.execute(
                     text("""
                         INSERT INTO artist_release_cache
-                            (artist, title, release_type, source, release_id, year, is_promo, updated_at)
-                        VALUES (:artist, :title, :rtype, :source, :release_id, :year, :is_promo, CURRENT_TIMESTAMP)
+                            (artist, title, release_type, category, source, release_id, year, is_promo, updated_at)
+                        VALUES (:artist, :title, :rtype, :category, :source, :release_id, :year, :is_promo, CURRENT_TIMESTAMP)
                         ON CONFLICT (artist, title, source) DO UPDATE SET
                             release_type = EXCLUDED.release_type,
+                            category = EXCLUDED.category,
                             release_id = EXCLUDED.release_id,
                             year = EXCLUDED.year,
                             is_promo = EXCLUDED.is_promo,
@@ -194,6 +290,7 @@ def _fetch_musicbrainz_releases(artist: str) -> list[dict[str, Any]]:
                 out.append({
                     "title": title,
                     "release_type": primary,
+                    "category": _derive_musicbrainz_category(rg),
                     "source": "musicbrainz",
                     "release_id": str(rg.get("id") or "").strip() or None,
                     "year": year,
@@ -258,6 +355,7 @@ def _fetch_discogs_releases(artist: str, discogs_artist_id: str) -> list[dict[st
             out.append({
                 "title": title,
                 "release_type": rtype,
+                "category": _derive_discogs_category(_release_format_key(rel.get("format"))),
                 "source": "discogs",
                 "release_id": str(rel.get("id") or "").strip() or None,
                 "year": year,
@@ -395,7 +493,7 @@ def refresh_missing_releases_for_artist(artist: str) -> Dict[str, Any]:
         with db_session() as session:
             result = session.execute(
                 text("""
-                    SELECT DISTINCT title, release_type, year, release_id, source
+                    SELECT DISTINCT title, release_type, category, year, release_id, source
                     FROM artist_release_cache
                     WHERE LOWER(artist) = LOWER(:artist)
                 """),
@@ -426,7 +524,14 @@ def refresh_missing_releases_for_artist(artist: str) -> Dict[str, Any]:
         elif rtype == "ep":
             category = "EP"
         else:
-            category = "Album"
+            # Use the secondary-type-aware category captured at prefetch time
+            # (Live Album / Compilation / Remix) so the artist page groups
+            # these under their own sections instead of flattening them into
+            # Albums.  Fall back to title heuristics for rows persisted before
+            # the category column existed.
+            category = str(row.get("category") or "").strip()
+            if not category:
+                category = _fallback_release_category(title)
         missing_rows.append({
             "release_id": str(row.get("release_id") or "").strip() or f"{artist}-{norm}",
             "title": title,
