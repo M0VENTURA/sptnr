@@ -16,13 +16,24 @@ from db.engine import db_session
 logger = logging.getLogger(__name__)
 
 
+_ALBUM_SCOPE_WHERE = (
+    "LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist) "
+    "AND LOWER(COALESCE(album, '')) = LOWER(:album)"
+)
+
+
 def get_library_tracks(artist: str, album: str) -> list[dict]:
-    """Get all library tracks for a specific artist/album."""
+    """Get all library tracks for a specific artist/album.
+
+    Uses the same case-insensitive artist/album matching as the album detail
+    page route, so the track list shown on the page and the rows returned here
+    always agree even when the URL casing differs from the stored names.
+    """
     with db_session() as session:
         result = session.execute(
             text(
-                "SELECT id, title, track_number, disc_number, file_path, duration FROM tracks "
-                "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album "
+                f"SELECT id, title, track_number, disc_number, file_path, duration FROM tracks "
+                f"WHERE {_ALBUM_SCOPE_WHERE} "
                 "ORDER BY COALESCE(disc_number, '1'), track_number"
             ),
             {"artist": artist, "album": album},
@@ -36,7 +47,8 @@ def get_missing_tracks(artist: str, album: str) -> dict:
         # Get MBID
         row = session.execute(
             text(
-                "SELECT musicbrainz_album_mbid FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album "
+                "SELECT musicbrainz_album_mbid FROM tracks "
+                f"WHERE {_ALBUM_SCOPE_WHERE} "
                 "AND musicbrainz_album_mbid IS NOT NULL AND TRIM(musicbrainz_album_mbid) != '' LIMIT 1"
             ),
             {"artist": artist, "album": album},
@@ -48,7 +60,7 @@ def get_missing_tracks(artist: str, album: str) -> dict:
         library_rows = session.execute(
             text(
                 "SELECT id, title, track_number, disc_number, mbid FROM tracks "
-                "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album"
+                f"WHERE {_ALBUM_SCOPE_WHERE}"
             ),
             {"artist": artist, "album": album},
         ).fetchall()
@@ -136,7 +148,8 @@ def get_title_mismatches(artist: str, album: str) -> dict:
     with db_session() as session:
         row = session.execute(
             text(
-                "SELECT musicbrainz_album_mbid FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album "
+                "SELECT musicbrainz_album_mbid FROM tracks "
+                f"WHERE {_ALBUM_SCOPE_WHERE} "
                 "AND musicbrainz_album_mbid IS NOT NULL AND TRIM(musicbrainz_album_mbid) != '' LIMIT 1"
             ),
             {"artist": artist, "album": album},
@@ -146,7 +159,7 @@ def get_title_mismatches(artist: str, album: str) -> dict:
         library_rows = session.execute(
             text(
                 "SELECT id, title, track_number, disc_number, duration FROM tracks "
-                "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album"
+                f"WHERE {_ALBUM_SCOPE_WHERE}"
             ),
             {"artist": artist, "album": album},
         ).fetchall()

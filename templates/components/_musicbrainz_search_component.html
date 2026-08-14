@@ -261,6 +261,12 @@ window.performMbSearch = async function() {
     }
     if (isArtistOnly) payload.artist_only = true;
     if (releaseType) payload.type = releaseType; // server-side primarytype/secondarytype filter
+    // Folder-match / re-match flows want owned releases included so the user
+    // can associate a downloaded folder with a release already in the library.
+    if (window._mbSearchIncludeOwned === true) {
+      payload.include_owned = true;
+      window._mbSearchIncludeOwned = false;
+    }
 
     var resp = await fetch('/api/musicbrainz/search', {
       method: 'POST',

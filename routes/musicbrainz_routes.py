@@ -253,6 +253,84 @@ def _normalise_search_key(value: str) -> str:
     return re.sub(r"[^a-zA-Z0-9]+", "", (value or "").lower())
 
 
+def _dedupe_owned_releases(releases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Strip MusicBrainz release-groups the user already owns.
+
+    A release-group is considered owned when its release-group MBID, or its
+    normalised (artist, album) title pair, already exists in the local
+    ``tracks`` table.  Local ``missing_releases`` rows (source "local") are
+    never touched.  Best-effort: any DB failure leaves the list unchanged.
+    """
+    try:
+        from sqlalchemy import text as _lib_text
+        from db.engine import db_session as _lib_db_session
+
+        mb_rows = [r for r in releases if r.get("source") == "musicbrainz"]
+        if not mb_rows:
+            return releases
+
+        owned_rgids: set[str] = set()
+        owned_pairs: set[tuple[str, str]] = set()
+        candidates = [
+            (
+                _normalise_search_key(r.get("artist")),
+                _normalise_search_key(r.get("title")),
+                str(r.get("id") or "").strip(),
+            )
+            for r in mb_rows
+        ]
+        with _lib_db_session() as session:
+            rgids = [c[2] for c in candidates if c[2]]
+            if rgids:
+                ph = ", ".join(f":r{i}" for i in range(len(rgids)))
+                rows = session.execute(
+                    _lib_text(
+                        "SELECT DISTINCT TRIM(musicbrainz_releasegroupid) FROM tracks "
+                        f"WHERE musicbrainz_releasegroupid IN ({ph})"
+                    ),
+                    {f"r{i}": rid for i, rid in enumerate(rgids)},
+                ).fetchall()
+                owned_rgids = {str(r[0]) for r in rows if r[0]}
+            pairs = [(c[0], c[1]) for c in candidates if c[0] and c[1]]
+            if pairs:
+                conds = " OR ".join(
+                    f"(LOWER(REGEXP_REPLACE(COALESCE(NULLIF(album_artist, ''), artist), "
+                    f"'[^a-zA-Z0-9]', '', 'g')) = :a{i} "
+                    f"AND LOWER(REGEXP_REPLACE(album, '[^a-zA-Z0-9]', '', 'g')) = :b{i})"
+                    for i in range(len(pairs))
+                )
+                pair_params: dict[str, str] = {}
+                for i, (a, b) in enumerate(pairs):
+                    pair_params[f"a{i}"] = a
+                    pair_params[f"b{i}"] = b
+                rows = session.execute(
+                    _lib_text(
+                        "SELECT DISTINCT "
+                        "LOWER(REGEXP_REPLACE(COALESCE(NULLIF(album_artist, ''), artist), "
+                        "'[^a-zA-Z0-9]', '', 'g')), "
+                        "LOWER(REGEXP_REPLACE(album, '[^a-zA-Z0-9]', '', 'g')) "
+                        f"FROM tracks WHERE {conds}"
+                    ),
+                    pair_params,
+                ).fetchall()
+                owned_pairs = {(str(r[0]), str(r[1])) for r in rows}
+
+        def _is_owned(r: dict[str, Any]) -> bool:
+            rgid = str(r.get("id") or "").strip()
+            if rgid and rgid in owned_rgids:
+                return True
+            pair = (
+                _normalise_search_key(r.get("artist")),
+                _normalise_search_key(r.get("title")),
+            )
+            return pair in owned_pairs
+
+        return [r for r in releases if r.get("source") != "musicbrainz" or not _is_owned(r)]
+    except Exception as exc:
+        logger.debug("[MB_SEARCH] Library dedupe failed: %s", exc)
+        return releases
+
+
 @mb_bp.route("/search", methods=["POST"])
 async def api_musicbrainz_search():
     """Search MusicBrainz for releases + local cached missing releases.
@@ -280,6 +358,10 @@ async def api_musicbrainz_search():
     query = str(payload.get("query", "")).strip()
     artist_only = bool(payload.get("artist_only", False))
     release_type = str(payload.get("type") or payload.get("release_type") or "").strip().lower()
+    # Folder-match / re-match searches want the release even when it already
+    # exists in the library — the library-dedupe step below is skipped so the
+    # user can pick the owned release and associate the folder with it.
+    include_owned = bool(payload.get("include_owned", False))
 
     def _esc(value: str) -> str:
         return value.replace('"', "")
@@ -610,71 +692,10 @@ async def api_musicbrainz_search():
         # normalised (artist, album) title already exists in the local
         # library, so the MusicBrainz tab count reflects only missing albums.
         # Local ``missing_releases`` rows (source "local") are untouched.
-        try:
-            from sqlalchemy import text as _lib_text
-            from db.engine import db_session as _lib_db_session
-
-            mb_rows = [r for r in releases if r.get("source") == "musicbrainz"]
-            if mb_rows:
-                owned_rgids: set[str] = set()
-                owned_pairs: set[tuple[str, str]] = set()
-                candidates = [
-                    (
-                        _normalise_search_key(r.get("artist")),
-                        _normalise_search_key(r.get("title")),
-                        str(r.get("id") or "").strip(),
-                    )
-                    for r in mb_rows
-                ]
-                with _lib_db_session() as session:
-                    rgids = [c[2] for c in candidates if c[2]]
-                    if rgids:
-                        ph = ", ".join(f":r{i}" for i in range(len(rgids)))
-                        rows = session.execute(
-                            _lib_text(
-                                "SELECT DISTINCT TRIM(musicbrainz_releasegroupid) FROM tracks "
-                                f"WHERE musicbrainz_releasegroupid IN ({ph})"
-                            ),
-                            {f"r{i}": rid for i, rid in enumerate(rgids)},
-                        ).fetchall()
-                        owned_rgids = {str(r[0]) for r in rows if r[0]}
-                    pairs = [(c[0], c[1]) for c in candidates if c[0] and c[1]]
-                    if pairs:
-                        conds = " OR ".join(
-                            f"(LOWER(REGEXP_REPLACE(COALESCE(NULLIF(album_artist, ''), artist), "
-                            f"'[^a-zA-Z0-9]', '', 'g')) = :a{i} "
-                            f"AND LOWER(REGEXP_REPLACE(album, '[^a-zA-Z0-9]', '', 'g')) = :b{i})"
-                            for i in range(len(pairs))
-                        )
-                        pair_params: dict[str, str] = {}
-                        for i, (a, b) in enumerate(pairs):
-                            pair_params[f"a{i}"] = a
-                            pair_params[f"b{i}"] = b
-                        rows = session.execute(
-                            _lib_text(
-                                "SELECT DISTINCT "
-                                "LOWER(REGEXP_REPLACE(COALESCE(NULLIF(album_artist, ''), artist), "
-                                "'[^a-zA-Z0-9]', '', 'g')), "
-                                "LOWER(REGEXP_REPLACE(album, '[^a-zA-Z0-9]', '', 'g')) "
-                                f"FROM tracks WHERE {conds}"
-                            ),
-                            pair_params,
-                        ).fetchall()
-                        owned_pairs = {(str(r[0]), str(r[1])) for r in rows}
-
-                def _is_owned(r: dict[str, Any]) -> bool:
-                    rgid = str(r.get("id") or "").strip()
-                    if rgid and rgid in owned_rgids:
-                        return True
-                    pair = (
-                        _normalise_search_key(r.get("artist")),
-                        _normalise_search_key(r.get("title")),
-                    )
-                    return pair in owned_pairs
-
-                releases = [r for r in releases if r.get("source") != "musicbrainz" or not _is_owned(r)]
-        except Exception as exc:
-            logger.debug("[MB_SEARCH] Library dedupe failed: %s", exc)
+        # Skipped when ``include_owned`` is set (folder match / re-match
+        # flows need the owned release to associate the folder with).
+        if not include_owned:
+            releases = _dedupe_owned_releases(releases)
 
         # ── 3. Sort (legacy parity): artist asc, then first release date desc
         if artist_only:
