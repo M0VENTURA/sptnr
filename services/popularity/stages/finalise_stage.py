@@ -958,7 +958,7 @@ def _create_essential_m3u(artist: str) -> None:
                            COALESCE(popularity, final_score, 0) AS popularity_score,
                            year, release_year, artist
                     FROM tracks
-                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+                    WHERE LOWER(TRIM(COALESCE(NULLIF(album_artist, ''), artist))) = LOWER(TRIM(:artist))
                       AND COALESCE(stars, star_rating) >= 4
                 """),
                 {"artist": artist},
@@ -985,7 +985,7 @@ def _create_essential_m3u(artist: str) -> None:
                                year, release_year, artist
                         FROM tracks
                         WHERE COALESCE(stars, star_rating) >= 4
-                          AND COALESCE(NULLIF(album_artist, ''), artist) <> :artist
+                          AND LOWER(TRIM(COALESCE(NULLIF(album_artist, ''), artist))) <> LOWER(TRIM(:artist))
                           AND (
                               artist ILIKE '% feat %' OR artist ILIKE '% feat.%'
                               OR artist ILIKE '%feat.%' OR artist ILIKE '%featuring%'
@@ -1080,6 +1080,11 @@ def _create_essential_m3u(artist: str) -> None:
             )
         except Exception:
             pass
+    else:
+        logger.info(
+            "[finalise_stage] Essential collection for '%s' not created: only %d unique 4★/5★ tracks (min %d) — no existing file to remove",
+            artist, len(winners), _ESSENTIAL_MIN_TRACKS,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1178,41 +1183,99 @@ def _display_genre(genre: str) -> str:
     )
 
 
+def _navidrome_clients() -> list[Any]:
+    """Resolve Navidrome clients from config (all user shapes + env).
+
+    Uses ``get_navidrome_users_normalized`` so ``user``/``pass``,
+    ``username``/``password``, the legacy ``navidrome`` block and env vars all
+    resolve — the raw-config loops used in older playlist code silently no-op
+    when the credential keys differ, which is why playlist deletions "didn't
+    work".
+    """
+    clients: list[Any] = []
+    try:
+        from helpers.config_helpers import get_navidrome_users_normalized
+        from api_clients.navidrome import NavidromeClient
+        for user in get_navidrome_users_normalized():
+            base_url = (user.get("base_url") or "").strip()
+            username = (user.get("user") or "").strip()
+            password = (user.get("pass") or "").strip()
+            if base_url and username and password:
+                clients.append(NavidromeClient(base_url, username, password))
+    except Exception as exc:
+        logger.debug("[finalise_stage] Navidrome client resolution failed: %s", exc)
+    return clients
+
+
 def _delete_genre_playlist_from_navidrome(playlist_name: str) -> None:
     """Best-effort: remove a genre playlist from Navidrome by name.
 
     Deleting the ``.m3u`` from the watch folder only removes the file —
     Navidrome keeps the imported playlist in its DB, so an under-threshold
     genre playlist would linger in the UI.  Mirrors the legacy NSP-overwrite
-    flow (``find_playlist_by_name`` + ``deletePlaylist``).  Quiet on failure;
-    the file deletion remains the source of truth.
+    flow (``find_playlist_by_name`` + ``deletePlaylist``).  Warnings are
+    logged when the playlist is not found so a silent delete failure is
+    diagnosable; the file deletion remains the source of truth.
     """
     if not playlist_name:
         return
     try:
-        from helpers.config_helpers import get_config
-        from api_clients.navidrome import NavidromeClient
-        cfg = get_config() or {}
-        nav_cfg = cfg.get("navidrome") or {}
-        nav_users = cfg.get("navidrome_users") or []
-        if not nav_users and isinstance(nav_cfg, dict) and nav_cfg.get("base_url"):
-            nav_users = [nav_cfg]
-        for user in nav_users:
-            base_url = user.get("base_url")
-            username = user.get("user")
-            password = user.get("pass")
-            if not (base_url and username and password):
-                continue
-            client = NavidromeClient(base_url, username, password)
+        for client in _navidrome_clients():
             playlist = client.find_playlist_by_name(playlist_name)
             if playlist and playlist.get("id") and client.delete_playlist(str(playlist["id"])):
                 logger.info("[finalise_stage] Deleted Navidrome playlist '%s'", playlist_name)
                 return
+        logger.warning(
+            "[finalise_stage] Navidrome playlist '%s' not found for deletion (file already removed)",
+            playlist_name,
+        )
     except Exception as exc:
-        logger.debug(
+        logger.warning(
             "[finalise_stage] Navidrome playlist delete failed for %s: %s",
             playlist_name, exc,
         )
+
+
+def _sweep_orphaned_genre_playlists_from_navidrome() -> None:
+    """Self-healing sweep: remove Navidrome genre playlists whose ``.m3u``
+    file is no longer on disk.
+
+    The file cleanup only deletes a Navidrome playlist for the exact file it
+    removed in the same run — if that API call failed (or the file was
+    removed out-of-band earlier), the imported playlist lingers forever.  This
+    sweep walks Navidrome's playlists, matches names to the genre template
+    (the configured suffix, e.g. " - Top Tracks") and deletes any whose
+    ``.m3u`` is missing from the watch directory.  Gated by
+    ``playlists.genre_playlists_delete_enabled``; best-effort, never raises.
+    """
+    try:
+        if not _genre_playlists_delete_enabled():
+            return
+        suffix = _sanitize_name(_genre_playlist_name("GENRE")).replace("GENRE", "", 1).strip() or ""
+        if not suffix:
+            return
+        playlists_dir = _essential_playlists_dir()
+        for client in _navidrome_clients():
+            for playlist in client.fetch_all_playlists() or []:
+                name = str(playlist.get("name") or "")
+                if suffix not in name:
+                    continue
+                file_path = os.path.join(playlists_dir, f"{_sanitize_name(name)}.m3u")
+                if os.path.exists(file_path):
+                    continue
+                playlist_id = str(playlist.get("id") or "")
+                if playlist_id and client.delete_playlist(playlist_id):
+                    logger.info(
+                        "[finalise_stage] Swept orphaned Navidrome playlist '%s' (file removed)",
+                        name,
+                    )
+                else:
+                    logger.warning(
+                        "[finalise_stage] Could not delete orphaned Navidrome playlist '%s'",
+                        name,
+                    )
+    except Exception as exc:
+        logger.warning("[finalise_stage] Genre playlist Navidrome sweep failed: %s", exc)
 
 
 def _create_genre_top_track_playlists(prune_only: bool = False) -> int:
@@ -1435,6 +1498,14 @@ def _create_genre_top_track_playlists(prune_only: bool = False) -> int:
             # The file is gone — drop the imported Navidrome playlist too so
             # under-threshold genres don't linger in the UI.
             _delete_genre_playlist_from_navidrome(os.path.splitext(name)[0])
+
+    # Self-healing Navidrome sweep: a previous delete attempt may have failed
+    # or the file may have been removed out-of-band — drop any Navidrome
+    # genre playlist whose .m3u is no longer on disk.
+    try:
+        _sweep_orphaned_genre_playlists_from_navidrome()
+    except Exception:
+        pass
 
     _save_genre_playlist_state((candidates | keep_names) - removed)
 

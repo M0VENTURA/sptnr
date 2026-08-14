@@ -345,3 +345,70 @@ class TestEdgeCases:
         assert written == 2
         assert _path(d, "Rock - Top Tracks.m3u").exists()
         assert _path(d, "Metal - Top Tracks.m3u").exists()
+
+
+class _FakeNavidromeClient:
+    """Minimal Navidrome client stand-in for the orphan-sweep tests."""
+
+    def __init__(self, playlists):
+        self._playlists = playlists
+        self.deleted = []
+
+    def fetch_all_playlists(self):
+        return list(self._playlists)
+
+    def find_playlist_by_name(self, name):
+        wanted = str(name or "").strip().lower()
+        for p in self._playlists:
+            if str(p.get("name") or "").strip().lower() == wanted:
+                return p
+        return None
+
+    def delete_playlist(self, playlist_id):
+        self.deleted.append(playlist_id)
+        return True
+
+
+class TestNavidromeOrphanSweep:
+    """Navidrome keeps imported genre playlists even after the ``.m3u`` file
+    is removed — the self-healing sweep must delete exactly the ones whose
+    file is gone (the reported "removed from disk but still on Navidrome")."""
+
+    def test_sweeps_orphaned_keeps_present_and_foreign(self, tmp_path, monkeypatch):
+        playlists_dir = tmp_path / "Playlists"
+        playlists_dir.mkdir(parents=True, exist_ok=True)
+        # A genre playlist file that still exists on disk must be kept.
+        (playlists_dir / "Alternative - Top Tracks.m3u").write_text("#EXTM3U\n")
+        monkeypatch.setattr(fs, "_essential_playlists_dir", lambda: str(playlists_dir))
+        monkeypatch.setattr(fs, "_genre_playlists_delete_enabled", lambda: True)
+
+        client = _FakeNavidromeClient([
+            {"id": "p1", "name": "Alt-rock - Top Tracks"},                    # no file → sweep
+            {"id": "p2", "name": "Alternative - Top Tracks"},                 # file exists → keep
+            {"id": "p3", "name": "Amon Amarth - Essential Collection"},       # not genre suffix → keep
+        ])
+        monkeypatch.setattr(fs, "_navidrome_clients", lambda: [client])
+
+        fs._sweep_orphaned_genre_playlists_from_navidrome()
+
+        assert client.deleted == ["p1"]
+
+    def test_respects_delete_toggle(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(fs, "_genre_playlists_delete_enabled", lambda: False)
+        client = _FakeNavidromeClient([{"id": "p1", "name": "Alt-rock - Top Tracks"}])
+        monkeypatch.setattr(fs, "_navidrome_clients", lambda: [client])
+
+        fs._sweep_orphaned_genre_playlists_from_navidrome()
+
+        assert client.deleted == []
+
+    def test_delete_by_name_uses_normalized_clients(self, monkeypatch):
+        """_delete_genre_playlist_from_navidrome must resolve clients via
+        _navidrome_clients (normalised config) and delete by case-insensitive
+        name."""
+        client = _FakeNavidromeClient([{"id": "p9", "name": "Alt-rock - Top Tracks"}])
+        monkeypatch.setattr(fs, "_navidrome_clients", lambda: [client])
+
+        fs._delete_genre_playlist_from_navidrome("Alt-Rock - Top Tracks")
+
+        assert client.deleted == ["p9"]
