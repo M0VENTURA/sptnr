@@ -54,6 +54,23 @@ def _playlists_dir() -> str:
     return os.path.join(os.environ.get("MUSIC_FOLDER", "/music"), "Playlists")
 
 
+def is_safe_playlist_path(file_path: str) -> bool:
+    """True when *file_path* is a real file inside the Playlists directory.
+
+    Enforces the playlists-root boundary for any user-supplied ``file_path``
+    so the playlist read/export/rename routes cannot be used for path
+    traversal (reading/renaming arbitrary files elsewhere on disk).  Uses
+    ``realpath`` so symlink escapes are also rejected.
+    """
+    if not file_path:
+        return False
+    try:
+        from services.infrastructure.filesystem_service import is_path_under_directory
+        return is_path_under_directory(file_path, _playlists_dir())
+    except Exception:
+        return False
+
+
 def create_m3u_file(playlist_name: str, tracks: list[dict]) -> str | None:
     """Write an ``{name}.m3u`` into the Playlists directory.
 

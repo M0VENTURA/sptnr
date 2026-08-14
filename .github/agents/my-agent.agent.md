@@ -767,12 +767,17 @@ All routes are defined in `app.py`. Group them as follows when working on relate
 | `/api/downloads/scan-progress` | GET | Scan progress |
 | `/api/downloads/folder-groups` | GET | List folder groups |
 | `/api/downloads/grouped-folders` | GET | Grouped folder view |
+| `/api/downloads/unmatched-folders` | GET | Passive disk folders (Matched Folders section) |
 | `/api/downloads/folder/<path>` | GET | Folder details |
 | `/api/downloads/folder/<path>/cancel` | POST | Cancel folder |
 | `/api/downloads/folder/<path>/match-musicbrainz` | POST | Match folder to MB |
 | `/api/downloads/folder/<path>/auto-match` | POST | Auto-match folder |
 | `/api/downloads/folder/<path>/duplicates` | GET | Folder duplicates |
 | `/api/downloads/folder/<path>/organize` | POST | Organize folder |
+| `/api/downloads/folder/match` | POST | Phase 2 (confirm) — tag/format/move folder to library |
+| `/api/downloads/folder/associate` | POST | Phase 1 — record folder→release MBID, NO file movement |
+| `/api/downloads/confirm-match` | POST | Phase 2 alias — confirm an associated folder (tag → path → move → cleanup) |
+| `/api/downloads/folder/delete` | POST | Delete a disk folder (safety-railed) |
 | `/api/downloads/folder-status` | GET | Folder status overview |
 | `/api/downloads/folder-duplicates` | GET | All folder duplicates |
 | `/api/downloads/folder-merge` | POST | Merge duplicate folders |
@@ -786,7 +791,7 @@ All routes are defined in `app.py`. Group them as follows when working on relate
 | `/api/downloads/process` | POST | Process all downloads |
 | `/api/downloads/process-one` | POST | Process single download |
 | `/api/downloads/process-retry` | POST | Retry processing |
-| `/api/downloads/queue` | GET | Downloads queue |
+| `/api/downloads/queue` | GET | Downloads queue (active search/download items ONLY — disk folders excluded) |
 | `/api/downloads/queue/grouped` | GET | Grouped queue view |
 | `/api/downloads/queue/batch-group` | POST | Batch group queue items |
 | `/api/downloads/queue/<id>` | GET/DELETE | Get/delete queue item |
@@ -871,12 +876,21 @@ All routes are defined in `app.py`. Group them as follows when working on relate
 
 | Table | Key fields | Purpose |
 |-------|-----------|---------|
-| `download_queue` | id, artist, title, status, priority, retry_count | Download queue items |
+| `download_queue` | id, artist, title, status, source, priority, retry_count | Download queue items |
 | `queue_events` | queue_id, event_type, timestamp, details | Download audit trail |
 | `folder_tracking` | folder_path, group_id, status | Downloads folder groups |
+| `folder_matches` | folder_path, release_mbid, release_title, artist, release_year, status | Two-phase folder-match association (phase 1 = Match, phase 2 = Confirm Match) |
 | `downloaded_files` | file_path, hash, artist, album, import_status | Completed downloads |
+| `musicbrainz_releases` | release_id, release_title, artist, monitoring_folder_path, status | Active MB releases with progress (drives the queue's folder groups) |
 
-Queue item `status` values: `queued` → `searching` → `downloading` → `importing` → `completed` / `failed`
+Queue item `status` values: `queued` → `searching` → `downloading` → `moving` → `imported` / `failed`
+
+> ⚠️ **Strict queue vs. local-disk boundary**: `unmatched` / `discovered` are
+> PASSIVE local-disk states (the Matched Folders section). They must never be
+> treated as active queue statuses — `ACTIVE_QUEUE_STATUSES` excludes
+> `unmatched`, and `get_active_queue` also hard-filters `source IN
+> ('local','discovered')` so ambient disk folders can never bleed into the
+> active search/download queue.
 
 Queue processor similarity thresholds:
 - `_NAV_TITLE_SIMILARITY_THRESHOLD = 0.85` (85%)
@@ -1010,7 +1024,8 @@ Download integrations (slskd, qBittorrent) are **policy-gated** — only enabled
 | Download queue orchestration | `services/queue/queue_orchestrator.py`, `queue_processing_service.py`, `queue_scoring.py`, `queue_matching_service.py`, `queue_worker.py` |
 | Download queue state | `services/downloads/download_queue_service.py`, `download_processing_service.py`, `download_retry_service.py` |
 | Download organization | `services/downloads/download_organize_service.py`, `download_organize_helpers.py`, `download_verification_service.py` |
-| Download folder matching | `services/downloads/download_folder_service.py`, `download_matching_service.py`, `match_engine.py`, `match_orchestrator.py` |
+| Download folder matching | `services/downloads/download_folder_service.py` (`associate_folder_to_release`, `match_folder_to_release` = confirm), `download_matching_service.py`, `match_engine.py`, `match_orchestrator.py` |
+| Folder-match association (two-phase) | `db/repositories/folder_match_repository.py` (upsert/get/all/delete on `folder_matches`) |
 | Download monitoring/watcher | `services/downloads/download_watcher_service.py`, `download_completion_service.py`, `download_scan_service.py`, `download_scheduler_service.py` |
 | API clients | `api_clients/` (HTTP only) |
 | DB abstraction | `db/engine.py` (`db_session`, engine), `db/repositories/` (writes), `db/schema.py`, `db/bootstrap.py` |
@@ -1088,6 +1103,45 @@ async function searchMusicBrainzRelease(event, artist, album, upcomingReleaseId)
 
 ## 14) Download queue — full lifecycle reference
 
+### 14.0 Strict queue vs. matched-folders separation (DO NOT BREAK)
+
+There are TWO completely separate surfaces in the downloads UI:
+
+- **Search / Download Queue (top)** — contains ONLY active search requests,
+  pending download tasks and live transfers. Scanning the local disk must
+  NEVER inject ambient folders into this queue.
+- **Matched Folders (bottom)** — the passive list of audio folders detected
+  on disk in the staging/downloads directory. These folders are passive:
+  they must NEVER auto-transfer or auto-move; all movement to `/music`
+  requires explicit manual confirmation.
+
+**Enforcement points (verified):**
+- `ACTIVE_QUEUE_STATUSES` (`services/queue/queue_constraints.py`) excludes
+  `unmatched`/`discovered` — they are passive disk states, not active queue
+  statuses.
+- `db/repositories/queue.py::get_active_queue` additionally hard-filters
+  `source IN ('local','discovered')` regardless of status (belt-and-suspenders).
+- `download_watcher_service.py` does NOT enqueue unmatched local files
+  (the `_queue_unmatched` injection was removed); ambient disk folders are
+  surfaced only by `get_unmatched_folders()`.
+
+#### Two-phase folder match (Match → Confirm Match)
+
+| Phase | Endpoint | What happens |
+|-------|----------|--------------|
+| **1 — Match / Change Match** | `POST /api/downloads/folder/associate` | Resolves the MB release, writes a row to `folder_matches` (folder_path + release_mbid + title/artist/year). **NO files are moved.** The folder stays fully passive on disk. |
+| **2 — Confirm Match** | `POST /api/downloads/confirm-match` (alias `folder/match`) | Runs the full migration pipeline: write MusicBrainz tags (`move_track_to_library`) → format path from config template → move to `/music` → delete staging folder → remove the `folder_matches` row. |
+
+- `get_unmatched_folders()` returns `match` + `release_mbid` per folder so the
+  UI renders two states: unmatched → `[Match] [Delete]`; associated →
+  `[Change Match] [Confirm Match] [Delete]`.
+- Frontend: `static/js/monitor.js` `openFolderMbSearch()` wires the shared MB
+  search modal (`_mbSearchCallback` + `populateMusicBrainzSearch`) to the
+  associate endpoint. `Confirm Match` calls the confirm endpoint.
+- Backend: `associate_folder_to_release()` (phase 1) + `match_folder_to_release()`
+  (phase 2/confirm) live in `services/downloads/download_folder_service.py`;
+  persistence in `db/repositories/folder_match_repository.py`.
+
 ### 14.1 Queue flow phases (CURRENT)
 
 ```
@@ -1121,7 +1175,8 @@ MusicBrainz direct import uses a parallel flow:
 | `services/downloads/download_retry_service.py` | Retry logic; manages `retry_count` and backoff |
 | `services/downloads/download_organize_service.py` / `download_organize_helpers.py` | Organizes staged files into library; writes ID3/Vorbis tags (`move_track_to_library`) |
 | `services/downloads/download_verification_service.py` | Hash verification before/after move |
-| `services/downloads/download_folder_service.py` | Groups download folder contents into logical releases; matched/unmatched folder listing |
+| `services/downloads/download_folder_service.py` | Groups download folder contents into logical releases; matched/unmatched folder listing; `associate_folder_to_release` + `match_folder_to_release` (two-phase match) |
+| `db/repositories/folder_match_repository.py` | `folder_matches` CRUD: `upsert_folder_match`, `get_folder_match`, `get_all_folder_matches`, `delete_folder_match` |
 | `services/downloads/download_completion_service.py` | Reconciles completed slskd transfers to files on disk and imports them (`check_completed_downloads`) |
 | `services/downloads/download_watcher_service.py` | Downloads-folder watcher (`scan_downloads_folder`) + auto-discovery cycle |
 

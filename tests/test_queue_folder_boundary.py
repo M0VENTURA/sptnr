@@ -159,3 +159,61 @@ def test_folder_match_repository_roundtrip(queue_engine):
     assert delete_folder_match("/downloads/Music/Artist - Album (2024)") is True
     assert get_folder_match("/downloads/Music/Artist - Album (2024)") is None
     assert get_all_folder_matches() == []
+
+
+class _Raise404:
+    """Minimal MusicBrainz client double whose get_release raises like httpx."""
+
+    def __init__(self, group_releases):
+        self._group_releases = group_releases
+
+    def get_release(self, release_mbid, inc="", timeout=10.0):
+        raise Exception(
+            "Client error '404 Not Found' for url "
+            f"'https://musicbrainz.org/ws/2/release/{release_mbid}'"
+        )
+
+    def get_release_group(self, release_group_mbid, timeout=10.0):
+        return {"id": release_group_mbid, "title": "Album"}
+
+    def get(self, endpoint, *, params=None, timeout=10.0):
+        if endpoint.rstrip("/") == "release":
+            return {"releases": self._group_releases}
+        return {}
+
+
+def test_resolve_release_falls_back_to_release_group(monkeypatch):
+    """A release-group MBID (as returned by the MB search modal) must resolve
+    through the release-group browse fallback — the old code 404'd because
+    get_release raises instead of returning empty."""
+    from services.downloads import download_folder_service as svc
+
+    client = _Raise404(
+        group_releases=[
+            {"id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "title": "Album"},
+        ]
+    )
+    release_data, release_mbid = svc._resolve_release(client, "rg-0000-0000-0000-000000000001")
+    assert release_mbid == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    assert release_data is not None
+
+
+def test_resolve_release_direct_release_wins(monkeypatch):
+    """A real release MBID is returned directly (no release-group fallback)."""
+    from services.downloads import download_folder_service as svc
+
+    class _DirectClient(_Raise404):
+        def get_release(self, release_mbid, inc="", timeout=10.0):
+            if release_mbid == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee":
+                return {
+                    "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                    "title": "Album",
+                    "artist-credit": [{"name": "Artist"}],
+                }
+            raise Exception("404 Not Found")
+
+    client = _DirectClient(group_releases=[])
+    release_data, release_mbid = svc._resolve_release(client, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+    assert release_mbid == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    assert release_data is not None
+    assert release_data["title"] == "Album"

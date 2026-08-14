@@ -792,6 +792,11 @@ def _fetch_playlist_tracks(source: str, playlist_id: str, file_path: str) -> tup
         file_path = str(file_path or "")
         if not file_path or not _os.path.exists(file_path):
             raise _PlaylistTracksError("Playlist file not found", 404)
+        # Path-traversal guard: only files inside the Playlists directory may
+        # be read/exported — never arbitrary paths on disk.
+        from services.playlists.playlist_service import is_safe_playlist_path
+        if not is_safe_playlist_path(file_path):
+            raise _PlaylistTracksError("Invalid playlist file path", 400)
 
         # Generated .m3u playlists are plain text — parse directly.
         if str(file_path).lower().endswith((".m3u", ".m3u8")):
@@ -970,6 +975,12 @@ async def api_playlists_add_track():
             target_name = str(entry.get("name") or "")
             path = str(entry.get("file_path") or "")
 
+            # Defense-in-depth: the entry lookup normally returns paths from
+            # the Playlists dir; reject anything outside it anyway.
+            from services.playlists.playlist_service import is_safe_playlist_path
+            if not is_safe_playlist_path(path):
+                return jsonify({"error": "Invalid playlist file path"}), 400
+
             # ── .m3u: append one #EXTINF block ────────────────────────────
             if entry.get("kind") == "m3u":
                 if not track["file_path"]:
@@ -1116,10 +1127,14 @@ async def api_playlists_rename():
             return jsonify({"error": "Playlist name is required"}), 400
 
         if source == "file":
-            from services.playlists.playlist_service import rename_nsp_playlist
+            from services.playlists.playlist_service import rename_nsp_playlist, is_safe_playlist_path
             file_path = str(data.get("file_path") or "")
             if not file_path or not _os.path.exists(file_path):
                 return jsonify({"error": "Playlist file not found"}), 404
+            # Path-traversal guard: only files inside the Playlists directory
+            # may be renamed — never arbitrary paths on disk.
+            if not is_safe_playlist_path(file_path):
+                return jsonify({"error": "Invalid playlist file path"}), 400
             # Generated .m3u playlists are renamed as plain text files.
             if str(file_path).lower().endswith((".m3u", ".m3u8")):
                 from services.playlists.playlist_service import sanitize_playlist_name

@@ -277,6 +277,50 @@ def _extract_mb_id(value: str) -> str:
     return match.group(0) if match else ""
 
 
+def _resolve_release(client, mb_id: str) -> tuple[dict | None, str]:
+    """Resolve a MusicBrainz *release* OR *release-group* MBID to a concrete
+    release payload plus its release MBID.
+
+    The MB search modal hands over release-GROUP MBIDs (the search returns
+    release-groups); ``/ws/2/release/{id}`` 404s for those.  ``get_release``
+    raises ``httpx.HTTPStatusError`` on a 404 rather than returning empty, so
+    the caller must catch it — this helper treats any lookup failure as "not
+    a release" and falls back to browsing the release-group for a concrete
+    release.
+
+    Returns ``(release_data, release_mbid)`` or ``(None, "")`` when the ID
+    cannot be resolved at all.
+    """
+    try:
+        data = client.get_release(mb_id, inc="artist-credits+recordings+media", timeout=15.0)
+        if data and data.get("id"):
+            return data, str(data["id"])
+    except Exception:
+        # Not a release (404 etc.) — try as a release-group below.
+        pass
+
+    try:
+        rg = client.get_release_group(mb_id, timeout=15.0)
+        if not rg:
+            return None, ""
+        release_search = client.get(
+            "release",
+            params={"release-group": mb_id, "limit": 1, "fmt": "json"},
+            timeout=15.0,
+        )
+        releases = (release_search or {}).get("releases") or []
+        if not releases:
+            return None, ""
+        release_mbid = str(releases[0].get("id") or "")
+        if not release_mbid:
+            return None, ""
+        data = client.get_release(release_mbid, inc="artist-credits+recordings+media", timeout=15.0)
+        return data, release_mbid
+    except Exception as exc:
+        logger.debug("[FOLDER_MATCH] release-group resolution failed for %s: %s", mb_id, exc)
+        return None, ""
+
+
 def associate_folder_to_release(folder_path: str, mb_id: str) -> dict:
     """PHASE 1 of the two-phase folder-match flow: record the folder → release
     association WITHOUT moving any files.
@@ -308,24 +352,12 @@ def associate_folder_to_release(folder_path: str, mb_id: str) -> dict:
 
         client = MusicBrainzHttpClient()
 
-        # Resolve release metadata (release-group IDs resolve via a
-        # representative release; release IDs are used directly).
-        release_data = client.get_release(mb_id, inc="artist-credits+recordings+media", timeout=15.0)
-        release_mbid = mb_id
-        if not release_data:
-            rg = client.get_release_group(mb_id, timeout=15.0)
-            if not rg:
-                return {"success": False, "error": "MusicBrainz could not resolve that release/release-group"}
-            release_search = client.get(
-                "release",
-                params={"release-group": mb_id, "limit": 1, "fmt": "json"},
-                timeout=15.0,
-            )
-            releases = (release_search or {}).get("releases") or []
-            if not releases:
-                return {"success": False, "error": "No release found for that release-group"}
-            release_mbid = releases[0]["id"]
-            release_data = client.get_release(release_mbid, inc="artist-credits+recordings+media", timeout=15.0)
+        # Resolve release metadata — accepts a release OR release-group MBID
+        # (the MB search modal returns release-groups).  ``_resolve_release``
+        # catches the 404 that ``get_release`` raises for a release-group ID.
+        release_data, release_mbid = _resolve_release(client, mb_id)
+        if release_data is None or not release_mbid:
+            return {"success": False, "error": "MusicBrainz could not resolve that release/release-group"}
 
         artist_credit = release_data.get("artist-credit") or []
         album_artist = " ".join(
@@ -404,25 +436,12 @@ def match_folder_to_release(folder_path: str, mb_id: str) -> dict:
 
         client = MusicBrainzHttpClient()
 
-        # Resolve release metadata (release-group IDs resolve via a
-        # representative release; release IDs are used directly).
-        release_data = client.get_release(mb_id, inc="artist-credits+recordings+media", timeout=15.0)
-        release_mbid = mb_id
-        if not release_data:
-            # Try as a release-group.
-            rg = client.get_release_group(mb_id, timeout=15.0)
-            if not rg:
-                return {"success": False, "error": "MusicBrainz could not resolve that release/release-group"}
-            release_search = client.get(
-                "release",
-                params={"release-group": mb_id, "limit": 1, "fmt": "json"},
-                timeout=15.0,
-            )
-            releases = (release_search or {}).get("releases") or []
-            if not releases:
-                return {"success": False, "error": "No release found for that release-group"}
-            release_mbid = releases[0]["id"]
-            release_data = client.get_release(release_mbid, inc="artist-credits+recordings+media", timeout=15.0)
+        # Resolve release metadata — accepts a release OR release-group MBID
+        # (the MB search modal returns release-groups).  ``_resolve_release``
+        # catches the 404 that ``get_release`` raises for a release-group ID.
+        release_data, release_mbid = _resolve_release(client, mb_id)
+        if release_data is None or not release_mbid:
+            return {"success": False, "error": "MusicBrainz could not resolve that release/release-group"}
 
         artist_credit = release_data.get("artist-credit") or []
         album_artist = " ".join(

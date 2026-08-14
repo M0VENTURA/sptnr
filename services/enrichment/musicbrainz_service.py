@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 from typing import Any, List, Dict, Tuple
 
@@ -1252,11 +1253,392 @@ def _enrich_releases_with_track_counts(releases: list[dict]) -> None:
 
 
 def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict:
-    """Compare a MusicBrainz release group tracklist with the local library."""
-    result = get_release_group_releases(rg_mbid)
-    if not result.get("success"):
-        return result
-    return {"success": True, "artist": artist, "album": album, "releases": result.get("releases", [])}
+    """Compare a MusicBrainz release's tracklist with the local library.
+
+    Ported from the old_system album-compare engine (per-track matching +
+    field-diff recommendations).  For every MusicBrainz track it tries to
+    find the matching library track (by track number with a title-similarity
+    gate, exact normalised title, fuzzy title ≥ 80 %, then a core-title /
+    parenthetical-stripped pass, and finally a cross-disc fuzzy pass) and
+    reports which fields differ (title, track_number, year, mbid, duration,
+    disc_number) so the album page can recommend and apply corrections.
+
+    Matches as many tracks as it can; anything it cannot match is returned as
+    unmatched (``matched: False``) and library tracks not claimed by any MB
+    track are returned in ``extra_tracks``.
+
+    Returns the frontend contract expected by ``album_detail.js``:
+    ``{success, mb_title, mb_year, mb_artist, release_group_mbid,
+    comparison, extra_tracks, tracks_needing_update, total_tracks}``.
+    """
+    try:
+        from db.engine import db_session
+        from sqlalchemy import text
+        import difflib as _difflib
+
+        # Resolve the best concrete release in the group, then its tracklist.
+        best = get_musicbrainz_best_release(artist, album, rg_mbid)
+        best_release = (best or {}).get("best_release")
+        release_id = (best_release or {}).get("id") or rg_mbid
+        # ``fetch_musicbrainz_release_metadata`` needs a concrete RELEASE MBID
+        # (a release-group 404s on /ws/2/release/{id}) — resolve the group to
+        # a real release when best-release resolution came up empty.
+        if not (best_release or {}).get("id"):
+            resolved = resolve_release_id(rg_mbid)
+            if resolved and resolved != rg_mbid:
+                release_id = resolved
+
+        mb_release = fetch_musicbrainz_release_metadata(release_id)
+        if not mb_release:
+            return {"success": False, "error": "Could not fetch MusicBrainz release data"}
+
+        mb_tracks = mb_release.get("tracks", [])
+        mb_year = str(mb_release.get("release_year") or "")
+        mb_release_title = str(mb_release.get("release_title") or "")
+
+        # Load library tracks for this album.
+        library_tracks: list[dict[str, Any]] = []
+        try:
+            with db_session() as session:
+                result = session.execute(
+                    text("""
+                        SELECT id, title, track_number, disc_number, artist, year,
+                               mbid, file_path, duration, mb_ignored_fields
+                        FROM tracks
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+                          AND album = :album
+                        ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 999)
+                    """),
+                    {"artist": artist, "album": album},
+                )
+                library_tracks = [dict(r._mapping) for r in result.fetchall()]
+        except Exception as exc:
+            logger.debug("[MB_COMPARE] library track fetch failed: %s", exc)
+
+        if not library_tracks:
+            return {
+                "success": False,
+                "error": "No library tracks found for this album",
+                "comparison": [],
+            }
+
+        # Normalisation helper mirroring the old_system passes.
+        def _norm(value: str) -> str:
+            return re.sub(r"\s+", " ", str(value or "").lower().strip())
+
+        def _core(value: str) -> str:
+            """Title truncated at the first ( or [ — strips venue/year/version
+            annotations that the local library usually omits."""
+            return re.sub(r"\s*[\(\[].+$", "", _norm(value)).strip()
+
+        # Lookups: (disc, track_number) -> track, (disc, norm_title) -> track.
+        lib_by_tracknum: dict[tuple, dict] = {}
+        lib_by_title: dict[tuple, dict] = {}
+        for t in library_tracks:
+            disc = int(t.get("disc_number") or 1)
+            tn = t.get("track_number")
+            if tn is not None:
+                try:
+                    lib_by_tracknum[(disc, int(str(tn).split("/")[0].strip()))] = t
+                except (TypeError, ValueError):
+                    pass
+            lib_by_title[(disc, _norm(t.get("title") or ""))] = t
+
+        matched_lib_ids: set = set()
+        comparison: list[dict[str, Any]] = []
+
+        # Duration tolerance (seconds) — legacy parity.
+        _DURATION_TOLERANCE_SEC = 5.0
+        # Minimum title similarity to trust a track-number match.
+        _TRACK_NUM_TITLE_SIM_MIN = 0.30
+
+        for mb_track in mb_tracks:
+            disc = int(mb_track.get("disc_number") or 1)
+            mb_num_raw = mb_track.get("track_number")
+            try:
+                mb_num = int(str(mb_num_raw).split("/")[0].strip()) if mb_num_raw is not None else None
+            except (TypeError, ValueError):
+                mb_num = None
+            mb_title = str(mb_track.get("title") or "")
+            norm_mb = _norm(mb_title)
+            norm_mb_core = _core(mb_title)
+            mb_recording_id = str(mb_track.get("recording_mbid") or "")
+            mb_duration_ms = mb_track.get("duration")
+            mb_duration_sec = (int(mb_duration_ms) / 1000.0) if mb_duration_ms else None
+
+            lib_track = None
+
+            # 1. Match by track number — only when titles are reasonably similar.
+            if mb_num is not None and not lib_track:
+                candidate = lib_by_tracknum.get((disc, mb_num))
+                if candidate is not None:
+                    if not norm_mb or _difflib.SequenceMatcher(
+                        None, norm_mb, _norm(candidate.get("title") or "")
+                    ).ratio() >= _TRACK_NUM_TITLE_SIM_MIN:
+                        lib_track = candidate
+
+            # 2. Match by exact normalised title (same disc).
+            if lib_track is None:
+                lib_track = lib_by_title.get((disc, norm_mb))
+
+            # 3. Fuzzy title match (≥ 80%) — same disc, unclaimed tracks only.
+            if lib_track is None:
+                best_ratio, best_t = 0.0, None
+                for t in library_tracks:
+                    if int(t.get("disc_number") or 1) != disc:
+                        continue
+                    if t.get("id") in matched_lib_ids:
+                        continue
+                    ratio = _difflib.SequenceMatcher(None, norm_mb, _norm(t.get("title") or "")).ratio()
+                    if ratio > best_ratio and ratio >= 0.80:
+                        best_ratio, best_t = ratio, t
+                lib_track = best_t
+
+            # 4. Core-title match: strip parenthetical/bracketed suffixes and retry.
+            if lib_track is None and norm_mb_core and norm_mb_core != norm_mb:
+                candidate = lib_by_title.get((disc, norm_mb_core))
+                if candidate is not None and candidate.get("id") not in matched_lib_ids:
+                    lib_track = candidate
+                if lib_track is None:
+                    best_ratio, best_t = 0.0, None
+                    for t in library_tracks:
+                        if int(t.get("disc_number") or 1) != disc:
+                            continue
+                        if t.get("id") in matched_lib_ids:
+                            continue
+                        ratio = _difflib.SequenceMatcher(None, norm_mb_core, _norm(t.get("title") or "")).ratio()
+                        if ratio > best_ratio and ratio >= 0.80:
+                            best_ratio, best_t = ratio, t
+                    lib_track = best_t
+
+            entry: dict[str, Any] = {
+                "mb_track_number": mb_num,
+                "mb_disc_number": disc,
+                "mb_title": mb_title,
+                "mb_artist": "",
+                "mb_recording_id": mb_recording_id,
+                "mb_year": mb_year,
+                "mb_duration": None,
+                "mb_duration_sec": int(mb_duration_sec) if mb_duration_sec else None,
+                "library_track_id": None,
+                "library_title": None,
+                "library_track_number": None,
+                "library_disc_number": None,
+                "library_artist": None,
+                "library_year": None,
+                "library_duration": None,
+                "matched": False,
+                "needs_update": False,
+                "diff_fields": [],
+            }
+
+            if lib_track is not None:
+                matched_lib_ids.add(lib_track["id"])
+                entry.update({
+                    "matched": True,
+                    "library_track_id": lib_track.get("id"),
+                    "library_title": lib_track.get("title", ""),
+                    "library_track_number": lib_track.get("track_number"),
+                    "library_disc_number": int(lib_track.get("disc_number") or 1),
+                    "library_artist": lib_track.get("artist", ""),
+                    "library_year": str(lib_track.get("year") or ""),
+                })
+                raw_lib_dur = lib_track.get("duration")
+                lib_duration_sec = None
+                if raw_lib_dur not in (None, "", 0, "0"):
+                    try:
+                        val = float(raw_lib_dur)
+                        lib_duration_sec = (val / 1000.0) if val > 10000 else val
+                        lib_duration_sec = lib_duration_sec if lib_duration_sec > 0 else None
+                    except (TypeError, ValueError):
+                        lib_duration_sec = None
+                entry["library_duration"] = lib_duration_sec
+
+                def _fmt_dur(sec):
+                    if sec is None:
+                        return None
+                    s = int(round(sec))
+                    return f"{s // 60}:{s % 60:02d}"
+
+                entry["mb_duration"] = _fmt_dur(mb_duration_sec)
+                entry["library_duration"] = _fmt_dur(lib_duration_sec)
+
+                diff_fields: list[str] = []
+                # Title differs (ignore an expected "(Artist Cover)" suffix).
+                lib_title = str(lib_track.get("title") or "")
+                if mb_title and mb_title != lib_title:
+                    cover_match = re.search(r'\([^)]*\bcover\b[^)]*\)', lib_title, re.IGNORECASE)
+                    if cover_match:
+                        stripped = re.sub(r'\s*\([^)]*\bcover\b[^)]*\)', '', lib_title, flags=re.IGNORECASE).strip()
+                        if stripped.lower() != mb_title.lower():
+                            diff_fields.append("title")
+                    else:
+                        diff_fields.append("title")
+                # Track number differs.
+                lib_tn = lib_track.get("track_number")
+                if mb_num is not None and str(mb_num) != str(lib_tn or ""):
+                    diff_fields.append("track_number")
+                # Year differs.
+                lib_year = str(lib_track.get("year") or "")
+                if mb_year and mb_year != lib_year:
+                    diff_fields.append("year")
+                # Missing recording MBID.
+                lib_mbid = str(lib_track.get("mbid") or "").strip()
+                if mb_recording_id and not lib_mbid:
+                    diff_fields.append("mbid")
+                # Duration differs by more than the tolerance.
+                if mb_duration_sec is not None and lib_duration_sec is not None:
+                    if abs(mb_duration_sec - lib_duration_sec) > _DURATION_TOLERANCE_SEC:
+                        diff_fields.append("duration")
+                # Disc number differs.
+                if int(lib_track.get("disc_number") or 1) != disc:
+                    diff_fields.append("disc_number")
+
+                # Remove fields the user has permanently ignored.
+                import json as _json_cmp
+                try:
+                    ignored = set(_json_cmp.loads(lib_track.get("mb_ignored_fields") or "[]"))
+                except Exception:
+                    ignored = set()
+                diff_fields = [f for f in diff_fields if f not in ignored]
+                entry["diff_fields"] = diff_fields
+                entry["needs_update"] = len(diff_fields) > 0
+
+            comparison.append(entry)
+
+        # ── Cross-disc matching pass ────────────────────────────────────────
+        # Some MB tracks remain unmatched because the library stores them under
+        # a different disc number.  Match those against unclaimed library tracks
+        # on ANY disc (fuzzy ≥ 80%) and promote them with disc_number flagged.
+        matched_mb_recording_ids = {e.get("mb_recording_id", "") for e in comparison if e.get("matched")}
+        for mb_track in mb_tracks:
+            mb_recording_id = str(mb_track.get("recording_mbid") or "")
+            if mb_recording_id and mb_recording_id in matched_mb_recording_ids:
+                continue
+            disc = int(mb_track.get("disc_number") or 1)
+            mb_title = str(mb_track.get("title") or "")
+            norm_mb = _norm(mb_title)
+            norm_mb_core = _core(mb_title)
+            mb_num_raw = mb_track.get("track_number")
+            try:
+                mb_num = int(str(mb_num_raw).split("/")[0].strip()) if mb_num_raw is not None else None
+            except (TypeError, ValueError):
+                mb_num = None
+
+            already_matched = any(
+                e.get("matched") and e.get("mb_title") == mb_title
+                and int(e.get("mb_disc_number") or 1) == disc
+                and e.get("mb_track_number") == mb_num
+                for e in comparison
+            )
+            if already_matched:
+                continue
+
+            best_ratio, best_lib = 0.0, None
+            for t in library_tracks:
+                if t.get("id") in matched_lib_ids:
+                    continue
+                lib_disc = int(t.get("disc_number") or 1)
+                if lib_disc == disc:
+                    continue  # same disc already handled in the main pass
+                ratio = _difflib.SequenceMatcher(None, norm_mb, _norm(t.get("title") or "")).ratio()
+                if ratio < 0.80 and norm_mb_core and norm_mb_core != norm_mb:
+                    ratio = max(ratio, _difflib.SequenceMatcher(None, norm_mb_core, _norm(t.get("title") or "")).ratio())
+                if ratio > best_ratio and ratio >= 0.80:
+                    best_ratio, best_lib = ratio, t
+
+            if best_lib is None:
+                continue
+
+            matched_lib_ids.add(best_lib["id"])
+            if mb_recording_id:
+                matched_mb_recording_ids.add(mb_recording_id)
+
+            mb_duration_ms = mb_track.get("duration")
+            mb_duration_sec = (int(mb_duration_ms) / 1000.0) if mb_duration_ms else None
+
+            entry = {
+                "mb_track_number": mb_num,
+                "mb_disc_number": disc,
+                "mb_title": mb_title,
+                "mb_artist": "",
+                "mb_recording_id": mb_recording_id,
+                "mb_year": mb_year,
+                "mb_duration": None,
+                "mb_duration_sec": int(mb_duration_sec) if mb_duration_sec else None,
+                "library_track_id": best_lib["id"],
+                "library_title": best_lib.get("title", ""),
+                "library_track_number": best_lib.get("track_number"),
+                "library_disc_number": int(best_lib.get("disc_number") or 1),
+                "library_artist": best_lib.get("artist", ""),
+                "library_year": str(best_lib.get("year") or ""),
+                "library_duration": None,
+                "matched": True,
+                "cross_disc_match": True,
+                "needs_update": False,
+                "diff_fields": [],
+            }
+
+            diff_fields = []
+            lib_title = str(best_lib.get("title") or "")
+            if mb_title and mb_title != lib_title:
+                cover_match = re.search(r'\([^)]*\bcover\b[^)]*\)', lib_title, re.IGNORECASE)
+                if cover_match:
+                    stripped = re.sub(r'\s*\([^)]*\bcover\b[^)]*\)', '', lib_title, flags=re.IGNORECASE).strip()
+                    if stripped.lower() != mb_title.lower():
+                        diff_fields.append("title")
+                else:
+                    diff_fields.append("title")
+            if mb_num is not None and str(mb_num) != str(best_lib.get("track_number") or ""):
+                diff_fields.append("track_number")
+            lib_year = str(best_lib.get("year") or "")
+            if mb_year and mb_year != lib_year:
+                diff_fields.append("year")
+            lib_mbid = str(best_lib.get("mbid") or "").strip()
+            if mb_recording_id and not lib_mbid:
+                diff_fields.append("mbid")
+            # disc_number mismatch is the point of a cross-disc match.
+            diff_fields.append("disc_number")
+
+            import json as _json_xdisc
+            try:
+                ignored = set(_json_xdisc.loads(best_lib.get("mb_ignored_fields") or "[]"))
+            except Exception:
+                ignored = set()
+            diff_fields = list(dict.fromkeys(f for f in diff_fields if f not in ignored))
+            entry["diff_fields"] = diff_fields
+            entry["needs_update"] = len(diff_fields) > 0
+            comparison.append(entry)
+
+        tracks_needing_update = sum(1 for c in comparison if c.get("needs_update"))
+
+        # Library tracks never claimed by any MB track = "extra" tracks.
+        extra_tracks = []
+        for t in library_tracks:
+            if t["id"] not in matched_lib_ids:
+                extra_tracks.append({
+                    "library_track_id": t["id"],
+                    "library_title": t.get("title", ""),
+                    "library_track_number": t.get("track_number"),
+                    "library_disc_number": int(t.get("disc_number") or 1),
+                    "library_artist": t.get("artist", ""),
+                })
+
+        return {
+            "success": True,
+            "mb_title": mb_release_title,
+            "mb_year": mb_year,
+            "mb_artist": str(mb_release.get("artist") or ""),
+            "release_group_mbid": rg_mbid,
+            "release_mbid": release_id,
+            "comparison": comparison,
+            "extra_tracks": extra_tracks,
+            "tracks_needing_update": tracks_needing_update,
+            "total_tracks": len(comparison),
+        }
+    except Exception as exc:
+        logger.error("[MB_COMPARE] Error: %s", exc, exc_info=True)
+        return {"success": False, "error": str(exc)}
 
 
 def _get_local_track_count(artist: str, album: str) -> int:
@@ -1278,47 +1660,113 @@ def _get_local_track_count(artist: str, album: str) -> int:
 def get_musicbrainz_best_release(artist: str, album: str, rg_mbid: str) -> dict:
     """Find the best matching release inside a release group.
 
-    Uses a combined score based on:
-    - Title similarity to the local album name
-    - Track-count proximity (when both local and MusicBrainz counts are known)
-    - Official/Promotional status
+    Matches the legacy (old_system) response contract so the album-page JS
+    (``autoPickRelease``) works: returns ``releases`` (full release list for
+    the picker), ``best_release`` (highest-scoring release), ``confidence``
+    (0.0–1.0) and ``local_track_count``.
+
+    Scoring:
+    - Track-count proximity to the local album (dominant).
+    - Official/Promotional status bonus.
+    - Release date (older editions like anniversary remasters score slightly
+      lower than the original).
+    - Release-title similarity to the local album name.
+
+    Confidence is 1.0 when the best release's track count exactly matches the
+    local album, otherwise scaled down by ``1.0 - (diff * 0.2)`` (legacy
+    parity).  A confidence >= 0.8 lets the frontend apply the match directly.
     """
-    result = get_release_group_releases(rg_mbid, include_track_counts=True)
-    if not result.get("success"):
-        return result
-    releases = result.get("releases", [])
-    if not releases:
-        return {"success": False, "error": "No releases found"}
+    try:
+        # ``get_shared_mb_client`` is defined in this module (singleton client).
+        client = get_shared_mb_client()
 
-    local_tc = _get_local_track_count(artist, album)
+        # Browse all releases in the group WITH media so track counts,
+        # disc counts and formats are available without extra calls.
+        releases_raw = client.browse_releases_for_group(
+            rg_mbid, inc="media+labels+recordings", limit=50,
+        )
+        releases: list[dict[str, Any]] = []
+        for r in releases_raw or []:
+            media = r.get("media") or []
+            total_tracks = sum(int(m.get("track-count", 0) or 0) for m in media)
+            disc_count = len(media)
+            formats = list({str(m.get("format") or "").strip() for m in media if m.get("format")})
+            releases.append({
+                "id": r.get("id", ""),
+                "title": r.get("title", ""),
+                "date": r.get("date", ""),
+                "country": r.get("country", ""),
+                "status": r.get("status", ""),
+                "disambiguation": r.get("disambiguation", ""),
+                "track_count": total_tracks,
+                "disc_count": disc_count,
+                "formats": [f for f in formats if f],
+                "cover_art_url": (
+                    f"https://coverartarchive.org/release/{r.get('id')}/front-250"
+                    if r.get("id") else ""
+                ),
+            })
 
-    scored = []
-    for rel in releases:
-        title = rel.get("title", "")
-        title_score = _similarity(album.lower(), title.lower())
+        # Sort chronologically (blank dates last) so the picker is stable.
+        releases.sort(key=lambda x: (x.get("date") == "", x.get("date") or ""))
 
-        # Official releases get a bonus
-        status_bonus = 0.1 if rel.get("status") == "Official" else 0.0
+        if not releases:
+            return {
+                "success": True,
+                "releases": [],
+                "best_release": None,
+                "confidence": 0,
+                "local_track_count": None,
+            }
 
-        # Track-count proximity: score 0.0–0.15 based on how close the
-        # candidate's track count is to the local album's track count.
-        tc_score = 0.0
-        if local_tc > 0:
-            candidate_tc = rel.get("track_count", 0) or 0
-            if candidate_tc > 0:
-                # Ratio of min to max -> 1.0 when equal, lower when mismatched
-                ratio = min(local_tc, candidate_tc) / max(local_tc, candidate_tc)
-                # Scale to at most 0.15 so it nudges rather than overrules
-                tc_score = ratio * 0.15
+        local_tc = _get_local_track_count(artist, album)
+        local_tc = local_tc if local_tc > 0 else None
 
-        combined = title_score + status_bonus + tc_score
-        scored.append({
-            "release": rel,
-            "score": round(combined, 3),
-            "title_score": round(title_score, 3),
-            "tc_score": round(tc_score, 3),
-        })
+        def _score_release(rel: dict) -> float:
+            score = 0.0
+            # Track-count proximity: dominant signal (legacy parity: -100 per
+            # unit of difference).
+            if local_tc is not None:
+                diff = abs(local_tc - int(rel.get("track_count") or 0))
+                score -= diff * 100.0
+            # Official releases get a modest bonus.
+            if (rel.get("status") or "").lower() == "official":
+                score += 50.0
+            # Older editions (anniversary remasters etc.) score slightly lower.
+            date = (rel.get("date") or "").strip()
+            if date and date[:4].isdigit():
+                score += max(0.0, 2100.0 - int(date[:4])) * 0.01
+            # Title similarity to the local album nudges the correct edition.
+            if album and rel.get("title"):
+                score += _similarity(album.lower(), str(rel["title"]).lower()) * 30.0
+            return score
 
-    scored.sort(key=lambda x: x["score"], reverse=True)
-    return {"success": True, "best": scored[0]["release"], "candidates": scored}
+        scored = sorted(
+            ((rel, _score_release(rel)) for rel in releases),
+            key=lambda x: x[1],
+            reverse=True,
+        )
+        best_release, best_score = scored[0][0], scored[0][1]
+
+        # Confidence: 1.0 on exact track-count match, else scaled down.
+        confidence = 0.0
+        if local_tc is not None:
+            if int(best_release.get("track_count") or 0) == local_tc:
+                confidence = 1.0
+            else:
+                diff = abs(local_tc - int(best_release.get("track_count") or 0))
+                confidence = max(0.0, 1.0 - (diff * 0.2))
+        else:
+            confidence = 0.5  # no local data → not confident
+
+        return {
+            "success": True,
+            "releases": releases,
+            "best_release": best_release,
+            "confidence": round(confidence, 2),
+            "local_track_count": local_tc,
+        }
+    except Exception as exc:
+        logger.error("[MB_BEST_RELEASE] Error: %s", exc, exc_info=True)
+        return {"success": False, "error": str(exc)}
 
