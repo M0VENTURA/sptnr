@@ -29,7 +29,9 @@ from typing import Any
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.jobstores.base import ConflictingIdError
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+from sqlalchemy.exc import IntegrityError
 
 from db.engine import get_engine
 
@@ -109,7 +111,28 @@ class ResilientSQLAlchemyJobStore(SQLAlchemyJobStore):
 
     # ── Override the job-store operations used by the scheduler loop ──────
     def add_job(self, job):
-        return self._execute(super().add_job, job)
+        """Add the job, tolerating the multi-worker duplicate-key race.
+
+        Every hypercorn worker boots its own scheduler over the SAME
+        DB-backed job store.  Two workers can pass the existence check in
+        the same instant and both attempt the INSERT; the loser violates
+        the ``apscheduler_jobs_pkey`` unique constraint (PostgreSQL logs
+        "duplicate key value violates unique constraint
+        apscheduler_jobs_pkey").  Because ``_register_default_jobs`` always
+        registers with ``replace_existing=True``, an already-present row is
+        meant to be (re)written anyway — treat the race as an upsert and
+        fall back to ``update_job`` instead of propagating the error.
+        """
+        try:
+            return self._execute(super().add_job, job)
+        except (ConflictingIdError, IntegrityError) as exc:
+            logger.warning(
+                "[scheduler] Job %s already exists in jobstore (concurrent "
+                "worker race); applying as update: %s",
+                job.id,
+                exc,
+            )
+            return self._execute(super().update_job, job)
 
     def update_job(self, job):
         return self._execute(super().update_job, job)
