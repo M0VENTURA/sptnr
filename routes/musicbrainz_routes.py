@@ -692,9 +692,18 @@ async def api_musicbrainz_search():
         # normalised (artist, album) title already exists in the local
         # library, so the MusicBrainz tab count reflects only missing albums.
         # Local ``missing_releases`` rows (source "local") are untouched.
-        # Skipped when ``include_owned`` is set (folder match / re-match
-        # flows need the owned release to associate the folder with).
-        if not include_owned:
+        #
+        # The dedupe only applies to DISCOVERY-style searches: artist-only
+        # browsing or free-text queries, where owned groups are just noise.
+        # When the caller searches for a SPECIFIC release (an explicit
+        # ``album`` or ``track`` term) the intent is to locate/match that
+        # release — the album page lookup, folder-match and re-match flows
+        # all search this way — so hiding the owned release-group makes the
+        # search look broken ("no results for albums I already own", the
+        # old_system's album lookup never deduped).  ``include_owned``
+        # remains an explicit opt-out for the shared modal callers that want
+        # discovery semantics restored on a targeted search.
+        if not include_owned and not album and not track:
             releases = _dedupe_owned_releases(releases)
 
         # ── 3. Sort (legacy parity): artist asc, then first release date desc

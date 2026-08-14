@@ -275,6 +275,10 @@ window.performMbSearch = async function() {
     });
 
     var data = await resp.json();
+    if (data && data.error) {
+      resultsEl.innerHTML = '<div class="col-12 text-center py-4"><p class="text-danger"><i class="bi bi-exclamation-triangle me-1"></i>MusicBrainz search failed: ' + escHtml(data.error) + '</p></div>';
+      return;
+    }
     var releases = data.releases || [];
 
     if (releaseType) {

@@ -71,24 +71,26 @@ def mb_env(monkeypatch):
 
     session = sess_factory()
 
-    # Seed library tracks: 3 tracks matching the MB release, plus one extra.
+    # Seed library tracks: 3 tracks matching the MB release (each carrying the
+    # recording MBID the MB release has, so no "mbid" diff is flagged), plus one
+    # extra.
     with engine.begin() as conn:
         conn.execute(text("""
             INSERT INTO tracks (id, artist, album_artist, album, title, track_number,
                                 disc_number, year, mbid, file_path, duration, mb_ignored_fields)
             VALUES
                 ('t1', 'Artist', 'Artist', 'Album', 'Song One', '1', '1', '2020',
-                 NULL, '/music/a/01 - Song One.mp3', '240000', NULL),
+                 'rec-0001', '/music/a/01 - Song One.mp3', '240000', NULL),
                 ('t2', 'Artist', 'Artist', 'Album', 'Song Two', '2', '1', '2020',
-                 NULL, '/music/a/02 - Song Two.mp3', '250000', NULL),
+                 'rec-0002', '/music/a/02 - Song Two.mp3', '250000', NULL),
                 ('t3', 'Artist', 'Artist', 'Album', 'Song Three (Radio Edit)', '3', '1', '2020',
-                 NULL, '/music/a/03 - Song Three (Radio Edit).mp3', '180000', NULL),
+                 'rec-0003', '/music/a/03 - Song Three (Radio Edit).mp3', '180000', NULL),
                 ('t4', 'Artist', 'Artist', 'Album', 'Bonus Track', '9', '1', '2020',
                  NULL, '/music/a/09 - Bonus Track.mp3', '200000', NULL)
-        """)
+        """))
 
     monkeypatch.setattr(
-        "services.enrichment.musicbrainz_service.db_session",
+        "db.engine.db_session",
         lambda *a, **kw: _Session(session),
     )
     return engine

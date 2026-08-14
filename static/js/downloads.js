@@ -277,6 +277,11 @@ window.performMbSearch = async function() {
       body: JSON.stringify(payload)
     });
     
+    if (data && data.error) {
+      if (resultsEl) resultsEl.innerHTML = `<div class="alert alert-danger"><i class="bi bi-exclamation-triangle me-1"></i>MusicBrainz search failed: ${escapeHtml(data.error)}</div>`;
+      return;
+    }
+
     let releases = data.releases || [];
 
     // Apply the release-type dropdown filter (modal field), if present.
