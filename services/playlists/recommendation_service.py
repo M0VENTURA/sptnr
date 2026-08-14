@@ -271,9 +271,32 @@ class PlaylistRecommender:
         if not self.db or not genre:
             return []
         try:
-            query = "SELECT id FROM tracks WHERE genres ILIKE :genre AND COALESCE(stars, 0) = 5 LIMIT 200"
+            query = """
+                SELECT id, artist, album_artist, title
+                FROM tracks
+                WHERE genres ILIKE :genre AND COALESCE(stars, 0) = 5
+                ORDER BY stars DESC, id
+                LIMIT 2000
+            """
             rows = self._execute_query(query, {"genre": f"%{genre}%"})
-            return [str(r["id"]) for r in rows]
+            # Dedup by (track artist, normalized title) so the same song on an
+            # album and a compilation/greatest-hits release counts only once.
+            import re as _re
+
+            seen: set[tuple[str, str]] = set()
+            track_ids: list[str] = []
+            for r in rows:
+                artist = str(r.get("artist") or r.get("album_artist") or "").strip().casefold()
+                title = _re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", str(r.get("title") or ""))
+                title = _re.sub(r"\s+", " ", title).strip().casefold()
+                key = (artist, title)
+                if key in seen:
+                    continue
+                seen.add(key)
+                track_ids.append(str(r["id"]))
+                if len(track_ids) >= 200:
+                    break
+            return track_ids
         except Exception as exc:
             logger.debug("Failed to get track IDs for genre %s: %s", genre, exc)
             return []

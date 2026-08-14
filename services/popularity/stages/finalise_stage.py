@@ -1286,7 +1286,7 @@ def _create_genre_top_track_playlists(prune_only: bool = False) -> int:
     assigned its TOP weighted genres (``aggregate_genres`` with the same
     config weights/synonyms the genre UI uses, capped at
     ``playlists.genre_playlists_max_genres``, default 3).  Each genre pool is
-    deduplicated by (artist, normalized title) — the best version wins
+    deduplicated by (track artist, normalized title) — the best version wins
     (studio over live, main release over compilation, then stars, then
     popularity) — sorted by stars DESC then ``final_score`` DESC, and capped
     at ``playlists.genre_playlists_top_n`` (default 500) tracks.
@@ -1392,7 +1392,7 @@ def _create_genre_top_track_playlists(prune_only: bool = False) -> int:
                 "duration": row.get("duration"),
                 "stars": int(row.get("stars") or 0),
                 "score": float(row.get("popularity_score") or 0),
-                "artist": str(row.get("album_artist") or row.get("artist") or ""),
+                "artist": str(row.get("artist") or row.get("album_artist") or ""),
                 "is_live": int(row.get("is_live") or 0),
                 "is_compilation": int(row.get("is_compilation") or 0),
             })
@@ -1411,8 +1411,9 @@ def _create_genre_top_track_playlists(prune_only: bool = False) -> int:
     written = 0
     keep_names: set[str] = set()
     for genre, tracks in pools.items():
-        # Dedup: (artist, normalized title) — remaster/live/compilation
-        # duplicates of the same song count once; winner by tiebreak.
+        # Dedup: (track artist, normalized title) — the same song on the
+        # artist's own release and a compilation (different album_artist)
+        # counts once; winner by tiebreak.
         grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
         for t in tracks:
             key = (

@@ -53,9 +53,10 @@ def _make_rows(rows_data: list[dict]) -> list:
                     "stars, popularity_score, is_live, is_compilation, lastfm_tags, "
                     "listenbrainz_genres, discogs_genres, musicbrainz_genres, "
                     "spotify_genres, essentia_genres, manual_genres, navidrome_genres) "
-                    "VALUES (:id, :title, :fp, :dur, :artist, :aa, :stars, :score, "
-                    ":live, :comp, :lf, :lb, :discogs, :mb, :spotify, :essentia, "
-                    ":manual, :nav)"
+                    "VALUES (:id, :title, :file_path, :duration, :artist, :album_artist, "
+                    ":stars, :popularity_score, :is_live, :is_compilation, :lastfm_tags, "
+                    ":listenbrainz_genres, :discogs_genres, :musicbrainz_genres, "
+                    ":spotify_genres, :essentia_genres, :manual_genres, :navidrome_genres)"
                 ),
                 {col: r.get(col) for col in _GENRE_COLUMNS},
             )
@@ -320,6 +321,30 @@ class TestEdgeCases:
         written, d = run_genre_playlists(rows)
         assert written == 0
         assert not _path(d, "Rock - Top Tracks.m3u").exists()
+
+    def test_dedup_by_track_artist_across_album_artists(self, run_genre_playlists):
+        # The same song on the artist's own album and on a compilation has a
+        # different album_artist — dedup must key on the TRACK artist, so the
+        # song counts once. 360 rows / 3 versions = 120 unique groups (over
+        # the 100 create threshold) and the playlist holds exactly 120 tracks.
+        rows = []
+        for i in range(1, 121):
+            rows.append({**make_row(f"Song {i}", artist="Alterium")})
+            rows.append({
+                **make_row(f"Song {i} (Live)", artist="Alterium"),
+                "is_live": 1,
+            })
+            rows.append({
+                **make_row(f"Song {i} [Remaster]", artist="Alterium"),
+                "album_artist": "Various Artists",
+                "is_compilation": 1,
+            })
+        written, d = run_genre_playlists(rows)
+        assert written == 1
+        target = _path(d, "Rock - Top Tracks.m3u")
+        assert target.exists()
+        content = target.read_text(encoding="utf-8")
+        assert content.count("#EXTINF") == 120
 
     def test_db_fetch_failure_is_graceful(self, monkeypatch):
         import db.engine as db_engine
