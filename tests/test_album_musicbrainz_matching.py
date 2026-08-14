@@ -245,3 +245,45 @@ def test_compare_musicbrainz_release_matches_and_recommends(monkeypatch, mb_env)
 
     # total_tracks counts the comparison entries (3 MB tracks).
     assert result["total_tracks"] == 3
+
+
+def test_local_track_count_is_case_insensitive(mb_env):
+    """_get_local_track_count must find tracks when the URL-decoded artist/
+    album names differ in case from the stored values (the album page itself
+    uses a LOWER() lookup, so the compare engine must too — otherwise the
+    auto-match reports "not confident enough" and the compare reports "No
+    library tracks found" for every differently-cased album)."""
+    import services.enrichment.musicbrainz_service as svc
+
+    # Exact-case match (control).
+    assert svc._get_local_track_count("Artist", "Album") == 4
+    # Case-different names (URL-derived) still count the same tracks.
+    assert svc._get_local_track_count("artist", "album") == 4
+    assert svc._get_local_track_count("ARTIST", "ALBUM") == 4
+    # Genuinely missing album → 0.
+    assert svc._get_local_track_count("Artist", "Does Not Exist") == 0
+
+
+def test_compare_musicbrainz_release_case_insensitive_lookup(monkeypatch, mb_env):
+    """compare_musicbrainz_release must find library tracks even when the
+    artist/album names passed in (from the URL) differ in case from the DB —
+    the reported "No library tracks found for this album" regression."""
+    import services.enrichment.musicbrainz_service as svc
+
+    class _FakeClient:
+        def browse_releases_for_group(self, rg_mbid, inc="media", limit=50):
+            return _make_releases_raw()
+
+        def get_release(self, release_mbid, inc="", timeout=10.0):
+            return _make_release_tracks()
+
+    monkeypatch.setattr(svc, "get_shared_mb_client", lambda: _FakeClient())
+    monkeypatch.setattr(svc, "resolve_release_id", lambda rid: "rel-0000-0000-0000-000000000001")
+
+    # Lower-cased names (as a URL slug would produce) must still compare.
+    result = svc.compare_musicbrainz_release("artist", "album", "rg-0001")
+    assert result["success"] is True
+    assert len(result["comparison"]) == 3
+    by_num = {c["mb_track_number"]: c for c in result["comparison"]}
+    assert by_num[1]["matched"] is True
+    assert by_num[2]["matched"] is True
