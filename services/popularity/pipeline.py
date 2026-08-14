@@ -165,8 +165,8 @@ def _log_scan_config() -> None:
 
         # ── single-detection source confidence + playlists ──────────────
         try:
-            from services.enrichment.single_detection_service import _get_source_confidence_levels
-            _levels = _get_source_confidence_levels()
+            from services.enrichment.single_detection_service import _source_confidence_levels
+            _levels = _source_confidence_levels()
             _lv_fmt = " ".join(f"{k}={v}" for k, v in _levels.items())
         except Exception:
             _lv_fmt = "unavailable"
