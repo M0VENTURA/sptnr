@@ -183,11 +183,11 @@ Include affected area (`api` / `ui` / `db` / `config` / `popularity` / `single`)
 
 ## 3) Non-negotiable product requirements
 
-### 3.1 Config UX contract: `config.html` → `config.yaml`
+### 3.1 Config UX contract: `templates/pages/config.html` → `config.yaml`
 
-- **`config.html` is the source of truth** for all user-editable settings.
-- Saving `config.html` must write to `config.yaml`.
-- Every new configurable option must appear in `config.html` first.
+- **The Config page (`templates/pages/config.html`) is the source of truth** for all user-editable settings.
+- Saving the Config page must write to `config.yaml`.
+- Every new configurable option must appear in the Config page first.
 - Validate inputs and provide safe defaults.
 - Keep the UI mobile-friendly (responsive layout, accessible input sizing).
 
@@ -213,7 +213,7 @@ If an album-level update occurs, **all tracks in that album** must be updated in
 
 ### 3.5 Database strategy: Postgres only
 
-- All DB I/O must go through `database_abstraction.py`.
+- All DB I/O goes through `db/engine.py` (`db_session`) and `db/repositories/` (the ONLY writer layer). Do not open raw sessions and write from services/routes.
 - Never scatter raw SQL across unrelated modules.
 - Use PostgreSQL-style placeholders (`%s`) and PostgreSQL-safe SQL only.
 - Do not add or retain SQLite-specific query branches (`?` placeholders, `PRAGMA`, `INSERT OR REPLACE`, sqlite3-specific SQL).
@@ -223,7 +223,7 @@ If an album-level update occurs, **all tracks in that album** must be updated in
 
 ## 4) Popularity scanning — exact implementation
 
-**Entry point**: `popularity.py::popularity_scan()`
+**Entry point**: `services/popularity/scanner.py::popularity_scan()` (canonical scanner; the root-level `popularity.py` referenced in older notes no longer exists — it lives under `services/popularity/` now, e.g. `popularity_math.py`, `popularity_stats_service.py`, `popularity_zscore.py`).
 
 ### 4.1 Weighted multi-source scoring
 
@@ -237,7 +237,7 @@ Popularity is a **0–100 normalized weighted score** combining four sources:
 | Spotify *(deprecated)* | 10% | `track.popularity` (direct 0–100) | already 0–100 |
 
 ```python
-# Final calculation (popularity.py ~line 2350)
+# Final calculation (services/popularity/popularity_math.py::calculate_combined_popularity_score)
 weighted_popularity = sum(score * weight for score, weight in zip(scores, weights)) / sum(weights)
 # Clamped to [0, 100]
 ```
@@ -246,14 +246,14 @@ Weights are configurable in `config.yaml` under the `weights:` key.
 
 ### 4.2 Dynamic weight adjustment
 
-`get_dynamic_weights()` (popularity.py ~line 1713) adjusts weights per-track based on the track's z-score relative to the artist catalog:
+Dynamic weight adjustment (`services/popularity/`) adjusts weights per-track based on the track's z-score relative to the artist catalog:
 
 - **z-score > artist_median + stddev** → boost Last.fm weight (community signal takes precedence)
 - **z-score < artist_median − stddev** → boost Spotify weight (catches breakthrough hits)
 
 ### 4.3 Artist-level statistics
 
-`calculate_artist_popularity_stats()` (popularity.py ~line 969) computes per-artist:
+`calculate_artist_popularity_stats()` (in `services/popularity/popularity_stats_service.py`) computes per-artist:
 
 | Stat | Purpose |
 |------|---------|
@@ -262,11 +262,11 @@ Weights are configurable in `config.yaml` under the `weights:` key.
 | `stddev_popularity` | Standard deviation |
 | `mad_popularity` | Median Absolute Deviation — used for outlier-robust z-scores |
 
-`should_exclude_track_from_stats()` (popularity.py ~line 251) removes live, remix, and alternate versions before computing these stats.
+`should_exclude_track_from_stats()` (in `services/catalog/album_classification_service.py`) removes live, remix, and alternate versions before computing these stats.
 
 ### 4.4 Mean popularity adjustment (artist-context scoring)
 
-When artist statistics are available, apply mean-adjusted scoring from `popularity_helpers.py::apply_mean_popularity_adjustment()`.
+When artist statistics are available, apply mean-adjusted scoring (artist-context z-score normalization):
 
 - Normalize by artist context using z-score:
   - `z = (track_score - artist_mean) / artist_stddev`
@@ -282,8 +282,8 @@ When artist statistics are available, apply mean-adjusted scoring from `populari
 
 ## 5) Single detection — exact implementation
 
-**Primary entry point**: `popularity.py::detect_single_for_track()`  
-**Enhanced path**: `single_detection_enhanced.py::detect_single_enhanced()`
+**Primary entry point**: `services/enrichment/single_detection_service.py::detect_single_for_track()`  
+(Related legacy names — `single_detection_enhanced.py`, `single_detector.py`, `popularity.py::detect_single_for_track()` — are from the old layout and are now legacy shims or gone; the canonical implementation lives under `services/enrichment/`.)
 
 ### 5.1 Eight-stage detection algorithm
 
@@ -307,14 +307,13 @@ When artist statistics are available, apply mean-adjusted scoring from `populari
 | `low` | < 0.6 | No metadata confirmation |
 | `user` | any | User manually toggled — highest priority, never overridden |
 
-### 5.3 Key single detection functions
+### 5.3 Key single detection functions (CURRENT locations)
 
 | Function | File | Purpose |
 |----------|------|---------|
-| `detect_single_for_track()` | `popularity.py` | Canonical entry point |
-| `detect_single_enhanced()` | `single_detection_enhanced.py` | 8-stage algorithm |
-| `store_single_detection_result()` | `single_detection_enhanced.py` | Persist to DB |
-| `rate_track_single_detection()` | `single_detector.py` | Delegates to detect_single_for_track |
+| `detect_single_for_track()` | `services/enrichment/single_detection_service.py` | Canonical entry point |
+| Single-detection stages | `services/popularity/stages/` + `services/enrichment/` | Stage-wise algorithm (8-stage flow) |
+| Result persistence | `db/repositories/` + track update helpers | Persist to DB |
 
 ### 5.4 DB fields written per track
 
@@ -338,7 +337,7 @@ For compilations/greatest-hits albums, single detection and star assignment use 
 
 ## 6) Star rating algorithm — exact implementation
 
-**Location**: `popularity.py` ~lines 6550–6770  
+**Location**: `services/popularity/` (star-band assignment + z-score gating; the root-level `popularity.py` no longer exists).  
 Star ratings (1–5) combine **popularity z-scores** with **single detection metadata**.
 
 ### 6.1 Baseline assignment
@@ -930,7 +929,8 @@ api_integrations:
     api_key: "195003"  # Free public key
 
 downloads:
-  # User-configurable in config.html (Downloads section); saving UI writes to config.yaml
+  # User-configurable in the Config page (templates/pages/config.html, Downloads section);
+  # saving UI writes to config.yaml
   folder: "/downloads/Music"
   quality_filter:
     enabled: true
@@ -1000,48 +1000,53 @@ Download integrations (slskd, qBittorrent) are **policy-gated** — only enabled
 3. Run available checks/tests (`test_*.py`).
 4. Commit to `/develop` with a clear conventional message.
 
-### Key module locations
+### Key module locations (CURRENT layout — matches the refactored codebase)
 
 | Concern | Files |
 |---------|-------|
-| Popularity scoring | `popularity.py`, `popularity_helpers.py` |
-| Single detection | `single_detector.py`, `single_detection_enhanced.py` |
-| Compilation handling | `compilation_manager.py`, `artist_identity.py` |
-| Download queue orchestration | `queue_processor.py`, `download_queue_manager.py`, `download_retry_manager.py` |
-| Download organization | `download_folder_grouping.py`, `download_file_manager.py`, `download_file_verification.py` |
-| Download monitoring | `download_monitor_enhancements.py`, `downloads_watcher.py` |
-| API clients | `api_clients/` |
-| DB abstraction | `database_abstraction.py` |
-| Database implementation | `database/`, `migrations/` |
-| App routes | `app.py` |
-| Config UI + templates | `templates/config.html`, `templates/` |
-| Static/UI assets | `static/` |
-| Queue/downloads | `queue_processor.py`, `download_queue_manager.py`, `download_file_manager.py` |
-| MusicBrainz flow | `musicbrainz_import.py`, `musicbrainz_release_manager.py`, `musicbrainz_finalizer.py` |
-| Config | `config/config.yaml`, `templates/config.html` |
-| Tag writing | `mp3scanner.py`, `scan_mp3_import.py` |
-| Watcher | `music_watcher.py`, `downloads_watcher.py` |
+| Popularity scoring | `services/popularity/` (`popularity_math.py`, `popularity_stats_service.py`, `popularity_zscore.py`, `scoring.py` legacy shim) |
+| Single detection | `services/enrichment/single_detection_service.py` (canonical `detect_single_for_track`); `single_detection_enhanced.py` / `single_detector.py` are legacy shims |
+| Compilation handling | `services/library/compilation_manager.py` (or `artist_identity.py`), `merge_duplicate_artists.py` |
+| Download queue orchestration | `services/queue/queue_orchestrator.py`, `queue_processing_service.py`, `queue_scoring.py`, `queue_matching_service.py`, `queue_worker.py` |
+| Download queue state | `services/downloads/download_queue_service.py`, `download_processing_service.py`, `download_retry_service.py` |
+| Download organization | `services/downloads/download_organize_service.py`, `download_organize_helpers.py`, `download_verification_service.py` |
+| Download folder matching | `services/downloads/download_folder_service.py`, `download_matching_service.py`, `match_engine.py`, `match_orchestrator.py` |
+| Download monitoring/watcher | `services/downloads/download_watcher_service.py`, `download_completion_service.py`, `download_scan_service.py`, `download_scheduler_service.py` |
+| API clients | `api_clients/` (HTTP only) |
+| DB abstraction | `db/engine.py` (`db_session`, engine), `db/repositories/` (writes), `db/schema.py`, `db/bootstrap.py` |
+| Database implementation | `db/`, `migrations/` |
+| App bootstrap/routes | `app.py` (minimal), `helpers/app_bootstrap.py` (registers all blueprints) |
+| Config UI + templates | `templates/pages/config.html`, `helpers/config_helpers.py`, `helpers/settings.py` |
+| Static/UI assets | `static/` (`js/`, `css/`) |
+| Queue/downloads routes | `routes/downloads.py`, `routes/queue/` (`matching_routes.py`, `processing_routes.py`, `cleanup_routes.py`, `diagnostics_routes.py`) |
+| MusicBrainz flow | `routes/musicbrainz_routes.py`, `helpers/musicbrainz_helpers.py`, `api_clients/musicbrainz.py` + `musicbrainz_http.py` |
+| Config | `config.yaml` (via `helpers/config_helpers.py` getters / `helpers/settings.py`), Config page `templates/pages/config.html` |
+| Tag writing | `services/metadata/tag_file_service.py` (`update_file_metadata`) |
+| Watcher | `services/downloads/download_watcher_service.py`, `downloads_watcher` legacy in `old_system/` |
+
+> ⚠️ **Template layout is namespaced, NOT flat.** Templates live under `templates/pages/` (one file per route, e.g. `templates/pages/downloads/manager.html`, `monitor.html`, `queue.html`), `templates/components/` (reusable partials), `templates/layouts/` and `templates/components/modals/`. Do NOT look for `templates/downloads.html` — it is `templates/pages/downloads/monitor.html`. Frontend JS is split by page under `static/js/` (`downloads.js`, `downloads_page.js`, `monitor.js`, `musicbrainz-folder-groups.js`, `upcoming_releases.js`).
 
 ---
 
 ## 13) MusicBrainz search modal — canonical reference
 
-The MB release search modal is reused across artist, album, track, and downloads pages. Understanding its structure prevents regressions when touching any of those templates.
+The MB release search is reused across artist, album, track, and downloads pages. Understanding its structure prevents regressions when touching any of those templates.
 
-### Shared partials (preferred for new pages)
+### Shared component (preferred for new pages)
 
 | File | Purpose |
 |------|---------|
-| `templates/_musicbrainz_search_modal.html` | Canonical modal HTML — include with `{% include %}` |
-| `templates/_musicbrainz_search_functions.html` | Canonical JS (`searchMusicBrainzRelease`, `displayMusicBrainzResults`) — used by artist/album/track pages |
+| `templates/components/_musicbrainz_search_component.html` | **Canonical unified component** (search form + results container + selected-release panel + inline JS) — works inline or inside a modal. Exposes `performMbSearch()`, `clearMbSearch()`, `confirmReleaseSelection()`, `window.escapeHtml`. Uses `GET /api/musicbrainz/search-releases?q=…&type=…&limit=…` (free-text query). |
+| `templates/components/_musicbrainz_search_modal.html` | Legacy canonical modal HTML — include with `{% include %}` |
+| `templates/components/_musicbrainz_search_functions.html` | Legacy canonical JS (`searchMusicBrainzRelease`, `displayMusicBrainzResults`) — used by artist/album/track pages |
 
-### Legacy copy (downloads pages only)
+### Legacy copy (downloads pages)
 
-`static/js/downloads.js` contains an older copy of `searchMusicBrainzRelease()` that is **shared between `downloads.html` and `downloads_monitor.html`**. Do not duplicate it; fix it in place.
+`static/js/downloads.js` contains an older copy of `searchMusicBrainzRelease()` shared by the downloads pages. The downloads frontend is now split across `static/js/downloads.js`, `downloads_page.js`, `monitor.js` and `musicbrainz-folder-groups.js`. Do not duplicate the search function; fix it in place.
 
-### Required element IDs
+### Required element IDs (legacy modal contract)
 
-Every page that opens the modal must have **all** of these in its DOM:
+Every page that opens the legacy modal must have **all** of these in its DOM:
 
 | Element ID | Type | Purpose |
 |------------|------|---------|
@@ -1058,13 +1063,14 @@ Every page that opens the modal must have **all** of these in its DOM:
 > Searching <strong id="mbSearchArtist"></strong> — <strong id="mbSearchAlbum"></strong>
 > ```
 
-### Per-page notes
+### Per-page notes (CURRENT paths)
 
 | Template | Modal source | JS source |
 |----------|-------------|-----------|
-| `downloads.html` | Inline modal (matches canonical structure) | `downloads.js` |
-| `downloads_monitor.html` | Inline modal (matches canonical structure) | `downloads.js` |
-| `artist.html` | Inline modal (own copy, may differ for artist-browse flows) | Inline `<script>` using `_musicbrainz_search_functions.html` logic |
+| `templates/pages/downloads/queue.html` | Search component or inline | `downloads.js`, `downloads_page.js` |
+| `templates/pages/downloads/monitor.html` | Inline modal | `monitor.js`, `downloads.js`, `upcoming_releases.js` |
+| `templates/pages/downloads/manager.html` | Inline modal | `downloads.js`, `musicbrainz-folder-groups.js` |
+| Artist pages | `_musicbrainz_search_functions.html` logic | Inline `<script>` |
 | Other pages | `{% include '_musicbrainz_search_modal.html' %}` | `{% include '_musicbrainz_search_functions.html' %}` |
 
 ### `searchMusicBrainzRelease()` signature (downloads.js variant)
@@ -1082,38 +1088,42 @@ async function searchMusicBrainzRelease(event, artist, album, upcomingReleaseId)
 
 ## 14) Download queue — full lifecycle reference
 
-### 14.1 Queue flow phases
+### 14.1 Queue flow phases (CURRENT)
 
 ```
-add_to_queue()
+add_to_queue()                          (db/repositories/queue.py / download_queue_service.py)
   ↓ status = 'queued'
-queue_processor (picks up item)
+queue worker / orchestrator picks up    (services/queue/queue_worker.py → queue_orchestrator.py)
   ↓ status = 'searching'
-slskd search (api_clients/slskd.py)
-  ↓ results scored → best candidate selected
+slskd search (api_clients/slskd.py / slskd_http.py)
+  ↓ results scored → best candidate selected (queue_scoring.py / queue_matching_service.py)
   ↓ status = 'downloading'
 slskd download (file lands in staging folder)
-  ↓ status = 'importing'
-download_file_manager.organize_file()
+  ↓ status = 'downloading' → verified by download_completion_service.check_completed_downloads
+download_organize_helpers.move_track_to_library()
   ↓ moves file to music library, writes tags
-  ↓ status = 'completed' / 'failed'
+  ↓ status = 'imported' / 'failed'
 ```
 
 MusicBrainz direct import uses a parallel flow:
-`musicbrainz_import.py` → `musicbrainz_release_manager.py` → `musicbrainz_finalizer.py`
+`services/` MusicBrainz release manager / finalizer services.
 
-### 14.2 Module ownership
+### 14.2 Module ownership (CURRENT)
 
 | Module | Owns |
 |--------|------|
-| `queue_processor.py` | Main processing loop; search + download orchestration |
-| `download_queue_manager.py` | Queue CRUD: `add_to_queue`, `update_queue_item`, `mark_failed`, `get_queue_items` |
-| `download_retry_manager.py` | Retry logic; manages `retry_count` and backoff |
-| `download_file_manager.py` | Organizes staged files into library; writes ID3/Vorbis tags |
-| `download_file_verification.py` | Hash verification before/after move |
-| `download_folder_grouping.py` | Groups download folder contents into logical releases |
-| `download_monitor_enhancements.py` | Real-time status monitoring helpers |
-| `downloads_watcher.py` | Filesystem watcher for new files in staging area |
+| `services/queue/queue_worker.py` | Standalone queue worker process (signal-driven wakeups) |
+| `services/queue/queue_orchestrator.py` | Main processing loop; search + download orchestration (`process_cycle`) |
+| `services/queue/queue_processing_service.py` | Per-item processing stages |
+| `services/queue/queue_scoring.py`, `queue_matching_service.py` | Candidate scoring + matching |
+| `services/downloads/download_queue_service.py` | Queue state + high-level orchestration (`run_auto_discovery_cycle`) |
+| `db/repositories/queue.py` | Queue CRUD: `add_to_queue`, `update_queue_item`, `mark_failed`, `get_queue_items` |
+| `services/downloads/download_retry_service.py` | Retry logic; manages `retry_count` and backoff |
+| `services/downloads/download_organize_service.py` / `download_organize_helpers.py` | Organizes staged files into library; writes ID3/Vorbis tags (`move_track_to_library`) |
+| `services/downloads/download_verification_service.py` | Hash verification before/after move |
+| `services/downloads/download_folder_service.py` | Groups download folder contents into logical releases; matched/unmatched folder listing |
+| `services/downloads/download_completion_service.py` | Reconciles completed slskd transfers to files on disk and imports them (`check_completed_downloads`) |
+| `services/downloads/download_watcher_service.py` | Downloads-folder watcher (`scan_downloads_folder`) + auto-discovery cycle |
 
 ### 14.3 `queue_events` event types
 
@@ -1135,7 +1145,7 @@ Events are appended to the `queue_events` table; never modified in place. Consum
 
 ### 14.4 Candidate scoring / format priority
 
-`queue_processor.py` scores slskd search results and selects the best candidate using:
+`services/queue/queue_scoring.py` / `queue_processing_service.py` score slskd search results and select the best candidate using:
 
 - **Format priority**: FLAC > MP3 320 kbps > MP3 VBR/lower
 - **Similarity thresholds** (against Navidrome metadata):
@@ -1186,7 +1196,7 @@ These are implemented behaviors the agent must preserve in follow-up work.
 
 ## 16) Tag & Genre Aggregation System (March 2026 implementation)
 
-**Location**: `genre_tag_aggregator.py`, `popularity.py` (collection phase)
+**Location**: `services/enrichment/genre_aggregation_service.py` (`aggregate_genres`), collected during the popularity scan (`services/popularity/stages/track_stage.py`).
 
 ### 16.1 Five-source genre/tag collection
 
@@ -1418,7 +1428,7 @@ All playlist items share `import_group = playlist_<source>_<date>`:
 
 ## 20) Configuration & Customization Contract
 
-**File**: `config.yaml` (user-editable, persisted via `config.html` UI)
+**File**: `config.yaml` (user-editable, persisted via the Config page UI at `templates/pages/config.html`)
 
 **Key customizable sections**:
 
