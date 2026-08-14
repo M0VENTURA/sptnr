@@ -89,6 +89,26 @@ PostgreSQL
   refactor, migrate code from, or delete anything inside it.** The current codebase is
   the only source of truth.
 
+### 2.2.1 Authentication gate (do not bypass)
+
+- Auth is enforced **centrally** in `helpers/app_hooks.py::before_request` — every
+  route requires a session EXCEPT a public allow-list.
+- **Always public:** static assets, `ui.login`, `ui.logout`.
+- **First-run public** (only while `helpers/config_helpers.needs_setup()` is true —
+  Navidrome unconfigured): the setup wizard page + its APIs
+  (`ui.api_test_navidrome_connection`, `ui.api_setup_save`,
+  `ui.api_setup_save_partial`, `misc_api.api_essentia_download_status`,
+  `misc_api.api_essentia_download_models`, `scans.api_navidrome_import`).
+- First-run: any other page redirects to `/setup`; any other API returns 401.
+- Configured: unauthenticated pages redirect to `/login`; unauthenticated APIs return
+  401 JSON.
+- `needs_setup()` recognises `navidrome_users`, legacy `navidrome`, or flat
+  `nav_url`/`nav_user`/`nav_pass` settings keys. `routes/ui_routes.py::_needs_setup`
+  delegates to it.
+- When adding new routes, they are protected by default. Only add a new endpoint to
+  the allow-lists in `app_hooks.py` if it must be reachable pre-login (and never
+  expose config-mutating endpoints this way).
+
 ### 2.3 Config & docs conventions
 
 - Settings live in `helpers/settings.py` (Pydantic, `POPULARLR_*` env vars) plus

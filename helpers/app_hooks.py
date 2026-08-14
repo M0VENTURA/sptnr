@@ -4,8 +4,13 @@ Registers ``before_request`` and ``after_request`` handlers on the Flask app.
 Provides:
 - Request timing (duration logged as ``X-Request-Duration`` header).
 - Basic security headers on every response.
+- Authentication gate: every route requires a logged-in session EXCEPT a
+  small public allow-list (static assets, the login page and the first-run
+  setup wizard + its APIs).  While Navidrome is unconfigured (first run),
+  all other routes redirect to the setup wizard so a brand-new user can
+  reach it; once configured, unauthenticated page requests redirect to the
+  login page and unauthenticated API calls return 401 JSON.
 - First-run interceptor: redirects to setup if Navidrome is unconfigured.
-- Placeholder for future rate-limiting or session validation.
 
 Called once during app factory setup.
 """
@@ -14,10 +19,37 @@ import time
 import logging
 import traceback
 
-from quart import g, jsonify, redirect, request, url_for
+from quart import g, jsonify, redirect, request, session, url_for
 from werkzeug.exceptions import HTTPException
 
 logger = logging.getLogger(__name__)
+
+
+# Endpoints reachable WITHOUT a session at all times (static assets + the
+# login/logout pages).  Everything else is gated by ``before_request``.
+_ALWAYS_PUBLIC_ENDPOINTS = frozenset({
+    "static",
+    "ui.login",
+    "ui.logout",
+})
+
+# Endpoints the first-run setup wizard needs.  These are public ONLY while
+# ``needs_setup()`` is true (Navidrome not configured yet) so a brand-new
+# user can complete the wizard; once configured they require a session.
+_SETUP_PUBLIC_ENDPOINTS = frozenset({
+    "ui.setup",
+    "ui.api_test_navidrome_connection",
+    "ui.api_setup_save",
+    "ui.api_setup_save_partial",
+    "misc_api.api_essentia_download_status",
+    "misc_api.api_essentia_download_models",
+    "scans.api_navidrome_import",
+})
+
+
+def _is_api_request() -> bool:
+    """True when the current request targets a JSON API endpoint."""
+    return request.path.startswith("/api/")
 
 
 def register_app_hooks(app):
@@ -46,36 +78,32 @@ def register_app_hooks(app):
     def before_request():
         g.start_time = time.time()
 
-        # ── First-run interceptor ─────────────────────────────────────
-        # Redirect to setup if Navidrome is not yet configured.
-        # Skip static assets and auth pages to avoid redirect loops.
-        allowed_endpoints = {
-            "ui.setup", "ui.login", "static",
-            "scans_bp.static", "navidrome_api.static",
-        }
-        if request.endpoint and request.endpoint in allowed_endpoints:
+        endpoint = request.endpoint or ""
+
+        # ── Always-public endpoints (static, login, logout) ──────────────
+        if endpoint in _ALWAYS_PUBLIC_ENDPOINTS or endpoint.endswith(".static"):
             return
 
-        # Only intercept HTML page requests, not API calls
-        if request.endpoint and not request.endpoint.startswith("ui."):
+        from helpers.config_helpers import needs_setup
+
+        # ── First run: setup wizard + its APIs are public ────────────────
+        # While Navidrome is unconfigured a brand-new user must be able to
+        # reach the setup wizard (and the login page, via _ALWAYS_PUBLIC).
+        # Everything else redirects to setup (pages) or returns 401 (APIs).
+        if needs_setup():
+            if endpoint in _SETUP_PUBLIC_ENDPOINTS:
+                return
+            if _is_api_request():
+                return jsonify({"success": False, "error": "Setup required"}), 401
+            return redirect(url_for("ui.setup"))
+
+        # ── Configured app: require a session for everything else ────────
+        if session.get("username"):
             return
 
-        # Also skip API routes that happen to live under the ui blueprint
-        if request.path.startswith("/api/"):
-            return
-
-        try:
-            from helpers.config_helpers import get_config
-            cfg = get_config()
-            nav_users = cfg.get("navidrome_users", [])
-            nav = cfg.get("navidrome", {}) or {}
-            has_config = bool(
-                nav_users or nav.get("base_url") or nav.get("user") or nav.get("pass")
-            )
-            if not has_config:
-                return redirect(url_for("ui.setup"))
-        except Exception:
-            pass
+        if _is_api_request():
+            return jsonify({"success": False, "error": "Authentication required"}), 401
+        return redirect(url_for("ui.login"))
 
     @app.after_request
     def after_request(response):

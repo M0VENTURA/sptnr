@@ -268,6 +268,28 @@ def get_navidrome_config():
     return {}
 
 
+def needs_setup(cfg: dict | None = None) -> bool:
+    """True while first-run setup hasn't been completed (no usable Navidrome).
+
+    Setup is considered complete once a Navidrome user with ``base_url`` +
+    ``user`` + ``pass`` exists, either in the multi-user ``navidrome_users``
+    list, the legacy single-user ``navidrome`` dict, or the flat settings/env
+    keys (``nav_url`` / ``nav_user`` / ``nav_pass``).  This mirrors the
+    legacy ``_needs_setup`` helper so the auth gate and the setup wizard
+    agree on whether the first-run flow is still pending.
+    """
+    cfg = cfg if cfg is not None else get_config()
+    nav_users = cfg.get("navidrome_users", [])
+    if isinstance(nav_users, list) and nav_users:
+        first = nav_users[0]
+        return not all([first.get("base_url"), first.get("user"), first.get("pass")])
+    nav = cfg.get("navidrome", {}) or {}
+    if nav:
+        return not all([nav.get("base_url"), nav.get("user"), nav.get("pass")])
+    # Settings/env-provided flat keys (POPULARLR_NAV_URL / _USER / _PASS).
+    return not all([cfg.get("nav_url"), cfg.get("nav_user"), cfg.get("nav_pass")])
+
+
 # -----------------------------------------------------------------------------
 # Optional (used in app.txt)
 # -----------------------------------------------------------------------------

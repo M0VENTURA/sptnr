@@ -85,13 +85,13 @@ def _similar_artist_display_list(session, entries: list) -> list[dict]:
 
 
 def _needs_setup(cfg=None):
-    cfg = cfg or get_config()
-    nav_users = cfg.get("navidrome_users", [])
-    if isinstance(nav_users, list) and nav_users:
-        first = nav_users[0]
-        return not all([first.get("base_url"), first.get("user"), first.get("pass")])
-    nav = cfg.get("navidrome", {}) or {}
-    return not all([nav.get("base_url"), nav.get("user"), nav.get("pass")])
+    """True while the first-run setup wizard should be shown.
+
+    Delegates to :func:`helpers.config_helpers.needs_setup` so the auth gate
+    and the setup wizard share one definition of "first run".
+    """
+    from helpers.config_helpers import needs_setup
+    return needs_setup(cfg)
 
 
 def login_required(f):
@@ -2652,7 +2652,7 @@ async def config_sandbox_route():
 
 @ui_bp.route("/config", methods=["GET", "POST"])
 async def config_editor():
-    from helpers.config_helpers import get_config, clear_config_cache
+    from helpers.config_helpers import get_config, clear_config_cache, needs_setup
     import yaml
     config, raw = {}, ""
     config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
@@ -2676,6 +2676,7 @@ async def config_editor():
                     await flash("Config must be a YAML mapping (top-level object)", "error")
                     return await render_template(
                         "pages/config.html", config=config, config_raw=config_content,
+                        needs_setup=needs_setup(),
                     )
                 with open(config_path, "w", encoding="utf-8") as f:
                     f.write(config_content)
@@ -2690,12 +2691,14 @@ async def config_editor():
                 await flash(f"Invalid YAML — not saved: {exc}", "error")
                 return await render_template(
                     "pages/config.html", config=config, config_raw=config_content,
+                    needs_setup=needs_setup(),
                 )
         return redirect(url_for("ui.config_editor"))
     return await render_template(
         "pages/config.html",
         config=config,
         config_raw=raw,
+        needs_setup=needs_setup(),
     )
 
 
