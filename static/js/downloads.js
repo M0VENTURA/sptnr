@@ -215,7 +215,7 @@ window.clearLookup = function() {
 
 window.performMbSearch = async function() {
   // 1. Gather advanced fields if they exist
-  const artist = document.getElementById('mbSearchArtist')?.value.trim() || '';
+  let artist = document.getElementById('mbSearchArtist')?.value.trim() || '';
   const album = document.getElementById('mbSearchAlbum')?.value.trim() || '';
   const track = document.getElementById('mbSearchTrack')?.value.trim() || '';
   const year = document.getElementById('mbSearchYear')?.value.trim() || '';
@@ -264,6 +264,12 @@ window.performMbSearch = async function() {
     if (artistOnly) payload.artist_only = true;
     const releaseTypeServer = document.getElementById('mbReleaseType')?.value || '';
     if (releaseTypeServer) payload.type = releaseTypeServer; // server-side primarytype/secondarytype filter
+    // Folder-match / re-match flows want owned releases included so the user
+    // can associate a downloaded folder with a release already in the library.
+    if (window._mbSearchIncludeOwned === true) {
+      payload.include_owned = true;
+      window._mbSearchIncludeOwned = false;
+    }
 
     const data = await fetchJsonOrThrow('/api/musicbrainz/search', {
       method: 'POST',

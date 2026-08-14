@@ -1296,7 +1296,9 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict:
         mb_year = str(mb_release.get("release_year") or "")
         mb_release_title = str(mb_release.get("release_title") or "")
 
-        # Load library tracks for this album.
+        # Load library tracks for this album.  Case-insensitive matching —
+        # consistent with the album detail page route — so a URL casing
+        # difference never empties the comparison.
         library_tracks: list[dict[str, Any]] = []
         try:
             with db_session() as session:
@@ -1305,8 +1307,8 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict:
                         SELECT id, title, track_number, disc_number, artist, year,
                                mbid, file_path, duration, mb_ignored_fields
                         FROM tracks
-                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
-                          AND album = :album
+                        WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)
+                          AND LOWER(COALESCE(album, '')) = LOWER(:album)
                         ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 999)
                     """),
                     {"artist": artist, "album": album},
