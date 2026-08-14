@@ -26,12 +26,3 @@ async def test_api_search_short_query(client):
     """POST /api/search with a single char returns 400."""
     response = await client.post("/api/search", json={"query": "a"})
     assert response.status_code == 400
-
-
-@pytest.mark.asyncio
-async def test_beets_status(client):
-    """GET /api/beets/status returns success."""
-    response = await client.get("/api/beets/status")
-    assert response.status_code == 200
-    data = await response.get_json()
-    assert "success" in data

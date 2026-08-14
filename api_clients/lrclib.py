@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from api_clients.http_utils import create_retry_client
+from api_clients import session
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,10 @@ def fetch_lyrics(
     404 for unknown tracks) or the network call fails.  The response is
     normalised to ``{"plain", "synced", "source", "track_name", "artist_name",
     "album_name", "duration"}``.
+
+    Uses the shared retry session (``api_clients.session``) so connections
+    are pooled and reused — a per-call client would leak sockets/TLS
+    connections.
     """
     params: dict[str, str] = {
         "track_name": str(track_name or "").strip(),
@@ -45,8 +49,7 @@ def fetch_lyrics(
     if duration:
         params["duration"] = str(int(duration or 0))
     try:
-        client = create_retry_client(timeout=timeout)
-        resp = client.get(LRCLIB_API, params=params)
+        resp = session.get(LRCLIB_API, params=params, timeout=timeout)
         if resp.status_code == 404:
             return {}
         resp.raise_for_status()

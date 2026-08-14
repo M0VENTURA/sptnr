@@ -261,18 +261,6 @@ class MusicBrainzHttpClient:
             "release_group_offset": payload.get("release-group-offset", offset) or offset,
         }
 
-    def browse_recording_by_release(self, release_mbid: str, inc: str = "", limit: int = 25, offset: int = 0) -> dict[str, Any]:
-        """Browse recordings directly linked to a release MBID."""
-        params = {"fmt": "json", "release": release_mbid, "limit": min(limit, 100), "offset": offset}
-        if inc:
-            params["inc"] = inc
-        payload = self.get("recording", params=params)
-        return {
-            "recordings": payload.get("recordings", []) or [],
-            "recording_count": payload.get("recording-count", 0) or 0,
-            "recording_offset": payload.get("recording-offset", offset) or offset,
-        }
-
     # ------------------------------------------------------------------
     # Non-MBID lookups (ISRC, discid, ISWC)
     # ------------------------------------------------------------------
@@ -308,17 +296,3 @@ class MusicBrainzHttpClient:
     def search_recordings_with_genres(self, query: str, limit: int = 25) -> list[dict[str, Any]]:
         """Search recordings including MusicBrainz genre data."""
         return self.search_recordings(query, limit=limit, inc="genres")
-
-    def search_release_groups_with_genres(self, query: str, limit: int = 25) -> list[dict[str, Any]]:
-        """Search release-groups including MusicBrainz genre data."""
-        params = {"query": query, "fmt": "json", "limit": max(1, min(limit, 25)), "inc": "genres"}
-        payload = self.get("release-group/", params=params)
-        return payload.get("release-groups", []) if isinstance(payload.get("release-groups"), list) else []
-
-    def get_artist_with_genres(self, artist_mbid: str) -> dict[str, Any]:
-        """Fetch artist details including genres and tags."""
-        return self.get_artist(artist_mbid, inc="genres+tags")
-
-    def get_recording_with_genres(self, recording_mbid: str) -> dict[str, Any]:
-        """Fetch recording details including genres."""
-        return self.get_recording(recording_mbid, inc="genres")

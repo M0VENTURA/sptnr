@@ -63,10 +63,7 @@ class LastFmClient:
 
 
 __all__ = [
-    "LASTFM_CONFIG",
-    "RecommendationCache",
-    "retry_with_backoff",
     "LastFmClient",
-    "get_lastfm_track_info",
-    "get_lastfm_recommendations",
+    "LastFmHttpClient",
+    "retry_with_backoff",
 ]

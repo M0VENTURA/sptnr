@@ -25,7 +25,6 @@ from routes.upcoming_releases_routes import upcoming_bp
 from routes.misc_routes import misc_api_bp
 from routes.ui_routes import ui_bp
 from routes.api_v1 import api_v1_bp
-from routes.beets_routes import beets_bp
 from routes.navidrome import navidrome_bp
 from routes.scan_routes import scans_bp
 from routes.scan_routes.library_routes import library_bp
@@ -57,7 +56,6 @@ def register_all_blueprints(app):
     app.register_blueprint(misc_api_bp)
     app.register_blueprint(api_v1_bp)
     app.register_blueprint(ui_bp)
-    app.register_blueprint(beets_bp)
     app.register_blueprint(navidrome_bp)
     app.register_blueprint(scans_bp)
     app.register_blueprint(library_bp)

@@ -183,25 +183,91 @@ async def api_track_audio(track_id):
 
 @track_bp.route("/<track_id>/rename-file", methods=["POST"])
 def api_track_rename_file(track_id):
-    """Rename/move a single track's file using the configured naming format."""
+    """Rename/move a single track's file using the configured naming format.
+
+    The destination is resolved under MUSIC_ROOT from
+    ``downloads.file_name_format`` (same convention the album rename flow and
+    the download organizer use), and is containment-checked so a crafted
+    metadata value or format string cannot move the file outside the music
+    library.
+    """
     try:
-        from services.infrastructure.filesystem_service import get_import_destination_path
+        from services.downloads.download_organize_helpers import _build_target_path
+        from services.infrastructure.filesystem_service import is_path_under_directory
+
         with db_session() as session:
-            result = session.execute(text("SELECT file_path, artist, album, title, track_number FROM tracks WHERE CAST(id AS TEXT) = :id"), {"id": track_id})
+            result = session.execute(
+                text("""
+                    SELECT file_path, artist, album_artist, album, title,
+                           track_number, disc_number, year
+                    FROM tracks WHERE CAST(id AS TEXT) = :id
+                """),
+                {"id": track_id},
+            )
             row = result.fetchone()
             if not row:
                 return jsonify({"success": False, "error": "Track not found"}), 404
-            metadata = {"file_path": row[0], "artist": row[1], "album": row[2], "title": row[3], "track_number": row[4]}
-            src = metadata.get("file_path", "")
-        if not src or not os.path.exists(src):
+            src = str(row[0] or "").strip()
+            artist = str(row[1] or "").strip()
+            album_artist = str(row[2] or "").strip()
+            album = str(row[3] or "").strip()
+            title = str(row[4] or "").strip()
+            track_number = row[5]
+            disc_number = row[6]
+            year = row[7]
+        if not src or not os.path.isfile(src):
             return jsonify({"success": False, "error": "File not found"}), 404
-        dest = get_import_destination_path(src, "", {})
+
+        cfg = get_config() or {}
+        music_root = os.path.realpath(
+            (cfg.get("music", {}) or {}).get("root")
+            or os.environ.get("MUSIC_ROOT")
+            or os.environ.get("MUSIC_FOLDER")
+            or "/music"
+        )
+        # Build the relative destination from the configured naming format and
+        # resolve it under the music root.
+        dest = _build_target_path(
+            music_root,
+            album_artist or artist,
+            year,
+            album,
+            artist,
+            title,
+            track_number,
+            src,
+            disc_number=disc_number,
+        )
+        dest = os.path.realpath(dest)
+        if not is_path_under_directory(dest, music_root):
+            return jsonify({"success": False, "error": "Refusing to move file outside the music library"}), 403
+        if os.path.normpath(dest) == os.path.normpath(src):
+            return jsonify({"success": True, "old_path": src, "new_path": dest, "unchanged": True})
+
+        # Avoid clobbering an existing file.
+        if os.path.exists(dest):
+            stem, suffix = os.path.splitext(dest)
+            counter = 1
+            while os.path.exists(dest):
+                dest = f"{stem} ({counter}){suffix}"
+                counter += 1
+
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         os.rename(src, dest)
+        # Keep the stored path style: relative stays relative, absolute stays absolute.
+        store_path = (
+            os.path.relpath(dest, music_root)
+            if not os.path.isabs(src)
+            else dest
+        )
         with db_session() as session:
-            session.execute(text("UPDATE tracks SET file_path = :path WHERE CAST(id AS TEXT) = :id"), {"path": dest, "id": track_id})
+            session.execute(
+                text("UPDATE tracks SET file_path = :path WHERE CAST(id AS TEXT) = :id"),
+                {"path": store_path, "id": track_id},
+            )
         return jsonify({"success": True, "old_path": src, "new_path": dest})
     except Exception as exc:
+        logger.error("Error renaming track file %s: %s", track_id, exc, exc_info=True)
         return jsonify({"success": False, "error": str(exc)}), 500
 
 

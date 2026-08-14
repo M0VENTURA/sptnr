@@ -103,7 +103,14 @@ def beets_status():
 
 @beets_bp.route("/import", methods=["POST"])
 async def beets_import():
-    """Import files from a given path using ``beet import``."""
+    """Import files from a given path using ``beet import``.
+
+    The path must be an existing directory under the music root — ``beet
+    import`` runs an external subprocess, so a crafted path must never be
+    able to point it at arbitrary filesystem locations.
+    """
+    from services.infrastructure.filesystem_service import is_path_under_directory
+
     data = (await request.get_json(silent=True)) or {}
     path = str(data.get("path", "")).strip()
     if not path:
@@ -111,7 +118,16 @@ async def beets_import():
     if not _beets_installed():
         return jsonify({"error": "beets not installed"}), 400
 
-    _rc, out, err = _run_beet("import", "-q", path)
+    music_root = os.path.realpath(
+        os.environ.get("MUSIC_ROOT", "/music") or "/music"
+    )
+    real_path = os.path.realpath(path)
+    if not os.path.isdir(real_path):
+        return jsonify({"error": "path is not an existing directory"}), 400
+    if not is_path_under_directory(real_path, music_root):
+        return jsonify({"error": "path must be inside the music library"}), 403
+
+    _rc, out, err = _run_beet("import", "-q", real_path)
     return jsonify({"success": _rc == 0, "message": out.strip() or err.strip() or "Import finished", "returncode": _rc})
 
 

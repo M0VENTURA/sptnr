@@ -3346,12 +3346,6 @@ async def metadata_compare_accept_navidrome():
         return jsonify({"error": str(exc)}), 500
 
 
-
-@ui_bp.route("/beets")
-async def beets():
-    return await render_template("pages/beets_integration.html")
-
-
 @ui_bp.route("/smart-playlists")
 async def smart_playlists():
     return await render_template("pages/smart_playlists.html")

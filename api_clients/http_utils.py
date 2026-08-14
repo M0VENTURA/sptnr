@@ -10,6 +10,7 @@ compatibility.
 
 from __future__ import annotations
 
+import datetime
 import logging
 import ssl
 import time
@@ -49,7 +50,6 @@ class _RetryTransport(httpx.BaseTransport):
             Retrying,
             retry_if_exception,
             stop_after_attempt,
-            wait_exponential,
         )
 
         class _RetryableStatus(Exception):
@@ -80,14 +80,40 @@ class _RetryTransport(httpx.BaseTransport):
                 raise _RetryableStatus(response)
             return response
 
+        def _wait(retry_state):
+            """Wait before the next retry.
+
+            Honors a ``Retry-After`` header on the last retryable response
+            (429/503) when present — some APIs (MusicBrainz, Last.fm,
+            Discogs) send an explicit seconds value or an HTTP-date.  Falls
+            back to exponential backoff otherwise.
+            """
+            exc = retry_state.outcome.exception()
+            retry_after = None
+            if isinstance(exc, _RetryableStatus):
+                response = getattr(exc, "response", None)
+                if response is not None:
+                    retry_after = response.headers.get("Retry-After")
+            if retry_after:
+                try:
+                    return float(retry_after)
+                except ValueError:
+                    # HTTP-date form (e.g. "Wed, 21 Oct 2015 07:28:00 GMT").
+                    from email.utils import parsedate_to_datetime
+                    try:
+                        when = parsedate_to_datetime(retry_after)
+                        if when.tzinfo is None:
+                            when = when.replace(tzinfo=datetime.timezone.utc)
+                        return max(0.0, (when - datetime.now(datetime.timezone.utc)).total_seconds())
+                    except Exception:
+                        pass
+            # Exponential backoff (legacy default).
+            n = retry_state.attempt_number  # 1-based (1 = first failed attempt)
+            return min(self._backoff * (2 ** (n - 1)), 60.0)
+
         retrying = Retrying(
             stop=stop_after_attempt(self._retries + 1),
-            wait=wait_exponential(
-                multiplier=self._backoff,
-                exp_base=2,
-                min=self._backoff,
-                max=60.0,
-            ),
+            wait=_wait,
             retry=retry_if_exception(_is_retryable),
             reraise=True,
         )

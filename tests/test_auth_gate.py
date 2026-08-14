@@ -115,8 +115,8 @@ async def test_configured_api_returns_401(configured, unauthed_client):
 @pytest.mark.asyncio
 async def test_configured_authed_client_allowed(configured, client):
     """An authenticated session passes through the gate."""
-    response = await client.get("/api/beets/status")
-    # beets status may 404/500 in the test env, but it must NOT be 401.
+    response = await client.get("/api/stats")
+    # stats may error in the test env, but it must NOT be 401.
     assert response.status_code != 401
 
 
