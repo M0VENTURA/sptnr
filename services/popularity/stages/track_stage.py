@@ -135,6 +135,53 @@ def _build_effective_track(
     return effective_track
 
 
+_GENRE_SOURCE_COLUMNS = (
+    "musicbrainz_genres",
+    "discogs_genres",
+    "listenbrainz_genres",
+    "spotify_genres",
+    "lastfm_tags",
+)
+
+
+def _has_real_genres(track: dict[str, Any]) -> bool:
+    """Whether a track already carries any actual (non-empty) genre data.
+
+    New Navidrome imports pre-fill the genre columns with ``"[]"``
+    (``JSON_EMPTY_LIST`` in ``payload_builder``), which is a *truthy* string —
+    a plain ``bool(column)`` check would treat those tracks as "already has
+    genres" and permanently skip the Discogs / MusicBrainz genre import during
+    metadata scans.  Parse each column and only count real, non-empty entries.
+    """
+    for column in _GENRE_SOURCE_COLUMNS:
+        raw = track.get(column)
+        if not raw:
+            continue
+        if isinstance(raw, str):
+            stripped = raw.strip()
+            if not stripped or stripped.lower() in ("[]", "{}", "null", "none"):
+                continue
+            try:
+                parsed = json.loads(stripped)
+            except (ValueError, TypeError):
+                # Not JSON — a plain delimited string still counts as genres.
+                return True
+            if isinstance(parsed, list):
+                if any(str(g or "").strip() for g in parsed):
+                    return True
+                continue
+            if isinstance(parsed, dict):
+                if any(str(v or "").strip() for v in parsed.values()):
+                    return True
+                continue
+            if str(parsed or "").strip():
+                return True
+            continue
+        if raw:
+            return True
+    return False
+
+
 # Album-type columns are owned by the album stage (``enrich_album`` /
 # ``ensure_album_type``).  The per-track stage never computes them, so it
 # must not write them back: the in-memory ``track`` dict is loaded before
@@ -475,13 +522,7 @@ def _resolve_track_mb_metadata(
     # Only columns that actually feed the genre display gate the genre source
     # fetches.  ``musicbrainz_tags`` is NOT one of them — the artist/album
     # pages aggregate ``musicbrainz_genres`` and the other per-source columns.
-    _has_genres = bool(
-        track.get("musicbrainz_genres")
-        or track.get("discogs_genres")
-        or track.get("listenbrainz_genres")
-        or track.get("spotify_genres")
-        or track.get("lastfm_tags")
-    )
+    _has_genres = _has_real_genres(track)
     _force_meta = bool(force_meta)
 
     mb_data = None
@@ -1733,10 +1774,19 @@ def process_track(
                         # Store as a JSON string — the column is TEXT and
                         # psycopg2 cannot adapt a Python list to a text
                         # parameter (this silently failed every track save).
+                        _mb_genre_names = [
+                            g.get("name", "") for g in mb_genres
+                            if isinstance(g, dict) and g.get("name")
+                        ]
                         update_payload["musicbrainz_genres"] = json.dumps(
-                            [g.get("name", "") for g in mb_genres if isinstance(g, dict) and g.get("name")],
+                            _mb_genre_names,
                             ensure_ascii=False,
                         )
+                        if _mb_genre_names:
+                            log_unified(
+                                f"[TRACK_STAGE] Genre import for \"{track_title}\" "
+                                f"({track_artist}): {len(_mb_genre_names)} MusicBrainz genre(s)"
+                            )
                     if mb_tags:
                         update_payload["musicbrainz_tags"] = json.dumps(
                             [t.get("name", "") for t in mb_tags if isinstance(t, dict) and t.get("name")],
@@ -1773,9 +1823,14 @@ def process_track(
                             genres = results[0].get("genre", []) or []
                             styles = results[0].get("style", []) or []
                             if genres or styles:
+                                _d_genre_names = list(set(genres + styles))
                                 update_payload["discogs_genres"] = json.dumps(
-                                    list(set(genres + styles)),
+                                    _d_genre_names,
                                     ensure_ascii=False,
+                                )
+                                log_unified(
+                                    f"[TRACK_STAGE] Genre import for \"{track_title}\" "
+                                    f"({track_artist}): {len(_d_genre_names)} Discogs genre(s)"
                                 )
                 except Exception as e:
                     logger.debug("[track_stage][DISCOGS_GENRE] %s: %s", track_id, e)
@@ -1810,7 +1865,10 @@ def process_track(
                         names = [n for n in names if n]
                         if names:
                             update_payload["listenbrainz_genres"] = json.dumps(names, ensure_ascii=False)
-                            logger.debug("[track_stage][LB_GENRE] %s: %d ListenBrainz genre(s)", track_id, len(names))
+                            log_unified(
+                                f"[TRACK_STAGE] Genre import for \"{track_title}\" "
+                                f"({track_artist}): {len(names)} ListenBrainz genre(s)"
+                            )
                 except Exception as e:
                     logger.debug("[track_stage][LB_GENRE] %s: %s", track_id, e)
 
@@ -1918,6 +1976,10 @@ def process_track(
                     # format the old scanner wrote).  ``aggregated_genres`` is
                     # not a column and would be silently dropped by save_to_db.
                     update_payload["genres"] = ", ".join(aggregated)
+                    log_unified(
+                        f"[TRACK_STAGE] Top genres for \"{track_title}\" ({track_artist}): "
+                        f"{', '.join(aggregated)}"
+                    )
 
                 # Legacy parity: inject special genre tags (Christmas, Cover,
                 # Live, Acoustic, Remix, ...) detected from the title/album —

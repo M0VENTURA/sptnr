@@ -2079,7 +2079,11 @@ def run_scan(
         # refreshes the playlists instead of waiting for a full scan.
         try:
             from services.popularity.stages.finalise_stage import _create_genre_top_track_playlists
-            _create_genre_top_track_playlists()
+            _genre_playlists_written = _create_genre_top_track_playlists()
+            if _genre_playlists_written:
+                log_unified(
+                    f"[FINALISE_STAGE] Genre playlists: {_genre_playlists_written} file(s) written"
+                )
         except Exception as exc:
             logger.debug("[scan_runner] Metadata genre playlist rebuild failed: %s", exc)
 
