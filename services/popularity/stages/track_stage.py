@@ -172,6 +172,23 @@ _MB_RECORDING_GENRE_SEARCH_CACHE: dict[tuple[str, str], list] = {}
 _DISCOGS_GENRE_CACHE: dict[tuple[str, str], list] = {}
 _LB_RECORDING_TAGS_CACHE: dict[str, list] = {}
 
+# Bound for the per-process genre caches — a long-lived worker / multi-scan
+# process must not let them grow unbounded.  FIFO eviction (plain dicts
+# preserve insertion order) drops ONE oldest entry on overflow, preserving the
+# recently-added entries (clear-all would nuke the whole cache and re-pay
+# every lookup on the next album).
+_GENRE_CACHE_MAX = 4000
+
+
+def _bounded_cache_put(cache: dict, key, value) -> None:
+    """Insert into a per-process cache, evicting the oldest entry on overflow."""
+    while len(cache) >= _GENRE_CACHE_MAX:
+        try:
+            cache.pop(next(iter(cache)))
+        except (StopIteration, KeyError):
+            break
+    cache[key] = value
+
 
 def _strip_album_type_columns(
     track: dict[str, Any],
@@ -430,6 +447,8 @@ def _resolve_track_mb_metadata(
     frozen_track: bool,
     force_meta: bool,
     options: dict[str, Any],
+    batch_artist: str = "",
+    batch_title: str = "",
 ) -> dict[str, Any]:
     """Resolve a track's MusicBrainz metadata and backfill it into a payload.
 
@@ -482,12 +501,23 @@ def _resolve_track_mb_metadata(
             # request pair.
             _batch_mb = options.get("mb_batch_metadata") or {}
             mb_data = _batch_mb.get(f"{artist.lower()}::{title.lower()}")
-            _from_batch = mb_data is not None
+            # The runner builds batch keys from the TRACK-CONTEXT artist/title
+            # (with album_artist fallback), which can differ from the bare
+            # track values (feat. variants, missing artist) — try the context
+            # key too so those tracks still hit the album batch instead of a
+            # per-track lookup.
+            if not mb_data and batch_artist and batch_title:
+                mb_data = _batch_mb.get(f"{batch_artist.lower()}::{batch_title.lower()}")
             # One shared service instance per scan keeps the suggested-MBID
             # disk cache warm (per-track instances re-read it on construction).
             mb_service = get_shared_mb_service()
+            # ``_from_batch`` must reflect the ACTUAL source: recompute after
+            # the fallback so an empty batch entry (or a fallback hit) is
+            # labelled correctly for the writer-backfill gate.
+            _from_batch = bool(mb_data)
             if not mb_data:
                 mb_data = mb_service.lookup_recording_metadata(title, artist)
+                _from_batch = False
             if not mb_data:
                 logger.debug(
                     "[track_stage] MB metadata lookup returned nothing for %s (%s - %s)",
@@ -767,6 +797,10 @@ def process_track(
                 frozen_track=frozen_track,
                 force_meta=bool(options.get("force")),
                 options=options,
+                # Same (artist, title) source the scan runner uses to build the
+                # album MB batch keys, so feat./missing-artist tracks hit it.
+                batch_artist=_as_str(track_context.get("artist") or track.get("artist")),
+                batch_title=_as_str(track_context.get("title") or track.get("title")),
             )
         except Exception as exc:
             logger.debug("[track_stage][MB_PRE] %s: %s", track_id, exc)
@@ -1653,11 +1687,11 @@ def process_track(
                         try:
                             _rg = mb_raw.get_release_group(_rg_mbid, inc="genres+tags")
                             if isinstance(_rg, dict) and _rg.get("id"):
-                                _MB_RG_GENRE_CACHE[_rg_mbid] = (_rg.get("genres") or [], _rg.get("tags") or [])
+                                _bounded_cache_put(_MB_RG_GENRE_CACHE, _rg_mbid, (_rg.get("genres") or [], _rg.get("tags") or []))
                             else:
-                                _MB_RG_GENRE_CACHE[_rg_mbid] = ([], [])
+                                _bounded_cache_put(_MB_RG_GENRE_CACHE, _rg_mbid, ([], []))
                         except Exception:
-                            _MB_RG_GENRE_CACHE[_rg_mbid] = ([], [])
+                            _bounded_cache_put(_MB_RG_GENRE_CACHE, _rg_mbid, ([], []))
                     if _rg_mbid in _MB_RG_GENRE_CACHE:
                         mb_genres, mb_tags = _MB_RG_GENRE_CACHE[_rg_mbid]
                     if not mb_genres and not mb_tags:
@@ -1673,11 +1707,11 @@ def process_track(
                                 try:
                                     _rec = mb_raw.get_recording(_rec_mbid, inc="genres+tags")
                                     if isinstance(_rec, dict) and _rec.get("id"):
-                                        _MB_RECORDING_GENRE_CACHE[_rec_mbid] = (_rec.get("genres") or [], _rec.get("tags") or [])
+                                        _bounded_cache_put(_MB_RECORDING_GENRE_CACHE, _rec_mbid, (_rec.get("genres") or [], _rec.get("tags") or []))
                                     else:
-                                        _MB_RECORDING_GENRE_CACHE[_rec_mbid] = ([], [])
+                                        _bounded_cache_put(_MB_RECORDING_GENRE_CACHE, _rec_mbid, ([], []))
                                 except Exception:
-                                    _MB_RECORDING_GENRE_CACHE[_rec_mbid] = ([], [])
+                                    _bounded_cache_put(_MB_RECORDING_GENRE_CACHE, _rec_mbid, ([], []))
                             mb_genres, mb_tags = _MB_RECORDING_GENRE_CACHE[_rec_mbid]
                     if not mb_genres and not mb_tags:
                         _search_key = (artist.casefold(), title.casefold())
@@ -1689,7 +1723,7 @@ def process_track(
                                 ) or []
                             except Exception:
                                 recs = []
-                            _MB_RECORDING_GENRE_SEARCH_CACHE[_search_key] = recs
+                            _bounded_cache_put(_MB_RECORDING_GENRE_SEARCH_CACHE, _search_key, recs)
                         recs = _MB_RECORDING_GENRE_SEARCH_CACHE[_search_key]
                         if recs:
                             rec = recs[0]
@@ -1733,7 +1767,7 @@ def process_track(
                                 "type": "release",
                                 "per_page": 3,
                             }) or []
-                            _DISCOGS_GENRE_CACHE[_d_key] = _d_results
+                            _bounded_cache_put(_DISCOGS_GENRE_CACHE, _d_key, _d_results)
                         results = _d_results
                         if results and len(results) > 0:
                             genres = results[0].get("genre", []) or []
@@ -1768,9 +1802,9 @@ def process_track(
                         else:
                             if _lb_mbid not in _LB_RECORDING_TAGS_CACHE:
                                 try:
-                                    _LB_RECORDING_TAGS_CACHE[_lb_mbid] = get_recording_tags(_lb_mbid) or []
+                                    _bounded_cache_put(_LB_RECORDING_TAGS_CACHE, _lb_mbid, get_recording_tags(_lb_mbid) or [])
                                 except Exception:
-                                    _LB_RECORDING_TAGS_CACHE[_lb_mbid] = []
+                                    _bounded_cache_put(_LB_RECORDING_TAGS_CACHE, _lb_mbid, [])
                             lb_tags = _LB_RECORDING_TAGS_CACHE[_lb_mbid]
                         names = [str(t.get("tag") or t.get("name") or "").strip() for t in lb_tags if isinstance(t, dict)]
                         names = [n for n in names if n]
@@ -1789,6 +1823,11 @@ def process_track(
 
     if not popularity_only and not singles_detection_only:
         try:
+            # Rebuild the effective track here — for metadata-only scans and
+            # singles passes with fresh stored popularity no earlier section
+            # bound ``effective_track``, and referencing it unbound silently
+            # disabled per-track cover detection (UnboundLocalError swallowed).
+            effective_track = _build_effective_track(track, update_payload)
             title = _as_str(effective_track.get("title") or track.get("title") or "")
             if title:
                 # Pass existing DB cover state so already-confirmed covers

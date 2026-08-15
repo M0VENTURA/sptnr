@@ -105,8 +105,11 @@ def is_common_writer_for_artist(
                 k = _loose_normalize(str(n))
                 if k:
                     counts[k] = counts.get(k, 0) + 1
-        if len(_writer_counts_cache) >= _WRITER_COUNTS_CACHE_MAX:
-            _writer_counts_cache.clear()
+        while len(_writer_counts_cache) >= _WRITER_COUNTS_CACHE_MAX:
+            try:
+                _writer_counts_cache.pop(next(iter(_writer_counts_cache)))
+            except (StopIteration, KeyError):
+                break
         _writer_counts_cache[lookup] = counts
 
     return counts.get(writer_norm, 0) >= min_count

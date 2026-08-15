@@ -1090,7 +1090,12 @@ def get_work_level_listenbrainz_popularity(
 
     # 3. Keep only same-artist studio recordings (no covers / live / remix).
     mbids: set[str] = set(seed_mbids)
-    target_artist = normalize_for_aggregation(artist)
+    # Strip the featured-guest credit before the name comparison — MB credits a
+    # feat. track's recording to the PRIMARY artist ("Feuerschwanz feat. Dag von
+    # SDP" records under "Feuerschwanz"), so without this the name filter
+    # excluded every browsed recording and work-level aggregation never fired.
+    from helpers.normalization_service import strip_featured_artist
+    target_artist = normalize_for_aggregation(strip_featured_artist(artist) or artist)
     for rec in recordings:
         if not isinstance(rec, dict):
             continue

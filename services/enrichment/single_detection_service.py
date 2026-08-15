@@ -409,8 +409,11 @@ def _cached_mb_release_group_search(query: str, limit: int, mb_client) -> list[d
     except Exception:
         found = []
     _mb_single_rg_cache[query] = found
-    if len(_mb_single_rg_cache) >= _MB_SINGLE_RG_CACHE_MAX:
-        _mb_single_rg_cache.clear()
+    while len(_mb_single_rg_cache) >= _MB_SINGLE_RG_CACHE_MAX:
+        try:
+            _mb_single_rg_cache.pop(next(iter(_mb_single_rg_cache)))
+        except (StopIteration, KeyError):
+            break
     return found
 
 
@@ -446,14 +449,39 @@ def _detect_musicbrainz(title: str, artist: str, artist_mbid: str | None,
             try:
                 _rec = mb_client.get_recording(recording_mbid)
                 if _rec:
-                    for _rel in _rec.get("releases") or []:
-                        if not isinstance(_rel, dict):
-                            continue
-                        _rg = _rel.get("release-group") or {}
-                        _pt = str(_rg.get("primary-type") or "").lower()
-                        if _pt in ("single", "ep"):
-                            matched = True
-                            break
+                    # Guard against a mis-resolved recording MBID pointing at
+                    # ANOTHER song (fuzzy per-track match, album-batch mixup):
+                    # only confirm a single when the recording's OWN title
+                    # matches the track (normalised, single-suffix stripped) —
+                    # otherwise a wrong MBID could fabricate a false 5★ single.
+                    # The recording is cached, so this costs nothing extra.
+                    _rec_title = str(_rec.get("title") or "")
+                    _norm_rec = normalize_title_for_lookup(
+                        strip_single_release_suffix(_rec_title) or _rec_title
+                    )
+                    _norm_track = normalize_title_for_lookup(
+                        strip_single_release_suffix(title) or title
+                    )
+                    _title_ok = bool(
+                        _norm_rec
+                        and _norm_track
+                        and (
+                            _norm_rec == _norm_track
+                            or (
+                                _HAVE_RAPIDFUZZ
+                                and (_fuzz.token_set_ratio(_norm_rec, _norm_track) / 100.0) >= 0.85
+                            )
+                        )
+                    )
+                    if _title_ok:
+                        for _rel in _rec.get("releases") or []:
+                            if not isinstance(_rel, dict):
+                                continue
+                            _rg = _rel.get("release-group") or {}
+                            _pt = str(_rg.get("primary-type") or "").lower()
+                            if _pt in ("single", "ep"):
+                                matched = True
+                                break
                     if matched:
                         logger.debug(
                             "[SINGLE_DETECTION] Recording %s release-group confirms single for %s - %s",

@@ -83,7 +83,7 @@ _ISRC_LOOKUP_CACHE_MAX = 2000
 # flows — keyed by release MBID alone with a canonical inc superset so a
 # single throttled call satisfies every caller (recordings for tracklists,
 # artist-credits, media, release-groups).
-_RELEASE_INC_SUPERSET = "recordings+artist-credits+media+release-groups"
+_RELEASE_INC_SUPERSET = "recordings+artist-credits+media+release-groups+labels"
 _RELEASE_DETAIL_CACHE: dict[str, dict[str, Any]] = {}
 _RELEASE_DETAIL_CACHE_MAX = 2000
 
@@ -185,8 +185,11 @@ class MusicBrainzHttpClient:
         params = {"fmt": "json", "inc": _RELEASE_INC_SUPERSET}
         data = self.get(f"release/{release_mbid}", params=params, timeout=timeout)
         if data:
-            if len(_RELEASE_DETAIL_CACHE) >= _RELEASE_DETAIL_CACHE_MAX:
-                _RELEASE_DETAIL_CACHE.clear()
+            while len(_RELEASE_DETAIL_CACHE) >= _RELEASE_DETAIL_CACHE_MAX:
+                try:
+                    _RELEASE_DETAIL_CACHE.pop(next(iter(_RELEASE_DETAIL_CACHE)))
+                except (StopIteration, KeyError):
+                    break
             _RELEASE_DETAIL_CACHE[release_mbid] = data
         return data
 
@@ -212,8 +215,11 @@ class MusicBrainzHttpClient:
         params = {"fmt": "json", "inc": _RECORDING_INC_SUPERSET}
         data = self.get(f"recording/{recording_mbid}", params=params, timeout=timeout)
         if data:
-            if len(_RECORDING_DETAIL_CACHE) >= _RECORDING_DETAIL_CACHE_MAX:
-                _RECORDING_DETAIL_CACHE.clear()
+            while len(_RECORDING_DETAIL_CACHE) >= _RECORDING_DETAIL_CACHE_MAX:
+                try:
+                    _RECORDING_DETAIL_CACHE.pop(next(iter(_RECORDING_DETAIL_CACHE)))
+                except (StopIteration, KeyError):
+                    break
             _RECORDING_DETAIL_CACHE[recording_mbid] = data
         return data
 
@@ -328,8 +334,11 @@ class MusicBrainzHttpClient:
         params = {"fmt": "json", "inc": _ISRC_INC_SUPERSET}
         payload = self.get(f"isrc/{isrc}", params=params)
         recordings = payload.get("recordings", []) if isinstance(payload.get("recordings"), list) else []
-        if len(_ISRC_LOOKUP_CACHE) >= _ISRC_LOOKUP_CACHE_MAX:
-            _ISRC_LOOKUP_CACHE.clear()
+        while len(_ISRC_LOOKUP_CACHE) >= _ISRC_LOOKUP_CACHE_MAX:
+            try:
+                _ISRC_LOOKUP_CACHE.pop(next(iter(_ISRC_LOOKUP_CACHE)))
+            except (StopIteration, KeyError):
+                break
         _ISRC_LOOKUP_CACHE[cache_key] = recordings
         return recordings
 

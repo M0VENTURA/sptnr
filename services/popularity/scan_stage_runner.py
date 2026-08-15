@@ -2072,6 +2072,16 @@ def run_scan(
                 log_unified(f"[POPULARITY] Finalise step failed ({_finalise_exc})")
             except Exception:
                 pass
+    else:
+        # Metadata-only scans write genre columns (the track_stage genre
+        # section) but skip finalise entirely — rebuild the library-wide genre
+        # top-tracks playlists once so a metadata scan that adds/fixes genres
+        # refreshes the playlists instead of waiting for a full scan.
+        try:
+            from services.popularity.stages.finalise_stage import _create_genre_top_track_playlists
+            _create_genre_top_track_playlists()
+        except Exception as exc:
+            logger.debug("[scan_runner] Metadata genre playlist rebuild failed: %s", exc)
 
     update(stage="complete", progress=100, message="Popularity scan complete.", processed=total_albums, total_items=total_albums)
 
