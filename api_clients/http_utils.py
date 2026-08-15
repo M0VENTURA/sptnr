@@ -18,6 +18,44 @@ from typing import Any
 
 import httpx
 
+
+# ---------------------------------------------------------------------------
+# Connection-pool limits (shared session)
+# ---------------------------------------------------------------------------
+
+# Pool size / timeout for the shared HTTP session, which serves EVERY provider
+# (MusicBrainz, Last.fm, ListenBrainz, Discogs, Navidrome, Wikipedia, search)
+# concurrently from the scan's thread pool plus background workers.  The httpx
+# defaults (pool_timeout=5s) made bursts fail with ``httpx.PoolTimeout``
+# whenever the pool was momentarily saturated — the logs showed "(PoolTimeout)"
+# on Navidrome getScanStatus/setRating/search3 and on the Wikipedia scraper
+# during scans.
+_POOL_MAX_CONNECTIONS = 200
+_POOL_MAX_KEEPALIVE = 50
+_POOL_TIMEOUT = 30.0
+
+
+def _build_pool_limits() -> httpx.Limits:
+    """Build ``httpx.Limits`` for the shared session, httpx-version-safe.
+
+    The ``pool_timeout`` keyword only exists on ``httpx.Limits`` since
+    httpx 0.25.0 — older httpx raises ``TypeError`` at import time (which
+    crashed the whole app on startup).  Fall back to the two always-supported
+    keywords there; the larger connection counts are what resolve the pool
+    exhaustion, the longer pool wait is a bonus on newer httpx.
+    """
+    try:
+        return httpx.Limits(
+            max_connections=_POOL_MAX_CONNECTIONS,
+            max_keepalive_connections=_POOL_MAX_KEEPALIVE,
+            pool_timeout=_POOL_TIMEOUT,
+        )
+    except TypeError:  # httpx < 0.25 — no pool_timeout kwarg
+        return httpx.Limits(
+            max_connections=_POOL_MAX_CONNECTIONS,
+            max_keepalive_connections=_POOL_MAX_KEEPALIVE,
+        )
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,23 +78,11 @@ class _RetryTransport(httpx.BaseTransport):
         self._retries = retries
         self._backoff = backoff
         self._status_forcelist = status_forcelist
-        # Explicit pool limits: the shared session serves EVERY provider
-        # (MusicBrainz, Last.fm, ListenBrainz, Discogs, Navidrome, Wikipedia,
-        # search) concurrently from the scan's thread pool plus background
-        # workers.  The httpx defaults (pool_timeout=5s) made bursts fail with
-        # httpx.PoolTimeout whenever the pool was momentarily saturated — the
-        # log showed "(PoolTimeout)" on Navidrome getScanStatus/setRating/
-        # search3 and on the Wikipedia scraper during scans.  A larger pool
-        # and a longer pool_timeout let requests WAIT for a slot instead of
-        # failing.
+        # Explicit pool limits — see ``_build_pool_limits`` (httpx-version-safe).
         self._transport = httpx.HTTPTransport(
             verify=verify,
             retries=0,
-            limits=httpx.Limits(
-                max_connections=200,
-                max_keepalive_connections=50,
-                pool_timeout=30.0,
-            ),
+            limits=_build_pool_limits(),
         )
 
     def handle_request(
@@ -222,11 +248,7 @@ def create_retry_client(
         timeout=httpx.Timeout(timeout),
         headers=headers,
         verify=verify,
-        limits=httpx.Limits(
-            max_connections=200,
-            max_keepalive_connections=50,
-            pool_timeout=30.0,
-        ),
+        limits=_build_pool_limits(),
         event_hooks={
             "request": [_log_request_start],
             "response": [_log_response],
