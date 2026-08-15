@@ -233,6 +233,23 @@ class MusicBrainzHttpClient:
         payload = self.get("release", params={"fmt": "json", "release-group": release_group_mbid, "inc": inc, "limit": limit})
         return payload.get("releases", []) if isinstance(payload.get("releases"), list) else []
 
+    def browse_work_recordings(self, work_mbid: str, inc: str = "artist-credits", limit: int = 100) -> list[dict[str, Any]]:
+        """Browse every recording linked to a MusicBrainz Work.
+
+        Singles splinter their ListenBrainz scrobbles across the album cut,
+        the 7" single edit, Greatest Hits masters and radio promos — each is
+        a separate recording that links to the same Work.  Browsing
+        ``recording?work=<mbid>`` returns them all in one throttled call
+        (the Work-level ListenBrainz aggregation relies on this).
+        """
+        if not self.enabled or not work_mbid:
+            return []
+        params = {"fmt": "json", "work": work_mbid, "limit": min(limit, 100)}
+        if inc:
+            params["inc"] = inc
+        payload = self.get("recording", params=params)
+        return payload.get("recordings", []) if isinstance(payload.get("recordings"), list) else []
+
     # ------------------------------------------------------------------
     # Browse endpoints (efficient lookups by linked entity)
     # ------------------------------------------------------------------

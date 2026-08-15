@@ -940,6 +940,202 @@ def get_aggregated_listenbrainz_popularity(
         return {"total_listen_count": 0, "total_user_count": 0, "mbids": sorted(mbids)}
 
 
+def _recording_work_mbid(recording: dict) -> str:
+    """Work MBID a recording performs, from its ``work-rels`` relations.
+
+    MusicBrainz links a recording to the song it performs via a
+    ``performance`` relation whose target is a Work entity::
+
+        {"relations": [{"type": "performance", "work": {"id": "…", "title": "…"}}]}
+
+    Returns "" when the recording carries no Work link.
+    """
+    for rel in recording.get("relations") or []:
+        if not isinstance(rel, dict):
+            continue
+        if str(rel.get("type") or "").lower() != "performance":
+            continue
+        work = rel.get("work") or {}
+        wid = str(work.get("id") or "").strip()
+        if wid:
+            return wid
+    return ""
+
+
+def _recording_artist_mbids(recording: dict) -> set[str]:
+    """Set of artist MBIDs credited on a recording (``artist-credit``)."""
+    out: set[str] = set()
+    for credit in recording.get("artist-credit") or []:
+        if not isinstance(credit, dict):
+            continue
+        art = credit.get("artist") or {}
+        aid = str(art.get("id") or "").strip()
+        if aid:
+            out.add(aid)
+    return out
+
+
+def _recording_primary_artist(recording: dict) -> str:
+    """Primary (first) artist name credited on a recording."""
+    for credit in recording.get("artist-credit") or []:
+        if not isinstance(credit, dict):
+            continue
+        art = credit.get("artist") or {}
+        name = str(art.get("name") or credit.get("name") or "").strip()
+        if name:
+            return name
+    return ""
+
+
+def _empty_work_lb_result() -> dict:
+    return {
+        "total_listen_count": 0,
+        "total_user_count": 0,
+        "mbids": [],
+        "work_mbid": "",
+        "source": "work",
+    }
+
+
+def get_work_level_listenbrainz_popularity(
+    title: str,
+    artist: str,
+    artist_mbid: str = "",
+    primary_mbid: str = "",
+    isrc: str = "",
+    lb_client=None,
+    mb_client=None,
+) -> dict:
+    """Aggregate ListenBrainz counts across a single MusicBrainz Work.
+
+    When a song is released as a single, its scrobbles on ListenBrainz get
+    splintered across multiple ``recording_mbid``s that all perform the SAME
+    Work — the 7" single edit, the album cut, a Greatest Hits remaster, a
+    radio promo.  Querying only the recording pinned to the library's album
+    release picks up a tiny fraction of the real traffic.
+
+    Resolution chain (per the single-detection design):
+      1. Resolve the track's ``work_mbid`` from its recording (``work-rels``)
+         or its ISRC when no recording MBID is stored.
+      2. Browse every recording linked to that Work (one throttled call).
+      3. Keep only recordings by the SAME artist — the Work links every
+         recording of the song including COVERS by other artists, which must
+         never inflate the count (strict ``artist_mbid`` filter when the
+         local artist MBID is known, else normalized name equality).
+      4. Sum the ListenBrainz listen/user counts across the kept recordings.
+
+    Args:
+        title: Local track title.
+        artist: Local track artist.
+        artist_mbid: Local artist MBID (strict artist filter — the cover-song
+            trap guard).  Empty falls back to normalized name equality.
+        primary_mbid: The track's recording MBID (seeded for the Work lookup).
+        isrc: Track ISRC (used when no recording MBID is available).
+        lb_client / mb_client: Optional clients (tests inject fakes).
+
+    Returns:
+        ``{total_listen_count, total_user_count, mbids, work_mbid, source}``
+        with ``source == "work"``; zero counts when no Work is resolvable or
+        no same-artist recordings are found.
+    """
+    logger.debug("[POPULARITY_SOURCES] Fetching Work-level aggregated ListenBrainz popularity")
+    if mb_client is None:
+        try:
+            from api_clients.musicbrainz_http import MusicBrainzHttpClient
+            mb_client = MusicBrainzHttpClient(enabled=True)
+        except Exception:
+            mb_client = None
+    if mb_client is None:
+        return _empty_work_lb_result()
+
+    # Seed the Work lookup from the track's recording MBID, or resolve the
+    # recording from the ISRC (most precise key when no MBID is stored).
+    seed_mbids: set[str] = set()
+    if primary_mbid:
+        seed_mbids.add(primary_mbid)
+    elif isrc:
+        try:
+            _isrc_rec = resolve_isrc_recording(isrc, title=title, artist=artist, mb_client=mb_client)
+            if _isrc_rec and _isrc_rec.get("recording_mbid"):
+                seed_mbids.add(_isrc_rec["recording_mbid"])
+        except Exception:
+            pass
+
+    # 1. Resolve the Work from the seed recording's work-rels.
+    work_mbid = ""
+    for seed_mbid in seed_mbids:
+        try:
+            rec = mb_client.get_recording(seed_mbid, inc="work-rels+artist-credits")
+            if not rec or not rec.get("id"):
+                continue
+            work_mbid = _recording_work_mbid(rec)
+            if work_mbid:
+                break
+        except Exception as exc:
+            logger.debug("[WORK_LB] Recording work-rels fetch failed for %s: %s", seed_mbid, exc)
+
+    if not work_mbid:
+        logger.debug(
+            "[WORK_LB] No Work resolvable for '%s - %s' (mbids=%s)",
+            artist, title, sorted(seed_mbids),
+        )
+        return _empty_work_lb_result()
+
+    # 2. Browse every recording of the Work.
+    recordings: list[dict] = []
+    try:
+        recordings = mb_client.browse_work_recordings(work_mbid, inc="artist-credits", limit=100) or []
+    except Exception as exc:
+        logger.debug("[WORK_LB] Work recording browse failed for %s: %s", work_mbid, exc)
+
+    # 3. Keep only same-artist studio recordings (no covers / live / remix).
+    mbids: set[str] = set(seed_mbids)
+    target_artist = normalize_for_aggregation(artist)
+    for rec in recordings:
+        if not isinstance(rec, dict):
+            continue
+        rec_id = str(rec.get("id") or "").strip()
+        rec_title = str(rec.get("title") or "")
+        if not rec_id or not rec_title:
+            continue
+        if _is_alternate_performance_title(rec_title):
+            continue
+        rec_artist_mbids = _recording_artist_mbids(rec)
+        if artist_mbid:
+            # Strict artist-MBID filter — the "cover song" trap: a Work
+            # links every recording of the song, including covers.
+            if artist_mbid not in rec_artist_mbids:
+                continue
+        else:
+            rec_artist = _recording_primary_artist(rec)
+            if not rec_artist or normalize_for_aggregation(rec_artist) != target_artist:
+                continue
+        mbids.add(rec_id)
+
+    if not mbids:
+        return _empty_work_lb_result()
+
+    # 4. Sum ListenBrainz counts across the same-artist recordings.
+    try:
+        batch = lb_get_recording_popularity_batch(list(mbids))
+        listen_count = sum(int((batch.get(mbid) or {}).get("total_listen_count") or 0) for mbid in mbids)
+        user_count = sum(int((batch.get(mbid) or {}).get("total_user_count") or 0) for mbid in mbids)
+        logger.debug(
+            "[WORK_LB] Aggregated LB for '%s - %s' (work %s): %s listens / %s users across %d recording(s) %s",
+            artist, title, work_mbid, listen_count, user_count, len(mbids), sorted(mbids),
+        )
+        return {
+            "total_listen_count": listen_count,
+            "total_user_count": user_count,
+            "mbids": sorted(mbids),
+            "work_mbid": work_mbid,
+            "source": "work",
+        }
+    except Exception:
+        logger.debug("[WORK_LB] Aggregated LB failed for '%s - %s'", artist, title, exc_info=True)
+        return _empty_work_lb_result()
+
+
 def get_metadata_sources_info(single_sources: list[str]) -> dict:
     """Extract metadata-source flags from a list of source identifiers.
 

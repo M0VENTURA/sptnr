@@ -49,6 +49,7 @@ from services.popularity.popularity_sources import (
     get_aggregated_lastfm_popularity,
     get_aggregated_listenbrainz_popularity,
     get_search_aggregated_lastfm_popularity,
+    get_work_level_listenbrainz_popularity,
 )
 
 # Detection
@@ -1246,25 +1247,30 @@ def process_track(
                 update_payload["single_sources"] = _json.dumps(sd_result.get("sources", []), default=str)
                 update_payload["single_detection_last_updated"] = sd_now
 
-                # ── Secondary cross-release ListenBrainz lookup ─────────
+                # ── Secondary cross-recording ListenBrainz lookup ──────
                 # The album-first release lookup pins each track to THIS
                 # release's recording, so a re-released song keeps its own
                 # listen count.  When that recording carries far fewer LB
-                # listens than the track's Last.fm audience implies, the
-                # real popularity usually sits on OTHER recordings of the
-                # same song (single version, Greatest Hits, remaster).
-                # Triggered by the proportionality gap — not the single-
-                # confidence tier — so HIGH singles with fragmented MBIDs
-                # get the same cross-release aggregation as MEDIUM ones.
-                # Still scoped to single-detected tracks; regular album
-                # tracks never aggregate other releases' counts.
+                # listens than the track's Last.fm audience implies — or the
+                # track is a confirmed single (MEDIUM+) — the real popularity
+                # usually sits on OTHER recordings of the same song (single
+                # version, Greatest Hits, remaster).  Triggered by the
+                # proportionality gap OR the single-confidence tier.  Still
+                # scoped to single-detected tracks; regular album tracks
+                # never aggregate other releases' counts.
                 _lf_listeners = int(lastfm_listeners or 0)
                 _lb_listens = int(listenbrainz_listens or 0)
+                _sd_conf = str(sd_result.get("confidence") or "low").lower()
                 _lb_secondary_boosted = False
+                # Work-level aggregation runs first (precise: every recording
+                # of the same song shares the Work); the title-based search
+                # below is the fallback when no Work is resolvable.
                 if (
-                    _lf_listeners >= LB_SECONDARY_MIN_LF_LISTENERS
-                    and _lb_listens < _lf_listeners * LB_SECONDARY_LF_RATIO
-                    and sd_title and sd_artist
+                    sd_title and sd_artist and (
+                        (_lf_listeners >= LB_SECONDARY_MIN_LF_LISTENERS
+                         and _lb_listens < _lf_listeners * LB_SECONDARY_LF_RATIO)
+                        or _sd_conf in ("medium", "high")
+                    )
                 ):
                     try:
                         _sd_rec_mbid = _as_str(
@@ -1273,14 +1279,31 @@ def process_track(
                             or effective_track.get("musicbrainz_trackid")
                         ).strip() or None
                         _sd_isrc = _as_str(effective_track.get("isrc") or "").strip() or None
+                        _sd_artist_mbid = _as_str(
+                            effective_track.get("musicbrainz_artistid")
+                            or effective_track.get("musicbrainz_artist_id")
+                        ).strip() or ""
                         _prev_lb = int(listenbrainz_listens or 0)
-                        agg_lb = get_aggregated_listenbrainz_popularity(
+                        agg_lb = get_work_level_listenbrainz_popularity(
                             title=sd_title,
                             artist=sd_artist,
-                            primary_mbid=_sd_rec_mbid,
-                            isrc=_sd_isrc,
+                            artist_mbid=_sd_artist_mbid,
+                            primary_mbid=_sd_rec_mbid or "",
+                            isrc=_sd_isrc or "",
                         )
                         agg_total = _as_int((agg_lb or {}).get("total_listen_count") or 0)
+                        _agg_source = "Work-level"
+                        # Fallback: title-based cross-release search (covers
+                        # the case where the Work could not be resolved).
+                        if agg_total <= _prev_lb:
+                            agg_lb = get_aggregated_listenbrainz_popularity(
+                                title=sd_title,
+                                artist=sd_artist,
+                                primary_mbid=_sd_rec_mbid,
+                                isrc=_sd_isrc,
+                            )
+                            agg_total = _as_int((agg_lb or {}).get("total_listen_count") or 0)
+                            _agg_source = "cross-release"
                         if agg_total > _prev_lb:
                             listenbrainz_listens = agg_total
                             update_payload["listenbrainz_listens"] = agg_total
@@ -1288,8 +1311,8 @@ def process_track(
                             update_payload["listenbrainz_last_updated"] = sd_now
                             _lb_secondary_boosted = True
                             log_unified(
-                                f"[TRACK_STAGE] Secondary LB for medium single '{sd_title}' ({sd_artist}): "
-                                f"release count {_prev_lb:,} -> {agg_total:,} listens across releases"
+                                f"[TRACK_STAGE] {_agg_source} LB for '{sd_title}' ({sd_artist}): "
+                                f"release count {_prev_lb:,} -> {agg_total:,} listens across recordings"
                             )
                             # The score was computed with the release count —
                             # re-run it with the adopted cross-release count so
