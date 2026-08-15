@@ -388,9 +388,36 @@ def _is_promo_only_group(group: dict[str, Any]) -> bool:
     return bool(statuses) and all(s == "promotion" for s in statuses)
 
 
+# Per-process cache for the artist-scoped MusicBrainz release-group searches
+# used by single detection.  The same (artist, title) is re-assessed across
+# albums/scans, and the artist-scoped single/EP list is shared by every track
+# of that artist — without this, each track paid up to 4 throttled MB
+# searches (2 primary types × title-scoped + artist-scoped fallback) and
+# none of them were ever cached.  Bounded so a long scan cannot balloon
+# memory.
+_mb_single_rg_cache: dict[str, list[dict[str, Any]]] = {}
+_MB_SINGLE_RG_CACHE_MAX = 4000
+
+
+def _cached_mb_release_group_search(query: str, limit: int, mb_client) -> list[dict[str, Any]]:
+    """Run a single-detection release-group search, cached per process by query."""
+    cached = _mb_single_rg_cache.get(query)
+    if cached is not None:
+        return cached
+    try:
+        found = mb_client.search_release_groups(query, limit=limit) or []
+    except Exception:
+        found = []
+    _mb_single_rg_cache[query] = found
+    if len(_mb_single_rg_cache) >= _MB_SINGLE_RG_CACHE_MAX:
+        _mb_single_rg_cache.clear()
+    return found
+
+
 def _detect_musicbrainz(title: str, artist: str, artist_mbid: str | None,
                         album_track_count: int | None, mb_client=None,
-                        mb_cached_singles: set | None = None) -> dict[str, Any]:
+                        mb_cached_singles: set | None = None,
+                        recording_mbid: str | None = None) -> dict[str, Any]:
     # Fast path: the title is already known to be a MusicBrainz single from
     # the artist's cached missing_releases (avoids one MB API call per track).
     if mb_cached_singles:
@@ -405,6 +432,35 @@ def _detect_musicbrainz(title: str, artist: str, artist_mbid: str | None,
 
         matched = False
         promo_only = False
+
+        # Fast path: the resolved recording already knows its release-groups.
+        # With metadata gathered FIRST, the track's recording MBID is on hand
+        # and the recording payload (cached process-wide, inc superset) embeds
+        # its releases — if ANY release belongs to a Single/EP release-group,
+        # the track was issued as a single.  ZERO extra API calls (the
+        # recording is already cached from the metadata pass).  This is a
+        # CONFIRMATION-only check: a recording whose embedded releases are all
+        # album editions (the list can be truncated to the album) falls
+        # through to the artist-scoped search below.
+        if recording_mbid and not matched:
+            try:
+                _rec = mb_client.get_recording(recording_mbid)
+                if _rec:
+                    for _rel in _rec.get("releases") or []:
+                        if not isinstance(_rel, dict):
+                            continue
+                        _rg = _rel.get("release-group") or {}
+                        _pt = str(_rg.get("primary-type") or "").lower()
+                        if _pt in ("single", "ep"):
+                            matched = True
+                            break
+                    if matched:
+                        logger.debug(
+                            "[SINGLE_DETECTION] Recording %s release-group confirms single for %s - %s",
+                            recording_mbid, artist, title,
+                        )
+            except Exception as exc:
+                logger.debug("Recording release-group single check failed for %s: %s", recording_mbid, exc)
         # Query-sanitised title: strip the trailing featured-guest credit so
         # "Uncontrolled (feat. Charlie Rolfe of As Everything Unfolds)" is
         # queried as "Uncontrolled" — MusicBrainz release-group titles and
@@ -427,24 +483,20 @@ def _detect_musicbrainz(title: str, artist: str, artist_mbid: str | None,
                     # Title-scoped query first — an artist with 25+ singles
                     # can otherwise hide the target beyond the client's page
                     # cap (search_release_groups caps at 25).
-                    try:
-                        _found = mb_client.search_release_groups(
-                            f'arid:{artist_mbid} AND primarytype:{_pt} '
-                            f'AND releasegroup:"{escape_lucene_special_chars(lucene_title)}"',
-                            limit=25,
-                        ) or []
-                    except Exception:
-                        _found = []
+                    _found = _cached_mb_release_group_search(
+                        f'arid:{artist_mbid} AND primarytype:{_pt} '
+                        f'AND releasegroup:"{escape_lucene_special_chars(lucene_title)}"',
+                        limit=25,
+                        mb_client=mb_client,
+                    )
                     if not _found:
                         # Tokenisation drift (punctuation, apostrophes) — fall
                         # back to the artist-scoped list and match by title
                         # similarity.
-                        try:
-                            _found = mb_client.search_release_groups(
-                                f"arid:{artist_mbid} AND primarytype:{_pt}", limit=100
-                            ) or []
-                        except Exception:
-                            continue
+                        _found = _cached_mb_release_group_search(
+                            f"arid:{artist_mbid} AND primarytype:{_pt}", limit=100,
+                            mb_client=mb_client,
+                        )
                     candidates += _found
                 for group in candidates:
                     rg_title = str(group.get("title") or "")
@@ -870,6 +922,7 @@ def detect_single_for_track(
     discogs_cached_singles: set | None = None,
     discogs_cached_promos: set | None = None,
     artist_mbid: str | None = None,
+    recording_mbid: str | None = None,
     mb_client=None,
     listenbrainz_listens: int | None = None,
     lastfm_listeners: int | None = None,
@@ -1061,7 +1114,8 @@ def detect_single_for_track(
 
     # MusicBrainz
     mr = _detect_musicbrainz(lookup_title, artist, artist_mbid, album_track_count, mb_client=mb_client,
-                             mb_cached_singles=mb_cached_singles)
+                             mb_cached_singles=mb_cached_singles,
+                             recording_mbid=recording_mbid)
     sources.append(mr)
     if mr["matched"]:
         musicbrainz_confirmed = True

@@ -421,6 +421,198 @@ def _score_track_popularity(
     return score_data, lb_percentile
 
 
+def _resolve_track_mb_metadata(
+    *,
+    track_id: str,
+    track: dict[str, Any],
+    track_title: str,
+    track_artist: str,
+    frozen_track: bool,
+    force_meta: bool,
+    options: dict[str, Any],
+) -> dict[str, Any]:
+    """Resolve a track's MusicBrainz metadata and backfill it into a payload.
+
+    Extracted from the former inline metadata section so a combined/full scan
+    runs it BEFORE popularity scoring — the resolved recording MBID / ISRC /
+    artist MBID / album / year then feed the SAME pass's Last.fm / ListenBrainz
+    arms and single detection (previously the lookup ran after scoring, so a
+    track that missed the album batch never helped its own first scan).
+
+    Returns:
+        ``{"mb_data", "payload", "artist", "title", "has_genres",
+        "force_meta"}``.  ``payload`` holds the backfill fields to merge into
+        the track's update payload; ``artist``/``title`` are the RAW track
+        names for the genre lookups (the popularity section re-assigns those
+        locals to the cleaned Last.fm titles).
+    """
+    payload: dict[str, Any] = {}
+    title = _as_str(track_title or "")
+    artist = _as_str(track_artist or "")
+
+    _has_mbid = bool(
+        _as_str(track.get("recording_mbid") or track.get("mbid") or track.get("musicbrainz_trackid"))
+    )
+    # Only columns that actually feed the genre display gate the genre source
+    # fetches.  ``musicbrainz_tags`` is NOT one of them — the artist/album
+    # pages aggregate ``musicbrainz_genres`` and the other per-source columns.
+    _has_genres = bool(
+        track.get("musicbrainz_genres")
+        or track.get("discogs_genres")
+        or track.get("listenbrainz_genres")
+        or track.get("spotify_genres")
+        or track.get("lastfm_tags")
+    )
+    _force_meta = bool(force_meta)
+
+    mb_data = None
+    if title and artist:
+        # The per-track MusicBrainz lookup is the dominant per-track API cost —
+        # skip it when the track already has a resolved recording MBID and the
+        # scan isn't forced (metadata is stable between scans).  Mature frozen
+        # tracks also skip it.
+        if frozen_track or (_has_mbid and not _force_meta):
+            logger.debug(
+                "[track_stage] Skipping MB metadata lookup for %s (frozen or MBID already resolved)", track_id,
+            )
+        else:
+            # Album-level batch pre-resolution first — the runner resolved
+            # every fresh track of this album in one batched search, so only
+            # batch misses pay the per-track (search + recording lookup)
+            # request pair.
+            _batch_mb = options.get("mb_batch_metadata") or {}
+            mb_data = _batch_mb.get(f"{artist.lower()}::{title.lower()}")
+            _from_batch = mb_data is not None
+            # One shared service instance per scan keeps the suggested-MBID
+            # disk cache warm (per-track instances re-read it on construction).
+            mb_service = get_shared_mb_service()
+            if not mb_data:
+                mb_data = mb_service.lookup_recording_metadata(title, artist)
+            if not mb_data:
+                logger.debug(
+                    "[track_stage] MB metadata lookup returned nothing for %s (%s - %s)",
+                    track_id, artist, title,
+                )
+
+        if mb_data:
+            logger.debug(
+                "[track_stage] MB metadata for %s (%s - %s): mbid=%s confidence=%s title=%r album=%r",
+                track_id, artist, title,
+                mb_data.get("recording_mbid") or "-",
+                mb_data.get("confidence"),
+                mb_data.get("title"),
+                mb_data.get("album"),
+            )
+            recording_mbid = mb_data.get("recording_mbid")
+            confidence = mb_data.get("confidence")
+
+            if recording_mbid:
+                payload["recording_mbid"] = recording_mbid
+                payload["mbid"] = recording_mbid
+            if confidence is not None:
+                payload["musicbrainz_confidence"] = confidence
+
+            # Writer backfill from MusicBrainz work relationships (legacy
+            # composer lookup parity) — only when missing AND the metadata
+            # came from the per-track lookup.  Batch hits skip it: the batch
+            # search documents don't carry work-rels, and fetching the
+            # recording just for writers would be an extra throttled MB call
+            # per track that defeats the batch (legacy parity).
+            if recording_mbid and not _from_batch:
+                _existing_writer = _as_str(track.get("writer") or "")
+                if not _existing_writer or _existing_writer.strip().lower() in ("[]", "null", "none", ""):
+                    try:
+                        writers = mb_service.get_composers_for_recording(recording_mbid)
+                        if writers:
+                            import json
+                            payload["writer"] = json.dumps(writers)
+                    except Exception as exc:
+                        logger.debug("[track_stage][WRITER] %s: %s", track_id, exc)
+            if mb_data.get("title"):
+                payload["musicbrainz_title"] = mb_data["title"]
+            # Persist the resolved artist MBID (from the recording's
+            # artist-credit) so the single-detection service can use the
+            # reliable artist-scoped release-group search instead of falling
+            # back to fuzzier per-recording matching.  Only set when the track
+            # doesn't already carry one — user edits win.
+            _artist_mbid = mb_data.get("artist_mbid")
+            if _artist_mbid and not _as_str(track.get("musicbrainz_artistid") or track.get("musicbrainz_artist_id")):
+                payload["musicbrainz_artistid"] = _artist_mbid
+            # ISRC pool backfill: recordings expose their ISRCs, so a track
+            # whose file tags lack one picks it up here — the ISRC then feeds
+            # the popularity fallback arms (Last.fm / ListenBrainz by-recording
+            # lookups) on later passes.
+            _mb_isrc = _as_str(mb_data.get("isrc") or "").strip()
+            if _mb_isrc and not _as_str(track.get("isrc") or "").strip():
+                payload["isrc"] = _mb_isrc
+            if mb_data.get("album"):
+                # Use the folder name from file_path as the primary reference
+                # for album matching — it reflects the actual file structure
+                # and is more reliable than the ``album`` column (which may
+                # have been overwritten by a previous bad MusicBrainz match).
+                existing_album = _as_str(track.get("album") or "")
+                fp = _as_str(track.get("file_path") or "")
+                folder_name = ""
+                if fp:
+                    import os as _os
+                    parts = _os.path.normpath(fp).split(_os.sep)
+                    if len(parts) >= 2:
+                        folder_name = parts[-2]
+                mb_album = _as_str(mb_data["album"])
+                match_ratio = 0.0
+                # An album column that already matches the folder is
+                # authoritative.  Per-track MusicBrainz releases for
+                # multi-edition albums can resolve to a DIFFERENT release per
+                # track; only rewrite a folder-backed album when the column
+                # clearly disagrees with the folder or when there is no folder
+                # to anchor on.
+                from difflib import SequenceMatcher
+                folder_consistent = bool(
+                    folder_name
+                    and existing_album
+                    and SequenceMatcher(
+                        None,
+                        existing_album.lower(),
+                        folder_name.lower(),
+                    ).ratio() >= 0.9
+                )
+                if mb_album and not folder_consistent:
+                    primary_ref = folder_name or existing_album
+                    if primary_ref:
+                        match_ratio = SequenceMatcher(None, primary_ref.lower(), mb_album.lower()).ratio()
+                        if match_ratio >= 0.6:
+                            payload["album"] = mb_album
+                        elif folder_name and existing_album:
+                            old_ratio = SequenceMatcher(None, existing_album.lower(), mb_album.lower()).ratio()
+                            if old_ratio >= 0.6:
+                                payload["album"] = mb_album
+                    else:
+                        payload["album"] = mb_album
+                elif folder_consistent:
+                    logger.debug(
+                        "[track_stage] Skipping album rename for %s (album '%s' matches folder '%s')",
+                        track_id, existing_album, folder_name,
+                    )
+                if not payload.get("album"):
+                    logger.debug(
+                        "[track_stage] Skipping album rename (folder='%s', album='%s') → '%s' (ratio=%.2f)",
+                        folder_name or "?", existing_album, mb_album, match_ratio,
+                    )
+            if mb_data.get("artist"):
+                payload["artist"] = mb_data["artist"]
+            if mb_data.get("year"):
+                payload["year"] = mb_data["year"]
+
+    return {
+        "mb_data": mb_data,
+        "payload": payload,
+        "artist": artist,
+        "title": title,
+        "has_genres": _has_genres,
+        "force_meta": _force_meta,
+    }
+
+
 def process_track(
     *,
     track: dict[str, Any],
@@ -554,6 +746,34 @@ def process_track(
                     )
         except Exception as _lr_exc:
             logger.debug("[track_stage] Log-MAD stored audit failed for %s: %s", track_id, _lr_exc)
+
+    # ── Metadata pre-resolution (combined/full scans) ──────────────────
+    # Resolve the track's MusicBrainz metadata BEFORE popularity scoring so
+    # the recording MBID / ISRC / artist MBID / album / year resolved here
+    # feed the SAME pass's Last.fm / ListenBrainz arms and single detection
+    # (previously the MB lookup ran after scoring, so a track that missed
+    # the album batch never helped its own first scan).  Popularity-only and
+    # singles-only passes skip metadata entirely (unchanged).
+    _mb_meta = None
+    _genre_lookup_artist = None
+    _genre_lookup_title = None
+    if not popularity_only and not singles_detection_only:
+        try:
+            _mb_meta = _resolve_track_mb_metadata(
+                track_id=track_id,
+                track=track,
+                track_title=_as_str(track.get("title")),
+                track_artist=_as_str(track.get("artist")),
+                frozen_track=frozen_track,
+                force_meta=bool(options.get("force")),
+                options=options,
+            )
+        except Exception as exc:
+            logger.debug("[track_stage][MB_PRE] %s: %s", track_id, exc)
+        if _mb_meta:
+            _genre_lookup_artist = _mb_meta.get("artist")
+            _genre_lookup_title = _mb_meta.get("title")
+            update_payload.update(_mb_meta.get("payload") or {})
 
     # -------------------------------------------------------------------------
     # 1. POPULARITY (via updated api_clients)
@@ -1191,6 +1411,15 @@ def process_track(
                     # normal z-score gates instead of the compilation bypass.
                     is_va_compilation=bool(album_context.get("is_va_compilation")),
                     isrc=effective_track.get("isrc") or None,
+                    # Metadata is gathered FIRST now, so the resolved recording
+                    # MBID is on hand — single detection uses it to confirm a
+                    # single from the recording's own embedded release-groups
+                    # (zero extra MB calls; the recording is already cached).
+                    recording_mbid=(
+                        effective_track.get("recording_mbid")
+                        or effective_track.get("mbid")
+                        or effective_track.get("musicbrainz_trackid")
+                    ) or None,
                     duration=(
                         float(effective_track["duration"])
                         if effective_track.get("duration")
@@ -1397,176 +1626,16 @@ def process_track(
 
     if not popularity_only and not singles_detection_only:
         try:
-            title = _as_str(track.get("title"))
-            artist = _as_str(track.get("artist"))
-
-            if title and artist:
-                # The per-track MusicBrainz lookup is the dominant per-track
-                # API cost — skip it when the track already has a resolved
-                # recording MBID and the scan isn't forced (metadata is
-                # stable between scans). Mature frozen tracks also skip it —
-                # the freeze is a score-only optimization, but the recording
-                # metadata (MBID, album, writer) is stable once resolved.
-                _has_mbid = bool(
-                    _as_str(track.get("recording_mbid") or track.get("mbid") or track.get("musicbrainz_trackid"))
-                )
-                # Only columns that actually feed the genre display gate the
-                # genre source fetches. ``musicbrainz_tags`` is NOT one of
-                # them — the artist/album pages aggregate ``musicbrainz_genres``
-                # and the other per-source columns, never tags. Including tags
-                # here meant a track that only had MB tags never fetched MB
-                # genres (and so never showed any genre on the artist page).
-                _has_genres = bool(
-                    track.get("musicbrainz_genres")
-                    or track.get("discogs_genres")
-                    or track.get("listenbrainz_genres")
-                    or track.get("spotify_genres")
-                    or track.get("lastfm_tags")
-                )
-                _force_meta = bool(options.get("force"))
-                mb_data = None
-                if frozen_track or (_has_mbid and not _force_meta):
-                    logger.debug("[track_stage] Skipping MB metadata lookup for %s (frozen or MBID already resolved)", track_id)
-                else:
-                    # Album-level batch pre-resolution first — the runner
-                    # resolved every fresh track of this album in one batched
-                    # search, so only batch misses pay the per-track
-                    # (search + recording lookup) request pair.
-                    _batch_mb = options.get("mb_batch_metadata") or {}
-                    mb_data = _batch_mb.get(f"{artist.lower()}::{title.lower()}")
-                    if not mb_data:
-                        # One shared service instance per scan keeps the
-                        # suggested-MBID disk cache warm (per-track instances
-                        # re-read the file on every construction).
-                        mb_service = get_shared_mb_service()
-                        mb_data = mb_service.lookup_recording_metadata(title, artist)
-                    if not mb_data:
-                        logger.debug(
-                            "[track_stage] MB metadata lookup returned nothing for %s (%s - %s)",
-                            track_id, artist, title,
-                        )
-
-                if mb_data:
-                    logger.debug(
-                        "[track_stage] MB metadata for %s (%s - %s): mbid=%s confidence=%s title=%r album=%r",
-                        track_id, artist, title,
-                        mb_data.get("recording_mbid") or "-",
-                        mb_data.get("confidence"),
-                        mb_data.get("title"),
-                        mb_data.get("album"),
-                    )
-                    recording_mbid = mb_data.get("recording_mbid")
-                    confidence = mb_data.get("confidence")
-
-                    if recording_mbid:
-                        update_payload["recording_mbid"] = recording_mbid
-                        update_payload["mbid"] = recording_mbid
-                    if confidence is not None:
-                        update_payload["musicbrainz_confidence"] = confidence
-
-                    # Writer backfill from MusicBrainz work relationships
-                    # (legacy composer lookup parity) — only when missing.
-                    if recording_mbid:
-                        _existing_writer = _as_str(track.get("writer") or "")
-                        if not _existing_writer or _existing_writer.strip().lower() in ("[]", "null", "none", ""):
-                            try:
-                                writers = mb_service.get_composers_for_recording(recording_mbid)
-                                if writers:
-                                    import json
-                                    update_payload["writer"] = json.dumps(writers)
-                            except Exception as exc:
-                                logger.debug("[track_stage][WRITER] %s: %s", track_id, exc)
-                    if mb_data.get("title"):
-                        update_payload["musicbrainz_title"] = mb_data["title"]
-                    # Persist the resolved artist MBID (from the recording's
-                    # artist-credit) so the single-detection service can use the
-                    # reliable artist-scoped release-group search instead of
-                    # falling back to fuzzier per-recording matching. Only set
-                    # when the track doesn't already carry one — user edits win.
-                    _artist_mbid = mb_data.get("artist_mbid")
-                    if _artist_mbid and not _as_str(track.get("musicbrainz_artistid") or track.get("musicbrainz_artist_id")):
-                        update_payload["musicbrainz_artistid"] = _artist_mbid
-                    # ISRC pool backfill: recordings expose their ISRCs, so a
-                    # track whose file tags lack one picks it up here — the
-                    # ISRC then feeds the popularity fallback arms (Last.fm /
-                    # ListenBrainz by-recording lookups) on later passes.
-                    _mb_isrc = _as_str(mb_data.get("isrc") or "").strip()
-                    if _mb_isrc and not _as_str(track.get("isrc") or "").strip():
-                        update_payload["isrc"] = _mb_isrc
-                    if mb_data.get("album"):
-                        # Use the folder name from file_path as the primary
-                        # reference for album matching — it reflects the actual
-                        # file structure and is more reliable than the `album`
-                        # column (which may have been overwritten by a previous
-                        # bad MusicBrainz match). Falls back to the existing
-                        # `album` column if file_path is not available.
-                        existing_album = _as_str(track.get("album") or "")
-                        fp = _as_str(track.get("file_path") or "")
-                        folder_name = ""
-                        if fp:
-                            import os as _os
-                            # Extract parent folder name from file path
-                            # e.g. "/music/Artist/Album/track.flac" → "Album"
-                            parts = _os.path.normpath(fp).split(_os.sep)
-                            if len(parts) >= 2:
-                                folder_name = parts[-2]
-                        mb_album = _as_str(mb_data["album"])
-                        match_ratio = 0.0
-                        # An album column that already matches the folder is
-                        # authoritative.  Per-track MusicBrainz releases for
-                        # multi-edition albums ("OPVS NOIR Vol. 3" vs
-                        # "OPVS NOIR Vol. 3 (Instrumental)") can resolve to a
-                        # DIFFERENT release per track, and rewriting each
-                        # track's album from its own lookup splits one folder
-                        # into several albums on every metadata scan.  Only
-                        # rewrite a folder-backed album when the column clearly
-                        # disagrees with the folder (a previous bad MusicBrainz
-                        # match) or when there is no folder to anchor on.
-                        from difflib import SequenceMatcher
-                        # Near-identical only: a loose threshold (0.6) also
-                        # matches a sibling EDITION of the same release
-                        # ("OPVS NOIR Vol. 3 (Instrumental)" vs "OPVS NOIR
-                        # Vol. 3") and would both fail to repair a corrupted
-                        # column and wrongly "confirm" a renamed track.
-                        folder_consistent = bool(
-                            folder_name
-                            and existing_album
-                            and SequenceMatcher(
-                                None,
-                                existing_album.lower(),
-                                folder_name.lower(),
-                            ).ratio() >= 0.9
-                        )
-                        if mb_album and not folder_consistent:
-                            primary_ref = folder_name or existing_album
-                            if primary_ref:
-                                match_ratio = SequenceMatcher(None, primary_ref.lower(), mb_album.lower()).ratio()
-                                if match_ratio >= 0.6:
-                                    update_payload["album"] = mb_album
-                                elif folder_name and existing_album:
-                                    # If MB doesn't match the folder, check if
-                                    # old album column is closer — keep
-                                    # existing if so
-                                    old_ratio = SequenceMatcher(None, existing_album.lower(), mb_album.lower()).ratio()
-                                    if old_ratio >= 0.6:
-                                        update_payload["album"] = mb_album
-                            else:
-                                update_payload["album"] = mb_album
-                        elif folder_consistent:
-                            logger.debug(
-                                "[track_stage] Skipping album rename for %s (album '%s' matches folder '%s')",
-                                track_id, existing_album, folder_name,
-                            )
-
-                        if not update_payload.get("album"):
-                            logger.debug(
-                                "[track_stage] Skipping album rename (folder='%s', album='%s') → '%s' (ratio=%.2f)",
-                                folder_name or "?", existing_album, mb_album, match_ratio,
-                            )
-                    if mb_data.get("artist"):
-                        update_payload["artist"] = mb_data["artist"]
-                    if mb_data.get("year"):
-                        update_payload["year"] = mb_data["year"]
+            # MB metadata resolution now runs BEFORE popularity scoring (see
+            # ``_resolve_track_mb_metadata`` at the top of process_track) —
+            # this section only fetches genre/tag data, using the pre-resolved
+            # ``mb_data`` and the RAW title/artist captured before popularity
+            # re-assigned those locals to the cleaned Last.fm titles.
+            title = _genre_lookup_title
+            artist = _genre_lookup_artist
+            mb_data = (_mb_meta or {}).get("mb_data")
+            _has_genres = bool((_mb_meta or {}).get("has_genres"))
+            _force_meta = bool((_mb_meta or {}).get("force_meta"))
 
             # Also fetch genre/tag data from MusicBrainz via genre-aware endpoint
             if title and artist and (not _has_genres or _force_meta):

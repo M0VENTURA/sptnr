@@ -19,6 +19,14 @@ from db.utils import row_get
 
 logger = logging.getLogger(__name__)
 
+# Per-process memo: artist lookup -> {normalised writer name: count}.  The
+# cover detector's writer step calls ``is_common_writer_for_artist`` once per
+# writer per track; without this every call re-read and JSON-parsed the
+# artist's ENTIRE writer column.  Bounded so a long scan cannot balloon
+# memory.
+_writer_counts_cache: dict[str, dict[str, int]] = {}
+_WRITER_COUNTS_CACHE_MAX = 500
+
 
 # ---------------------------------------------------------------------------
 # Queries
@@ -62,37 +70,46 @@ def is_common_writer_for_artist(
         return False
 
     lookup = track_artist if track_artist and not _loose_match(track_artist, artist) else artist
-    try:
-        with db_session() as session:
-            rows = session.execute(
-                text("""
-                    SELECT writer FROM tracks
-                    WHERE (LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:lookup)
-                           OR LOWER(artist) = LOWER(:lookup))
-                      AND writer IS NOT NULL AND writer != '' AND writer != '[]'
-                """),
-                {"lookup": lookup},
-            ).fetchall() or []
-    except Exception:
-        return False
-
     writer_norm = _loose_normalize(writer)
-    count = 0
-    for row in rows:
-        raw = row_get(row, "writer", 0, "")
-        if not raw:
-            continue
+
+    # Memoised per-artist writer counts — the cover writer step calls this
+    # once per writer per track, and the full-column read + JSON parse is the
+    # dominant cost.
+    counts = _writer_counts_cache.get(lookup)
+    if counts is None:
+        counts = {}
         try:
-            names = json.loads(raw) if isinstance(raw, str) else raw
-            if not isinstance(names, list):
-                names = [str(names)]
-        except (json.JSONDecodeError, TypeError, ValueError):
-            continue
-        if any(_loose_normalize(str(n)) == writer_norm for n in names):
-            count += 1
-            if count >= min_count:
-                return True
-    return False
+            with db_session() as session:
+                rows = session.execute(
+                    text("""
+                        SELECT writer FROM tracks
+                        WHERE (LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:lookup)
+                               OR LOWER(artist) = LOWER(:lookup))
+                          AND writer IS NOT NULL AND writer != '' AND writer != '[]'
+                    """),
+                    {"lookup": lookup},
+                ).fetchall() or []
+        except Exception:
+            return False
+        for row in rows:
+            raw = row_get(row, "writer", 0, "")
+            if not raw:
+                continue
+            try:
+                names = json.loads(raw) if isinstance(raw, str) else raw
+                if not isinstance(names, list):
+                    names = [str(names)]
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+            for n in names:
+                k = _loose_normalize(str(n))
+                if k:
+                    counts[k] = counts.get(k, 0) + 1
+        if len(_writer_counts_cache) >= _WRITER_COUNTS_CACHE_MAX:
+            _writer_counts_cache.clear()
+        _writer_counts_cache[lookup] = counts
+
+    return counts.get(writer_norm, 0) >= min_count
 
 
 def writer_coverage_for_artist(conn, artist: str) -> float:

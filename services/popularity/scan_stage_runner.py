@@ -883,6 +883,13 @@ def run_scan(
     # work and only does artist_stats / playlists / summary.
     _artist_scan_results: dict[str, list[dict[str, Any]]] = {}
     _per_album_posted_keys: set[tuple[str, str]] = set()
+    # Raw artist-catalogue rows memoized per artist — ``_load_artist_db_scores``
+    # used to re-issue the full-catalogue SELECT once per ALBUM (an artist with
+    # K albums re-queried the whole catalogue K times).  The rows for tracks
+    # scored in this scan are always excluded by the caller's ``scanned_titles``,
+    # and un-scanned rows don't change until they are scored, so caching them is
+    # correct.
+    _artist_db_rows_cache: dict[str, list[Any]] = {}
 
     def _load_artist_db_scores(artist: str, scanned_titles: set[str]) -> list[float]:
         """Stored artist scores, EXCLUDING tracks scored during this scan.
@@ -906,22 +913,25 @@ def run_scan(
         try:
             from sqlalchemy import text as _text
             from db.engine import db_session as _db_session
-            with _db_session() as session:
-                rows = session.execute(
-                    _text(
-                        "SELECT title, album, final_score FROM tracks "
-                        "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
-                        "AND final_score > 0"
-                    ),
-                    {"artist": artist},
-                ).fetchall()
-                db_rows = [
-                    (str(r[1] or ""), float(r[2] or 0))
-                    for r in rows or []
-                    if r[2]
-                    and str(r[0] or "").strip().lower() not in scanned_titles
-                    and not is_bonus_track_title(str(r[0] or ""))
-                ]
+            if artist not in _artist_db_rows_cache:
+                with _db_session() as session:
+                    rows = session.execute(
+                        _text(
+                            "SELECT title, album, final_score FROM tracks "
+                            "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
+                            "AND final_score > 0"
+                        ),
+                        {"artist": artist},
+                    ).fetchall()
+                _artist_db_rows_cache[artist] = rows or []
+            rows = _artist_db_rows_cache[artist]
+            db_rows = [
+                (str(r[1] or ""), float(r[2] or 0))
+                for r in rows
+                if r[2]
+                and str(r[0] or "").strip().lower() not in scanned_titles
+                and not is_bonus_track_title(str(r[0] or ""))
+            ]
         except Exception as exc:
             logger.debug("[scan_runner] Artist DB score fetch failed for %s: %s", artist, exc)
         try:
@@ -1603,6 +1613,10 @@ def run_scan(
                         MusicBrainzService,
                         get_shared_mb_client,
                     )
+                    # Per-album batch only: reset so this album's tracks can
+                    # never match a PREVIOUS album's (artist, title) entry, and
+                    # the dict doesn't grow across a long library scan.
+                    options["mb_batch_metadata"] = {}
                     _mb_entries: list[tuple[str, str]] = []
                     for _tc in track_contexts:
                         if _tc.get("recording_mbid") or _tc.get("mbid") or _tc.get("musicbrainz_trackid"):
@@ -1623,8 +1637,7 @@ def run_scan(
                             # every metadata scan.  Collapse the whole batch
                             # onto ONE folder-anchored album name first.
                             _collapse_album_mb_batch(_mb_batch, track_contexts, album)
-                            _existing = options.get("mb_batch_metadata") or {}
-                            options["mb_batch_metadata"] = {**_existing, **_mb_batch}
+                            options["mb_batch_metadata"] = _mb_batch
                             log_unified(
                                 f"[POPULARITY] MusicBrainz batch resolved {len(_mb_batch)}/{len(_mb_entries)} track(s) for {artist} - {album}"
                             )
@@ -1959,11 +1972,12 @@ def run_scan(
 
                 # ── Per-album genre playlist refresh ─────────────────────────
                 # Star ratings (and hence which 4★/5★ tracks qualify for a
-                # genre's pool) changed for this album — refresh the genre
-                # top-tracks playlists for the genres its tracks belong to so
-                # they stay current mid-scan instead of only at the very end.
-                # Best-effort; scoped to the affected genres only.
-                if _posted:
+                # genre's pool) changed for this album.  Only single-album /
+                # targeted scans refresh here — the per-album refresh re-queries
+                # the WHOLE library for the affected genres, so doing it once
+                # per album is O(albums × library).  Multi-album scans defer to
+                # the once-per-scan full rebuild in finalise_scan.
+                if _posted and total_albums <= 1:
                     try:
                         from services.popularity.stages.finalise_stage import (
                             refresh_genre_playlists_for_album,

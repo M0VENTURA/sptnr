@@ -59,14 +59,33 @@ def escape_lucene_special_chars(text: str) -> str:
 
 # Process-wide lookup caches.  The same recording / ISRC is resolved by
 # several independent code paths during one scan (popularity fallbacks,
-# single detection, cover detection, genres) — each used to pay a full
-# throttled MusicBrainz request.  These dicts are GIL-safe for concurrent
-# reads/writes and bounded: payloads are small, and the cache is cleared
-# when it grows past its cap so a long scan cannot balloon memory.
-_RECORDING_DETAIL_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
+# single detection, cover detection, genres, work-level LB aggregation) —
+# each used to pay a full throttled MusicBrainz request.  These dicts are
+# GIL-safe for concurrent reads/writes and bounded: payloads are small, and
+# the cache is cleared when it grows past its cap so a long scan cannot
+# balloon memory.
+#
+# Keyed by MBID / ISRC alone (NOT by (id, inc)): callers ask for different
+# ``inc`` subsets (artist-credits+releases / genres+tags / work-rels / ...),
+# and a (id, inc) key meant the SAME recording was fetched up to 5× per scan
+# at the 1 req/s throttle.  A canonical superset is always requested, so a
+# single call satisfies every caller's subset.
+_RECORDING_INC_SUPERSET = "artist-credits+releases+work-rels+recording-rels+artist-rels+genres+tags"
+_ISRC_INC_SUPERSET = "artist-credits+releases+work-rels"
+
+_RECORDING_DETAIL_CACHE: dict[str, dict[str, Any]] = {}
 _RECORDING_DETAIL_CACHE_MAX = 4000
-_ISRC_LOOKUP_CACHE: dict[tuple[str, str], list[dict[str, Any]]] = {}
+_ISRC_LOOKUP_CACHE: dict[str, list[dict[str, Any]]] = {}
 _ISRC_LOOKUP_CACHE_MAX = 2000
+
+# Release lookups are fetched independently by the LB album-tracklist path,
+# end-of-album tag-sync, cover detection and the compare / release-resolution
+# flows — keyed by release MBID alone with a canonical inc superset so a
+# single throttled call satisfies every caller (recordings for tracklists,
+# artist-credits, media, release-groups).
+_RELEASE_INC_SUPERSET = "recordings+artist-credits+media+release-groups"
+_RELEASE_DETAIL_CACHE: dict[str, dict[str, Any]] = {}
+_RELEASE_DETAIL_CACHE_MAX = 2000
 
 
 class MusicBrainzHttpClient:
@@ -155,10 +174,21 @@ class MusicBrainzHttpClient:
     def get_release(self, release_mbid: str, inc: str = "", timeout: float = 10.0) -> dict[str, Any]:
         if not release_mbid:
             return {}
-        params = {"fmt": "json"}
-        if inc:
-            params["inc"] = inc
-        return self.get(f"release/{release_mbid}", params=params, timeout=timeout)
+        # Cached by release MBID alone with a canonical inc superset — the
+        # same release is fetched by the LB album-tracklist path, tag-sync,
+        # cover detection and the compare / release-resolution flows with
+        # overlapping inc sets; keying by (mbid, inc) paid a throttled call
+        # per inc set.
+        cached = _RELEASE_DETAIL_CACHE.get(release_mbid)
+        if cached is not None:
+            return cached
+        params = {"fmt": "json", "inc": _RELEASE_INC_SUPERSET}
+        data = self.get(f"release/{release_mbid}", params=params, timeout=timeout)
+        if data:
+            if len(_RELEASE_DETAIL_CACHE) >= _RELEASE_DETAIL_CACHE_MAX:
+                _RELEASE_DETAIL_CACHE.clear()
+            _RELEASE_DETAIL_CACHE[release_mbid] = data
+        return data
 
     def get_release_group(self, release_group_mbid: str, inc: str = "", timeout: float = 10.0) -> dict[str, Any]:
         if not release_group_mbid:
@@ -171,21 +201,20 @@ class MusicBrainzHttpClient:
     def get_recording(self, recording_mbid: str, inc: str = "", timeout: float = 10.0) -> dict[str, Any]:
         if not recording_mbid:
             return {}
-        # Cached process-wide by (mbid, inc) — the same recording is fetched
-        # repeatedly per scan (metadata, genres, single detection, cover
-        # detection) with overlapping inc sets, each a throttled request.
-        key = (recording_mbid, inc)
-        cached = _RECORDING_DETAIL_CACHE.get(key)
+        # Cached process-wide by MBID alone with a canonical inc superset —
+        # the same recording is fetched by metadata, genres, single detection,
+        # cover detection and work-level LB aggregation with overlapping inc
+        # sets; keying by (mbid, inc) fragmented the cache and paid a
+        # throttled request per inc set.
+        cached = _RECORDING_DETAIL_CACHE.get(recording_mbid)
         if cached is not None:
             return cached
-        params = {"fmt": "json"}
-        if inc:
-            params["inc"] = inc
+        params = {"fmt": "json", "inc": _RECORDING_INC_SUPERSET}
         data = self.get(f"recording/{recording_mbid}", params=params, timeout=timeout)
         if data:
             if len(_RECORDING_DETAIL_CACHE) >= _RECORDING_DETAIL_CACHE_MAX:
                 _RECORDING_DETAIL_CACHE.clear()
-            _RECORDING_DETAIL_CACHE[key] = data
+            _RECORDING_DETAIL_CACHE[recording_mbid] = data
         return data
 
     def get_artist(self, artist_mbid: str, inc: str = "", timeout: float = 10.0) -> dict[str, Any]:
@@ -285,20 +314,18 @@ class MusicBrainzHttpClient:
     def lookup_by_isrc(self, isrc: str, inc: str = "") -> list[dict[str, Any]]:
         """Lookup recordings by ISRC code.
 
-        Cached process-wide by (isrc, inc) — the same code is resolved up to
-        5× per track per scan (Last.fm fallback, LB MBID resolution, LB
-        aggregation, ISRC single check, cover detection), each previously a
-        full throttled request.
+        Cached process-wide by ISRC alone (canonical inc superset) — the same
+        code is resolved up to 5× per track per scan (Last.fm fallback, LB
+        MBID resolution, LB aggregation, ISRC single check, cover detection),
+        each previously a full throttled request.
         """
         if not isrc:
             return []
-        cache_key = (isrc.strip().upper(), inc)
+        cache_key = isrc.strip().upper()
         cached = _ISRC_LOOKUP_CACHE.get(cache_key)
         if cached is not None:
             return cached
-        params = {"fmt": "json"}
-        if inc:
-            params["inc"] = inc
+        params = {"fmt": "json", "inc": _ISRC_INC_SUPERSET}
         payload = self.get(f"isrc/{isrc}", params=params)
         recordings = payload.get("recordings", []) if isinstance(payload.get("recordings"), list) else []
         if len(_ISRC_LOOKUP_CACHE) >= _ISRC_LOOKUP_CACHE_MAX:

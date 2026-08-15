@@ -207,7 +207,8 @@ class TestSinglesOnlyPass:
                         use_advanced_detection=True, persist_result=False,
                         mb_cached_singles=None, discogs_cached_singles=None,
                         discogs_cached_promos=None,
-                        artist_mbid=None, listenbrainz_listens=0,
+                        artist_mbid=None, recording_mbid=None,
+                        listenbrainz_listens=0,
                         lastfm_listeners=0, album_lf_listeners=None,
                         album_lb_listens=None,
                         discogs_token=None, lastfm_client=None, mb_client=None):
