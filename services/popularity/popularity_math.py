@@ -83,6 +83,23 @@ LOG_SCALE_MULTIPLIER = 16.0
 SINGLE_BOOST_FADE_START = 60.0
 SINGLE_BOOST_FADE_END = 92.0
 
+# ── Log-Ratio Median Deviation (Log-MAD) cross-platform playcount audit ─────
+# Raw Last.fm / ListenBrainz counts are not comparable directly (LF is often
+# 10-50x LB), so the audit compares each track's ``log10(LF/LB)`` ratio
+# against the ALBUM's median log ratio instead of the raw counts.  A track
+# whose ratio deviates by more than ``LOG_RATIO_DIVERGENCE_THRESHOLD`` log
+# units from the album median is a TARGETED source failure — a
+# tag/punctuation split collapsed LF (REJECT_LF) or a missing / wrong
+# recording MBID collapsed LB (REJECT_LB) — NOT a legitimate deep cut (low on
+# both platforms stays inside the album's ratio spread).
+LOG_RATIO_DIVERGENCE_THRESHOLD = 0.85  # ~7x relative divergence
+# Minimum album tracks with both counts to establish a meaningful baseline
+# ratio distribution (a 1-2 track "album" has no spread to compare against).
+LOG_RATIO_MIN_ALBUM_TRACKS = 3
+# Reject a platform only when the OTHER side is healthy enough to trust.
+LOG_RATIO_REJECT_LF_MIN_LB = 50
+LOG_RATIO_REJECT_LB_MIN_LF = 100
+
 
 def fmt_count(count) -> str:
     """Format a listener/listen count compactly (14201 → '14.2k')."""
@@ -409,6 +426,162 @@ def evaluate_listenbrainz_validity(
     return not reasons, reasons
 
 
+# ── Log-Ratio Median Deviation (Log-MAD) audit ──────────────────────────────
+
+def evaluate_log_ratio_deviation(
+    *,
+    lastfm_listeners: int = 0,
+    listenbrainz_listens: int = 0,
+    album_lf_lb_pairs: Optional[List[tuple]] = None,
+    divergence_threshold: float = LOG_RATIO_DIVERGENCE_THRESHOLD,
+    min_album_tracks: int = LOG_RATIO_MIN_ALBUM_TRACKS,
+    reject_lf_min_lb: int = LOG_RATIO_REJECT_LF_MIN_LB,
+    reject_lb_min_lf: int = LOG_RATIO_REJECT_LB_MIN_LF,
+) -> str:
+    """Return the Log-MAD verdict for one track against its album.
+
+    ``album_lf_lb_pairs`` is the album's ``(lastfm_listeners,
+    listenbrainz_listens)`` pairs.  The track's own log10 LF/LB ratio is
+    compared with the album's MEDIAN log ratio (``+1`` smoothing avoids
+    ``log(0)`` / division by zero):
+
+    - ``delta ≈ 0``        → both platforms agree proportionally → ``VALID``
+    - ``delta ≪ -threshold`` and LB healthy → Last.fm is far below what the
+      album ratio implies (tag/punctuation split collapsed LF) → ``REJECT_LF``
+    - ``delta ≫ threshold`` and LF healthy → ListenBrainz is far below what
+      the album ratio implies (missing / wrong recording MBID collapsed LB)
+      → ``REJECT_LB``
+
+    Returns ``"VALID"`` when the album has too few valid pairs to establish a
+    baseline (``< min_album_tracks``) — a 1-2 track album has no distribution.
+    """
+    pairs = [
+        (int(a or 0), int(b or 0))
+        for a, b in (album_lf_lb_pairs or [])
+        if int(a or 0) > 0 and int(b or 0) > 0
+    ]
+    if len(pairs) < min_album_tracks:
+        return "VALID"
+    log_ratios = [math.log10((lf + 1) / (lb + 1)) for lf, lb in pairs]
+    album_median_ratio = median(log_ratios)
+
+    lf = int(lastfm_listeners or 0)
+    lb = int(listenbrainz_listens or 0)
+    track_ratio = math.log10((lf + 1) / (lb + 1))
+    delta = track_ratio - album_median_ratio
+
+    if delta < -divergence_threshold and lb > reject_lf_min_lb:
+        return "REJECT_LF"
+    if delta > divergence_threshold and lf > reject_lb_min_lf:
+        return "REJECT_LB"
+    return "VALID"
+
+
+def audit_album_playcounts(
+    tracks,
+    divergence_threshold: float = LOG_RATIO_DIVERGENCE_THRESHOLD,
+) -> list:
+    """Log-MAD audit of an album's Last.fm / ListenBrainz counts.
+
+    ``tracks`` is a list of objects with ``lf`` (Last.fm listeners) and ``lb``
+    (ListenBrainz listens) attributes or dicts with ``lastfm_listeners`` /
+    ``listenbrainz_listens`` keys.  Returns ``[(track, verdict)]`` for every
+    track with verdict in ``{"VALID", "REJECT_LF", "REJECT_LB"}``.
+    """
+    def _lf(t) -> int:
+        if isinstance(t, dict):
+            return int(t.get("lastfm_listeners") or 0)
+        return int(getattr(t, "lf", 0) or 0)
+
+    def _lb(t) -> int:
+        if isinstance(t, dict):
+            return int(t.get("listenbrainz_listens") or 0)
+        return int(getattr(t, "lb", 0) or 0)
+
+    tracks = list(tracks or [])
+    if len(tracks) < LOG_RATIO_MIN_ALBUM_TRACKS:
+        return [(t, "VALID") for t in tracks]
+
+    log_ratios = [math.log10((_lf(t) + 1) / (_lb(t) + 1)) for t in tracks]
+    album_median_ratio = median(log_ratios)
+
+    results = []
+    for t in tracks:
+        lf, lb = _lf(t), _lb(t)
+        delta = math.log10((lf + 1) / (lb + 1)) - album_median_ratio
+        if delta < -divergence_threshold and lb > LOG_RATIO_REJECT_LF_MIN_LB:
+            verdict = "REJECT_LF"
+        elif delta > divergence_threshold and lf > LOG_RATIO_REJECT_LB_MIN_LF:
+            verdict = "REJECT_LB"
+        else:
+            verdict = "VALID"
+        results.append((t, verdict))
+    return results
+
+
+def apply_log_ratio_audit_to_stored_score(
+    *,
+    lastfm_listeners: int = 0,
+    listenbrainz_listens: int = 0,
+    album_lf_lb_pairs: Optional[List[tuple]] = None,
+    lastfm_score: float = 0.0,
+    listenbrainz_score: float = 0.0,
+    age_score: float = 0.0,
+    divergence_threshold: float = LOG_RATIO_DIVERGENCE_THRESHOLD,
+) -> tuple[str, Optional[Dict[str, float]]]:
+    """Re-blend a STORED popularity score through the Log-MAD audit.
+
+    Tracks scored BEFORE the Log-MAD feature keep their stored blend (equal
+    platform trust), so a targeted platform failure keeps a wrong score until
+    the next full rescan.  Singles scans revisiting an album re-run the audit
+    on the stored LF/LB counts: when a failure is flagged the stored per-source
+    scores are re-blended with the audit weights — ``REJECT_LF`` →
+    ``{Last.fm: 0.00, ListenBrainz: 0.90, Age: 0.10}`` (score on LB), and
+    ``REJECT_LB`` → score on Last.fm only.
+
+    Returns ``(verdict, score_data)`` where ``score_data`` is the re-blended
+    dict (or ``None`` when the track is ``VALID`` / no baseline exists — keep
+    the stored score).
+    """
+    verdict = evaluate_log_ratio_deviation(
+        lastfm_listeners=lastfm_listeners,
+        listenbrainz_listens=listenbrainz_listens,
+        album_lf_lb_pairs=album_lf_lb_pairs,
+        divergence_threshold=divergence_threshold,
+    )
+    if verdict == "VALID":
+        return verdict, None
+
+    if verdict == "REJECT_LF":
+        lf_w, lb_w, age_w = 0.0, 0.90, 0.10
+    else:  # REJECT_LB
+        lf_w, lb_w, age_w = 1.0, 0.0, 0.0
+
+    scores: list[float] = []
+    weights: list[float] = []
+    if float(lastfm_score or 0) > 0 and lf_w > 0:
+        scores.append(float(lastfm_score))
+        weights.append(lf_w)
+    if float(listenbrainz_score or 0) > 0 and lb_w > 0:
+        scores.append(float(listenbrainz_score))
+        weights.append(lb_w)
+    if float(age_score or 0) > 0 and age_w > 0:
+        scores.append(float(age_score))
+        weights.append(age_w)
+
+    if scores and weights:
+        combined = sum(s * w for s, w in zip(scores, weights)) / sum(weights)
+    else:
+        combined = 0.0
+
+    return verdict, {
+        "combined_score": round(min(100.0, max(0.0, combined)), 3),
+        "lastfm_score": round(float(lastfm_score or 0), 3),
+        "listenbrainz_score": round(float(listenbrainz_score or 0), 3),
+        "age_score": round(float(age_score or 0), 3),
+    }
+
+
 def score_by_age(playcount: int | float, release_str: str) -> tuple[float, int]:
     """Apply age decay to a playcount-like metric."""
     try:
@@ -437,6 +610,7 @@ def calculate_combined_popularity_score(
     is_featured_track: bool = False,
     is_live_track: bool = False,
     lastfm_weight_override: Optional[float] = None,
+    source_audit: str = "VALID",
     single_boost: float = 1.15,
     metadata_score_floor: float = 5.0,
     live_weight_penalty: float = 0.5,
@@ -446,6 +620,11 @@ def calculate_combined_popularity_score(
     Matches the legacy ``popularity_scan`` behaviour:
     - live tracks get a ``live_weight_penalty`` (default 50%) on the Last.fm weight
     - source-mismatch weighting honours featured-track / metadata flags
+    - ``source_audit`` (a Log-MAD verdict from ``evaluate_log_ratio_deviation``)
+      forces the platform weights when the cross-platform ratio audit flagged a
+      targeted source failure: ``REJECT_LF`` scores on ListenBrainz (+ age) only,
+      ``REJECT_LB`` scores on Last.fm only — both outrank the heuristic mismatch
+      detection below
     - confirmed singles receive a ``single_boost`` (default +15%), faded out
       as the raw score nears the ceiling so top singles stay apart
     - tracks with a confirmed MusicBrainz ID get a ``metadata_score_floor``
@@ -495,6 +674,7 @@ def calculate_combined_popularity_score(
     # Check for source mismatch and adjust weights dynamically
     has_mismatch = is_source_mismatch(lastfm_listeners, listenbrainz_listens)
     is_unreliable = is_lastfm_unreliable(lastfm_listeners, listenbrainz_listens)
+    _audit = str(source_audit or "VALID")
 
     # Live-track penalty: legacy logic halves the Last.fm weight because live
     # recordings are streamed far less than their studio counterparts.
@@ -512,20 +692,30 @@ def calculate_combined_popularity_score(
     active_scores: list[float] = []
     active_weights: list[float] = []
 
-    if has_mismatch or is_unreliable:
-        # Use dynamic weights when sources conflict
+    if has_mismatch or is_unreliable or _audit != "VALID":
+        # Use dynamic weights when sources conflict — or when the Log-MAD
+        # cross-platform audit flagged a TARGETED source failure (the track's
+        # LF/LB ratio sits far outside the album's typical ratio spread).  An
+        # audit verdict outranks the heuristic mismatch detection: REJECT_LF
+        # scores on ListenBrainz (+ age) only, REJECT_LB scores on Last.fm
+        # only (the blended weights below are normalised, so setting one side
+        # to 0.0 drops it from the blend).
         lf_weight, lb_weight = adjust_weights(
             lastfm_listeners,
             listenbrainz_listens,
             is_featured_track=is_featured_track,
             metadata_confirmed=has_metadata,
         )
+        if _audit == "REJECT_LF":
+            lf_weight, lb_weight = 0.0, 1.0
+        elif _audit == "REJECT_LB":
+            lf_weight, lb_weight = 1.0, 0.0
         if is_live_track:
             lf_weight = lf_weight * max(0.0, min(1.0, live_weight_penalty))
-        if lastfm_score > 0:
+        if lastfm_score > 0 and lf_weight > 0:
             active_scores.append(lastfm_score)
             active_weights.append(lf_weight)
-        if lb_score > 0:
+        if lb_score > 0 and lb_weight > 0:
             active_scores.append(lb_score)
             active_weights.append(lb_weight)
     else:
@@ -537,7 +727,11 @@ def calculate_combined_popularity_score(
             active_scores.append(lb_score)
             active_weights.append(_live_lb_w)
 
-    if age_score > 0:
+    # Age corroborates LB evidence, so it joins the REJECT_LF blend
+    # ({LB: 0.90, Age: 0.10, LF: 0.00}) but is dropped for REJECT_LB — that
+    # verdict means ListenBrainz itself is broken, so its (age-decayed) count
+    # must not leak back in; the track scores on Last.fm only.
+    if age_score > 0 and _audit != "REJECT_LB":
         active_scores.append(age_score)
         active_weights.append(_live_age_w)
 

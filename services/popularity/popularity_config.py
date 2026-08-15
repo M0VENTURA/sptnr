@@ -111,3 +111,55 @@ def get_single_organic_floor(config: dict | None = None) -> tuple[float, float]:
         )
     except Exception:
         return 45.0, 1000.0
+
+
+DEFAULT_LOG_RATIO = {
+    "enabled": True,
+    "divergence_threshold": 0.85,
+    "reject_lf_min_lb": 50,
+    "reject_lb_min_lf": 100,
+}
+
+
+def get_log_ratio_config(config: dict | None = None) -> dict:
+    """Return the Log-MAD cross-platform playcount audit settings.
+
+    Reads ``single_detection.log_ratio_*`` keys:
+    - ``log_ratio_enabled`` (default True) — master switch for the audit
+    - ``log_ratio_divergence_threshold`` (default 0.85 ≈ 7x relative
+      divergence) — a track's log10 LF/LB ratio must deviate by more than
+      this from the album's median log ratio before it is rejected
+    - ``log_ratio_reject_lf_min_lb`` (default 50) — minimum ListenBrainz
+      listens before Last.fm is distrusted (LB must be healthy to trust)
+    - ``log_ratio_reject_lb_min_lf`` (default 100) — minimum Last.fm
+      listeners before ListenBrainz is distrusted
+
+    A threshold of 1.00 corresponds to a 10x relative divergence (safe,
+    conservative); 0.70 corresponds to ~5x.
+    """
+    cfg = config if isinstance(config, dict) else get_config()
+    sd = cfg.get("single_detection", {}) if isinstance(cfg, dict) else {}
+    if not isinstance(sd, dict):
+        sd = {}
+    try:
+        enabled = bool(sd.get("log_ratio_enabled", DEFAULT_LOG_RATIO["enabled"]))
+    except Exception:
+        enabled = DEFAULT_LOG_RATIO["enabled"]
+    try:
+        threshold = float(sd.get("log_ratio_divergence_threshold", DEFAULT_LOG_RATIO["divergence_threshold"]))
+    except Exception:
+        threshold = DEFAULT_LOG_RATIO["divergence_threshold"]
+    try:
+        reject_lf_min_lb = int(sd.get("log_ratio_reject_lf_min_lb", DEFAULT_LOG_RATIO["reject_lf_min_lb"]))
+    except Exception:
+        reject_lf_min_lb = DEFAULT_LOG_RATIO["reject_lf_min_lb"]
+    try:
+        reject_lb_min_lf = int(sd.get("log_ratio_reject_lb_min_lf", DEFAULT_LOG_RATIO["reject_lb_min_lf"]))
+    except Exception:
+        reject_lb_min_lf = DEFAULT_LOG_RATIO["reject_lb_min_lf"]
+    return {
+        "enabled": enabled,
+        "divergence_threshold": threshold,
+        "reject_lf_min_lb": reject_lf_min_lb,
+        "reject_lb_min_lf": reject_lb_min_lf,
+    }
