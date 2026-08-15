@@ -637,7 +637,7 @@ def _assign_stars(
 # Navidrome sync
 # ---------------------------------------------------------------------------
 
-def _sync_rating_to_navidrome(track_id: str, stars: int) -> bool:
+def _sync_rating_to_navidrome(track_id: str, stars: int, clients: list[Any] | None = None) -> bool:
     """Push a single track rating to Navidrome.
 
     Delegates to ``services.navidrome.rating_sync_service`` — the single
@@ -646,12 +646,37 @@ def _sync_rating_to_navidrome(track_id: str, stars: int) -> bool:
     it was removed so the two paths can never drift.  ``sync_ratings_to_all_users``
     (default off) controls whether every configured user is updated; when off
     only the primary user is.
+
+    ``clients`` lets the album-level caller reuse ONE set of Navidrome clients
+    across all of the album's tracks (built via ``_build_rating_sync_clients``)
+    instead of reconstructing a client — and reloading config — per track.
+    When omitted, the clients are built per call (fallback for direct callers).
     """
     try:
-        from services.navidrome.rating_sync_service import sync_track_rating_to_navidrome
-        return sync_track_rating_to_navidrome(track_id, stars)
+        from services.navidrome.rating_sync_service import (
+            sync_track_rating_to_navidrome,
+            sync_track_rating_with_clients,
+        )
+        if clients is None:
+            return sync_track_rating_to_navidrome(track_id, stars)
+        return sync_track_rating_with_clients(clients, track_id, stars)
     except Exception:
         return False
+
+
+def _build_rating_sync_clients() -> list[Any]:
+    """Build the Navidrome rating-sync clients once per album.
+
+    ``_sync_rating_to_navidrome`` used to reload the configured user list and
+    construct a fresh ``NavidromeClient`` per track per user.  Building them
+    once per album removes that per-track config load / client churn while
+    keeping the exact same user list and multi-user behaviour.
+    """
+    try:
+        from services.navidrome.rating_sync_service import get_rating_sync_clients
+        return get_rating_sync_clients()
+    except Exception:
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -2079,6 +2104,12 @@ def post_album_star_ratings(
             _attempted = 0
             _synced = 0
             _skipped = 0
+            # Build the rating-sync clients ONCE per album — each setRating is
+            # a Subsonic HTTP call, and the old per-track path ALSO reloaded
+            # the user config and constructed a fresh NavidromeClient per track
+            # per user.  Clients are built lazily so an album with nothing to
+            # sync (all unchanged / unrated) never pays the config load.
+            _sync_clients: list[Any] | None = None
             for track in album_results:
                 stars = track.get("stars", 0)
                 if stars < 1:
@@ -2089,7 +2120,9 @@ def post_album_star_ratings(
                         _skipped += 1
                         continue
                     _attempted += 1
-                    if _sync_rating_to_navidrome(track_id, stars):
+                    if _sync_clients is None:
+                        _sync_clients = _build_rating_sync_clients()
+                    if _sync_rating_to_navidrome(track_id, stars, clients=_sync_clients):
                         navidrome_synced += 1
                         _synced += 1
             _failed = _attempted - _synced

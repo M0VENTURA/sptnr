@@ -313,7 +313,7 @@ class TestPostAlbumStarRatings:
             fs, "_assign_stars",
             lambda track, *args, **kwargs: 4 if track["title"] == "Apocalypse Please" else 5
         )
-        monkeypatch.setattr(fs, "_sync_rating_to_navidrome", lambda track_id, stars: True)
+        monkeypatch.setattr(fs, "_sync_rating_to_navidrome", lambda track_id, stars, clients=None: True)
         logged = []
         monkeypatch.setattr(fs, "log_unified", lambda msg: logged.append(msg))
 
@@ -678,7 +678,7 @@ class TestSkipUnchangedRatingWrites:
             lambda track, *args, **kwargs: 4 if track["title"] == "Apocalypse Please" else 5
         )
         syncs = []
-        monkeypatch.setattr(fs, "_sync_rating_to_navidrome", lambda tid, stars: syncs.append((tid, stars)) or True)
+        monkeypatch.setattr(fs, "_sync_rating_to_navidrome", lambda tid, stars, clients=None: syncs.append((tid, stars)) or True)
         writes = []
         monkeypatch.setattr(
             tag_file_service, "write_rating_to_file",
@@ -721,7 +721,7 @@ class TestSkipUnchangedRatingWrites:
         # Both tracks get a DIFFERENT rating than stored (stored 5★).
         monkeypatch.setattr(fs, "_assign_stars", lambda track, *args, **kwargs: 3)
         syncs = []
-        monkeypatch.setattr(fs, "_sync_rating_to_navidrome", lambda tid, stars: syncs.append((tid, stars)) or True)
+        monkeypatch.setattr(fs, "_sync_rating_to_navidrome", lambda tid, stars, clients=None: syncs.append((tid, stars)) or True)
         writes = []
         monkeypatch.setattr(
             tag_file_service, "write_rating_to_file",
@@ -773,6 +773,269 @@ class TestPostAlbumStarRatingsResilience:
         assert outcome["star_ratings"] == 1
         assert results[0]["stars"] == 4
         assert results[1].get("stars") is None
-        star_updates = [e for e in conn.cur.executed if "UPDATE tracks SET stars" in e[0]]
+        star_updates = [e for e in session.executed if "UPDATE tracks SET stars" in str(e[0])]
         assert len(star_updates) == 1
         assert any("📊 SCAN RESULTS: Muse — Absolution" in m for m in logged)
+
+
+class TestUpsertTracksBulk:
+    """``upsert_tracks_bulk`` persists a whole batch in ONE session + commit.
+
+    The scan workers used to open a fresh ``db_session`` (one transaction) per
+    track — tens of thousands of transactions for a full library scan.  The
+    bulk path runs the whole album through a single session.
+    """
+
+    class _CountingSession:
+        def __init__(self):
+            self.executed = []
+            self.commit_count = 0
+
+        def execute(self, sql, params=None):
+            self.executed.append((sql, params))
+            return _FakeResult([])
+
+        def commit(self):
+            self.commit_count += 1
+
+        def rollback(self):
+            pass
+
+    def test_bulk_uses_one_session_for_many_payloads(self, monkeypatch):
+        from db.repositories import popularity_repository as pr
+
+        sessions = []
+
+        @contextmanager
+        def _fake_db_session():
+            s = self._CountingSession()
+            sessions.append(s)
+            yield s
+
+        monkeypatch.setattr(pr, "db_session", _fake_db_session)
+        saved = []
+        monkeypatch.setattr(
+            pr, "_execute_save",
+            lambda session, payload: saved.append(payload) or True,
+        )
+
+        payloads = [
+            {"id": "t1", "title": "One"},
+            {"id": "t2", "title": "Two"},
+            {"id": "t3", "title": "Three"},
+        ]
+        ok = pr.upsert_tracks_bulk(payloads)
+
+        assert ok is True
+        # ONE session + commit for the whole album, not one per track.
+        assert len(sessions) == 1
+        assert len(saved) == 3
+        assert [p["id"] for p in saved] == ["t1", "t2", "t3"]
+
+    def test_bulk_empty_returns_false_without_session(self, monkeypatch):
+        from db.repositories import popularity_repository as pr
+
+        sessions = []
+
+        @contextmanager
+        def _fake_db_session():
+            s = self._CountingSession()
+            sessions.append(s)
+            yield s
+
+        monkeypatch.setattr(pr, "db_session", _fake_db_session)
+        assert pr.upsert_tracks_bulk([]) is False
+        assert len(sessions) == 0
+
+    def test_bulk_skips_bad_rows_without_aborting_batch(self, monkeypatch):
+        from db.repositories import popularity_repository as pr
+
+        @contextmanager
+        def _fake_db_session():
+            yield self._CountingSession()
+
+        monkeypatch.setattr(pr, "db_session", _fake_db_session)
+        saved = []
+
+        def flaky_save(session, payload):
+            if payload.get("id") == "bad":
+                raise ValueError("missing id")
+            saved.append(payload)
+            return True
+
+        monkeypatch.setattr(pr, "_execute_save", flaky_save)
+
+        ok = pr.upsert_tracks_bulk([
+            {"id": "good1"}, {"id": "bad"}, {"id": "good2"},
+        ])
+        assert ok is False
+        assert [p["id"] for p in saved] == ["good1", "good2"]
+
+
+class TestDeferredPersistSink:
+    def test_drain_returns_and_clears(self):
+        from db.repositories.tracks import DeferredPersistSink
+
+        sink = DeferredPersistSink()
+        sink.add({"id": "a"})
+        sink.add({"id": "b"})
+        assert sink.drain() == [{"id": "a"}, {"id": "b"}]
+        # A second drain is empty — the runner never double-persists an album.
+        assert sink.drain() == []
+
+
+class TestDeferredPersistBatching:
+    """``process_track`` defers its upsert into the runner's batch sink when
+    ``options["_deferred_persist"]`` is present, and persists inline otherwise.
+
+    The scan runner uses the deferred path so every album's track writes flush
+    in one ``upsert_tracks_bulk`` call instead of one transaction per track.
+    """
+
+    def _run(self, monkeypatch, options):
+        import services.popularity.stages.track_stage as ts
+
+        persist_calls = []
+        monkeypatch.setattr(ts, "LastFmClient", lambda *a, **k: object())
+        monkeypatch.setattr(ts, "ListenBrainzClient", lambda *a, **k: object())
+        monkeypatch.setattr(ts, "get_aggregated_lastfm_popularity", lambda *a, **k: {})
+        monkeypatch.setattr(ts, "get_aggregated_listenbrainz_popularity", lambda *a, **k: {})
+        monkeypatch.setattr(ts, "get_search_aggregated_lastfm_popularity", lambda *a, **k: {})
+        monkeypatch.setattr(
+            ts, "insert_or_update_track",
+            lambda tid, data: persist_calls.append((tid, data)),
+        )
+        monkeypatch.setattr(
+            ts, "detect_single_for_track",
+            lambda **kw: {"is_single": False, "confidence": "low",
+                          "confidence_score": 0.0, "single_status": "none",
+                          "sources": [], "reasons": []},
+        )
+
+        track = {
+            "id": "t1",
+            "artist": "Muse",
+            "album": "Absolution",
+            "title": "Hysteria",
+            "final_score": 50.0,
+            "popularity": 50.0,
+            "lastfm_listeners": 1000,
+            "listenbrainz_listens": 2000,
+            "lb_percentile": 0.9,
+            "single_detection_last_updated": None,
+        }
+        result = ts.process_track(
+            track=track,
+            track_context={"artist": "Muse", "album": "Absolution"},
+            album_context={"album": "Absolution", "artist": "Muse", "tracks": [track]},
+            album_result={"detected_album_type": "album", "is_heterogeneous": False},
+            options=options,
+        )
+        return result, persist_calls
+
+    def test_with_sink_defers_and_skips_inline_persist(self, monkeypatch):
+        from db.repositories.tracks import DeferredPersistSink
+
+        sink = DeferredPersistSink()
+        result, persist_calls = self._run(
+            monkeypatch,
+            {"singles_detection_only": True, "_deferred_persist": sink},
+        )
+
+        # No inline DB write — the payload went to the batch sink instead.
+        assert persist_calls == []
+        drained = sink.drain()
+        assert len(drained) == 1
+        assert drained[0]["id"] == "t1"
+        assert result is not None
+
+    def test_without_sink_persists_inline(self, monkeypatch):
+        result, persist_calls = self._run(
+            monkeypatch,
+            {"singles_detection_only": True},
+        )
+
+        assert result is not None
+        assert len(persist_calls) == 1
+        assert persist_calls[0][0] == "t1"
+
+
+class TestNavidromeClientReusePerAlbum:
+    """The album-level rating sync builds its Navidrome clients ONCE and reuses
+    them across every track, instead of reloading config + reconstructing a
+    client per track per user."""
+
+    def test_clients_built_once_and_passed_to_every_sync(self, monkeypatch):
+        from services.popularity.stages import finalise_stage as fs
+        import db.engine as db_engine
+
+        session = _RecordingSession()
+        monkeypatch.setattr(db_engine, "db_session", _session_factory(session))
+        monkeypatch.setattr(
+            fs, "_assign_stars",
+            lambda track, *args, **kwargs: 4 if track["title"] == "Apocalypse Please" else 5
+        )
+
+        builds = []
+        monkeypatch.setattr(
+            fs, "_build_rating_sync_clients",
+            lambda: builds.append(True) or ["navidrome-user-1", "navidrome-user-2"],
+        )
+        syncs = []
+        monkeypatch.setattr(
+            fs, "_sync_rating_to_navidrome",
+            lambda tid, stars, clients=None: syncs.append((tid, stars, clients)) or True,
+        )
+        logged = []
+        monkeypatch.setattr(fs, "log_unified", lambda msg: logged.append(msg))
+
+        results = _album_results()
+        outcome = fs.post_album_star_ratings(
+            album_results=results,
+            artist="Muse",
+            artist_scores=[80.0, 90.0],
+            options={"sync_navidrome": True},
+        )
+
+        assert outcome["navidrome_synced"] == 2
+        # Clients built ONCE for the whole album, not once per track.
+        assert len(builds) == 1
+        assert len(syncs) == 2
+        assert syncs[0][1] == 4
+        assert syncs[1][1] == 5
+        # Both tracks reuse the SAME pre-built client list.
+        assert syncs[0][2] == ["navidrome-user-1", "navidrome-user-2"]
+        assert syncs[1][2] == ["navidrome-user-1", "navidrome-user-2"]
+
+    def test_no_clients_built_when_everything_is_skipped(self, monkeypatch):
+        from services.popularity.stages import finalise_stage as fs
+        import db.engine as db_engine
+
+        session = _RecordingSession([
+            [],                                  # album DB score merge
+            [],                                  # album scaling model
+            [_Row({"id": "t1", "stars": 4, "file_path": "/x/t1.mp3"}),
+             _Row({"id": "t2", "stars": 5, "file_path": "/x/t2.mp3"})],  # stored ratings
+        ])
+        monkeypatch.setattr(db_engine, "db_session", _session_factory(session))
+        monkeypatch.setattr(
+            fs, "_assign_stars",
+            lambda track, *args, **kwargs: 4 if track["title"] == "Apocalypse Please" else 5
+        )
+        builds = []
+        monkeypatch.setattr(fs, "_build_rating_sync_clients", lambda: builds.append(True) or [])
+        monkeypatch.setattr(fs, "_sync_rating_to_navidrome", lambda *a, **k: True)
+        logged = []
+        monkeypatch.setattr(fs, "log_unified", lambda msg: logged.append(msg))
+
+        results = _album_results()
+        outcome = fs.post_album_star_ratings(
+            album_results=results,
+            artist="Muse",
+            artist_scores=[80.0, 90.0],
+            options={"sync_navidrome": True},
+        )
+
+        # Both ratings are unchanged (stored) → skipped → no client build.
+        assert outcome["navidrome_synced"] == 0
+        assert builds == []

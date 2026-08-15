@@ -30,6 +30,7 @@ from services.popularity.stages.album_stage import enrich_album
 from services.popularity.stages.finalise_stage import finalise_scan, post_album_star_ratings
 from services.popularity.stages.load_stage import load_candidates
 from services.popularity.stages.track_stage import process_track
+from db.repositories.tracks import DeferredPersistSink, upsert_tracks_bulk
 from services.scanning.scan_state import (
     is_stop_requested,
     save_artist_scan_checkpoint,
@@ -711,6 +712,15 @@ def run_scan(
         "caller_scan_type": caller_scan_type,
         **extra_kwargs,
     }
+
+    # Per-album track-write batching: each per-track worker used to open its
+    # own session + commit (one transaction per track — tens of thousands for
+    # a full library scan).  Workers now defer their upsert into this
+    # thread-safe sink and the album loop flushes them in ONE
+    # ``upsert_tracks_bulk`` call.  The sink is injected per track-job below,
+    # never into the shared ``options`` dict, so the singles-only skip pass
+    # (which copies ``options``) keeps its inline per-track writes.
+    _deferred_persist = DeferredPersistSink()
 
     update(stage="loading", progress=3, message="Loading scan candidates...")
     albums = load_candidates(options)
@@ -1712,11 +1722,15 @@ def run_scan(
                                 prepared_track.get("id"),
                                 exc,
                             )
-                _track_options = options
+                # Each worker gets its OWN options copy so the deferred-persist
+                # sink is injected per job without mutating the shared ``options``
+                # dict (the singles-only skip pass and later albums must not
+                # inherit it).  Frozen tracks additionally set ``frozen_track``.
+                _track_options = dict(options)
+                _track_options["_deferred_persist"] = _deferred_persist
                 if _frozen:
                     # Reuse the cached popularity score but still run the rest of
                     # the per-track pipeline (metadata/cover/singles/genre).
-                    _track_options = dict(options)
                     _track_options["frozen_track"] = True
                 _track_jobs.append((prepared_track, track_context, _track_options, _frozen))
 
@@ -1806,6 +1820,28 @@ def run_scan(
                         pass
             else:
                 _track_results_ordered = [_run_track_job(job) for job in _track_jobs]
+
+            # ── Batch-persist the album's deferred track writes ─────────────
+            # Every worker pushed its per-track upsert into the shared sink
+            # instead of opening its own session + commit; flush the whole
+            # album in ONE session + commit here (tens of thousands of
+            # transactions become one per album across a full scan).  Runs
+            # before the result logging / enrichment / star-rating posting so
+            # the stored ratings (and album-stage DB reads) always see the
+            # freshly persisted rows.
+            try:
+                _deferred_payloads = _deferred_persist.drain()
+                if _deferred_payloads:
+                    upsert_tracks_bulk(_deferred_payloads)
+                    logger.debug(
+                        "[scan_runner] Bulk-persisted %d track(s) for '%s - %s'",
+                        len(_deferred_payloads), artist, album,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "[scan_runner] Bulk track persist failed for '%s - %s': %s",
+                    artist, album, exc,
+                )
 
             for (_prepared, _tc, _opts, _frozen), track_result in zip(_track_jobs, _track_results_ordered):
                 if track_result is not None:
@@ -1901,6 +1937,20 @@ def run_scan(
             # stuck as "running" and the scan "fails to resume".  Log, record a
             # failure, and move on to the next album (legacy behaviour).
             #
+            # Safety net for deferred track writes: if the album raised AFTER
+            # the workers finished but BEFORE the normal flush (e.g. the result
+            # logging / enrichment raised), persist whatever the workers already
+            # queued so the per-track DB writes are never lost.
+            try:
+                _deferred_payloads = _deferred_persist.drain()
+                if _deferred_payloads:
+                    upsert_tracks_bulk(_deferred_payloads)
+                    logger.debug(
+                        "[scan_runner] Safety-flushed %d deferred track(s) for '%s - %s'",
+                        len(_deferred_payloads), artist, album,
+                    )
+            except Exception:
+                pass
             # ``BaseException`` (not just ``Exception``) so a SystemExit /
             # KeyboardInterrupt / GeneratorExit surfacing anywhere in an album —
             # e.g. from a worker thread, a C extension, or ``os._exit`` in a

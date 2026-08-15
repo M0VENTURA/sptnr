@@ -24,7 +24,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 from api_clients.navidrome import NavidromeClient
-from db.repositories.tracks import upsert_track_payload
+from db.repositories.tracks import upsert_track_payload, upsert_tracks_bulk
 from sqlalchemy import text
 from db.engine import db_session
 from helpers.logging_config import log_unified
@@ -395,6 +395,11 @@ def scan_artist_to_db(
             )
 
             album_mbids_seen: set[str] = set()
+            # Payloads are accumulated per album and persisted in ONE
+            # session + commit — the per-track ``save_to_db`` used to open a
+            # fresh transaction for every track (tens of thousands across a
+            # full library import).
+            _album_payloads: list[dict[str, Any]] = []
 
             for track in tracks:
                 if not track.get("id"):
@@ -420,7 +425,18 @@ def scan_artist_to_db(
                 if album_mbid:
                     album_mbids_seen.add(album_mbid)
 
-                save_to_db(payload)
+                _album_payloads.append(payload)
+
+            if _album_payloads:
+                try:
+                    upsert_tracks_bulk(_album_payloads)
+                except Exception as exc:
+                    logger.warning(
+                        "[NAVIDROME_SCAN] Bulk track persist failed for '%s - %s': %s",
+                        artist_name,
+                        album_name,
+                        exc,
+                    )
 
             if len(album_mbids_seen) > 1:
                 logging.warning(
