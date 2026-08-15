@@ -639,6 +639,110 @@ class TestListenerZRobustness:
         assert 1 <= stars <= 5
 
 
+class _Row:
+    """Row stub exposing a ``_mapping`` dict (the batch-load query reads it)."""
+
+    def __init__(self, mapping):
+        self._mapping = mapping
+
+
+class TestSkipUnchangedRatingWrites:
+    """Ratings that match the stored value must not rewrite the audio file or
+    re-sync to Navidrome — mutagen rewrites the whole file on every rating
+    save, which is the dominant scan disk-write source."""
+
+    def _rows(self, tmp_path):
+        f1 = tmp_path / "t1.mp3"
+        f2 = tmp_path / "t2.mp3"
+        f1.write_bytes(b"")
+        f2.write_bytes(b"")
+        return [
+            _Row({"id": "t1", "stars": 5, "file_path": str(f1)}),
+            _Row({"id": "t2", "stars": 5, "file_path": str(f2)}),
+        ]
+
+    def test_unchanged_rating_skips_file_write_and_navidrome_sync(self, monkeypatch, tmp_path):
+        from services.popularity.stages import finalise_stage as fs
+        import db.engine as db_engine
+        import services.metadata.tag_file_service as tag_file_service
+
+        session = _RecordingSession([
+            [],                                  # album DB score merge
+            [],                                  # album scaling model
+            self._rows(tmp_path),                # batch rating/path load
+        ])
+        monkeypatch.setattr(db_engine, "db_session", _session_factory(session))
+        # t1 → 4★ (CHANGED from stored 5★), t2 → 5★ (UNCHANGED).
+        monkeypatch.setattr(
+            fs, "_assign_stars",
+            lambda track, *args, **kwargs: 4 if track["title"] == "Apocalypse Please" else 5
+        )
+        syncs = []
+        monkeypatch.setattr(fs, "_sync_rating_to_navidrome", lambda tid, stars: syncs.append((tid, stars)) or True)
+        writes = []
+        monkeypatch.setattr(
+            tag_file_service, "write_rating_to_file",
+            lambda path, stars: writes.append((path, stars)) or True,
+        )
+        logged = []
+        monkeypatch.setattr(fs, "log_unified", lambda msg: logged.append(msg))
+
+        results = _album_results()
+        outcome = fs.post_album_star_ratings(
+            album_results=results,
+            artist="Muse",
+            artist_scores=[80.0, 90.0],
+            options={"sync_navidrome": True},
+        )
+
+        # t1 (4★, changed) synced + file rewritten; t2 (5★, unchanged) skipped.
+        assert outcome["navidrome_synced"] == 1
+        assert [t["stars"] for t in results] == [4, 5]
+        assert syncs == [("t1", 4)]
+        assert len(writes) == 1
+        assert writes[0][1] == 4
+        assert "skipped 1 unchanged rating(s)" in " ".join(logged)
+
+        # The batch rating/path load replaced the per-track file-path lookup.
+        batch_loads = [e for e in session.executed if "SELECT id, stars, file_path" in str(e[0])]
+        assert len(batch_loads) == 1
+
+    def test_changed_ratings_still_rewrite_and_sync(self, monkeypatch, tmp_path):
+        from services.popularity.stages import finalise_stage as fs
+        import db.engine as db_engine
+        import services.metadata.tag_file_service as tag_file_service
+
+        session = _RecordingSession([
+            [],                                  # album DB score merge
+            [],                                  # album scaling model
+            self._rows(tmp_path),                # batch rating/path load
+        ])
+        monkeypatch.setattr(db_engine, "db_session", _session_factory(session))
+        # Both tracks get a DIFFERENT rating than stored (stored 5★).
+        monkeypatch.setattr(fs, "_assign_stars", lambda track, *args, **kwargs: 3)
+        syncs = []
+        monkeypatch.setattr(fs, "_sync_rating_to_navidrome", lambda tid, stars: syncs.append((tid, stars)) or True)
+        writes = []
+        monkeypatch.setattr(
+            tag_file_service, "write_rating_to_file",
+            lambda path, stars: writes.append((path, stars)) or True,
+        )
+        logged = []
+        monkeypatch.setattr(fs, "log_unified", lambda msg: logged.append(msg))
+
+        results = _album_results()
+        outcome = fs.post_album_star_ratings(
+            album_results=results,
+            artist="Muse",
+            artist_scores=[80.0, 90.0],
+            options={"sync_navidrome": True},
+        )
+
+        assert outcome["navidrome_synced"] == 2
+        assert len(writes) == 2
+        assert len(syncs) == 2
+
+
 class TestPostAlbumStarRatingsResilience:
     def test_one_track_failure_does_not_abort_album(self, monkeypatch):
         from services.popularity.stages import finalise_stage as fs

@@ -423,6 +423,7 @@ function buildConfigObject() {
       (window.pageConfig && window.pageConfig.tagging) || {},
       {
         write_tags_to_file: getChecked('tagging_write_enabled', true),
+        skip_unchanged_ratings: getChecked('tagging_skip_unchanged', true),
         write_options: {
           ratings_only: getChecked('tagging_ratings_only', false),
           fill_missing_only: getChecked('tagging_fill_missing_only', false),
