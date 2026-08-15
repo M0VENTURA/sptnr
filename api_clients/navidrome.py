@@ -47,6 +47,12 @@ _RETRYABLE_STATUSES = frozenset({429, 502, 503, 504})
 # implement) must fail fast instead of retrying and spamming the log.
 _NON_RETRYABLE_STATUSES = frozenset({400, 401, 403, 404, 405, 409, 410})
 
+# Per-endpoint throttle for the failure log — a misconfigured / unreachable
+# Navidrome must not spam ERROR for every poll attempt.  The first failure in
+# each window logs at ERROR; repeats within the window log at DEBUG.
+_nav_error_log_ts: dict[str, float] = {}
+_NAV_ERROR_LOG_COOLDOWN_SECONDS = 60.0
+
 
 def _md5_hex(value: str) -> str:
     """Return the hex MD5 digest of a string."""
@@ -191,7 +197,24 @@ class NavidromeClient:
                     time.sleep(wait)
                     continue
 
-        logger.error("Navidrome %s failed after %s attempts: %s", endpoint, retries + 1, last_error)
+        # Throttle repeated failures per endpoint: a misconfigured / unreachable
+        # Navidrome must not spam the error log on every poll attempt.  The
+        # first failure in each window logs at ERROR WITH the exception TYPE —
+        # an empty ``str(exc)`` (e.g. a bare httpx timeout) is otherwise
+        # impossible to diagnose; repeats within the window log at DEBUG.
+        _now = time.time()
+        _last = _nav_error_log_ts.get(endpoint, 0.0)
+        if _now - _last >= _NAV_ERROR_LOG_COOLDOWN_SECONDS:
+            _nav_error_log_ts[endpoint] = _now
+            logger.error(
+                "Navidrome %s failed after %s attempts: %s (%s)",
+                endpoint, retries + 1, last_error, type(last_error).__name__,
+            )
+        else:
+            logger.debug(
+                "Navidrome %s failed again (suppressed): %s (%s)",
+                endpoint, last_error, type(last_error).__name__,
+            )
         return {}
 
     # ------------------------------------------------------------------
