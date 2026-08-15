@@ -1303,7 +1303,118 @@ def _sweep_orphaned_genre_playlists_from_navidrome() -> None:
         logger.warning("[finalise_stage] Genre playlist Navidrome sweep failed: %s", exc)
 
 
-def _create_genre_top_track_playlists(prune_only: bool = False) -> int:
+def _genre_playlist_track_genres(
+    row: Any,
+    *,
+    max_genres: int = 3,
+    json_sources: dict[str, str] | None = None,
+    delimited_sources: dict[str, str] | None = None,
+) -> list[str]:
+    """Resolve a track row's TOP weighted genres for genre-playlist pools.
+
+    Shared by the library-wide genre playlist build and the per-album refresh
+    so both use the exact same aggregation weights/synonyms.
+    """
+    from services.enrichment.genre_aggregation_service import aggregate_genres
+    from services.enrichment.genre_tag_aggregator import parse_json_tags, parse_delimited_tags
+
+    _json_sources = json_sources or {
+        "lastfm_tags": "lastfm",
+        "listenbrainz_genres": "listenbrainz",
+        "discogs_genres": "discogs",
+        "musicbrainz_genres": "musicbrainz",
+        "spotify_genres": "spotify",
+    }
+    _delimited_sources = delimited_sources or {
+        "essentia_genres": "essentia",
+        "manual_genres": "manual",
+        "navidrome_genres": "navidrome",
+    }
+
+    source_map: dict[str, list[str]] = {}
+    for column, source in _json_sources.items():
+        raw = row.get(column)
+        if raw:
+            names = [t.get("name") for t in (parse_json_tags(raw) or []) if t.get("name")]
+            if names:
+                source_map[source] = names
+    for column, source in _delimited_sources.items():
+        raw = row.get(column)
+        if raw:
+            names = [t.get("name") for t in (parse_delimited_tags(raw) or []) if t.get("name")]
+            if names:
+                source_map[source] = names
+    if not source_map:
+        return []
+    return aggregate_genres(source_map, max_genres=max_genres)
+
+
+def refresh_genre_playlists_for_album(artist: str, album: str) -> int:
+    """Refresh genre top-tracks playlists for genres touched by ONE album.
+
+    Called at the end of an album scan (per-album star posting) so a genre's
+    playlist reflects tracks that just changed, instead of waiting for the
+    whole library scan to finish.  Only the affected genres' pools are
+    rebuilt (``only_genres``), so unrelated genre playlists are never touched
+    and the stale-file sweep is skipped (the scan-end full pass still handles
+    deletion).  Best-effort; never raises.
+    """
+    if not _genre_playlists_active():
+        return 0
+    try:
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
+
+        try:
+            from helpers.config_helpers import get_config
+            _cfg = (get_config() or {}).get("playlists") or {}
+        except Exception:
+            _cfg = {}
+        min_stars = max(1, int(_cfg.get("genre_playlists_min_stars", 4) or 4))
+
+        rows: list[Any] = []
+        with _db_session() as session:
+            result = session.execute(
+                _text("""
+                    SELECT id, title, file_path, duration, artist, album_artist,
+                           COALESCE(stars, star_rating) AS stars,
+                           COALESCE(popularity, final_score, 0) AS popularity_score,
+                           COALESCE(is_live, 0) AS is_live,
+                           COALESCE(is_compilation, 0) AS is_compilation,
+                           lastfm_tags, listenbrainz_genres, discogs_genres,
+                           musicbrainz_genres, spotify_genres,
+                           essentia_genres, manual_genres, navidrome_genres
+                    FROM tracks
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+                      AND album = :album
+                      AND COALESCE(stars, star_rating) >= :min_stars
+                """),
+                {"artist": artist, "album": album, "min_stars": min_stars},
+            )
+            rows = [dict(r._mapping) for r in result.fetchall() or []]
+        if not rows:
+            return 0
+
+        max_genres = max(1, int(_cfg.get("genre_playlists_max_genres", 3) or 3))
+        affected: set[str] = set()
+        for row in rows:
+            for genre in _genre_playlist_track_genres(row, max_genres=max_genres):
+                affected.add(genre)
+        if not affected:
+            return 0
+        return _create_genre_top_track_playlists(only_genres=affected)
+    except Exception as exc:
+        logger.debug(
+            "[finalise_stage] Per-album genre playlist refresh failed for %s - %s: %s",
+            artist, album, exc,
+        )
+        return 0
+
+
+def _create_genre_top_track_playlists(
+    prune_only: bool = False,
+    only_genres: set[str] | None = None,
+) -> int:
     """Build ``{Genre} - Top Tracks.m3u`` playlists for the whole library.
 
     Library-wide (unlike the per-artist essential collections): every track
@@ -1313,8 +1424,9 @@ def _create_genre_top_track_playlists(prune_only: bool = False) -> int:
     ``playlists.genre_playlists_max_genres``, default 3).  Each genre pool is
     deduplicated by (track artist, normalized title) — the best version wins
     (studio over live, main release over compilation, then stars, then
-    popularity) — sorted by stars DESC then ``final_score`` DESC, and capped
-    at ``playlists.genre_playlists_top_n`` (default 500) tracks.
+    popularity) — and the playlist is sorted by ``final_score`` DESC (most
+    popular first).  Every qualifying track is included: there is no top-N
+    cap.
 
     A playlist is created or refreshed only when the genre pool holds MORE
     than ``playlists.genre_playlists_create_threshold`` (default 100) unique
@@ -1331,6 +1443,12 @@ def _create_genre_top_track_playlists(prune_only: bool = False) -> int:
     and scan start): pools are counted so ``keep_names`` is accurate, but no
     files are written — stale playlists below the delete threshold are still
     removed.
+
+    ``only_genres`` (a set of genre names) restricts the pass to just those
+    genres' playlists: only the listed pools are (re)written and the stale-file
+    sweep is skipped, so unrelated genre playlists are never touched.  Used for
+    the per-album refresh at the end of an album scan where tracks of that
+    genre changed.
     """
     from collections import defaultdict
 
@@ -1342,7 +1460,6 @@ def _create_genre_top_track_playlists(prune_only: bool = False) -> int:
         cfg = (get_config() or {}).get("playlists") or {}
     except Exception:
         cfg = {}
-    top_n = max(1, int(cfg.get("genre_playlists_top_n", 500) or 500))
     min_stars = max(1, int(cfg.get("genre_playlists_min_stars", 4) or 4))
     max_genres = max(1, int(cfg.get("genre_playlists_max_genres", 3) or 3))
     create_threshold = max(1, int(cfg.get("genre_playlists_create_threshold", 100) or 100))
@@ -1391,22 +1508,12 @@ def _create_genre_top_track_playlists(prune_only: bool = False) -> int:
     }
 
     def _track_genres(row: Any) -> list[str]:
-        source_map: dict[str, list[str]] = {}
-        for column, source in _json_sources.items():
-            raw = row.get(column)
-            if raw:
-                names = [t.get("name") for t in (parse_json_tags(raw) or []) if t.get("name")]
-                if names:
-                    source_map[source] = names
-        for column, source in _delimited_sources.items():
-            raw = row.get(column)
-            if raw:
-                names = [t.get("name") for t in (parse_delimited_tags(raw) or []) if t.get("name")]
-                if names:
-                    source_map[source] = names
-        if not source_map:
-            return []
-        return aggregate_genres(source_map, max_genres=max_genres)
+        return _genre_playlist_track_genres(
+            row,
+            max_genres=max_genres,
+            json_sources=_json_sources,
+            delimited_sources=_delimited_sources,
+        )
 
     pools: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
@@ -1423,6 +1530,9 @@ def _create_genre_top_track_playlists(prune_only: bool = False) -> int:
             })
 
     def _tiebreak(item: dict[str, Any]) -> tuple:
+        # Winner-selection order for dedup (best version of a song wins):
+        # studio over live, main release over compilation, then stars, then
+        # popularity.
         return (
             item["is_live"],
             item["is_compilation"],
@@ -1431,11 +1541,24 @@ def _create_genre_top_track_playlists(prune_only: bool = False) -> int:
             item["title"].casefold(),
         )
 
+    def _popularity_order(item: dict[str, Any]) -> tuple:
+        # Final playlist ordering: most popular first (final_score DESC),
+        # then stars DESC, then title.  The playlist pools only contain
+        # 4★/5★ tracks, so popularity is the meaningful primary key.
+        return (
+            -item["score"],
+            -item["stars"],
+            item["title"].casefold(),
+        )
+
     playlists_dir = _essential_playlists_dir()
     os.makedirs(playlists_dir, exist_ok=True)
     written = 0
     keep_names: set[str] = set()
     for genre, tracks in pools.items():
+        if only_genres is not None and genre not in only_genres:
+            continue
+
         # Dedup: (track artist, normalized title) — the same song on the
         # artist's own release and a compilation (different album_artist)
         # counts once; winner by tiebreak.
@@ -1469,8 +1592,7 @@ def _create_genre_top_track_playlists(prune_only: bool = False) -> int:
         if qualifying_count <= create_threshold:
             continue
 
-        winners.sort(key=_tiebreak)
-        winners = winners[:top_n]
+        winners.sort(key=_popularity_order)
         lines = ["#EXTM3U"]
         for t in winners:
             try:
@@ -1496,6 +1618,9 @@ def _create_genre_top_track_playlists(prune_only: bool = False) -> int:
     # never came from this generator are never touched.  Gated by the delete
     # toggle; the state file is refreshed either way so template changes are
     # cleaned up on later scans even while deletion is disabled.
+    # A scoped ``only_genres`` refresh skips the sweep entirely so unrelated
+    # genre playlists are never touched — the full pass at scan end handles
+    # stale-file removal.
     previous_names = _load_genre_playlist_state()
     suffix = _sanitize_name(_genre_playlist_name("GENRE")) \
         .replace("GENRE", "", 1).strip() or ""
@@ -1509,7 +1634,7 @@ def _create_genre_top_track_playlists(prune_only: bool = False) -> int:
         pass
 
     removed: set[str] = set()
-    if delete_enabled:
+    if delete_enabled and only_genres is None:
         for name in candidates:
             if name in keep_names:
                 continue
