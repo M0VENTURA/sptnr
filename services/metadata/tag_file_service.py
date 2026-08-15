@@ -51,7 +51,7 @@ try:
     from mutagen.id3 import (
         ID3,
         APIC, COMM, POPM, TALB, TBPM, TCOM, TCON,
-        TDRC, TIT2, TMOO, TPE1, TPE2, TPOS, TRCK, TXXX
+        TDRC, TIT2, TMOO, TPE1, TPE2, TPOS, TRCK, TSRC, TXXX, USLT
     )
     from mutagen.mp3 import MP3
 except Exception:
@@ -67,7 +67,7 @@ except Exception:
     ID3 = _MissingMutagen
 
     APIC = COMM = POPM = TALB = TBPM = TCOM = TCON = _MissingMutagen
-    TDRC = TIT2 = TMOO = TPE1 = TPE2 = TPOS = TRCK = TXXX = _MissingMutagen
+    TDRC = TIT2 = TMOO = TPE1 = TPE2 = TPOS = TRCK = TSRC = TXXX = USLT = _MissingMutagen
 
     MP3 = _MissingMutagen
 
@@ -83,6 +83,22 @@ _MP3_FRAME_FOR_FIELD = {
     "track_number": "TRCK", "disc_number": "TPOS",
     "year": "TDRC", "date": "TDRC", "genre": "TCON", "genres": "TCON",
     "comment": "COMM", "cover_art_data": "APIC", "rating": "POPM",
+    "isrc": "TSRC", "lyrics": "USLT",
+    "musicbrainz_artistid": "TXXX", "musicbrainz_artist_id": "TXXX",
+    "musicbrainz_albumartistid": "TXXX",
+    "musicbrainz_releasegroupid": "TXXX",
+    "musicbrainz_releasetrackid": "TXXX",
+    "musicbrainz_workid": "TXXX",
+}
+
+# TXXX descriptions for the MusicBrainz ID frames (case-insensitive).
+_MB_TXXX_DESC = {
+    "musicbrainz_artistid": "MUSICBRAINZ ARTIST ID",
+    "musicbrainz_artist_id": "MUSICBRAINZ ARTIST ID",
+    "musicbrainz_albumartistid": "MUSICBRAINZ ALBUM ARTIST ID",
+    "musicbrainz_releasegroupid": "MUSICBRAINZ RELEASE GROUP ID",
+    "musicbrainz_releasetrackid": "MUSICBRAINZ RELEASE TRACK ID",
+    "musicbrainz_workid": "MUSICBRAINZ WORK ID",
 }
 
 
@@ -97,6 +113,17 @@ def _existing_non_empty_fields(file_path: str, tags: Dict[str, Any]) -> set[str]
             from mutagen.id3 import ID3 as _ID3
             tag_obj = _ID3(file_path)
             for field, frame_id in _MP3_FRAME_FOR_FIELD.items():
+                if frame_id == "TXXX":
+                    # TXXX-based MBID frames: presence depends on the specific
+                    # description, not on any TXXX frame existing at all.
+                    desc = _MB_TXXX_DESC.get(field)
+                    if desc and any(
+                        getattr(f, "text", None)
+                        and str(getattr(f, "desc", "") or "").strip().upper() == desc
+                        for f in tag_obj.getall("TXXX")
+                    ):
+                        present.add(field)
+                    continue
                 if frame_id not in tag_obj:
                     continue
                 if any(getattr(f, "text", None) for f in tag_obj.getall(frame_id)):
@@ -306,6 +333,48 @@ def write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
 
                 if value:
                     tag_obj.add(TXXX(encoding=3, desc="MUSICBRAINZ ALBUM ID", text=[str(value)]))
+
+            elif field == "isrc":
+                tag_obj.delall("TSRC")
+
+                if value:
+                    tag_obj.add(TSRC(encoding=3, text=[str(value)]))
+
+            elif field == "lyrics":
+                tag_obj.delall("USLT")
+
+                if value:
+                    tag_obj.add(USLT(encoding=3, lang="eng", desc="", text=[str(value)]))
+
+            elif field in {"musicbrainz_artistid", "musicbrainz_artist_id"}:
+                _clear_txxx_variants(tag_obj, "musicbrainzartistid")
+
+                if value:
+                    tag_obj.add(TXXX(encoding=3, desc="MUSICBRAINZ ARTIST ID", text=[str(value)]))
+
+            elif field == "musicbrainz_albumartistid":
+                _clear_txxx_variants(tag_obj, "musicbrainzalbumartistid")
+
+                if value:
+                    tag_obj.add(TXXX(encoding=3, desc="MUSICBRAINZ ALBUM ARTIST ID", text=[str(value)]))
+
+            elif field == "musicbrainz_releasegroupid":
+                _clear_txxx_variants(tag_obj, "musicbrainzreleasegroupid")
+
+                if value:
+                    tag_obj.add(TXXX(encoding=3, desc="MUSICBRAINZ RELEASE GROUP ID", text=[str(value)]))
+
+            elif field == "musicbrainz_releasetrackid":
+                _clear_txxx_variants(tag_obj, "musicbrainzreleasetrackid")
+
+                if value:
+                    tag_obj.add(TXXX(encoding=3, desc="MUSICBRAINZ RELEASE TRACK ID", text=[str(value)]))
+
+            elif field == "musicbrainz_workid":
+                _clear_txxx_variants(tag_obj, "musicbrainzworkid")
+
+                if value:
+                    tag_obj.add(TXXX(encoding=3, desc="MUSICBRAINZ WORK ID", text=[str(value)]))
 
             elif field == "cover_art_data" and value:
                 tag_obj.delall("APIC")

@@ -672,6 +672,7 @@ def get_tagging_config() -> dict[str, Any]:
     return {
         "write_tags_to_file": write_enabled,
         "skip_unchanged_ratings": bool(tagging.get("skip_unchanged_ratings", True)),
+        "sync_album_tags_on_scan": bool(tagging.get("sync_album_tags_on_scan", True)),
         "ratings_only": bool(opts.get("ratings_only", False)),
         "fill_missing_only": bool(opts.get("fill_missing_only", False)),
         "embed_lyrics": bool(opts.get("embed_lyrics", False)),

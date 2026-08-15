@@ -1020,6 +1020,13 @@
         </div>
         <div class="col-12 col-md-4">
           <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" id="tagging_sync_album_scan" {% if tagging_cfg.get('sync_album_tags_on_scan', True) %}checked{% endif %}>
+            <label class="form-check-label" for="tagging_sync_album_scan">Fill Missing Tags After Album Metadata Scan</label>
+            <small class="d-block text-muted">At the end of each album's metadata scan, write any missing tags (title, artist, album, year, track/disc, genres, ISRC, composer, MusicBrainz IDs) into the audio files — never overwriting existing values — and record per-track corrections for file values that differ from what MusicBrainz resolved. MBIDs are only written when the album's tracklist perfectly matches the MusicBrainz release. Default: <strong>on</strong>.</small>
+          </div>
+        </div>
+        <div class="col-12 col-md-4">
+          <div class="form-check form-switch">
             <input class="form-check-input" type="checkbox" id="tagging_skip_unchanged" {% if tagging_cfg.get('skip_unchanged_ratings', True) %}checked{% endif %}>
             <label class="form-check-label" for="tagging_skip_unchanged">Skip Unchanged Ratings</label>
             <small class="d-block text-muted">When a scan assigns the same star rating a track already has, don't rewrite the audio file or re-sync that rating to Navidrome. This is the biggest disk-write source during scans — each rating save rewrites the entire file. Turn off to always rewrite (e.g. to repair tags after an external tagger). Default: <strong>on</strong>.</small>

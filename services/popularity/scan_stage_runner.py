@@ -1909,6 +1909,33 @@ def run_scan(
                 options=options,
             )
 
+            # ── End-of-album file-tag fill + correction recording ──────
+            # After the per-track MB metadata is persisted (and cover renames
+            # applied), fill MISSING tags on the audio files from the freshly
+            # scanned DB values and record per-track corrections for values
+            # that could be wrong.  MBIDs are only written when the album's
+            # tracklist perfectly matches the MB release.  Metadata and full
+            # passes (which fetched MB metadata) run it; popularity / singles
+            # passes skip it.
+            if _mode_meta or _full_pass:
+                try:
+                    from services.metadata.album_tag_sync_service import sync_album_file_tags
+                    _tag_sync = sync_album_file_tags(artist=artist, album=album)
+                    if _tag_sync and (
+                        _tag_sync.get("files_updated") or _tag_sync.get("corrections_recorded")
+                    ):
+                        log_unified(
+                            f"[ALBUM_TAG_SYNC] {artist} - {album}: filled "
+                            f"{_tag_sync.get('files_updated', 0)} file(s), recorded "
+                            f"{_tag_sync.get('corrections_recorded', 0)} correction(s)"
+                            f"{' (perfect MB match)' if _tag_sync.get('perfect_match') else ''}"
+                        )
+                except Exception as exc:
+                    logger.debug(
+                        "[scan_runner] Album tag sync failed for %s - %s: %s",
+                        artist, album, exc,
+                    )
+
             # Record completion for this album scan
             try:
                 record_scan(scan_type, "completed", message=f"{scan_type} scan: {artist} - {album}", artist=artist, album=album)

@@ -1,0 +1,392 @@
+"""End-of-album file-tag fill + correction recording (album metadata scan).
+
+Runs once per album at the end of a metadata / full scan, AFTER the per-track
+MusicBrainz metadata has been persisted to the ``tracks`` table.  For every
+track of the album it:
+
+  • Fills MISSING file tags from the freshly scanned DB values — title,
+    artist, album, album_artist, year, track/disc number, genres, ISRC,
+    composer/writer.  MusicBrainz IDs (recording / release / release-group /
+    artist / release-track / work) are ALSO filled, but only when the album's
+    local tracklist **perfectly matches** the MusicBrainz release (a 1:1
+    disc+position mapping with an equal track count) — a bad match can never
+    stamp wrong IDs into the files.
+  • Records a per-track correction (``metadata_conflicts``, provider
+    ``"musicbrainz"``) whenever a file tag already holds a value that differs
+    from what the scan resolved — "could be wrong" candidates that the
+    corrections UI can review instead of silently overwriting them.
+
+The file writes are fill-missing-only by design (never overwrite a populated
+frame) and funnel through ``tag_file_service.write_tags_to_file`` so the
+existing ``tagging`` config (master toggle, ratings_only, preserve timestamps)
+is honoured.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import re
+from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+def _norm(s: Any) -> str:
+    """Normalise for value comparison (case + punctuation insensitive)."""
+    return re.sub(r"[^a-z0-9]+", "", str(s or "").lower())
+
+
+def _norm_desc(s: Any) -> str:
+    return "".join(ch for ch in str(s or "").lower() if ch.isalnum())
+
+
+def _num(value: Any, default: int) -> int:
+    s = str(value or "").strip()
+    if not s:
+        return default
+    try:
+        return int(s.split("/")[0].strip())
+    except (TypeError, ValueError):
+        return default
+
+
+# ---------------------------------------------------------------------------
+# File-tag readers
+# ---------------------------------------------------------------------------
+
+def _read_file_values(file_path: str) -> dict[str, str]:
+    """Read the current (non-empty) tag values from an MP3/FLAC file.
+
+    Keys are the tag keys understood by ``tag_file_service`` writers.  Values
+    are the on-disk display strings (used for correction comparisons).
+    """
+    values: dict[str, str] = {}
+
+    def _put(key: str, raw: Any) -> None:
+        s = str(raw or "").strip()
+        if s:
+            values[key] = s
+
+    try:
+        suffix = Path(file_path).suffix.lower()
+        if suffix == ".mp3":
+            from mutagen.id3 import ID3 as _ID3
+
+            tag_obj = _ID3(file_path)
+
+            _FRAME_TEXT = {
+                "title": "TIT2", "artist": "TPE1", "album": "TALB",
+                "album_artist": "TPE2", "composer": "TCOM",
+                "track_number": "TRCK", "disc_number": "TPOS",
+                "year": "TDRC", "genres": "TCON", "isrc": "TSRC",
+                "lyrics": "USLT",
+            }
+            for key, frame_id in _FRAME_TEXT.items():
+                frames = tag_obj.getall(frame_id)
+                for f in frames:
+                    text = getattr(f, "text", None)
+                    if text:
+                        _put(key, ", ".join(str(t) for t in text))
+                        break
+
+            _TXXX_DESC = {
+                "musicbrainz_trackid": "musicbrainztrackid",
+                "musicbrainz_albumid": "musicbrainzalbumid",
+                "musicbrainz_artistid": "musicbrainzartistid",
+                "musicbrainz_albumartistid": "musicbrainzalbumartistid",
+                "musicbrainz_releasegroupid": "musicbrainzreleasegroupid",
+                "musicbrainz_releasetrackid": "musicbrainzreleasetrackid",
+                "musicbrainz_workid": "musicbrainzworkid",
+            }
+            for key, desc_norm in _TXXX_DESC.items():
+                for f in tag_obj.getall("TXXX"):
+                    if _norm_desc(getattr(f, "desc", "")) == desc_norm:
+                        text = getattr(f, "text", None)
+                        if text:
+                            _put(key, str(text[0]))
+                        break
+        elif suffix == ".flac":
+            from mutagen.flac import FLAC as _FLAC
+
+            audio = _FLAC(file_path)
+            _VORBIS_KEY = {
+                "title": "title", "artist": "artist", "album": "album",
+                "album_artist": "albumartist", "composer": "composer",
+                "track_number": "tracknumber", "disc_number": "discnumber",
+                "year": "date", "genres": "genre", "isrc": "isrc",
+                "lyrics": "lyrics",
+                "musicbrainz_trackid": "musicbrainz_trackid",
+                "musicbrainz_albumid": "musicbrainz_albumid",
+                "musicbrainz_artistid": "musicbrainz_artistid",
+                "musicbrainz_albumartistid": "musicbrainz_albumartistid",
+                "musicbrainz_releasegroupid": "musicbrainz_releasegroupid",
+                "musicbrainz_releasetrackid": "musicbrainz_releasetrackid",
+                "musicbrainz_workid": "musicbrainz_workid",
+            }
+            for key, vkey in _VORBIS_KEY.items():
+                vals = audio.get(vkey) or audio.get(vkey.upper()) or []
+                joined = ", ".join(str(v).strip() for v in vals if str(v).strip())
+                _put(key, joined)
+    except Exception as exc:
+        logger.debug("[ALBUM_TAG_SYNC] Could not read tags from %s: %s", file_path, exc)
+    return values
+
+
+# ---------------------------------------------------------------------------
+# DB → file-tag mapping
+# ---------------------------------------------------------------------------
+
+def _db_tag_candidates(track: dict[str, Any], perfect: bool, include_lyrics: bool) -> dict[str, str]:
+    """Map a track's fresh DB values to file-tag keys (empty values omitted).
+
+    MusicBrainz IDs are only candidates when ``perfect`` — the album's
+    tracklist matches the MB release 1:1, so the IDs are trustworthy.
+    """
+    out: dict[str, str] = {}
+
+    def _put(key: str, value: Any) -> None:
+        s = str(value or "").strip()
+        if s and s.lower() not in ("[]", "null", "none", "unknown", "0"):
+            out[key] = s
+
+    _put("title", track.get("title"))
+    _put("artist", track.get("artist"))
+    _put("album", track.get("album"))
+    album_artist = str(track.get("album_artist") or "").strip() or str(track.get("artist") or "").strip()
+    _put("album_artist", album_artist)
+    _put("year", track.get("year"))
+    _put("track_number", track.get("track_number"))
+    _put("disc_number", track.get("disc_number"))
+    _put("isrc", track.get("isrc"))
+
+    # Composer/writer — MB work-rels backfill is stored as a JSON array.
+    writer = track.get("writer")
+    if writer:
+        try:
+            parsed = json.loads(writer) if isinstance(writer, str) else writer
+            if isinstance(parsed, list):
+                names = [str(w).strip() for w in parsed if str(w).strip()]
+                if names:
+                    _put("composer", ", ".join(names))
+            else:
+                _put("composer", writer)
+        except Exception:
+            _put("composer", writer)
+
+    # Genres — comma/backslash-joined in the DB; pass through joined.
+    genres = track.get("genres")
+    if genres:
+        raw = str(genres)
+        parts = [g.strip() for g in re.split(r"[,;\\]+", raw) if g.strip()]
+        if parts:
+            out["genres"] = ", ".join(parts)
+
+    if include_lyrics:
+        _put("lyrics", track.get("lyrics"))
+
+    if perfect:
+        _put("musicbrainz_trackid", track.get("recording_mbid") or track.get("mbid"))
+        _put(
+            "musicbrainz_albumid",
+            track.get("musicbrainz_albumid") or track.get("musicbrainz_album_mbid"),
+        )
+        _put("musicbrainz_releasegroupid", track.get("musicbrainz_releasegroupid"))
+        _put("musicbrainz_artistid", track.get("musicbrainz_artistid"))
+        _put("musicbrainz_releasetrackid", track.get("musicbrainz_releasetrackid"))
+        _put("musicbrainz_workid", track.get("musicbrainz_workid"))
+
+    return out
+
+
+# ---------------------------------------------------------------------------
+# MusicBrainz release match
+# ---------------------------------------------------------------------------
+
+def _resolve_mb_release(tracks: list[dict[str, Any]]) -> tuple[str, dict[tuple[int, int], dict[str, Any]], int]:
+    """Resolve the album's MB release and index its (disc, position) slots.
+
+    Returns ``(release_mbid, {(disc, pos): {recording_mbid, title}}, track_count)``.
+    """
+    release_mbid = ""
+    for t in tracks:
+        release_mbid = str(
+            t.get("musicbrainz_albumid") or t.get("musicbrainz_album_mbid") or ""
+        ).strip()
+        if release_mbid:
+            break
+    if not release_mbid:
+        return "", {}, 0
+
+    try:
+        from api_clients.musicbrainz_http import MusicBrainzHttpClient
+        data = MusicBrainzHttpClient(enabled=True).get_release(release_mbid, inc="recordings") or {}
+    except Exception as exc:
+        logger.debug("[ALBUM_TAG_SYNC] MB release fetch failed for %s: %s", release_mbid, exc)
+        return release_mbid, {}, 0
+
+    index: dict[tuple[int, int], dict[str, Any]] = {}
+    count = 0
+    for medium in data.get("media") or []:
+        if not isinstance(medium, dict):
+            continue
+        try:
+            disc = int(medium.get("position") or 1)
+        except (TypeError, ValueError):
+            disc = 1
+        for trk in medium.get("tracks") or []:
+            if not isinstance(trk, dict):
+                continue
+            count += 1
+            try:
+                pos = int(trk.get("position"))
+            except (TypeError, ValueError):
+                continue
+            rec = trk.get("recording") or {}
+            index[(disc, pos)] = {
+                "recording_mbid": str(rec.get("id") or "").strip(),
+                "title": str(trk.get("title") or "").strip(),
+            }
+    return release_mbid, index, count
+
+
+def _is_perfect_match(tracks: list[dict[str, Any]], mb_index: dict, mb_count: int) -> bool:
+    """Every local track occupies a (disc, position) slot in the MB release
+    and the track counts agree — a 1:1 tracklist match."""
+    if not mb_index or mb_count <= 0 or not tracks:
+        return False
+    for t in tracks:
+        disc = _num(t.get("disc_number"), 1)
+        tn = _num(t.get("track_number"), 0)
+        if tn <= 0 or (disc, tn) not in mb_index:
+            return False
+    return len(tracks) == mb_count
+
+
+# ---------------------------------------------------------------------------
+# Corrections
+# ---------------------------------------------------------------------------
+
+def _record_corrections(
+    track: dict[str, Any],
+    file_values: dict[str, str],
+    db_candidates: dict[str, str],
+) -> int:
+    """Record per-track corrections for file values that differ from the
+    scan-resolved DB values (both non-empty) into ``metadata_conflicts``."""
+    local: dict[str, str] = {}
+    remote: dict[str, str] = {}
+    for key, db_val in db_candidates.items():
+        file_val = str(file_values.get(key) or "").strip()
+        if not file_val:
+            continue  # missing → filled, not a correction
+        if _norm(file_val) == _norm(db_val):
+            continue
+        local[key] = file_val
+        remote[key] = db_val
+    if not remote:
+        return 0
+    try:
+        from services.metadata.conflict_service import detect_and_record_conflicts
+        result = detect_and_record_conflicts(
+            track_id=str(track.get("id") or ""),
+            provider="musicbrainz",
+            local_data=local,
+            remote_data=remote,
+            artist_name=str(track.get("artist") or ""),
+            album_name=str(track.get("album") or ""),
+            track_title=str(track.get("title") or ""),
+        )
+        return int(result.get("conflicts_recorded") or 0)
+    except Exception as exc:
+        logger.debug("[ALBUM_TAG_SYNC] Correction record failed for %s: %s", track.get("id"), exc)
+        return 0
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+def sync_album_file_tags(artist: str, album: str) -> dict[str, Any]:
+    """Fill missing file tags + record corrections for one album's tracks.
+
+    Called at the end of the album metadata scan.  Returns a summary dict:
+    ``{artist, album, perfect_match, files_updated, corrections_recorded,
+    tracks, skipped?}``.  Never raises — all lookups/writes are best-effort.
+    """
+    try:
+        from helpers.config_helpers import get_tagging_config
+        tagging = get_tagging_config()
+        if not tagging.get("sync_album_tags_on_scan", True):
+            return {"skipped": "feature_disabled", "files_updated": 0, "corrections_recorded": 0}
+        include_lyrics = bool(tagging.get("embed_lyrics", False))
+    except Exception:
+        include_lyrics = False
+
+    tracks = _load_fresh_tracks(artist, album)
+    if not tracks:
+        return {"skipped": "no_tracks", "files_updated": 0, "corrections_recorded": 0}
+
+    release_mbid, mb_index, mb_count = _resolve_mb_release(tracks)
+    perfect = bool(release_mbid) and _is_perfect_match(tracks, mb_index, mb_count)
+
+    files_updated = 0
+    corrections_recorded = 0
+    for track in tracks:
+        file_path = str(track.get("file_path") or "").strip()
+        if not file_path or not os.path.exists(file_path):
+            continue
+        file_values = _read_file_values(file_path)
+        db_candidates = _db_tag_candidates(track, perfect, include_lyrics)
+
+        # Fill missing fields only — never overwrite a populated frame.
+        fill = {
+            k: v for k, v in db_candidates.items()
+            if not str(file_values.get(k) or "").strip()
+        }
+        if fill:
+            try:
+                from services.metadata.tag_file_service import write_tags_to_file
+                if write_tags_to_file(file_path, fill):
+                    files_updated += 1
+            except Exception as exc:
+                logger.debug("[ALBUM_TAG_SYNC] Tag fill failed for %s: %s", track.get("id"), exc)
+
+        corrections_recorded += _record_corrections(track, file_values, db_candidates)
+
+    if files_updated or corrections_recorded:
+        logger.info(
+            "[ALBUM_TAG_SYNC] %s - %s: filled %d file(s), %d correction(s) (perfect=%s)",
+            artist, album, files_updated, corrections_recorded, perfect,
+        )
+    return {
+        "artist": artist,
+        "album": album,
+        "perfect_match": perfect,
+        "files_updated": files_updated,
+        "corrections_recorded": corrections_recorded,
+        "tracks": len(tracks),
+    }
+
+
+def _load_fresh_tracks(artist: str, album: str) -> list[dict[str, Any]]:
+    """Re-read the album's tracks from the DB (post-scan values)."""
+    try:
+        from sqlalchemy import text as _text
+        from db.engine import db_session as _db_session
+        with _db_session() as session:
+            rows = session.execute(
+                _text("""
+                    SELECT * FROM tracks
+                    WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)
+                      AND LOWER(COALESCE(album, '')) = LOWER(:album)
+                    ORDER BY COALESCE(disc_number, '1'), COALESCE(track_number, '999')
+                """),
+                {"artist": artist, "album": album},
+            ).mappings().all() or []
+        return [dict(r) for r in rows]
+    except Exception as exc:
+        logger.debug("[ALBUM_TAG_SYNC] Track load failed for %s - %s: %s", artist, album, exc)
+        return []

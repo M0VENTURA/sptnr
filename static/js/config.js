@@ -423,6 +423,7 @@ function buildConfigObject() {
       {
         write_tags_to_file: getChecked('tagging_write_enabled', true),
         skip_unchanged_ratings: getChecked('tagging_skip_unchanged', true),
+        sync_album_tags_on_scan: getChecked('tagging_sync_album_scan', true),
         write_options: {
           ratings_only: getChecked('tagging_ratings_only', false),
           fill_missing_only: getChecked('tagging_fill_missing_only', false),
