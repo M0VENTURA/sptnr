@@ -102,7 +102,7 @@ class MusicBrainzHttpClient:
         return payload if isinstance(payload, dict) else {}
 
     def search_release_groups(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
-        payload = self.get("release-group/", params={"query": query, "fmt": "json", "limit": max(1, min(limit, 25))})
+        payload = self.get("release-group/", params={"query": query, "fmt": "json", "limit": max(1, min(limit, 100))})
         return payload.get("release-groups", []) if isinstance(payload.get("release-groups"), list) else []
 
     def search_releases(self, query: str, limit: int = 10, inc: str = "") -> list[dict[str, Any]]:

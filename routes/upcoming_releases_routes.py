@@ -165,12 +165,17 @@ def api_upcoming_releases():
         # (the same window the Wikipedia scraper imports).  Undated (TBA)
         # rows are kept so genuinely unscheduled releases stay visible, but
         # out-of-window dated rows (e.g. the January block when the current
-        # month is August) are hidden.
+        # month is August) are hidden.  Year-only rows ("2026") are kept when
+        # their year overlaps the window — a partial date compared as a plain
+        # string always sorts before any "YYYY-MM-DD" bound and would
+        # otherwise silently vanish from the feed.
         try:
             from services.upcoming_releases.wikipedia_scraper_service import get_release_window
             _win_start, _win_end = get_release_window()
             _date_clause = (
-                " (release_date IS NULL OR release_date BETWEEN :win_start AND :win_end)"
+                " (release_date IS NULL"
+                " OR release_date BETWEEN :win_start AND :win_end"
+                " OR (LENGTH(release_date) = 4 AND release_date BETWEEN :win_start_year AND :win_end_year))"
             )
             where_sql = (
                 f" WHERE {_date_clause}"
@@ -179,6 +184,8 @@ def api_upcoming_releases():
             )
             params["win_start"] = _win_start.strftime("%Y-%m-%d")
             params["win_end"] = _win_end.strftime("%Y-%m-%d")
+            params["win_start_year"] = _win_start.strftime("%Y")
+            params["win_end_year"] = _win_end.strftime("%Y")
         except Exception:
             pass
 
@@ -195,7 +202,9 @@ def api_upcoming_releases():
         if window_days > 0:
             _today = datetime.now().date()
             _tight_clause = (
-                " (release_date IS NULL OR release_date BETWEEN :win7_start AND :win7_end)"
+                " (release_date IS NULL"
+                " OR release_date BETWEEN :win7_start AND :win7_end"
+                " OR (LENGTH(release_date) = 4 AND release_date BETWEEN :win7_start_year AND :win7_end_year))"
             )
             where_sql = (
                 f" WHERE {_tight_clause}"
@@ -204,6 +213,8 @@ def api_upcoming_releases():
             )
             params["win7_start"] = (_today - timedelta(days=window_days)).isoformat()
             params["win7_end"] = (_today + timedelta(days=window_days)).isoformat()
+            params["win7_start_year"] = str((_today - timedelta(days=window_days)).year)
+            params["win7_end_year"] = str((_today + timedelta(days=window_days)).year)
 
         # Hide releases whose (artist, album) already exists in the local
         # library — normalized comparison (case + punctuation-insensitive)
