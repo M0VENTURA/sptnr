@@ -778,7 +778,7 @@
         </div>
         <div class="col-12 col-md-3">
           <label class="form-label">Max Artists / Run</label>
-          <input type="number" class="form-control" id="daily_musicbrainz_release_max_artists" placeholder="500" value="{{ config.get('features', {}).get('daily_musicbrainz_release_max_artists', 500) }}" min="1" max="5000">
+          <input type="number" class="form-control" id="daily_musicbrainz_release_max_artists" placeholder="5000" value="{{ config.get('features', {}).get('daily_musicbrainz_release_max_artists', 5000) }}" min="1" max="5000">
           <div class="form-text">Cap on how many artists are queried per daily cycle — raise for large libraries, lower to save API quota.</div>
         </div>
         <div class="col-12 col-md-3">

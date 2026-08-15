@@ -349,7 +349,7 @@ function buildConfigObject() {
         daily_musicbrainz_release_scan_enabled: getChecked('daily_musicbrainz_release_scan_enabled', true),
         daily_musicbrainz_release_lookback_days: parseInt(getValue('daily_musicbrainz_release_lookback_days', '42')) || 42,
         daily_musicbrainz_release_lookahead_days: parseInt(getValue('daily_musicbrainz_release_lookahead_days', '120')) || 120,
-        daily_musicbrainz_release_max_artists: parseInt(getValue('daily_musicbrainz_release_max_artists', '500')) || 500,
+        daily_musicbrainz_release_max_artists: parseInt(getValue('daily_musicbrainz_release_max_artists', '5000')) || 5000,
         daily_musicbrainz_release_per_artist_limit: parseInt(getValue('daily_musicbrainz_release_per_artist_limit', '100')) || 100,
         daily_musicbrainz_release_global_limit: parseInt(getValue('daily_musicbrainz_release_global_limit', '50')) || 0,
         upcoming_releases_scan_enabled: getChecked('upcoming_releases_scan_enabled', true),

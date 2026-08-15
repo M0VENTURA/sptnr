@@ -41,8 +41,11 @@ _refresh_lock = threading.Lock()
 _refresh_running = False
 
 # Circuit breaker: abort the whole refresh after this many consecutive
-# per-artist failures (rate limits / network errors usually repeat).
-_MAX_CONSECUTIVE_FAILURES = 5
+# per-artist failures (rate limits / network errors usually repeat).  Kept
+# generous — MusicBrainz search frequently returns transient 503s, and a low
+# threshold meant one flaky minute aborted the entire weekly run, surfacing
+# zero "MusicBrainz Daily Collection" rows.
+_MAX_CONSECUTIVE_FAILURES = 20
 
 # Live progress snapshot shared with the /scrape/status endpoint.
 _status_lock = threading.Lock()
@@ -95,6 +98,25 @@ def _parse_release_date(raw: Any) -> str | None:
         except ValueError:
             continue
     return None
+
+
+def _normalize_release_date(raw: Any) -> str:
+    """Expand a partial MB release date to a comparable ISO date string.
+
+    MusicBrainz stores partial dates ("2026", "2026-07").  Storing them as-is
+    breaks the upcoming-releases page: its window filter compares
+    ``release_date`` with ``BETWEEN :win_start AND :win_end`` as strings, so a
+    year-only row ("2026") silently drops out of the feed even though it is
+    within the scan window.  Expand to the earliest representable date
+    (matching the legacy scraper): "2026" -> "2026-01-01", "2026-07" ->
+    "2026-07-01".  Full dates pass through untouched.
+    """
+    raw = str(raw or "").strip()
+    if len(raw) == 4 and raw[:4].isdigit():
+        return f"{raw}-01-01"
+    if len(raw) == 7 and raw[4] == "-" and raw[:4].isdigit() and raw[5:7].isdigit():
+        return f"{raw}-01"
+    return raw
 
 
 def _feature_int(key: str, default: int) -> int:
@@ -153,7 +175,7 @@ def _fetch_artist_release_groups(
         f'artist:"{escaped}" AND (primarytype:album OR primarytype:ep OR primarytype:single) '
         f"AND firstreleasedate:{query_range}"
     )
-    raw = client.search_release_groups(query, limit=max(1, min(limit, 25)))
+    raw = client.search_release_groups(query, limit=max(1, min(limit, 100)))
     requested_norm = _normalize_artist(artist)
     out: list[dict[str, Any]] = []
     for rg in raw or []:
@@ -202,6 +224,14 @@ def _fetch_global_upcoming_release_groups(
     "new MusicBrainz releases" the user expects alongside Wikipedia matches.
     The same date-window + type filters apply; results are capped by
     ``daily_musicbrainz_release_global_limit`` (config).
+
+    CRITICAL: a single OR'd query ``(primarytype:album OR primarytype:ep OR
+    primarytype:single)`` is NOT used here. MusicBrainz ranks OR'd
+    primary-type terms by relevance and empirically returns ONLY EPs/singles
+    on the first pages, burying every album — the exact "isn't finding new
+    albums" symptom.  Albums are therefore queried FIRST with their own
+    ``primarytype:album`` term (full limit), then EPs/singles are topped up
+    with a separate query only if the album result came up short.
     """
     # Widen the query window so partial first-release dates (year / year-month)
     # indexed as ranges are not silently excluded; exact window re-applied
@@ -210,34 +240,60 @@ def _fetch_global_upcoming_release_groups(
     query_range = (
         f"[{(min_date - query_margin).isoformat()} TO {(max_date + query_margin).isoformat()}]"
     )
-    query = (
-        f"(primarytype:album OR primarytype:ep OR primarytype:single) "
-        f"AND firstreleasedate:{query_range}"
-    )
-    raw = client.search_release_groups(query, limit=max(1, min(limit, 25)))
+
+    def _fetch_type(primary_type: str, fetch_limit: int) -> list[dict[str, Any]]:
+        query = f"primarytype:{primary_type} AND firstreleasedate:{query_range}"
+        return client.search_release_groups(query, limit=max(1, min(fetch_limit, 100)))
+
     out: list[dict[str, Any]] = []
-    for rg in raw or []:
+    # Pass 1 — albums first (the whole point of the discovery pass).
+    for rg in _fetch_type("album", limit) or []:
         if not isinstance(rg, dict):
-            continue
-        primary = str(rg.get("primary-type") or "").lower()
-        if primary not in ("album", "ep", "single"):
             continue
         secondary = [str(s).lower() for s in (rg.get("secondary-types") or []) if s]
         if any(t in secondary for t in _DISQUALIFYING_SECONDARY_TYPES):
             continue
         parsed_date = _parse_release_date(rg.get("first-release-date"))
-        if not parsed_date:
-            continue
-        if not _within_window(parsed_date, min_date, max_date):
+        if not parsed_date or not _within_window(parsed_date, min_date, max_date):
             continue
         out.append({
             "id": str(rg.get("id") or "").strip(),
             "title": str(rg.get("title") or "").strip(),
             "first_release_date": parsed_date,
-            "primary_type": primary,
+            "primary_type": "album",
             "artist": _release_group_artist(rg),
         })
-    return out
+
+    # Pass 2 — EPs/singles only when albums didn't fill the limit.  The same
+    # relevance-ranking quirk that buries albums in the OR'd query would also
+    # hide singles under an EP-heavy top page, so each type is queried with
+    # its own term too.
+    remaining = max(1, min(limit, 100)) - len(out)
+    if remaining > 0:
+        for primary_type in ("ep", "single"):
+            if remaining <= 0:
+                break
+            for rg in _fetch_type(primary_type, remaining) or []:
+                if not isinstance(rg, dict):
+                    continue
+                secondary = [str(s).lower() for s in (rg.get("secondary-types") or []) if s]
+                if any(t in secondary for t in _DISQUALIFYING_SECONDARY_TYPES):
+                    continue
+                parsed_date = _parse_release_date(rg.get("first-release-date"))
+                if not parsed_date or not _within_window(parsed_date, min_date, max_date):
+                    continue
+                out.append({
+                    "id": str(rg.get("id") or "").strip(),
+                    "title": str(rg.get("title") or "").strip(),
+                    "first_release_date": parsed_date,
+                    "primary_type": str(rg.get("primary-type") or primary_type).lower(),
+                    "artist": _release_group_artist(rg),
+                })
+                remaining -= 1
+
+    # Newest first so the feed leads with what is actually coming out.
+    out.sort(key=lambda r: r.get("first_release_date") or "", reverse=True)
+    return out[: max(1, min(limit, 100))]
 
 
 def _release_group_artist(rg: dict[str, Any]) -> str:
@@ -300,7 +356,7 @@ def _persist_artist_releases(artist: str, releases: list[dict[str, Any]]) -> tup
                 _artist, album = sanitize_wiki_entry(artist, rel.get("title") or "")
                 if not album:
                     continue
-                rel_date = rel.get("first_release_date") or ""
+                rel_date = _normalize_release_date(rel.get("first_release_date") or "")
                 release_year = int(rel_date[:4]) if len(rel_date) >= 4 and rel_date[:4].isdigit() else None
                 # Case/punctuation-insensitive dedupe: a Wikipedia-scraped row
                 # with different casing ("Tanzneid" vs "TANZNEID") must merge
@@ -479,7 +535,7 @@ def _persist_global_releases(releases: list[dict[str, Any]]) -> tuple[int, int]:
                 _artist, album = sanitize_wiki_entry(artist_name, rel.get("title") or "")
                 if not album:
                     continue
-                rel_date = rel.get("first_release_date") or ""
+                rel_date = _normalize_release_date(rel.get("first_release_date") or "")
                 release_year = int(rel_date[:4]) if len(rel_date) >= 4 and rel_date[:4].isdigit() else None
                 _mbid = rel.get("id") or None
                 _ptype = str(rel.get("primary_type") or "").strip()
