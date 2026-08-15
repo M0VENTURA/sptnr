@@ -136,7 +136,6 @@ def make_cfg(**overrides) -> dict:
         "genre_playlists_delete_enabled": True,
         "genre_playlists_create_threshold": 100,
         "genre_playlists_delete_threshold": 80,
-        "genre_playlists_top_n": 500,
         "genre_playlists_min_stars": 4,
         "genre_playlists_max_genres": 3,
         "genre_playlists_name_template": "{genre} - Top Tracks",
@@ -437,3 +436,51 @@ class TestNavidromeOrphanSweep:
         fs._delete_genre_playlist_from_navidrome("Alt-Rock - Top Tracks")
 
         assert client.deleted == ["p9"]
+
+
+class TestPopularityOrderingAndNoCap:
+    """Genre playlists are sorted by popularity (most popular first) and
+    include EVERY qualifying track — there is no top-N cap anymore."""
+
+    def _titles(self, content: str) -> list[str]:
+        titles = []
+        for line in content.splitlines():
+            if line.startswith("#EXTINF:"):
+                titles.append(line.split(",", 1)[1].split(" - ", 1)[1])
+        return titles
+
+    def test_sorted_by_popularity_desc(self, run_genre_playlists):
+        rows = []
+        for i in range(1, 121):
+            rows.append({**make_row(f"Song {i}"), "popularity_score": float(i)})
+        written, d = run_genre_playlists(rows)
+        assert written == 1
+        content = _path(d, "Rock - Top Tracks.m3u").read_text(encoding="utf-8")
+        titles = self._titles(content)
+        assert titles == [f"Song {i}" for i in range(120, 0, -1)]
+
+    def test_every_qualifying_track_included_no_cap(self, run_genre_playlists):
+        # 700 qualifying tracks — the old top-N cap (500) would truncate.
+        rows = [make_row(f"Song {i}") for i in range(1, 701)]
+        written, d = run_genre_playlists(rows)
+        assert written == 1
+        content = _path(d, "Rock - Top Tracks.m3u").read_text(encoding="utf-8")
+        assert content.count("#EXTINF") == 700
+
+    def test_lower_star_but_popular_track_ranks_first(self, run_genre_playlists):
+        # Popularity is the primary playlist key: a lower-starred but hugely
+        # popular track outranks a higher-starred quiet track.
+        rows = [
+            {**make_row("Popular 4 Star"), "stars": 4, "popularity_score": 95.0},
+            {**make_row("Quiet 5 Star"), "stars": 5, "popularity_score": 40.0},
+        ]
+        rows += [
+            {**make_row(f"Filler {i}"), "stars": 4, "popularity_score": 30.0}
+            for i in range(1, 119)
+        ]
+        written, d = run_genre_playlists(rows)
+        assert written == 1
+        content = _path(d, "Rock - Top Tracks.m3u").read_text(encoding="utf-8")
+        titles = self._titles(content)
+        assert titles[0] == "Popular 4 Star"
+        assert titles[1] == "Quiet 5 Star"

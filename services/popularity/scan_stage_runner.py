@@ -1923,12 +1923,30 @@ def run_scan(
             _album_results_this = results[_album_start:]
             if _album_results_this:
                 _artist_scan_results.setdefault(artist, []).extend(_album_results_this)
-                _post_album_stars(
+                _posted = _post_album_stars(
                     artist,
                     _album_results_this,
                     is_compilation=bool(album_context.get("is_compilation")),
                     is_va_compilation=bool(album_context.get("is_va_compilation")),
                 )
+
+                # ── Per-album genre playlist refresh ─────────────────────────
+                # Star ratings (and hence which 4★/5★ tracks qualify for a
+                # genre's pool) changed for this album — refresh the genre
+                # top-tracks playlists for the genres its tracks belong to so
+                # they stay current mid-scan instead of only at the very end.
+                # Best-effort; scoped to the affected genres only.
+                if _posted:
+                    try:
+                        from services.popularity.stages.finalise_stage import (
+                            refresh_genre_playlists_for_album,
+                        )
+                        refresh_genre_playlists_for_album(artist, album)
+                    except Exception as exc:
+                        logger.debug(
+                            "[scan_runner] Genre playlist refresh failed for %s - %s: %s",
+                            artist, album, exc,
+                        )
 
         except BaseException as _album_exc:
             # A failure in ANY part of one album's processing (enrichment, the

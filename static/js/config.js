@@ -279,7 +279,6 @@ function buildConfigObject() {
       genre_playlists_delete_enabled: getChecked('playlists_genre_delete_enabled', true),
       genre_playlists_create_threshold: parseInt(getValue('playlists_genre_create_threshold', '100'), 10) || 100,
       genre_playlists_delete_threshold: parseInt(getValue('playlists_genre_delete_threshold', '80'), 10) || 80,
-      genre_playlists_top_n: parseInt(getValue('playlists_genre_top_n', '500'), 10) || 500,
       genre_playlists_min_stars: parseInt(getValue('playlists_genre_min_stars', '4'), 10) || 4,
       genre_playlists_max_genres: parseInt(getValue('playlists_genre_max_genres', '3'), 10) || 3,
       genre_playlists_name_template: getValue('playlists_genre_name_template', '{genre} - Top Tracks')

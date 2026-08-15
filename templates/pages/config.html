@@ -1880,7 +1880,7 @@
       <div class="setting-card">
         <div class="setting-info">
           <label class="setting-title" for="playlists_genre_playlists_enabled">Create Genre Top-Tracks Playlists</label>
-          <p class="setting-description">Library-wide <code>{Genre} - Top Tracks.m3u</code> playlists generated once per scan: every track at or above the Minimum Stars is assigned its top weighted genres, each genre pool is sorted by stars then final score and capped at the Top N, and a playlist is only created when the genre clears the Create Threshold.</p>
+          <p class="setting-description">Library-wide <code>{Genre} - Top Tracks.m3u</code> playlists generated once per scan (and refreshed per album when its tracks change): every track at or above the Minimum Stars is assigned its top weighted genres, each genre pool is sorted by popularity (most popular first), a playlist is only created when the genre clears the Create Threshold, and every qualifying track is included (no top-N cap).</p>
         </div>
         <div class="setting-control">
           <div class="form-check form-switch m-0">
@@ -1924,11 +1924,6 @@
           <label for="playlists_genre_delete_threshold">Delete Threshold</label>
           <input type="number" step="1" min="1" max="5000" class="form-control form-control-sm" id="playlists_genre_delete_threshold" placeholder="80" value="{{ config.get('playlists', {}).get('genre_playlists_delete_threshold', 80) }}">
           <span class="help-text">Delete a genre playlist when it drops below this many qualifying tracks. Default: <strong>80</strong></span>
-        </div>
-        <div class="input-card">
-          <label for="playlists_genre_top_n">Top N Tracks</label>
-          <input type="number" step="50" min="10" max="5000" class="form-control form-control-sm" id="playlists_genre_top_n" placeholder="500" value="{{ config.get('playlists', {}).get('genre_playlists_top_n', 500) }}">
-          <span class="help-text">Max tracks per genre playlist. Default: <strong>500</strong></span>
         </div>
         <div class="input-card">
           <label for="playlists_genre_min_stars">Minimum Stars</label>
