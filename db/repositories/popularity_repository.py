@@ -170,6 +170,42 @@ def save_to_db(track_data: dict) -> bool:
     return run_with_db_lock_retry(operation)
 
 
+def upsert_tracks_bulk(track_payloads: list[dict]) -> bool:
+    """Persist many track payloads in ONE session + commit.
+
+    The per-track scan workers open a fresh ``db_session`` (one transaction,
+    one commit) per track — tens of thousands of transactions for a full
+    library scan.  A bulk upsert runs the whole batch (typically one album)
+    through one session so the writes commit once per album instead of once
+    per row.  Rows that fail validation are logged and skipped so a single
+    malformed payload never aborts the album's remaining writes.
+
+    Args:
+        track_payloads: List of track payload dicts (each must include ``id``).
+
+    Returns:
+        True when every row saved, False if any row failed.
+    """
+    if not track_payloads:
+        return False
+
+    def operation():
+        with db_session() as session:
+            ok = True
+            for payload in track_payloads:
+                try:
+                    _execute_save(session, payload)
+                except Exception as exc:
+                    ok = False
+                    logger.debug(
+                        "Bulk track upsert skipped for %s: %s",
+                        payload.get("id"), exc,
+                    )
+            return ok
+
+    return run_with_db_lock_retry(operation)
+
+
 # ── Columns whose values are owned by the popularity pipeline and must
 #    NEVER be overwritten by a Navidrome metadata sync.  The UPSERT UPDATE
 #    clause skips these columns when ``_navidrome_sync`` is set.

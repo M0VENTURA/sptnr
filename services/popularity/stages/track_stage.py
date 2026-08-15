@@ -1826,19 +1826,33 @@ def process_track(
 
     effective_track = _strip_album_type_columns(track, update_payload)
 
-    try:
-        insert_or_update_track(track_id, effective_track)
-    except Exception as e:
-        # Surface persistence failures — a silent drop here means scores,
-        # single status and metadata never reach the DB while the unified
-        # log still looks healthy (results are returned from memory).
-        logger.warning("[track_stage][DB] Persist failed for %s: %s", track_id, e)
+    # ── Persistence ──────────────────────────────────────────────────────
+    # When the scan runner supplied a deferred-persist sink
+    # (``options["_deferred_persist"]``), push the payload into it instead of
+    # opening a session + commit per track — the runner flushes the whole
+    # album in one ``upsert_tracks_bulk`` call (removes ~50k transactions per
+    # full library scan).  Direct callers (tests, the Navidrome skip pass)
+    # persist inline exactly as before.
+    _persist_sink = options.get("_deferred_persist")
+    if _persist_sink is not None:
         try:
-            log_unified(
-                f"[TRACK_STAGE] {track_artist} - {track_title} → DB persist FAILED: {e}"
-            )
-        except Exception:
-            pass
+            _persist_sink.add({**effective_track, "id": track_id})
+        except Exception as e:
+            logger.debug("[track_stage][DB] Deferred persist enqueue failed for %s: %s", track_id, e)
+    else:
+        try:
+            insert_or_update_track(track_id, effective_track)
+        except Exception as e:
+            # Surface persistence failures — a silent drop here means scores,
+            # single status and metadata never reach the DB while the unified
+            # log still looks healthy (results are returned from memory).
+            logger.warning("[track_stage][DB] Persist failed for %s: %s", track_id, e)
+            try:
+                log_unified(
+                    f"[TRACK_STAGE] {track_artist} - {track_title} → DB persist FAILED: {e}"
+                )
+            except Exception:
+                pass
 
     # -------------------------------------------------------------------------
     # 7. RETURN RESULT

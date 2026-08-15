@@ -47,6 +47,44 @@ def insert_or_update_track(track_id: str, track_data: dict[str, Any]) -> None:
     save_to_db(track_data)
 
 
+def upsert_tracks_bulk(track_payloads: list[dict[str, Any]]) -> bool:
+    """Persist a batch of track payloads in ONE session + commit.
+
+    Delegates to ``popularity_repository.upsert_tracks_bulk``.  The scan
+    runner batches each album's per-track writes into a single transaction
+    instead of one commit per track.
+    """
+    from db.repositories.popularity_repository import upsert_tracks_bulk as _bulk
+    return _bulk(track_payloads)
+
+
+class DeferredPersistSink:
+    """Thread-safe accumulator for deferred per-track DB payloads.
+
+    The scan runner's per-track workers run in a thread pool; each used to
+    open its own session + commit per track (~50k transactions for a full
+    library scan).  With batching enabled the workers push their payload into
+    this sink instead and the runner flushes the whole album in one
+    ``upsert_tracks_bulk`` call.
+    """
+
+    def __init__(self) -> None:
+        import threading
+        self._lock = threading.Lock()
+        self._payloads: list[dict[str, Any]] = []
+
+    def add(self, payload: dict[str, Any]) -> None:
+        """Append one deferred track payload (called from worker threads)."""
+        with self._lock:
+            self._payloads.append(payload)
+
+    def drain(self) -> list[dict[str, Any]]:
+        """Return and clear all accumulated payloads (called on the main thread)."""
+        with self._lock:
+            payloads, self._payloads = self._payloads, []
+        return payloads
+
+
 def get_tracks_by_artist(artist_id: str) -> list[Any]:
     """Return all tracks for an artist_id."""
     with db_session() as session:

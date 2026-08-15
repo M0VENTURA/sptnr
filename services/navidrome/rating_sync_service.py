@@ -11,6 +11,8 @@ concurrent operations that could cause conflicts.
 from __future__ import annotations
 import json
 import os
+from typing import Any
+
 from helpers.config_helpers import get_navidrome_progress_file
 
 NAVIDROME_PROGRESS_FILE = get_navidrome_progress_file()
@@ -44,15 +46,56 @@ def is_sync_ratings_to_all_users_enabled() -> bool:
 
 def sync_track_rating_to_navidrome(track_id: str, stars: int) -> bool:
     try:
+        clients = get_rating_sync_clients()
+        return sync_track_rating_with_clients(clients, track_id, stars)
+    except Exception:
+        return False
+
+
+def get_rating_sync_clients() -> list[Any]:
+    """Build the rating-sync Navidrome clients ONCE per album.
+
+    The old per-track path reconstructed a ``NavidromeClient`` — and reloaded
+    the user list plus the ``sync_ratings_to_all_users`` config flag — for
+    EVERY track on the album.  Building the clients once per album removes
+    that per-track config load / client churn; each ``set_rating`` still makes
+    its own Subsonic HTTP call.  Returns one client per configured user
+    (primary user only unless ``sync_ratings_to_all_users`` is on), or an
+    empty list when Navidrome is not configured.
+    """
+    clients: list[Any] = []
+    try:
         from api_clients.navidrome import NavidromeClient
         users = load_navidrome_users_from_config()
         if not is_sync_ratings_to_all_users_enabled() and users:
             users = users[:1]
-        ok = False
         for user in users:
-            client = NavidromeClient(base_url=user.get("base_url", ""), username=user.get("user", user.get("username", "")), password=user.get("pass", user.get("password", "")))
+            clients.append(
+                NavidromeClient(
+                    base_url=user.get("base_url", ""),
+                    username=user.get("user", user.get("username", "")),
+                    password=user.get("pass", user.get("password", "")),
+                )
+            )
+    except Exception:
+        clients = []
+    return clients
+
+
+def sync_track_rating_with_clients(clients: list[Any], track_id: str, stars: int) -> bool:
+    """Push one track rating through pre-built clients (one per user).
+
+    Reuses the per-album client set from ``get_rating_sync_clients`` so a
+    track's rating is set on every configured user without reconstructing a
+    client (or reloading config) per track.
+    """
+    if not clients:
+        return False
+    ok = False
+    try:
+        for client in clients:
             ok = bool(client.set_rating(track_id, stars)) or ok
-        return ok
     except Exception:
         return False
+    return ok
 

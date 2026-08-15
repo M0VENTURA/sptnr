@@ -637,7 +637,7 @@ def _assign_stars(
 # Navidrome sync
 # ---------------------------------------------------------------------------
 
-def _sync_rating_to_navidrome(track_id: str, stars: int) -> bool:
+def _sync_rating_to_navidrome(track_id: str, stars: int, clients: list[Any] | None = None) -> bool:
     """Push a single track rating to Navidrome.
 
     Delegates to ``services.navidrome.rating_sync_service`` — the single
@@ -646,12 +646,37 @@ def _sync_rating_to_navidrome(track_id: str, stars: int) -> bool:
     it was removed so the two paths can never drift.  ``sync_ratings_to_all_users``
     (default off) controls whether every configured user is updated; when off
     only the primary user is.
+
+    ``clients`` lets the album-level caller reuse ONE set of Navidrome clients
+    across all of the album's tracks (built via ``_build_rating_sync_clients``)
+    instead of reconstructing a client — and reloading config — per track.
+    When omitted, the clients are built per call (fallback for direct callers).
     """
     try:
-        from services.navidrome.rating_sync_service import sync_track_rating_to_navidrome
-        return sync_track_rating_to_navidrome(track_id, stars)
+        from services.navidrome.rating_sync_service import (
+            sync_track_rating_to_navidrome,
+            sync_track_rating_with_clients,
+        )
+        if clients is None:
+            return sync_track_rating_to_navidrome(track_id, stars)
+        return sync_track_rating_with_clients(clients, track_id, stars)
     except Exception:
         return False
+
+
+def _build_rating_sync_clients() -> list[Any]:
+    """Build the Navidrome rating-sync clients once per album.
+
+    ``_sync_rating_to_navidrome`` used to reload the configured user list and
+    construct a fresh ``NavidromeClient`` per track per user.  Building them
+    once per album removes that per-track config load / client churn while
+    keeping the exact same user list and multi-user behaviour.
+    """
+    try:
+        from services.navidrome.rating_sync_service import get_rating_sync_clients
+        return get_rating_sync_clients()
+    except Exception:
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -1767,10 +1792,58 @@ def post_album_star_ratings(
         # Surface the exact weights + era rules this album was rated with.
         _log_scan_weights(artist, album, album_model)
 
-        # Persist to database — one session for the whole album's rating
-        # writes so the per-album assignment commits atomically.
+        # ── Batch-load current rating + file path for the album's tracks ──
+        # Used to (a) skip rewriting the audio file and re-syncing Navidrome
+        # when the star rating is unchanged — the dominant scan disk-write
+        # source (mutagen rewrites the ENTIRE audio file on every rating
+        # save, so a full library scan rewrites every rated file even when
+        # nothing changed) — and (b) replace the per-track file-path DB
+        # lookup with one query for the whole album.
         from sqlalchemy import text as _text
         from db.engine import db_session as _db_session
+        _stored_stars: dict[str, int] = {}
+        _stored_paths: dict[str, str] = {}
+        try:
+            _album_ids = [
+                str(t.get("track_id") or "").strip()
+                for t in album_results
+                if str(t.get("track_id") or "").strip()
+            ]
+            if _album_ids:
+                _ph = ", ".join(f":id{i}" for i in range(len(_album_ids)))
+                with _db_session() as _sess:
+                    _rows = _sess.execute(
+                        _text(
+                            "SELECT id, stars, file_path FROM tracks "
+                            f"WHERE CAST(id AS TEXT) IN ({_ph})"
+                        ),
+                        {f"id{i}": _tid for i, _tid in enumerate(_album_ids)},
+                    ).fetchall() or []
+                for _r in _rows:
+                    _m = _r._mapping
+                    _stored_stars[str(_m.get("id"))] = int(_m.get("stars") or 0)
+                    _p = str(_m.get("file_path") or "").strip()
+                    if _p:
+                        _stored_paths[str(_m.get("id"))] = _p
+        except Exception as exc:
+            logger.debug(
+                "[finalise_stage] Album rating/path batch load failed for %s - %s: %s",
+                artist, album, exc,
+            )
+
+        # When unchanged ratings are skipped (default), tracks whose assigned
+        # star rating matches the stored value do NOT get a full audio-file
+        # rewrite or a redundant Navidrome setRating call.  Set
+        # ``tagging.skip_unchanged_ratings: false`` to always rewrite/sync
+        # (e.g. to repair stale tags after an external tagger touched files).
+        try:
+            from helpers.config_helpers import get_tagging_config
+            _skip_unchanged = bool(get_tagging_config().get("skip_unchanged_ratings", True))
+        except Exception:
+            _skip_unchanged = True
+
+        # Persist to database — one session for the whole album's rating
+        # writes so the per-album assignment commits atomically.
         with _db_session() as session:
             for track in album_results:
                 # Assign star rating — one track's edge case (e.g. a degenerate
@@ -1854,19 +1927,30 @@ def post_album_star_ratings(
                     # Mirror the rating into the audio file tags (POPM/RATING) when
                     # the tagging policy permits — the master toggle and the
                     # ratings_only mode are honoured by ``write_rating_to_file``.
-                    # Silently skipped when tag writes are disabled.
+                    # Silently skipped when tag writes are disabled.  A rating
+                    # that matches the stored value skips the write entirely
+                    # (``tagging.skip_unchanged_ratings``) — mutagen rewrites the
+                    # whole audio file on every save, which is the single biggest
+                    # disk-write source during a library scan.
                     if stars >= 1:
-                        try:
-                            from services.metadata.tag_file_service import (
-                                _get_track_file_path,
-                                _resolve_music_file_path,
-                                write_rating_to_file,
+                        _rating_changed = stars != _stored_stars.get(track_id, 0)
+                        if _skip_unchanged and not _rating_changed:
+                            logger.debug(
+                                "[finalise_stage] Rating unchanged for %s (%d★) — skipping file rewrite",
+                                track_id, stars,
                             )
-                            _abs = _resolve_music_file_path(_get_track_file_path(track_id))
-                            if _abs:
-                                write_rating_to_file(_abs, stars)
-                        except Exception as _tag_err:
-                            logger.debug("[finalise_stage] Rating tag write failed for %s: %s", track_id, _tag_err)
+                        else:
+                            try:
+                                from services.metadata.tag_file_service import (
+                                    _resolve_music_file_path,
+                                    write_rating_to_file,
+                                )
+                                _path = _stored_paths.get(track_id) or ""
+                                _abs = _resolve_music_file_path(_path) if _path else None
+                                if _abs:
+                                    write_rating_to_file(_abs, stars)
+                            except Exception as _tag_err:
+                                logger.debug("[finalise_stage] Rating tag write failed for %s: %s", track_id, _tag_err)
 
             # ── Era 5★ slot cap (scaling model step 4) ────────────────────
             # The era's slot budget limits how many 5★ singles one album can
@@ -2011,23 +2095,45 @@ def post_album_star_ratings(
             logger.debug("[finalise_stage] Favourite rating floor skipped: %s", _floor_err)
 
         # Sync to Navidrome — every rated track (old-system parity:
-        # 1★/2★ ratings and downgrades must propagate too).
+        # 1★/2★ ratings and downgrades must propagate too).  Ratings that
+        # match the stored value are skipped (unless ``skip_unchanged_ratings``
+        # is off) — each setRating is a Subsonic HTTP call + config reload per
+        # user per track, which churns Navidrome and the filesystem during a
+        # full library scan.
         if options.get("sync_navidrome", True):
             _attempted = 0
             _synced = 0
+            _skipped = 0
+            # Build the rating-sync clients ONCE per album — each setRating is
+            # a Subsonic HTTP call, and the old per-track path ALSO reloaded
+            # the user config and constructed a fresh NavidromeClient per track
+            # per user.  Clients are built lazily so an album with nothing to
+            # sync (all unchanged / unrated) never pays the config load.
+            _sync_clients: list[Any] | None = None
             for track in album_results:
                 stars = track.get("stars", 0)
                 if stars < 1:
                     continue  # unrated
                 track_id = str(track.get("track_id") or "")
                 if track_id:
+                    if _skip_unchanged and stars == _stored_stars.get(track_id, 0):
+                        _skipped += 1
+                        continue
                     _attempted += 1
-                    if _sync_rating_to_navidrome(track_id, stars):
+                    if _sync_clients is None:
+                        _sync_clients = _build_rating_sync_clients()
+                    if _sync_rating_to_navidrome(track_id, stars, clients=_sync_clients):
                         navidrome_synced += 1
                         _synced += 1
             _failed = _attempted - _synced
             # Surface successful syncs at INFO — a per-album summary line so
             # the album scan log shows Navidrome output (previously silent).
+            # Unchanged ratings that were skipped are surfaced at INFO too so
+            # operators can see the write/API load the scan avoided.
+            if _skipped > 0:
+                log_unified(
+                    f"🔗 Navidrome: skipped {_skipped} unchanged rating(s) for '{artist}'"
+                )
             if _synced > 0:
                 log_unified(f"🔗 Navidrome: synced {_synced} rating(s) for '{artist}'")
             if _failed > 0:

@@ -645,6 +645,9 @@ def get_tagging_config() -> dict[str, Any]:
     ```yaml
     tagging:
       write_tags_to_file: true        # master toggle: touch audio files at all
+      skip_unchanged_ratings: true    # skip rating tag writes + Navidrome syncs
+                                      # when the scan's star rating is unchanged
+                                      # (biggest disk-write source in scans)
       write_options:
         ratings_only: false           # only write POPM/RATING, never text frames
         fill_missing_only: false      # only fill frames that are currently empty
@@ -668,6 +671,7 @@ def get_tagging_config() -> dict[str, Any]:
         write_enabled = True
     return {
         "write_tags_to_file": write_enabled,
+        "skip_unchanged_ratings": bool(tagging.get("skip_unchanged_ratings", True)),
         "ratings_only": bool(opts.get("ratings_only", False)),
         "fill_missing_only": bool(opts.get("fill_missing_only", False)),
         "embed_lyrics": bool(opts.get("embed_lyrics", False)),
