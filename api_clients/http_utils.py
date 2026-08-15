@@ -40,7 +40,24 @@ class _RetryTransport(httpx.BaseTransport):
         self._retries = retries
         self._backoff = backoff
         self._status_forcelist = status_forcelist
-        self._transport = httpx.HTTPTransport(verify=verify, retries=0)
+        # Explicit pool limits: the shared session serves EVERY provider
+        # (MusicBrainz, Last.fm, ListenBrainz, Discogs, Navidrome, Wikipedia,
+        # search) concurrently from the scan's thread pool plus background
+        # workers.  The httpx defaults (pool_timeout=5s) made bursts fail with
+        # httpx.PoolTimeout whenever the pool was momentarily saturated — the
+        # log showed "(PoolTimeout)" on Navidrome getScanStatus/setRating/
+        # search3 and on the Wikipedia scraper during scans.  A larger pool
+        # and a longer pool_timeout let requests WAIT for a slot instead of
+        # failing.
+        self._transport = httpx.HTTPTransport(
+            verify=verify,
+            retries=0,
+            limits=httpx.Limits(
+                max_connections=200,
+                max_keepalive_connections=50,
+                pool_timeout=30.0,
+            ),
+        )
 
     def handle_request(
         self,
@@ -205,6 +222,11 @@ def create_retry_client(
         timeout=httpx.Timeout(timeout),
         headers=headers,
         verify=verify,
+        limits=httpx.Limits(
+            max_connections=200,
+            max_keepalive_connections=50,
+            pool_timeout=30.0,
+        ),
         event_hooks={
             "request": [_log_request_start],
             "response": [_log_response],

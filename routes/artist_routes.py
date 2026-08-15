@@ -347,7 +347,7 @@ def api_missing_overview():
                 FROM tracks
                 WHERE musicbrainz_album_mbid IS NOT NULL
                   AND (pending_mb_updates IS NOT NULL AND pending_mb_updates != '')
-                GROUP BY artist, album
+                GROUP BY COALESCE(NULLIF(album_artist, ''), artist), album
                 ORDER BY artist, album
             """))
             for row in result.fetchall() or []:
