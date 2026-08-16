@@ -29,6 +29,38 @@ cleanup() {
 # ---------------------------------------------------------------------------
 # Wait for PostgreSQL to accept connections (Docker Compose support)
 # ---------------------------------------------------------------------------
+verify_scan_unwrap_fix() {
+    # Startup self-check for the "Album failed: <Future ...>" fix.
+    # Reports whether the RUNNING code actually contains the Future-unwrap
+    # (the marker string in the source AND what a fresh import loads), so an
+    # operator can tell at a glance whether a stale .pyc / old image is in use.
+    local marker="Album future completed"
+    local file="/app/services/popularity/scan_stage_runner.py"
+    local src_hits=0
+    if [ -f "$file" ]; then
+        src_hits=$(grep -c "$marker" "$file" 2>/dev/null || echo 0)
+    fi
+    local loaded
+    loaded=$(python3 -c "
+import inspect
+try:
+    import services.popularity.scan_stage_runner as m
+    src = inspect.getsource(m)
+    print('PRESENT' if '$marker' in src else 'MISSING')
+except Exception as exc:
+    print('ERROR: %s' % exc)
+" 2>&1)
+
+    log "Scan unwrap fix check: source_marker_hits=${src_hits} loaded_module=${loaded}"
+    if [ "${src_hits:-0}" -ge 1 ] && echo "$loaded" | grep -q "PRESENT"; then
+        ok2 "Scan unwrap fix VERIFIED (source + fresh import both have the unwrap)"
+        return 0
+    fi
+    warn "Scan unwrap fix NOT VERIFIED — source_marker_hits=${src_hits}, loaded_module=${loaded}"
+    warn "If this is the current image, check for stale __pycache__/old image."
+    return 1
+}
+
 wait_for_db() {
     local host="${PG_HOST:-}"
     local port="${PG_PORT:-5432}"
