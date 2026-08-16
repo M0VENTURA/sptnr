@@ -2228,10 +2228,31 @@ def run_scan(
             # ``<Future at ... state=finished returned dict>``.  Surface the
             # future's real exception / result so the log shows the actual cause
             # instead of an opaque object repr.
+            #
+            # NOTE: duck-typed (not ``isinstance(x, concurrent.futures.Future)``)
+            # because the leaked object can be a DIFFERENT future class
+            # (``asyncio.Future``, a library future, or a custom wrapper) whose
+            # repr still reads ``<Future ... state=...>`` but which is NOT a
+            # ``concurrent.futures.Future`` — isinstance would miss it and the
+            # raw repr would survive.  Any object exposing ``exception()`` and
+            # ``result()`` is treated as a future and unwrapped.
             _album_error = _album_exc
             try:
-                import concurrent.futures as _cf
-                if isinstance(_album_exc, _cf.Future):
+                _exc_type = type(_album_exc)
+                _is_future_like = (
+                    hasattr(_album_exc, "exception")
+                    and callable(getattr(_album_exc, "exception", None))
+                    and hasattr(_album_exc, "result")
+                    and callable(getattr(_album_exc, "result", None))
+                )
+                logger.warning(
+                    "[scan_runner] Album failed for '%s - %s' — exception_type=%s.%s future_like=%s repr=%r",
+                    artist, album,
+                    _exc_type.__module__, _exc_type.__name__,
+                    _is_future_like,
+                    _album_exc,
+                )
+                if _is_future_like:
                     _inner = _album_exc.exception()
                     if _inner is not None:
                         _album_error = _inner
