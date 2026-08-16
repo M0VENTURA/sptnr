@@ -46,6 +46,50 @@ from services.catalog.album_classification_service import (
 logger = logging.getLogger(__name__)
 
 
+def _bounded_call(fn, seconds: float, label: str) -> None:
+    """Run ``fn()`` with a hard time budget so a hung call cannot freeze a scan.
+
+    The per-artist prefetch and post-singles enrichment make synchronous
+    network + DB calls through retry-capable clients.  A call whose transport
+    timeout is exhausted (or a DB call waiting on a stale connection / row
+    lock) can otherwise block the album loop for the whole scan — the log
+    showed a full-library scan stalling forever on one album (no deadline on
+    these sections, while the per-track pool already has a 300s one).
+
+    Runs ``fn`` on a daemon thread and abandons it after ``seconds``: the
+    album continues and the worker thread is left to finish/clean up in the
+    background.  Callers treat an abandonment as a best-effort miss (caches
+    simply won't be warm / extras won't apply this pass).
+    """
+    import threading
+
+    if seconds is None or seconds <= 0:
+        fn()
+        return
+
+    _done = threading.Event()
+    _error: dict[str, BaseException] = {}
+
+    def _runner() -> None:
+        try:
+            fn()
+        except BaseException as exc:  # noqa: BLE001 - never let the worker kill the scan
+            _error["exc"] = exc
+        finally:
+            _done.set()
+
+    _thread = threading.Thread(target=_runner, name=f"bounded-{label[:40]}", daemon=True)
+    _thread.start()
+    if not _done.wait(seconds):
+        logger.warning(
+            "[scan_runner] %s exceeded the %ss budget — abandoned, scan continues",
+            label, seconds,
+        )
+        return
+    if _error.get("exc") is not None:
+        logger.warning("[scan_runner] %s failed: %s", label, _error["exc"])
+
+
 def _refresh_album_live_context(album, album_context, track_contexts, album_type_field) -> None:
     """Apply the album TYPE as the authoritative live-album signal.
 
@@ -1443,72 +1487,85 @@ def run_scan(
             if artist and artist != last_prefetch_artist and not _is_compilation_artist:
                 last_prefetch_artist = artist
                 prefetched_popularity = {}
-                if not _singles_pass:
+                # The whole per-artist prefetch is synchronous network + DB
+                # work (Last.fm top-tracks, MusicBrainz + Discogs releases,
+                # missing-release tracklists).  Bounded so a single hung call
+                # (exhausted transport retries, stale DB connection) can never
+                # freeze the album — and hence the whole library scan — here.
+                # On abandonment the caches are simply cold for this artist and
+                # per-track lookups take over.
+                _prefetch_state: dict[str, Any] = {"prefetched_popularity": {}}
+
+                def _prefetch_artist_work() -> None:
+                    if not _singles_pass:
+                        try:
+                            from services.popularity.popularity_cache_service import prefetch_artist_popularity
+                            _prefetch_state["prefetched_popularity"] = prefetch_artist_popularity(
+                                artist=artist,
+                                tracks=artist_all_tracks.get(artist) or track_dicts,
+                                force=bool(options.get("force")),
+                                # Album-scoped scans (no cached data for the artist yet)
+                                # still persist the artist's full top-tracks catalogue in
+                                # one bulk call, so later scans never need per-track calls.
+                                cache_full_catalogue=True,
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "[scan_runner] Popularity cache prefetch failed for %s: %s (falls back to per-track lookups)",
+                                artist, exc,
+                            )
+
+                    # ── Artist release cache (albums/EPs/singles) ────────────
+                    # One MusicBrainz + one Discogs call per artist fills
+                    # artist_release_cache; singles detection then matches local
+                    # tracks against it instead of per-track API searches.
                     try:
-                        from services.popularity.popularity_cache_service import prefetch_artist_popularity
-                        prefetched_popularity = prefetch_artist_popularity(
-                            artist=artist,
-                            tracks=artist_all_tracks.get(artist) or track_dicts,
-                            force=bool(options.get("force")),
-                            # Album-scoped scans (no cached data for the artist yet)
-                            # still persist the artist's full top-tracks catalogue in
-                            # one bulk call, so later scans never need per-track calls.
-                            cache_full_catalogue=True,
-                        )
+                        from services.popularity.release_cache_service import prefetch_artist_releases
+                        _discogs_id = ""
+                        for _t in artist_all_tracks.get(artist) or track_dicts:
+                            _discogs_id = str(_t.get("discogs_artist_id") or "").strip()
+                            if _discogs_id:
+                                break
+                        if not _discogs_id:
+                            # First-ever scan: ``enrich_album`` persists the Discogs
+                            # artist id AFTER the in-memory track dicts were loaded, so
+                            # it is not in them yet. Resolve it here so the Discogs
+                            # release cache (and hence Discogs single confirmation) is
+                            # populated on the first pass instead of a week later.
+                            try:
+                                from services.enrichment.discogs_service import DiscogsService
+                                from helpers.config_helpers import get_config
+                                _tok = ((get_config().get("api_integrations") or {}).get("discogs") or {}).get("token") or ""
+                                if _tok and _tok.lower() not in ("your_discogs_token", "your_token", "placeholder"):
+                                    _discogs_id = str(DiscogsService(token=_tok).get_artist_id(artist) or "").strip()
+                            except Exception as exc:
+                                logger.debug("[scan_runner] Discogs artist id resolution failed for %s: %s", artist, exc)
+                        prefetch_artist_releases(artist, _discogs_id)
                     except Exception as exc:
                         logger.warning(
-                            "[scan_runner] Popularity cache prefetch failed for %s: %s (falls back to per-track lookups)",
+                            "[scan_runner] Release cache prefetch failed for %s: %s (single-title cache unavailable)",
                             artist, exc,
                         )
 
-                # ── Artist release cache (albums/EPs/singles) ────────────────
-                # One MusicBrainz + one Discogs call per artist fills
-                # artist_release_cache; singles detection then matches local
-                # tracks against it instead of per-track API searches.
-                try:
-                    from services.popularity.release_cache_service import prefetch_artist_releases
-                    _discogs_id = ""
-                    for _t in artist_all_tracks.get(artist) or track_dicts:
-                        _discogs_id = str(_t.get("discogs_artist_id") or "").strip()
-                        if _discogs_id:
-                            break
-                    if not _discogs_id:
-                        # First-ever scan: ``enrich_album`` persists the Discogs
-                        # artist id AFTER the in-memory track dicts were loaded, so
-                        # it is not in them yet. Resolve it here so the Discogs
-                        # release cache (and hence Discogs single confirmation) is
-                        # populated on the first pass instead of a week later.
+                    # ── Missing-releases gap detection + tracklists (cache-driven) ─
+                    # Compares the cached releases against the library (title + year),
+                    # persists gaps into missing_releases, and caches tracklists for
+                    # a few of them so they can be queued for download (legacy parity).
+                    # Not singles work — a singles pass skips it (the download queue is
+                    # served by dedicated missing-releases scans).
+                    if not _is_compilation_artist and not _singles_pass:
                         try:
-                            from services.enrichment.discogs_service import DiscogsService
-                            from helpers.config_helpers import get_config
-                            _tok = ((get_config().get("api_integrations") or {}).get("discogs") or {}).get("token") or ""
-                            if _tok and _tok.lower() not in ("your_discogs_token", "your_token", "placeholder"):
-                                _discogs_id = str(DiscogsService(token=_tok).get_artist_id(artist) or "").strip()
+                            from services.popularity.release_cache_service import (
+                                populate_missing_release_tracklists,
+                                refresh_missing_releases_for_artist,
+                            )
+                            refresh_missing_releases_for_artist(artist)
+                            populate_missing_release_tracklists(artist, limit=3)
                         except Exception as exc:
-                            logger.debug("[scan_runner] Discogs artist id resolution failed for %s: %s", artist, exc)
-                    prefetch_artist_releases(artist, _discogs_id)
-                except Exception as exc:
-                    logger.warning(
-                        "[scan_runner] Release cache prefetch failed for %s: %s (single-title cache unavailable)",
-                        artist, exc,
-                    )
+                            logger.debug("[scan_runner] Missing-releases refresh failed for %s: %s", artist, exc)
 
-                # ── Missing-releases gap detection + tracklists (cache-driven) ─
-                # Compares the cached releases against the library (title + year),
-                # persists gaps into missing_releases, and caches tracklists for
-                # a few of them so they can be queued for download (legacy parity).
-                # Not singles work — a singles pass skips it (the download queue is
-                # served by dedicated missing-releases scans).
-                if not _is_compilation_artist and not _singles_pass:
-                    try:
-                        from services.popularity.release_cache_service import (
-                            populate_missing_release_tracklists,
-                            refresh_missing_releases_for_artist,
-                        )
-                        refresh_missing_releases_for_artist(artist)
-                        populate_missing_release_tracklists(artist, limit=3)
-                    except Exception as exc:
-                        logger.debug("[scan_runner] Missing-releases refresh failed for %s: %s", artist, exc)
+                _bounded_call(_prefetch_artist_work, seconds=240, label=f"per-artist prefetch for '{artist}'")
+                prefetched_popularity = _prefetch_state["prefetched_popularity"]
 
             # ── Album-tracklist ListenBrainz lookup (release-first) ──────────
             # The per-MBID prefetch keys on each LOCAL track's recording MBID,
@@ -1929,22 +1986,34 @@ def run_scan(
             # enrichment).  Popularity-only / singles / metadata passes skip
             # it — their enrich_album already ran the right scope.
             if _full_pass:
-                try:
-                    from services.popularity.stages.album_stage import enrich_album_extras
-                    _extra_ctx, _extra_similar, _extra_meta = enrich_album_extras(
-                        artist=artist,
-                        album=album,
-                        album_context=album_context,
-                        album_tracks=tracks,
-                        detected_type=str((album_result or {}).get("detected_album_type") or ""),
-                        options=options,
-                    )
-                    if album_result is not None:
-                        album_result.setdefault("album_context", {}).update(_extra_ctx)
-                        album_result["similar_artists"] = _extra_similar
-                        album_result["artist_metadata"] = _extra_meta
-                except Exception as exc:
-                    logger.debug("[scan_runner] Post-singles enrichment failed for %s - %s: %s", artist, album, exc)
+                # This post-loop enrichment (art cache, artist metadata,
+                # similar artists, Last.fm tags, Discogs ID) is synchronous
+                # network work with no deadline — a hung call froze the scan
+                # on one album indefinitely.  Bounded so the album always
+                # finalises; a miss simply skips that album's extras.
+                def _post_singles_enrichment_work() -> None:
+                    try:
+                        from services.popularity.stages.album_stage import enrich_album_extras
+                        _extra_ctx, _extra_similar, _extra_meta = enrich_album_extras(
+                            artist=artist,
+                            album=album,
+                            album_context=album_context,
+                            album_tracks=tracks,
+                            detected_type=str((album_result or {}).get("detected_album_type") or ""),
+                            options=options,
+                        )
+                        if album_result is not None:
+                            album_result.setdefault("album_context", {}).update(_extra_ctx)
+                            album_result["similar_artists"] = _extra_similar
+                            album_result["artist_metadata"] = _extra_meta
+                    except Exception as exc:
+                        logger.debug("[scan_runner] Post-singles enrichment failed for %s - %s: %s", artist, album, exc)
+
+                _bounded_call(
+                    _post_singles_enrichment_work,
+                    seconds=240,
+                    label=f"post-singles enrichment for '{artist} - {album}'",
+                )
 
             # ── Full cover detection stage (after per-track singles/cover
             #    detection) ────────────────────────────────────────────────
