@@ -754,6 +754,43 @@ def _is_excluded_essential_artist(artist: str) -> bool:
     return str(artist or "").strip().casefold() in _ESSENTIAL_EXCLUDED_ARTISTS
 
 
+def _refresh_all_essential_collections() -> int:
+    """(Re)generate essential collections for every qualifying artist.
+
+    Runs when a scan produced no per-track results (e.g. a singles-only scan
+    where every album was already assessed and skipped): essential collections
+    are DB-driven, so they can be refreshed from stored ratings alone without
+    any per-track results.  Returns the number of artists processed.
+    """
+    from sqlalchemy import text as _text
+    from db.engine import db_session as _db_session
+
+    artists: list[str] = []
+    try:
+        with _db_session() as session:
+            result = session.execute(_text("""
+                SELECT DISTINCT TRIM(COALESCE(NULLIF(album_artist, ''), artist)) AS artist
+                FROM tracks
+                WHERE COALESCE(stars, star_rating) >= 4
+                  AND TRIM(COALESCE(NULLIF(album_artist, ''), artist)) <> ''
+            """))
+            artists = [str(r[0]) for r in result.fetchall() or [] if r and r[0]]
+    except Exception as exc:
+        logger.debug("[finalise_stage] Essential collection artist scan failed: %s", exc)
+        return 0
+
+    refreshed = 0
+    for artist in artists:
+        if _is_excluded_essential_artist(artist):
+            continue
+        try:
+            _create_essential_m3u(artist)
+            refreshed += 1
+        except Exception as exc:
+            logger.debug("[finalise_stage] Essential collection refresh failed for %s: %s", artist, exc)
+    return refreshed
+
+
 def _cleanup_stale_essential_files(playlists_dir: str, artist: str, playlist_name: str) -> None:
     """Remove old NSP essential files so the .m3u is the single source.
 
@@ -2355,6 +2392,29 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
     except Exception:
         pass
     if not results:
+        # No per-track results were produced (all albums were skipped — e.g. a
+        # singles-only scan where every album was already assessed).  The
+        # library-wide playlists (essential collections, genre top-tracks,
+        # New Music) are DB-driven and must still be refreshed so a skip-all
+        # scan does not silently leave them stale.  Star ratings have nothing
+        # to assign here, so only the DB-driven outputs run.
+        try:
+            if _essential_playlists_enabled(options):
+                _essential_refreshed = _refresh_all_essential_collections()
+                if _essential_refreshed:
+                    log_unified(
+                        f"[FINALISE_STAGE] Essential collections refreshed: {_essential_refreshed} artist(s)"
+                    )
+            if _genre_playlists_active():
+                _genre_playlists_written = _create_genre_top_track_playlists()
+                if _genre_playlists_written:
+                    log_unified(
+                        f"[FINALISE_STAGE] Genre playlists: {_genre_playlists_written} file(s) written"
+                    )
+            if _new_music_playlist_enabled():
+                _create_new_music_playlist()
+        except Exception as exc:
+            logger.error("[finalise_stage] Finalisation failed: %s", exc)
         return
 
     # Group results by artist for per-artist stats.  The grouping key is the
