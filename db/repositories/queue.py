@@ -713,6 +713,15 @@ def mark_failed(queue_id: int, reason: str) -> Optional[Dict[str, Any]]:
     ``retry_count`` is bumped each time and ``failure_reason`` records why,
     so ``queue.failure_retry_delay_minutes`` / ``retry_delay_minutes``
     govern the backoff cadence.
+
+    Items the processor already rescheduled are left alone: the search
+    pipeline parks search-misses in ``backed_off`` / ``pending_release``
+    with a 4h/12h/24h (or release-day) ``next_retry_at`` before it returns,
+    and the orchestrator calls ``mark_failed`` on every non-2xx result.
+    Overwriting that would revert the item to ``queued`` with the short
+    generic delay (default 30 min) — pre-release items and 24h-backed-off
+    misses would be re-dispatched within the hour instead of waiting out
+    their scheduled backoff (and ``retry_count`` would double-bump).
     """
     delay = _queue_retry_defaults()[0]
     try:
@@ -720,11 +729,17 @@ def mark_failed(queue_id: int, reason: str) -> Optional[Dict[str, Any]]:
             session.execute(
                 text("""
                     UPDATE download_queue
-                    SET status = 'queued',
-                        failure_reason = :reason,
+                    SET failure_reason = :reason,
                         retry_count = retry_count + 1,
-                        next_retry_at = CURRENT_TIMESTAMP
-                            + (COALESCE(retry_delay_minutes, :delay) * INTERVAL '1 minute'),
+                        next_retry_at = GREATEST(
+                            COALESCE(next_retry_at, CURRENT_TIMESTAMP),
+                            CURRENT_TIMESTAMP
+                                + (COALESCE(retry_delay_minutes, :delay) * INTERVAL '1 minute')
+                        ),
+                        status = CASE
+                            WHEN status IN ('backed_off', 'pending_release') THEN status
+                            ELSE 'queued'
+                        END,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = :qid
                 """),
