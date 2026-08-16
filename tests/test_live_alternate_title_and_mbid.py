@@ -115,11 +115,11 @@ class TestTrackStageLiveTitleWiring:
             def get_recording_popularity(self, mbid):
                 return {"total_listen_count": 1234, "total_user_count": 99}
 
-        # ``track_stage`` locally re-imports MusicBrainzService inside the
-        # popularity pass — patch the SOURCE class (and the module binding for
-        # the metadata pass) so no real API call happens.
-        monkeypatch.setattr("services.enrichment.musicbrainz_service.MusicBrainzService", FakeMB)
-        monkeypatch.setattr(ts, "MusicBrainzService", FakeMB)
+        # ``track_stage`` calls the shared MB service/client (no per-track
+        # ``MusicBrainzService`` construction anymore) — patch those module
+        # bindings so no real API call happens.
+        monkeypatch.setattr(ts, "get_shared_mb_service", lambda *a, **k: FakeMB())
+        monkeypatch.setattr(ts, "get_shared_mb_client", lambda *a, **k: FakeMB())
         monkeypatch.setattr(ts, "ListenBrainzClient", FakeLB)
         monkeypatch.setattr(ts, "LastFmClient", lambda *a, **k: None)
         monkeypatch.setattr(ts, "get_aggregated_lastfm_popularity", lambda *a, **k: {})

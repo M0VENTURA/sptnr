@@ -1566,11 +1566,23 @@ def process_track(
                 _lb_listens = int(listenbrainz_listens or 0)
                 _sd_conf = str(sd_result.get("confidence") or "low").lower()
                 _lb_secondary_boosted = False
+                # A live / acoustic / remix / jam-along / alternate version of
+                # the song has its OWN audience — rolling the canonical studio
+                # Work's listen count onto the version track over-inflates it
+                # (a "(jam-along version)" cut inheriting 1M listens).  Skip
+                # cross-release aggregation for version tracks so only the
+                # core recording's count is used.
+                _is_version_track = (
+                    bool(track.get("is_live"))
+                    or bool(track.get("album_context_live"))
+                    or is_live_or_alternate_track_title(sd_title)
+                )
                 # Work-level aggregation runs first (precise: every recording
                 # of the same song shares the Work); the title-based search
                 # below is the fallback when no Work is resolvable.
                 if (
-                    sd_title and sd_artist and (
+                    not _is_version_track
+                    and sd_title and sd_artist and (
                         (_lf_listeners >= LB_SECONDARY_MIN_LF_LISTENERS
                          and _lb_listens < _lf_listeners * LB_SECONDARY_LF_RATIO)
                         or _sd_conf in ("medium", "high")

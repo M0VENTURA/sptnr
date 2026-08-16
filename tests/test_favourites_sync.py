@@ -38,7 +38,8 @@ def fav_env(monkeypatch):
                 navidrome_id TEXT,
                 is_favourite INTEGER DEFAULT 0,
                 created_at TEXT,
-                updated_at TEXT
+                updated_at TEXT,
+                UNIQUE (username, entity_type, entity_id)
             )
         """))
         conn.execute(text("""
@@ -66,7 +67,9 @@ def fav_env(monkeypatch):
         def __enter__(self):
             return self
 
-        def __exit__(self, *exc):
+        def __exit__(self, exc_type, *exc):
+            if exc_type is None:
+                self._session.commit()
             self._session.close()
             return False
 
@@ -159,7 +162,7 @@ def test_apply_favourite_rating_floor(fav_env, monkeypatch):
     # alice hearts t1; bob is also a configured user (via normalized config).
     set_favourite("alice", "track", "t1", True, navidrome_id="t1")
     monkeypatch.setattr(
-        "services.favourites_service.get_navidrome_users_normalized",
+        "helpers.config_helpers.get_navidrome_users_normalized",
         lambda: [{"user": "alice", "base_url": "http://nd", "pass": "x"}],
     )
     monkeypatch.setattr(svc, "favourite_rating_floor", lambda: 4)

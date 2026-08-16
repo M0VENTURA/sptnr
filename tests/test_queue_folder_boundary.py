@@ -53,7 +53,8 @@ def queue_engine(monkeypatch):
                 release_year INTEGER,
                 status TEXT DEFAULT 'matched',
                 created_at TEXT,
-                updated_at TEXT
+                updated_at TEXT,
+                UNIQUE (folder_path)
             )
         """))
 
@@ -71,7 +72,9 @@ def queue_engine(monkeypatch):
         def __enter__(self):
             return self
 
-        def __exit__(self, *exc):
+        def __exit__(self, exc_type, *exc):
+            if exc_type is None:
+                self._session.commit()
             self._session.close()
             return False
 
@@ -188,13 +191,26 @@ def test_resolve_release_falls_back_to_release_group(monkeypatch):
     get_release raises instead of returning empty."""
     from services.downloads import download_folder_service as svc
 
-    client = _Raise404(
-        group_releases=[
-            {"id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "title": "Album"},
-        ]
+    release_mbid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+    class _GroupOnly(_Raise404):
+        """get_release raises for the release-group MBID but succeeds once the
+        browse step has resolved a concrete release MBID (the current flow
+        re-fetches the resolved release for its full payload)."""
+
+        def get_release(self, release_mbid, inc="", timeout=10.0):
+            if release_mbid == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee":
+                return {"id": release_mbid, "title": "Album"}
+            raise Exception(
+                "Client error '404 Not Found' for url "
+                f"'https://musicbrainz.org/ws/2/release/{release_mbid}'"
+            )
+
+    client = _GroupOnly(
+        group_releases=[{"id": release_mbid, "title": "Album"}],
     )
-    release_data, release_mbid = svc._resolve_release(client, "rg-0000-0000-0000-000000000001")
-    assert release_mbid == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    release_data, resolved = svc._resolve_release(client, "rg-0000-0000-0000-000000000001")
+    assert resolved == release_mbid
     assert release_data is not None
 
 

@@ -157,9 +157,11 @@ class TestAlbumZBandStars:
         assert self._stars(19.0, self._album()) == 2
 
     def test_bottom_outliers_gets_one(self):
-        # Z < -1.2 → 1★.
+        # Z < -1.2 → 1★.  Robust (median+MAD) z is used, so the truly lowest
+        # outlier (score 1 → z ≈ -1.24) is 1★ while score 10 (z ≈ -1.01) still
+        # sits in the 2★ band.
         assert self._stars(1.0, self._album()) == 1
-        assert self._stars(10.0, self._album()) == 1
+        assert self._stars(10.0, self._album()) == 2
 
     def test_zero_score_is_one_star(self):
         assert self._stars(0.0, self._album()) == 1
@@ -178,17 +180,20 @@ class TestAlbumZBandStars:
         # A metadata-tagged single with almost no organic audience (e.g.
         # Discogs-confirmed with 299 listeners and a sub-45 score) must not
         # leapfrog genuinely popular album tracks — it keeps the album-z band
-        # rating instead of the forced single promotion.
+        # rating instead of the forced single promotion.  Robust z puts score
+        # 10 in the 2★ band (z ≈ -1.01).
         from services.popularity.stages import finalise_stage as fs
 
         assert self._stars(
             10.0, self._album(), is_single=True, single_confidence="high",
             lastfm_listeners=299,
-        ) == 1
+        ) == 2
         # The same gate caps the 4★ Single Floor: a non-organic high single
-        # that misses the era bar never exceeds 3★ (era-model path).
+        # that misses the era bar never exceeds 3★ (era-model path).  Score
+        # must be below the organic floor (45.0) — a 46.0 score meets it and
+        # legitimately earns the 4★ Single Floor instead.
         track = self._track(
-            46.0, is_single=True, single_confidence="high", lastfm_listeners=299
+            37.0, is_single=True, single_confidence="high", lastfm_listeners=299
         )
         album_model = {"has_benchmark": True, "era": "peak", "catalog_cutoff": 80.0,
                        "max_5star_slots": 4}
@@ -253,6 +258,15 @@ class TestZStandoutSourceReVerification:
     def _album(self):
         return [40.0, 50.0, 60.0, 70.0, 80.0, 90.0]
 
+    def _artist(self):
+        # The album distribution [40..90] gives the top track a ROBUST
+        # (median+MAD) artist z of ~1.12 — below the 5★ standout gate (1.2),
+        # so ``popularity_z_standout`` could never reach 5★ regardless of the
+        # listener re-verification being tested.  A wider catalogue where the
+        # top track genuinely clears the robust gate (z=1.21) isolates the
+        # listener-verification behaviour these tests exercise.
+        return [1.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0]
+
     def _listeners(self):
         return [10000, 9000, 8000, 7000, 6000, 5000], [20000, 18000, 16000, 14000, 12000, 10000]
 
@@ -268,7 +282,7 @@ class TestZStandoutSourceReVerification:
             90.0, 6000, 12000,
             single_sources='[{"source": "popularity_z_standout", "matched": true, "confidence": 0.5}]',
         )
-        assert fs._assign_stars(track, self._album(), self._album(), lf, lb) == 4
+        assert fs._assign_stars(track, self._album(), self._artist(), lf, lb) == 4
 
     def test_album_top_listeners_honour_standout_flag(self):
         from services.popularity.stages import finalise_stage as fs
@@ -279,7 +293,7 @@ class TestZStandoutSourceReVerification:
             90.0, 10000, 20000,
             single_sources='[{"source": "popularity_z_standout", "matched": true, "confidence": 0.5}]',
         )
-        assert fs._assign_stars(track, self._album(), self._album(), lf, lb) == 5
+        assert fs._assign_stars(track, self._album(), self._artist(), lf, lb) == 5
 
     def test_no_album_listener_distribution_keeps_flag(self):
         from services.popularity.stages import finalise_stage as fs
@@ -289,7 +303,7 @@ class TestZStandoutSourceReVerification:
             90.0, 6000, 12000,
             single_sources='[{"source": "popularity_z_standout", "matched": true, "confidence": 0.5}]',
         )
-        assert fs._assign_stars(track, self._album(), self._album()) == 5
+        assert fs._assign_stars(track, self._album(), self._artist()) == 5
 
     def test_popularity_marked_standout_not_listener_gated(self):
         from services.popularity.stages import finalise_stage as fs
@@ -298,7 +312,7 @@ class TestZStandoutSourceReVerification:
         # The artist top-10% marking is a DIFFERENT proof path (not the
         # z_standout source) — the listener re-verification does not apply.
         track = self._track(90.0, 6000, 12000, popularity_marked=True)
-        assert fs._assign_stars(track, self._album(), self._album(), lf, lb) == 5
+        assert fs._assign_stars(track, self._album(), self._artist(), lf, lb) == 5
 
 
 class TestPostAlbumStarRatings:

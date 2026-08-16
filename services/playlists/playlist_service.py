@@ -60,13 +60,14 @@ def is_safe_playlist_path(file_path: str) -> bool:
     Enforces the playlists-root boundary for any user-supplied ``file_path``
     so the playlist read/export/rename routes cannot be used for path
     traversal (reading/renaming arbitrary files elsewhere on disk).  Uses
-    ``realpath`` so symlink escapes are also rejected.
+    ``realpath`` so symlink escapes are also rejected, and requires the path
+    to actually exist (a missing file is not a readable playlist).
     """
     if not file_path:
         return False
     try:
         from services.infrastructure.filesystem_service import is_path_under_directory
-        return is_path_under_directory(file_path, _playlists_dir())
+        return os.path.isfile(file_path) and is_path_under_directory(file_path, _playlists_dir())
     except Exception:
         return False
 

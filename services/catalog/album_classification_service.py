@@ -43,6 +43,10 @@ ALT_TRACK_PATTERNS = [
     r"\bdemo\b",
     r"\binstrumental\b",
     r"\bkaraoke\b",
+    r"\bjam[- ]along\b",
+    r"\balternate\b",
+    r"\balt\.\b",
+    r"\b(?:single|radio|album)\s+edit\b",
 ]
 
 
@@ -161,10 +165,11 @@ def is_live_or_unplugged_track_title(title: str) -> bool:
 # "Live Fast, Die Young" or "Live In Colour", capping them at 4★.
 _LIVE_ALTERNATE_TRACK_MARKERS = [
     # Trailing parenthetical version tags: "Song (Live)", "Song (Acoustic)",
-    # "Song (Live In Tokyo 1994)", "Song (Unplugged)", "Song (Demo)".
-    r"\((?:live|unplugged|acoustic|orchestral|demo)[^)]*\)",
+    # "Song (Live In Tokyo 1994)", "Song (Unplugged)", "Song (Demo)",
+    # "Song (Jam-Along Version)", "Song (Alternate Version)".
+    r"\((?:live|unplugged|acoustic|orchestral|demo|jam[- ]along|alternate)[^)]*\)",
     # Trailing "- Live" / "- Acoustic" separators.
-    r"[-–—]\s*(?:live|unplugged|acoustic|orchestral|demo)\s*$",
+    r"[-–—]\s*(?:live|unplugged|acoustic|orchestral|demo|jam[- ]along|alternate)\s*$",
 ]
 
 

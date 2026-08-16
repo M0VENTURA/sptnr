@@ -227,14 +227,17 @@ def _first_isrc(recording: dict) -> str | None:
 
     Both the JSON search docs and the recording entity expose ISRCs as an
     ``isrcs`` array; a defensive ``isrc-list`` alias covers older payloads.
+    The value is normalized to a bare 12-char code (see ``normalize_isrc``)
+    so a wrapped ``{A/B}``-style tag list never leaks downstream.
     """
+    from helpers.normalization_service import normalize_isrc
     isrcs = recording.get("isrcs") or recording.get("isrc-list") or []
     if isinstance(isrcs, list):
         for raw in isrcs:
-            value = str(raw or "").strip()
+            value = normalize_isrc(raw)
             if value:
                 return value
-    value = str(recording.get("isrc") or "").strip()
+    value = normalize_isrc(recording.get("isrc"))
     return value or None
 
 

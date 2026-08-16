@@ -69,7 +69,7 @@ class TestTrackStageDoesNotSplitAlbums:
                 ],
             )
 
-        monkeypatch.setattr(ts, "MusicBrainzService", _fake_mb)
+        monkeypatch.setattr(ts, "get_shared_mb_service", _fake_mb)
         monkeypatch.setattr(
             ts,
             "insert_or_update_track",

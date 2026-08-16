@@ -65,7 +65,9 @@ def mb_env(monkeypatch):
         def __enter__(self):
             return self
 
-        def __exit__(self, *exc):
+        def __exit__(self, exc_type, *exc):
+            if exc_type is None:
+                self._session.commit()
             self._session.close()
             return False
 

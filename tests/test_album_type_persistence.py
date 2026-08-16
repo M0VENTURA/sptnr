@@ -153,15 +153,6 @@ class TestEnsureAlbumTypeReturnsVerdict:
 
         monkeypatch.setattr(album_stage, "_persist_album_type_to_tracks", fake_persist)
 
-        class _FakeConn:
-            def cursor(self):
-                return object()
-
-            def close(self):
-                pass
-
-        monkeypatch.setattr(album_stage, "get_db_connection", lambda: _FakeConn())
-
         album_row = {
             "artist": "Muse",
             "album": "Absolution",
@@ -197,7 +188,8 @@ class TestSinglesOnlyPass:
         # record which sections actually ran by wrapping detection entry points.
         monkeypatch.setattr(ts, "LastFmClient", lambda *a, **k: object())
         monkeypatch.setattr(ts, "ListenBrainzClient", lambda *a, **k: object())
-        monkeypatch.setattr(ts, "MusicBrainzService", lambda *a, **k: object())
+        monkeypatch.setattr(ts, "get_shared_mb_service", lambda *a, **k: object())
+        monkeypatch.setattr(ts, "get_shared_mb_client", lambda *a, **k: object())
         monkeypatch.setattr(ts, "get_aggregated_lastfm_popularity", lambda *a, **k: {})
         monkeypatch.setattr(ts, "get_aggregated_listenbrainz_popularity", lambda *a, **k: {})
         monkeypatch.setattr(ts, "get_search_aggregated_lastfm_popularity", lambda *a, **k: {})
@@ -211,7 +203,8 @@ class TestSinglesOnlyPass:
                         listenbrainz_listens=0,
                         lastfm_listeners=0, album_lf_listeners=None,
                         album_lb_listens=None,
-                        discogs_token=None, lastfm_client=None, mb_client=None):
+                        discogs_token=None, lastfm_client=None, mb_client=None,
+                        is_va_compilation=False, **kwargs):
             calls["singles"] += 1
             return {"is_single": True, "confidence": "high", "confidence_score": 0.9,
                     "single_status": "high", "sources": [{"source": "musicbrainz", "matched": True}],
@@ -306,7 +299,8 @@ class TestSinglesPassPopularityGating:
         calls = {"fetch_popularity": 0, "singles": 0}
         monkeypatch.setattr(ts, "LastFmClient", lambda *a, **k: object())
         monkeypatch.setattr(ts, "ListenBrainzClient", lambda *a, **k: object())
-        monkeypatch.setattr(ts, "MusicBrainzService", lambda *a, **k: object())
+        monkeypatch.setattr(ts, "get_shared_mb_service", lambda *a, **k: object())
+        monkeypatch.setattr(ts, "get_shared_mb_client", lambda *a, **k: object())
         monkeypatch.setattr(ts, "get_search_aggregated_lastfm_popularity", lambda *a, **k: {})
 
         def fake_agg(*a, **k):

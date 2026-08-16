@@ -157,9 +157,9 @@ def _first_credit_name(recording: dict) -> str:
 # the SAME performance ("(Single Version)", "(Radio Edit)") are kept.
 _ALTERNATE_PERFORMANCE_RE = re.compile(
     r"\([^)]*\b(?:live|unplugged|acoustic|orchestral|symphonic|demo|instrumental|"
-    r"karaoke|remix|alternate|alt|take|session|rehearsal)\b[^)]*\)"
+    r"karaoke|remix|alternate|alt|take|session|rehearsal|jam[- ]along)\b[^)]*\)"
     r"|\s+-\s*(?:live|unplugged|acoustic|orchestral|symphonic|demo|instrumental|"
-    r"karaoke|remix|alternate|alt|take|session|rehearsal)\s*$",
+    r"karaoke|remix|alternate|alt|take|session|rehearsal|jam[- ]along)\s*$",
     re.IGNORECASE,
 )
 

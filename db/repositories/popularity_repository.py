@@ -37,6 +37,13 @@ def get_tracks_table_columns(session=None) -> set[str]:
 
 def _do_get_tracks_table_columns(session) -> set[str]:
     global _TRACKS_COLUMN_CACHE
+    dialect = (session.get_bind().dialect.name if hasattr(session, "get_bind") else "").lower()
+    if dialect == "sqlite":
+        result = session.execute(text("PRAGMA table_info(tracks)"))
+        _TRACKS_COLUMN_CACHE = {
+            str(row[1]) for row in result.fetchall() or []
+        }
+        return _TRACKS_COLUMN_CACHE
     result = session.execute(
         text("""
             SELECT column_name
@@ -66,6 +73,14 @@ def get_tracks_table_column_types(session=None) -> Dict[str, str]:
 
 def _do_get_tracks_table_column_types(session) -> Dict[str, str]:
     global _TRACKS_COLUMN_TYPES_CACHE
+    dialect = (session.get_bind().dialect.name if hasattr(session, "get_bind") else "").lower()
+    if dialect == "sqlite":
+        result = session.execute(text("PRAGMA table_info(tracks)"))
+        _TRACKS_COLUMN_TYPES_CACHE = {
+            str(row[1]): str(row[2])
+            for row in result.fetchall() or []
+        }
+        return _TRACKS_COLUMN_TYPES_CACHE
     result = session.execute(
         text("""
             SELECT column_name, data_type

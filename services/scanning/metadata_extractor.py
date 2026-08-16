@@ -41,6 +41,15 @@ def _safe_int(value: Any) -> int | None:
         return None
 
 
+def _normalize_isrc(value: Any) -> str:
+    """Normalize a raw ISRC / tag-list value to a bare 12-char code."""
+    try:
+        from helpers.normalization_service import normalize_isrc
+        return normalize_isrc(value)
+    except Exception:
+        return str(value or "").strip()
+
+
 def _safe_float(value: Any) -> float | None:
     """Return value as float, or None if it cannot be converted."""
     try:
@@ -283,7 +292,7 @@ def extract_track_metadata(
         "encodersettings": get_tag_value("encodersettings", "encoder", "encodingsettings") or "",
         "website": get_tag_value("website", "url", "weblink") or "",
         "license": get_tag_value("license") or "",
-        "isrc": get_tag_value("isrc", "musicbrainz_isrc") or "",
+        "isrc": _normalize_isrc(get_tag_value("isrc", "musicbrainz_isrc") or ""),
         "bpm": _safe_int(get_tag_value("bpm", "tempo")),
         "danceability": _safe_float(get_tag_value("danceability")),
         "comment": get_tag_value("comment", "comments", "description") or "",
