@@ -54,8 +54,13 @@ def test_mark_failed_sql_never_parks_as_failed(monkeypatch):
     assert executed, "mark_failed must execute an UPDATE"
     sql, params = executed[0]
     # The failure parks the item back in the queue (pending), never failed.
-    assert "SET status = 'queued'" in sql
+    # Unscheduled items return to 'queued'; items the search pipeline already
+    # parked ('backed_off' / 'pending_release') keep their scheduled status so
+    # a 24h/release-day backoff is never clobbered back to the short delay.
+    assert "'queued'" in sql
     assert "'failed'" not in sql
+    assert "backed_off" in sql
+    assert "pending_release" in sql
     assert params["qid"] == 7
     assert params["reason"] == "peer_no_free_slots"
     # A retry window is always scheduled so the worker re-picks the item.

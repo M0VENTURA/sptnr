@@ -1254,16 +1254,32 @@ def run_scan(
                             return None
 
                     def _collect_skip_results(_pool: Any, _skip_futures: list[Any]) -> list[dict[str, Any] | None]:
-                        collected: list[dict[str, Any] | None] = []
-                        for _f in _skip_futures:
-                            try:
-                                collected.append(_f.result(timeout=300))
-                            except BaseException as _exc:
-                                logger.warning(
-                                    "[scan_runner] Skip singles result timed out for '%s - %s': %s",
-                                    artist, album, _exc,
-                                )
-                                collected.append(None)
+                        collected: list[dict[str, Any] | None] = [None] * len(_skip_futures)
+                        _index_by_future = {_f: _i for _i, _f in enumerate(_skip_futures)}
+                        # ``as_completed`` (not sequential ``result(timeout=300)``)
+                        # so ONE hung worker cannot hold the whole album for
+                        # N×300s — finished workers are collected as they land
+                        # and only genuinely-stuck workers eat the deadline.
+                        try:
+                            for _f in _futures2.as_completed(_skip_futures, timeout=300):
+                                _i = _index_by_future[_f]
+                                try:
+                                    collected[_i] = _f.result()
+                                except BaseException as _exc:
+                                    logger.warning(
+                                        "[scan_runner] Skip singles result failed for '%s - %s': %s",
+                                        artist, album, _exc,
+                                    )
+                                    collected[_i] = None
+                        except _futures2.TimeoutError as _exc:
+                            for _f in _skip_futures:
+                                if not _f.done():
+                                    _i = _index_by_future[_f]
+                                    logger.warning(
+                                        "[scan_runner] Skip singles result timed out for '%s - %s': %s",
+                                        artist, album, _exc,
+                                    )
+                                    collected[_i] = None
                         return collected
 
                     if _scan_threads > 1 and len(_skip_jobs) > 1:
@@ -1787,33 +1803,58 @@ def run_scan(
                     return None
 
             def _collect_track_results(_pool: Any, _track_futures: list[Any]) -> list[dict[str, Any] | None]:
-                """Collect per-track results with a per-track timeout.
+                """Collect per-track results with a per-album deadline.
 
-                ``future.result(timeout=...)`` prevents a single hung worker
-                (DB connection stall, unexpected long API call) from blocking
-                the scan forever at this album — the previous bare ``result()``
-                had no timeout, so one stuck worker froze the whole full scan
-                with no further log output.
+                ``as_completed`` gathers finished workers as they land so one
+                hung worker (DB connection stall, unexpected long API call)
+                cannot block the scan for N×300s sequentially — the whole
+                album now waits at most 300s for the slowest worker.  The
+                previous bare ``result()`` had no timeout (froze the scan) and
+                the later per-future ``result(timeout=300)`` still stalled the
+                album one hung track at a time (e.g. 6 timed-out tracks = 30
+                minutes before the remaining tracks were collected).
                 """
-                collected: list[dict[str, Any] | None] = []
-                for _f in _track_futures:
-                    try:
-                        collected.append(_f.result(timeout=300))
-                    except BaseException as _exc:
-                        # Includes concurrent.futures.TimeoutError AND worker
-                        # BaseExceptions — both must not kill the scan.
-                        logger.warning(
-                            "[scan_runner] Track result collection failed for '%s - %s': %s",
-                            artist, album, _exc,
-                        )
+                collected: list[dict[str, Any] | None] = [None] * len(_track_futures)
+                _index_by_future = {id(_f): _i for _i, _f in enumerate(_track_futures)}
+                try:
+                    for _f in _futures.as_completed(_track_futures, timeout=300):
+                        _i = _index_by_future[_f]
                         try:
-                            log_unified(
-                                f"[TRACK_STAGE] Track timed out or failed for "
-                                f"'{artist} - {album}' — skipping ({_exc})"
+                            collected[_i] = _f.result()
+                        except BaseException as _exc:
+                            # Includes concurrent.futures.TimeoutError AND worker
+                            # BaseExceptions — both must not kill the scan.
+                            logger.warning(
+                                "[scan_runner] Track result collection failed for '%s - %s': %s",
+                                artist, album, _exc,
                             )
-                        except Exception:
-                            pass
-                        collected.append(None)
+                            try:
+                                log_unified(
+                                    f"[TRACK_STAGE] Track timed out or failed for "
+                                    f"'{artist} - {album}' — skipping ({_exc})"
+                                )
+                            except Exception:
+                                pass
+                            collected[_i] = None
+                except _futures.TimeoutError as _exc:
+                    # The album-wide deadline expired — mark whatever is still
+                    # running as failed so the album can finalise with the
+                    # tracks that DID complete.
+                    for _f in _track_futures:
+                        if not _f.done():
+                            _i = _index_by_future[_f]
+                            logger.warning(
+                                "[scan_runner] Track result collection failed for '%s - %s': %s",
+                                artist, album, _exc,
+                            )
+                            try:
+                                log_unified(
+                                    f"[TRACK_STAGE] Track timed out or failed for "
+                                    f"'{artist} - {album}' — skipping ({_exc})"
+                                )
+                            except Exception:
+                                pass
+                            collected[_i] = None
                 return collected
 
             _track_results_ordered: list[dict[str, Any] | None] = []

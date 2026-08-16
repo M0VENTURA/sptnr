@@ -32,8 +32,27 @@ import time
 from typing import Any
 
 from api_clients import session
+from api_clients.http_utils import create_retry_client
 
 logger = logging.getLogger(__name__)
+
+# Dedicated session for Navidrome with its OWN connection pool.
+#
+# The shared ``session`` serves every provider (MusicBrainz, Last.fm,
+# ListenBrainz, Discogs, Wikipedia, …) concurrently from the scan's thread
+# pool.  During a full library scan that pool is constantly saturated, and
+# Navidrome calls queued behind it fail with ``httpx.PoolTimeout`` — each
+# request burns ~47s across the transport's retry attempts, so rating syncs
+# ("5/5 Navidrome rating syncs failed"), scan-status polls and search
+# lookups starve for the whole scan.  Navidrome traffic is low-volume and
+# mostly sequential, so a dedicated pool never contends with the other
+# providers and a slow Navidrome can never be blamed on the scanner.
+navidrome_session = create_retry_client(
+    retries=1,
+    backoff=0.5,
+    status_forcelist=(429, 502, 503, 504),
+    timeout=15.0,
+)
 
 # The shared ``session`` (``create_retry_client(retries=3)``) already retries
 # connection errors and retryable statuses internally with backoff.  Keep the
@@ -119,7 +138,7 @@ class NavidromeClient:
             self.base_url = "http://" + self.base_url
         self.username = username or ""
         self.password = password or ""
-        self.session = http_session or session
+        self.session = http_session or navidrome_session
         self.use_token_auth = use_token_auth
         self._stats_cache: dict[str, Any] | None = None
         self._last_stats_time = 0.0

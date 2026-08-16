@@ -2272,6 +2272,7 @@ def post_album_star_ratings(
             # per user.  Clients are built lazily so an album with nothing to
             # sync (all unchanged / unrated) never pays the config load.
             _sync_clients: list[Any] | None = None
+            _consecutive_failures = 0
             for track in album_results:
                 stars = track.get("stars", 0)
                 if stars < 1:
@@ -2287,6 +2288,19 @@ def post_album_star_ratings(
                     if _sync_rating_to_navidrome(track_id, stars, clients=_sync_clients):
                         navidrome_synced += 1
                         _synced += 1
+                        _consecutive_failures = 0
+                    else:
+                        _consecutive_failures += 1
+                        # A Navidrome that is unreachable / timing out must not
+                        # make every remaining track of the album burn a full
+                        # HTTP timeout each — stop pushing after 3 consecutive
+                        # misses and let the per-album summary surface it.
+                        if _consecutive_failures >= 3:
+                            logger.warning(
+                                "[finalise_stage] Aborting Navidrome rating sync for %s after %d consecutive failures — Navidrome unreachable?",
+                                str(artist or "").strip(), _consecutive_failures,
+                            )
+                            break
             _failed = _attempted - _synced
             # Surface successful syncs at INFO — a per-album summary line so
             # the album scan log shows Navidrome output (previously silent).
