@@ -271,6 +271,75 @@ class TestCreateEssentialM3u:
         assert not (playlists_dir / "Poppy - Essential Collection.m3u").exists()
 
 
+class TestFinaliseScanEmptyResults:
+    """A scan that processed no albums (all skipped, e.g. a singles-only scan
+    where every album was already assessed) must STILL refresh the DB-driven
+    essential collections — the old ``if not results: return`` left them stale.
+    """
+
+    def test_empty_results_still_refreshes_essential_collections(self, monkeypatch):
+        from services.popularity.stages import finalise_stage as fs
+        import db.engine as db_engine
+
+        # DISTINCT artist query returns two qualifying artists; the fake
+        # session just needs to hand back rows for that one execute.
+        class ArtistRowsSession:
+            def execute(self, *args, **kwargs):
+                return _FakeResult([("Poppy",), ("Lord of the Lost",)])
+
+            def commit(self):
+                pass
+
+            def rollback(self):
+                pass
+
+        monkeypatch.setattr(db_engine, "db_session", _session_factory(ArtistRowsSession()))
+
+        refreshed = []
+        monkeypatch.setattr(fs, "_create_essential_m3u", lambda artist: refreshed.append(artist))
+        monkeypatch.setattr(fs, "_essential_playlists_enabled", lambda options: True)
+        monkeypatch.setattr(fs, "_genre_playlists_active", lambda: False)
+        monkeypatch.setattr(fs, "_new_music_playlist_enabled", lambda: False)
+        logged = []
+        monkeypatch.setattr(fs, "log_unified", lambda msg: logged.append(msg))
+
+        fs.finalise_scan(results=[], options={})
+
+        # Every qualifying artist got its essential collection refreshed even
+        # though the scan itself produced no per-track results.
+        assert set(refreshed) == {"Poppy", "Lord of the Lost"}
+        assert any("Essential collections refreshed: 2 artist(s)" in m for m in logged)
+
+    def test_empty_results_respects_essential_playlist_toggle(self, monkeypatch):
+        from services.popularity.stages import finalise_stage as fs
+        import db.engine as db_engine
+
+        class ArtistRowsSession:
+            def execute(self, *args, **kwargs):
+                return _FakeResult([("Poppy",)])
+
+            def commit(self):
+                pass
+
+            def rollback(self):
+                pass
+
+        monkeypatch.setattr(db_engine, "db_session", _session_factory(ArtistRowsSession()))
+
+        refreshed = []
+        monkeypatch.setattr(fs, "_create_essential_m3u", lambda artist: refreshed.append(artist))
+        monkeypatch.setattr(fs, "_essential_playlists_enabled", lambda options: False)
+        monkeypatch.setattr(fs, "_genre_playlists_active", lambda: False)
+        monkeypatch.setattr(fs, "_new_music_playlist_enabled", lambda: False)
+        logged = []
+        monkeypatch.setattr(fs, "log_unified", lambda msg: logged.append(msg))
+
+        fs.finalise_scan(results=[], options={})
+
+        assert refreshed == []
+        assert not any("Essential collections refreshed" in m for m in logged)
+
+
 class TestDedupWinner:
     def _write(self, tmp_path, rows, monkeypatch):
         playlists_dir = tmp_path / "Playlists"
