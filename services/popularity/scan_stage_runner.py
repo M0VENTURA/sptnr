@@ -1644,7 +1644,7 @@ def run_scan(
                     if _mb_entries:
                         _mb_batch = MusicBrainzService(
                             http_client=get_shared_mb_client()
-                        ).lookup_album_metadata(_mb_entries)
+                        ).lookup_album_metadata(_mb_entries, album=str(album or ""))
                         if _mb_batch:
                             # Per-track MB releases for multi-edition albums
                             # ("OPVS NOIR Vol. 3" vs "... (Instrumental)") can

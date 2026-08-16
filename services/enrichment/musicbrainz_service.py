@@ -189,6 +189,39 @@ def get_shared_mb_client() -> MusicBrainzHttpClient:
     return _SHARED_MB_CLIENT
 
 
+def _recording_matches_album(recording: dict, album: str) -> bool:
+    """True when a recording's embedded releases include the scanned album.
+
+    A version / alternate-take / bonus track ("Last Of Us (2018 Version)")
+    must resolve to the recording that actually appears on the album being
+    scanned: MusicBrainz assigns the SAME recording MBID to a remastered
+    reissue (the version track IS the original recording) and a DIFFERENT
+    recording to a full rerecording — so anchoring on the album resolves
+    both cases from MusicBrainz data alone, without guessing whether a
+    "(2018 Version)" marker means "remaster" or "rerecord".
+
+    Both the release title and its release-group title are checked (search
+    docs embed both); the match is fuzzy so a local folder name like
+    "Last Of Us" still matches a release titled "Last of Us" or
+    "Last Of Us (Deluxe)".
+    """
+    if not album or not recording:
+        return False
+    album = str(album).strip().lower()
+    if not album:
+        return False
+    for release in recording.get("releases") or []:
+        candidates = [release.get("title") or ""]
+        rg = release.get("release-group") or {}
+        if rg.get("title"):
+            candidates.append(rg["title"])
+        for candidate in candidates:
+            candidate = str(candidate or "").strip()
+            if candidate and _similarity(candidate, album) >= 0.6:
+                return True
+    return False
+
+
 def _first_isrc(recording: dict) -> str | None:
     """First ISRC from a MusicBrainz recording or search document.
 
@@ -290,8 +323,23 @@ class MusicBrainzService:
             norm_title = normalize_title_for_mbid_match(title)
 
             for rec in recordings:
+                rec_title = str(rec.get("title") or "")
+                # A candidate whose edition annotation differs from the
+                # track's is a DIFFERENT edition — never the match (a
+                # "(Epic Edition)" cut must not resolve to the plain
+                # recording).  Live/remaster/version markers are not
+                # editions and never gate here.
+                if not edition_annotations_compatible(title, rec_title):
+                    continue
+                # Compare both sides BRACKET-PRESERVING: normalising the
+                # candidate with ``normalize_title_for_lookup`` stripped
+                # "(Live)"/"(Acoustic)"/"(2018 Version)" off the candidate
+                # too, so a version-tagged track tied with its plain studio
+                # sibling and resolved to whichever recording MusicBrainz
+                # returned first — leaking that recording's ListenBrainz
+                # counts onto the alternate take.
                 sim = _mbid_similarity(
-                    norm_title, normalize_title_for_lookup(rec.get("title") or "")
+                    norm_title, normalize_title_for_mbid_match(rec_title)
                 )
 
                 if sim > best_score:
@@ -384,6 +432,7 @@ class MusicBrainzService:
         self,
         entries: list[tuple[str, str]],
         candidates_per_entry: int = 5,
+        album: str = "",
     ) -> Dict[str, Dict[str, Any]]:
         """Batch MusicBrainz metadata for many tracks in ONE search per chunk.
 
@@ -395,6 +444,13 @@ class MusicBrainzService:
         the per-track (search + recording lookup) request pair with a single
         batched search.
 
+        ``album`` (the release being scanned) anchors version / alternate-take
+        / bonus tracks ("Last Of Us (2018 Version)") to the recording that
+        actually appears on that album — a remastered reissue reuses the
+        original recording, a full rerecording carries its own — so the tie
+        between a version track and its plain studio sibling resolves to the
+        ALBUM's recording instead of whichever MusicBrainz returned first.
+
         Returns ``{artist.lower()::title.lower(): metadata}`` for matched
         entries only; unmatched entries fall back to the per-track lookup.
         Resolved MBIDs are written to the persistent mbid cache so later
@@ -402,6 +458,7 @@ class MusicBrainzService:
         """
         if not self.enabled:
             return {}
+        album = str(album or "").strip()
         try:
             unique = sorted(
                 {
@@ -436,13 +493,41 @@ class MusicBrainzService:
                     norm_title = normalize_title_for_mbid_match(title)
                     best = None
                     best_score = 0.0
+                    best_album_anchor = False
                     for rec in recordings:
+                        rec_title = str(rec.get("title") or "")
+                        # A candidate whose edition annotation differs from
+                        # the track's is a DIFFERENT edition — never the
+                        # match.  Version/live/remaster markers are not
+                        # editions and never gate here.
+                        if not edition_annotations_compatible(title, rec_title):
+                            continue
+                        # Bracket-preserving BOTH sides (see get_suggested_mbid):
+                        # bracket-stripping the candidate made a version track
+                        # tie with its plain sibling and resolve to whichever
+                        # MusicBrainz returned first — the reported wrong-ISRC
+                        # bug for "(2018 Version)" / alternate-take bonus tracks.
                         sim = _mbid_similarity(
-                            norm_title, normalize_title_for_lookup(rec.get("title") or "")
+                            norm_title, normalize_title_for_mbid_match(rec_title)
                         )
-                        if sim > best_score:
+                        if sim <= 0:
+                            continue
+                        # The scanned album is the tie-breaker: when two
+                        # recordings score the same title similarity, the one
+                        # that actually appears on this album wins (remaster →
+                        # same recording, rerecording → its own).
+                        album_anchor = _recording_matches_album(rec, album)
+                        if (
+                            sim > best_score
+                            or (
+                                sim == best_score
+                                and album_anchor
+                                and not best_album_anchor
+                            )
+                        ):
                             best_score = sim
                             best = rec
+                            best_album_anchor = album_anchor
                     mbid = (best or {}).get("id", "")
                     if not best or not mbid:
                         continue
