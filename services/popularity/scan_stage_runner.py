@@ -1967,7 +1967,7 @@ def run_scan(
                 minutes before the remaining tracks were collected).
                 """
                 collected: list[dict[str, Any] | None] = [None] * len(_track_futures)
-                _index_by_future = {id(_f): _i for _i, _f in enumerate(_track_futures)}
+                _index_by_future = {_f: _i for _i, _f in enumerate(_track_futures)}
                 try:
                     for _f in _futures.as_completed(_track_futures, timeout=300):
                         _i = _index_by_future[_f]
