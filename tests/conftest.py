@@ -12,6 +12,7 @@ Provides:
 from __future__ import annotations
 
 import os
+import re
 import pytest
 
 os.environ.setdefault("CONFIG_PATH", "/dev/null")
@@ -30,14 +31,85 @@ os.environ.setdefault("POPULARLR_NAV_URL", "http://navidrome:4533")
 os.environ.setdefault("POPULARLR_NAV_USER", "admin")
 os.environ.setdefault("POPULARLR_NAV_PASS", "password")
 
+
+def register_sqlite_regexp_replace(engine) -> None:
+    """Register a ``REGEXP_REPLACE`` function on a SQLite engine.
+
+    Postgres-only SQL in the upcoming-releases dedupe
+    (``LOWER(REGEXP_REPLACE(...))``) has no SQLite equivalent.  Registering the
+    function on the test engine lets the unit suite exercise the same SQL the
+    production Postgres path runs.
+    """
+    from sqlalchemy import event
+
+    @event.listens_for(engine, "connect")
+    def _add_regexp_replace(dbapi_connection, connection_record):
+        def _regexp_replace(value, pattern, repl, flags=""):
+            if value is None:
+                return None
+            try:
+                return re.sub(pattern, repl, str(value), flags=re.IGNORECASE if "i" in flags else 0)
+            except Exception:
+                return str(value)
+
+        try:
+            dbapi_connection.create_function("regexp_replace", -1, _regexp_replace)
+        except Exception:
+            pass
+
 # ---------------------------------------------------------------------------
 # App fixture
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(scope="session", autouse=True)
+def _ensure_test_schema():
+    """Create the minimal schema on the shared in-memory SQLite engine.
+
+    ``import app`` runs ``initialize_app_services`` whose
+    ``reset_stale_scan_states`` ORM query fails against the empty test DB;
+    the resulting ``db_session`` transient-error path disposes the engine,
+    wiping an in-memory database.  The ``app`` fixture re-creates the schema
+    after the import, and the function-scoped ``_recreate_test_schema``
+    autouse below re-creates it before EVERY test so any mid-suite dispose
+    never leaves a later test without a ``tracks`` table.
+    """
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _recreate_test_schema():
+    """Idempotently ensure the ``tracks`` table exists before each test.
+
+    The ``db_session`` context manager disposes the engine on any transient
+    DB error (see ``db.engine``), which erases an in-memory database.  Rather
+    than fight the ordering of session-scoped fixtures, this cheap
+    ``checkfirst`` create runs before every single test.
+    """
+    from db.engine import get_engine
+    from db.models import Track
+
+    Track.__table__.create(get_engine(), checkfirst=True)
+    yield
+
+
 @pytest.fixture(scope="session")
 def app():
-    """Create and configure the Quart application for testing."""
+    """Create and configure the Quart application for testing.
+
+    Schema is (re)created AFTER importing ``app`` because the import itself
+    disposes the engine (``initialize_app_services`` → ``reset_stale_scan_states``
+    queries the missing ``scan_states`` table → transient-error dispose wipes
+    the in-memory DB).  The create is idempotent (``checkfirst``), so always
+    running it here survives any earlier dispose.
+    """
     from app import app as _app
+    from db.engine import get_engine
+    from db.models import Track
+
+    engine = get_engine()
+    Track.__table__.create(engine, checkfirst=True)
+    engine._popularr_test_schema_ready = True
+
     _app.config["TESTING"] = True
     return _app
 
@@ -63,7 +135,20 @@ async def unauthed_client(app):
 
 @pytest.fixture
 def db_session():
-    """Provide an isolated database session per test."""
+    """Provide an isolated database session per test.
+
+    The in-memory SQLite engine is shared across connections (StaticPool, see
+    ``db.engine``).  Schema is (re)created idempotently on every request — the
+    ``db_session`` context manager disposes the engine on transient errors,
+    which wipes an in-memory DB, so relying on a one-time flag would leave
+    later tests without a ``tracks`` table.
+    """
+    from db.engine import get_engine
+    from db.models import Track
+
+    engine = get_engine()
+    Track.__table__.create(engine, checkfirst=True)
+
     from db.engine import db_session as _db_session
     with _db_session() as session:
         yield session

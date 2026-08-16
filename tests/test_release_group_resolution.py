@@ -46,6 +46,10 @@ class _FakeHttp:
             raise _Exc("404")
         return self._release_data
 
+    def browse_releases_for_group(self, release_group_mbid: str, inc: str = "media", limit: int = 50):
+        self.calls.append(("browse", "release", {"release-group": release_group_mbid, "inc": inc, "limit": limit}))
+        return self._browse_releases
+
     def get(self, endpoint: str, *, params=None, timeout: float = 10.0):
         self.calls.append(("browse", endpoint, params))
         return {"releases": self._browse_releases}

@@ -213,15 +213,75 @@ def is_postgres_connection(conn: Any) -> bool:
     return "psycopg2" in module_name
 
 
+def is_postgres_session(session: Any) -> bool:
+    """Return True when a SQLAlchemy session is bound to PostgreSQL.
+
+    Used to branch Postgres-only SQL (``INTERVAL``, ``~`` regex, ``::`` casts,
+    ``REGEXP_REPLACE``) against the SQLite equivalent so the unit suite can
+    run the same code paths against an in-memory database.
+    """
+    try:
+        bind = session.get_bind() if hasattr(session, "get_bind") else getattr(session, "bind", None)
+        dialect = getattr(bind, "dialect", None)
+        return (getattr(dialect, "name", "") or "").lower() == "postgresql"
+    except Exception:
+        return False
+
+
+def interval_minutes_expr(session: Any, delay_bind: str) -> str:
+    """Return a SQL fragment adding ``:delay_bind`` minutes to the current time.
+
+    PostgreSQL: ``CURRENT_TIMESTAMP + (:delay * INTERVAL '1 minute')``.
+    SQLite has no ``INTERVAL`` type — ``datetime('now', '+N minutes')`` is
+    the equivalent, so the queue retry logic is testable against SQLite.
+    """
+    if is_postgres_session(session):
+        return f"CURRENT_TIMESTAMP + ({delay_bind} * INTERVAL '1 minute')"
+    return f"datetime('now', '+' || CAST({delay_bind} AS TEXT) || ' minutes')"
+
+
+def numeric_track_number_expr(session: Any, column: str = "track_number") -> str:
+    """Return a portable numeric sort expression for ``column``.
+
+    PostgreSQL uses ``~ '^\\d+$'`` plus a ``::integer`` cast; SQLite supports
+    neither the regex match operator nor the cast syntax, so a
+    ``GLOB`` + ``CAST`` form is emitted instead.  Tracks without a numeric
+    track number sort last (9999).
+    """
+    col = f"TRIM(COALESCE({column}, ''))"
+    if is_postgres_session(session):
+        return (
+            f"CASE WHEN NULLIF({col}, '') ~ '^\\d+$' "
+            f"THEN {col}::integer ELSE 9999 END"
+        )
+    return (
+        f"CASE WHEN {col} <> '' AND {col} GLOB '[0-9]*' "
+        f"THEN CAST({col} AS INTEGER) ELSE 9999 END"
+    )
+
+
 def _is_postgres_connection(conn: Any) -> bool:
     """Backward-compatible alias for older imports."""
     return is_postgres_connection(conn)
 
 
 def row_get(row: Any, key: str, index: int | None = None, default: Any = None) -> Any:
-    """Read a value from dict-like or tuple/list-like DB rows."""
+    """Read a value from dict-like or tuple/list-like DB rows.
+
+    Handles SQLAlchemy 2.0 ``Row`` objects (no ``.keys()``, string indexing
+    raises ``TypeError``): those are read via ``row._mapping[key]``.  Plain
+    dicts, ``RowMapping`` and ``LegacyRow`` (both have ``.keys()``) fall
+    through to the dict path, and plain tuples/lists use positional access.
+    """
     if row is None:
         return default
+    # SQLAlchemy 2.0 Row: string indexing raises, but _mapping[key] works.
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None:
+        try:
+            return mapping[key]
+        except Exception:
+            pass
     if hasattr(row, "keys"):
         try:
             return row.get(key, default)

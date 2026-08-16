@@ -89,6 +89,33 @@ def clean_title(
     return value.strip()
 
 
+def normalize_isrc(value) -> str:
+    """Normalize an ISRC / ISRC-list to a bare 12-char code (uppercased).
+
+    File taggers and API payloads vary wildly: MusicBrainz Picard writes
+    multi-ISRC as ``{A/B}``, others use commas/semicolons/whitespace, and the
+    raw MB API returns arrays.  Downstream consumers use the value as a
+    precise key (the Subsonic ``isrc/{isrc}`` lookup, the finalise ISRC
+    ``GROUP BY``), so a wrapped value silently breaks matching and splits
+    one recording across copies.  Normalizes to the FIRST code found:
+    strips braces, splits on ``/ , ; |`` and whitespace, uppercases, and
+    validates the 12-char ISRC shape.  Returns ``""`` when nothing valid
+    remains.
+    """
+    if value is None:
+        return ""
+    import re as _re
+    raw = str(value)
+    cleaned = _re.sub(r"[{}]", " ", raw)
+    for code in _re.split(r"[/,;|\s]+", cleaned):
+        code = code.strip().upper()
+        if _re.fullmatch(r"[A-Z]{2}[0-9A-Z]{3}[0-9]{7}", code):
+            return code
+    # No full 12-char code survived — fall back to the uppercased raw string
+    # stripped of braces so at least the dominant format (bare code) matches.
+    return _re.sub(r"[{}]", "", raw).strip().upper()
+
+
 def normalize_string(value: str) -> str:
     """
     Canonical normalization:

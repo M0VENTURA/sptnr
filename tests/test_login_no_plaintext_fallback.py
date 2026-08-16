@@ -56,7 +56,7 @@ async def test_login_rejects_stored_password_when_navidrome_down(
     with patch("api_clients.navidrome.NavidromeClient", _DownClient):
         response = await unauthed_client.post(
             "/login",
-            data={"username": "admin", "password": "stored-pass"},
+            form={"username": "admin", "password": "stored-pass"},
         )
     # Not redirected to the dashboard — login failed.
     assert response.status_code in (200, 401)
@@ -78,7 +78,7 @@ async def test_login_succeeds_with_live_navidrome_verification(
     with patch("api_clients.navidrome.NavidromeClient", _UpClient):
         response = await unauthed_client.post(
             "/login",
-            data={"username": "admin", "password": "whatever"},
+            form={"username": "admin", "password": "whatever"},
         )
     assert response.status_code in (301, 302)
     assert "/dashboard" in response.headers.get("Location", "")
@@ -97,7 +97,7 @@ async def test_login_wrong_username_rejected(configured_with_users, unauthed_cli
     with patch("api_clients.navidrome.NavidromeClient", _UpClient):
         response = await unauthed_client.post(
             "/login",
-            data={"username": "nobody", "password": "whatever"},
+            form={"username": "nobody", "password": "whatever"},
         )
     assert "dashboard" not in response.headers.get("Location", "")
 
@@ -113,7 +113,20 @@ def _migration_columns(module_name: str) -> set[str]:
 
     mod = importlib.import_module(module_name)
     src = open(mod.__file__, encoding="utf-8").read()
-    return set(re.findall(r'sa\.Column\("([^"]+)"', src))
+    cols = set(re.findall(r'sa\.Column\("([^"]+)"', src))
+    # Later migrations add columns via ``ALTER TABLE ... ADD COLUMN IF NOT
+    # EXISTS {column_name} {column_ddl}`` (data-driven f-string loop in
+    # 006_sync_upcoming_releases) — the literal names live in the
+    # ``_ensure_columns`` [(name, ddl), ...] list.  Capture those.
+    cols.update(re.findall(r'\("\s*([a-z][a-z0-9_]*)"\s*,\s*"(?:TEXT|INTEGER|BOOLEAN|REAL|TIMESTAMP)', src))
+    # Also match the anchored ALTER TABLE form used by other migrations.
+    cols.update(
+        re.findall(
+            r'ALTER TABLE\s+\w+\s+ADD COLUMN IF NOT EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)',
+            src,
+        )
+    )
+    return cols
 
 
 def test_migration_002_matches_schema_columns():
@@ -121,7 +134,7 @@ def test_migration_002_matches_schema_columns():
     (db/schema.py DDL + COLUMN_REGISTRY) so a fresh migration-only build gets
     the full table — including the columns the writers use (mbid_*,
     artist_in_collection, status, last_seen_at, updated_at, …)."""
-    from db.schema import COLUMN_REGISTRY, _read_yaml  # noqa: F401  (module import sanity)
+    from db.schema import COLUMN_REGISTRY  # noqa: F401  (module import sanity)
 
     migration_cols = _migration_columns("migrations.versions.002_add_upcoming_releases")
 

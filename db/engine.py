@@ -147,9 +147,16 @@ def get_engine() -> Engine:
 
     if sqlite:
         # Only reachable via an explicit DATABASE_URL override (e.g. tests):
-        # SQLite needs NullPool to avoid multi-threaded access errors.
-        kwargs["poolclass"] = NullPool
-        kwargs["connect_args"] = {"check_same_thread": False}
+        # in-memory SQLite needs StaticPool so every session shares the SAME
+        # connection (otherwise each checkout gets a fresh empty database);
+        # file-backed SQLite needs NullPool to avoid multi-threaded errors.
+        if url == "sqlite:///:memory:" or url.endswith(":memory:"):
+            from sqlalchemy.pool import StaticPool
+            kwargs["poolclass"] = StaticPool
+            kwargs["connect_args"] = {"check_same_thread": False}
+        else:
+            kwargs["poolclass"] = NullPool
+            kwargs["connect_args"] = {"check_same_thread": False}
     else:
         # PostgreSQL gets a connection pool sized to scan concurrency
         # (up to 8 parallel track workers plus background services) with

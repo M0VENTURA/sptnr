@@ -106,7 +106,9 @@ def queue_env(monkeypatch):
         def __enter__(self):
             return self
 
-        def __exit__(self, *exc):
+        def __exit__(self, exc_type, *exc):
+            if exc_type is None:
+                self._session.commit()
             self._session.close()
             return False
 
@@ -171,7 +173,7 @@ def test_failed_items_requeue_when_due_uses_delay(queue_env):
 # 3. MusicBrainz artist+album fallback
 # ---------------------------------------------------------------------------
 
-def test_mb_release_group_search_falls_back_to_artist_only(monkeypatch):
+def test_mb_release_group_search_falls_back_to_artist_only(monkeypatch, app):
     """When the combined artist+album query returns nothing, the route falls
     back to an artist-only search so 'Spice Girls' + 'Greatest Hits' still
     surfaces results (old_system parity)."""
@@ -228,7 +230,16 @@ def test_mb_release_group_search_falls_back_to_artist_only(monkeypatch):
     monkeypatch.setattr(routes, "jsonify", _fake_jsonify)
 
     import asyncio
-    asyncio.run(routes.api_musicbrainz_search())
+
+    async def _run():
+        ctx = app.app_context()
+        await ctx.push()
+        try:
+            return await routes.api_musicbrainz_search()
+        finally:
+            await ctx.pop()
+
+    asyncio.run(_run())
 
     payload = captured.get("payload") or {}
     assert payload.get("success") is True

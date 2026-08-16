@@ -15,7 +15,7 @@ from datetime import datetime
 from sqlalchemy import text
 
 from db.engine import db_session
-from db.utils import row_get
+from db.utils import interval_minutes_expr, numeric_track_number_expr, row_get
 
 from helpers.config_helpers import get_config
 from services.downloads.download_scan_service import resolve_downloads_dir
@@ -423,6 +423,7 @@ def get_active_queue(limit: int = 200) -> List[Dict[str, Any]]:
     )
     try:
         with db_session() as session:
+            track_num_expr = numeric_track_number_expr(session)
             result = session.execute(
                 text(f"""
                     SELECT *
@@ -435,8 +436,7 @@ def get_active_queue(limit: int = 200) -> List[Dict[str, Any]]:
                              -- so the queue list under an album folder shows
                              -- the album's tracks in order instead of the
                              -- arbitrary insert sequence.
-                             CASE WHEN NULLIF(TRIM(COALESCE(track_number, '')), '') ~ '^\\d+$'
-                                  THEN TRIM(track_number)::integer ELSE 9999 END,
+                             {track_num_expr},
                              id ASC
                     LIMIT :limit
                 """),
@@ -514,16 +514,17 @@ def requeue_due_failed_items(limit: int = 50) -> List[Dict[str, Any]]:
             )
             rows = [dict(r._mapping) for r in result.fetchall()]
             _delay_default = _queue_retry_defaults()[0]
+            next_retry_expr = interval_minutes_expr(session, ":delay")
             for row in rows:
                 qid = row.get("id")
                 delay_minutes = max(1, int(row.get("retry_delay_minutes") or _delay_default))
                 session.execute(
-                    text("""
+                    text(f"""
                         UPDATE download_queue
                         SET status = 'queued',
                             retry_count = retry_count + 1,
                             failure_reason = NULL,
-                            next_retry_at = CURRENT_TIMESTAMP + (:delay * INTERVAL '1 minute'),
+                            next_retry_at = {next_retry_expr},
                             updated_at = CURRENT_TIMESTAMP
                         WHERE id = :qid
                     """),
@@ -819,11 +820,7 @@ def get_queue_match_targets(
                         WHEN :selected_queue_id IS NOT NULL AND id = :selected_queue_id THEN 0
                         ELSE 1
                     END,
-                    CASE
-                        WHEN NULLIF(TRIM(COALESCE(track_number, '')), '') ~ '^\\d+$'
-                            THEN TRIM(track_number)::integer
-                        ELSE 9999
-                    END,
+                    {numeric_track_number_expr(session)},
                     COALESCE(NULLIF(TRIM(track_number), ''), '9999'),
                     id
                 LIMIT 250
@@ -857,15 +854,14 @@ def get_album_queue_tracks(
     try:
         with db_session() as session:
             result = session.execute(
-                text("""
+                text(f"""
                     SELECT id, title, file_path, status, track_number,
                            disc_number, artist, album_artist
                     FROM download_queue
                     WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)
                       AND LOWER(COALESCE(album, '')) = LOWER(:album)
                     ORDER BY
-                        CASE WHEN NULLIF(TRIM(COALESCE(track_number, '')), '') ~ '^\d+$'
-                            THEN TRIM(track_number)::integer ELSE 9999 END,
+                        {numeric_track_number_expr(session)},
                         title
                 """),
                 {"artist": artist, "album": album},

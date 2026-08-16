@@ -95,7 +95,7 @@ def test_sync_fills_missing_and_records_corrections(monkeypatch, _tagging_on):
         _track(id="t1", title="Song One"),
         _track(
             id="t2", title="Song Two", track_number="2", recording_mbid="rec-2",
-            genres="", isrc="", writer=None,
+            genres="", isrc="", writer=None, file_path="/tmp/2.mp3",
         ),
     ]
     monkeypatch.setattr(svc, "_load_fresh_tracks", lambda artist, album: tracks)

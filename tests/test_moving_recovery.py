@@ -138,7 +138,10 @@ class TestApplyStoredMetadata:
 
         meta = written["meta"]
         assert "track_number" not in meta
-        assert "disc_number" not in meta
+        # Single-disc (disc < 2) files get the disc field CLEARED on the
+        # transferred file so Navidrome doesn't show a spurious "Disc 1" —
+        # the empty value is the deliberate clear signal.
+        assert meta.get("disc_number") == ""
         assert "recording_mbid" not in meta
         assert "release_mbid" not in meta
         assert meta["artist"] == "Muse"

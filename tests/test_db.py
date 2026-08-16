@@ -45,18 +45,20 @@ class TestTrackRepository:
 
         insert_or_update_track(
             track_id="test-insert-001",
-            artist_id="artist-001",
-            album="Test Insert Album",
-            title="Test Insert Track",
-            genres=["Rock", "Pop"],
-            spotify_score=75.0,
-            lastfm_score=60.0,
-            listenbrainz_score=0.0,
-            age_score=10.0,
-            final_score=70.0,
-            stars=4,
-            is_single=False,
-            single_confidence=0.0,
+            track_data={
+                "artist_id": "artist-001",
+                "album": "Test Insert Album",
+                "title": "Test Insert Track",
+                "genres": '["Rock","Pop"]',
+                "spotify_score": 75.0,
+                "lastfm_score": 60.0,
+                "listenbrainz_score": 0.0,
+                "age_score": 10.0,
+                "final_score": 70.0,
+                "stars": 4,
+                "is_single": False,
+                "single_confidence": 0.0,
+            },
         )
 
         result = db_session.execute(

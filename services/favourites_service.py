@@ -22,6 +22,7 @@ from typing import Any, Optional
 
 from quart import session as _quart_session
 
+from db.engine import db_session
 from db.repositories.favourites_repository import (
     get_favourite_ids,
     get_favourite_navidrome_ids,
@@ -119,7 +120,6 @@ def apply_favourite_rating_floor(artist: str, album: str) -> int:
         return 0
     try:
         from sqlalchemy import text
-        from db.engine import db_session
         from helpers.config_helpers import get_navidrome_users_normalized
 
         users = get_navidrome_users_normalized()
@@ -227,7 +227,6 @@ def _resolve_navidrome_id(entity_type: str, entity_id: str) -> Optional[str]:
     # Albums/artists: try to find a Navidrome ID by searching.  If we cannot
     # resolve one here, return None so the caller can supply it explicitly.
     try:
-        from db.engine import db_session
         from sqlalchemy import text
         if etype == "album":
             with db_session() as session:

@@ -374,13 +374,15 @@ class TestCompilationTrackArtistNormalization:
         self._normalize(tracks, scores_map)
         assert 30 <= tracks[0]["popularity_score"] <= 70
 
-    def test_artist_without_scores_keeps_raw(self):
-        # An artist with no stored catalogue scores (first scan) keeps its raw
-        # score — there is no distribution to compare against.
+    def test_artist_without_scores_falls_back_to_album_distribution(self):
+        # An artist with no stored catalogue scores (first scan) cannot be
+        # re-mapped against its own catalogue — the track still lands on the
+        # relative scale via the compilation's OWN internal raw distribution
+        # (so a raw 90-65 tracklist isn't left sitting on its raw peak).
         tracks = self._tracks()
         changed = self._normalize(tracks, {})
-        assert changed == 0
-        assert all(t["popularity_score"] == t["_raw_combined"] for t in tracks)
+        assert changed == len(tracks)
+        assert all(t["popularity_score"] != t["_raw_combined"] for t in tracks)
 
     def test_no_fresh_scores_skips(self):
         tracks = [{"track_id": "t1", "artist": "A", "_raw_combined": 0, "popularity_score": 60.0}]

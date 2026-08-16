@@ -68,7 +68,7 @@ def test_annotate_is_case_insensitive():
     assert result[0]["in_collection"] is True
 
 
-def test_display_list_filters_owned_artists():
+def test_display_list_annotates_owned_artists():
     from routes.ui_routes import _similar_artist_display_list
 
     session = _FakeSession(owned=["Coldplay", "Radiohead"])
@@ -80,8 +80,14 @@ def test_display_list_filters_owned_artists():
     ]
     result = _similar_artist_display_list(session, entries)
 
-    assert [r["name"] for r in result] == ["The Killers"]
-    assert result[0]["match"] == 0.4
+    # The display list ANNOTATES owned artists (``in_collection``) so the
+    # template can split them into "In Collection" / "Recommended" groups —
+    # it does not drop them (blank names are the only ones removed).
+    assert [r["name"] for r in result] == ["Coldplay", "Radiohead", "The Killers"]
+    assert result[0]["in_collection"] is True
+    assert result[1]["in_collection"] is True
+    assert result[2]["match"] == 0.4
+    assert result[2]["in_collection"] is False
     assert session.executed
 
 

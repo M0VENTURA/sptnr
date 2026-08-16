@@ -15,12 +15,15 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
+from conftest import register_sqlite_regexp_replace
+
 
 @pytest.fixture()
 def mb_fetcher_env(monkeypatch):
     """Fresh SQLite DB with upcoming_releases + tracks tables."""
     tmp = tempfile.mkdtemp()
     engine = create_engine(f"sqlite:///{os.path.join(tmp, 'test.db')}")
+    register_sqlite_regexp_replace(engine)
     sess_factory = sessionmaker(bind=engine, expire_on_commit=False)
 
     with engine.begin() as conn:
@@ -43,7 +46,8 @@ def mb_fetcher_env(monkeypatch):
                 mbid_last_checked_at TEXT,
                 status TEXT,
                 last_seen_at TEXT,
-                updated_at TEXT
+                updated_at TEXT,
+                UNIQUE (artist_name, album_name)
             )
         """))
         conn.execute(text("""
@@ -73,7 +77,9 @@ def mb_fetcher_env(monkeypatch):
         def __enter__(self):
             return self
 
-        def __exit__(self, *exc):
+        def __exit__(self, exc_type, *exc):
+            if exc_type is None:
+                self._session.commit()
             self._session.close()
             return False
 

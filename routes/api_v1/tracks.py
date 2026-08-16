@@ -21,10 +21,12 @@ async def get_track(track_id: str):
             )
             row = result.fetchone()
             if not row:
-                return jsonify(_fail("Track not found", 404))
+                payload, status = _fail("Track not found", 404)
+                return jsonify(payload), status
             return jsonify(_ok(track=dict(row._mapping)))
     except Exception as exc:
-        return jsonify(_fail(str(exc), 500))
+        payload, status = _fail(str(exc), 500)
+        return jsonify(payload), status
 
 
 @api_v1_bp.route("/tracks/<track_id>/genres")
@@ -43,7 +45,8 @@ async def get_track_genres(track_id: str):
             )
             row = result.fetchone()
             if not row:
-                return jsonify(_fail("Track not found", 404))
+                payload, status = _fail("Track not found", 404)
+                return jsonify(payload), status
 
             keys = ["spotify_genres", "lastfm_tags", "musicbrainz_genres",
                     "discogs_genres", "essentia_genres", "mood",
@@ -58,4 +61,5 @@ async def get_track_genres(track_id: str):
             }
             return jsonify(_ok(genres=genres))
     except Exception as exc:
-        return jsonify(_fail(str(exc), 500))
+        payload, status = _fail(str(exc), 500)
+        return jsonify(payload), status
