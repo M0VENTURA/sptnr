@@ -177,6 +177,9 @@ preflight_python() {
     else
         ok2 "Python syntax checks passed"
     fi
+    # py_compile writes .pyc files — purge them so the app never reuses
+    # bytecode compiled from a stale/partial state during this boot.
+    find /app -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 }
 
 start_web_app() {
@@ -237,6 +240,13 @@ main() {
     trap 'warn "Fatal error on line $LINENO — see above for details"' ERR
 
     log "── Pre-flight Checks ───────────────────────────────────────"
+
+    # Drop stale bytecode: a ``__pycache__`` compiled by a previous run can
+    # silently shadow updated ``.py`` sources when source mtimes collide
+    # (git checkouts / COPY preserve uniform timestamps), so a restarted
+    # process keeps executing the OLD code.  Always purge before launch so
+    # the app loads fresh from the current files on every start.
+    find /app -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 
     preflight_python || true
 
