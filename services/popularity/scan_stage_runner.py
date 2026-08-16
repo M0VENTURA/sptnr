@@ -27,7 +27,13 @@ from services.popularity.popularity_sources import (
     get_lastfm_artist_max_listeners,
 )
 from services.popularity.stages.album_stage import enrich_album
-from services.popularity.stages.finalise_stage import finalise_scan, post_album_star_ratings
+from services.popularity.stages.finalise_stage import (
+    _create_essential_m3u,
+    _essential_playlists_enabled,
+    _fetch_essential_featured_rows,
+    finalise_scan,
+    post_album_star_ratings,
+)
 from services.popularity.stages.load_stage import load_candidates
 from services.popularity.stages.track_stage import process_track
 from db.repositories.tracks import DeferredPersistSink, upsert_tracks_bulk
@@ -270,6 +276,45 @@ def _load_discogs_promo_titles(artist: str) -> set[str]:
     except Exception as exc:
         logger.debug("[scan_runner] Could not pre-load Discogs promos for '%s': %s", artist, exc)
         return set()
+
+
+def _close_artist_essential_section(
+    artist_name: str | None,
+    options: dict[str, Any],
+    done: set[str],
+    featured_rows: list | None,
+) -> tuple[set[str], list | None]:
+    """Create/refresh ONE artist's Essential Collection .m3u at section end.
+
+    The essential .m3u must be created/updated at the END of EVERY artist's
+    scan section (not once at the end of the whole scan): star ratings are
+    persisted per album, so once the artist's last album completes the DB
+    holds their current ratings and the collection can be written.  Fully-
+    SKIPPED artists (albums inside the skip window) get their collection
+    checked/updated here too — previously they never appeared in
+    ``finalise_scan``'s results and their playlist went stale forever.
+
+    Returns ``(done, featured_rows)`` — the caller persists the (possibly
+    grown) done-set and the once-per-scan feat-track pool so ``finalise_scan``
+    can skip re-doing these artists and reuse the cache.
+    """
+    if not artist_name or options.get("metadata_only"):
+        return done, featured_rows
+    key = str(artist_name).strip().casefold()
+    if not key or key in done:
+        return done, featured_rows
+    if not _essential_playlists_enabled(options):
+        return done, featured_rows
+    try:
+        if featured_rows is None:
+            featured_rows = _fetch_essential_featured_rows()
+        _create_essential_m3u(artist_name, featured_rows=featured_rows)
+        done.add(key)
+    except Exception as exc:
+        logger.debug(
+            "[scan_runner] Essential collection failed for %s: %s", artist_name, exc
+        )
+    return done, featured_rows
 
 
 def _run_album_cover_detection(
@@ -1120,15 +1165,58 @@ def run_scan(
             logger.debug("[scan_runner] Per-album star posting failed for %s: %s", artist, exc)
         return False
 
+    # ── Per-artist essential collection (section close) ─────────────────
+    # The essential .m3u is created/updated at the END of EVERY artist's
+    # section — not once at the end of the whole scan.  Star ratings are
+    # persisted per album, so by the time the last album of an artist
+    # completes the DB holds that artist's current ratings and the collection
+    # can be written.  Fully-SKIPPED artists (albums inside the skip window)
+    # also get their collection checked/updated here — previously they never
+    # appeared in finalise's ``results`` and their playlist went stale forever.
+    #
+    # The feat-track pool (library-wide 4★/5★ feat. rows) is fetched ONCE per
+    # scan and reused for every artist so this never re-scans the whole
+    # ``tracks`` table per artist.
+    _essential_featured_rows: list | None = None
+    _essential_playlists_done: set[str] = set()
+    _section_artist: str | None = None
+
+    def _close_artist_section(artist_name: str | None) -> None:
+        nonlocal _essential_featured_rows, _essential_playlists_done
+        _essential_playlists_done, _essential_featured_rows = _close_artist_essential_section(
+            artist_name,
+            options,
+            _essential_playlists_done,
+            _essential_featured_rows,
+        )
+        # Hand the once-per-scan cache + done-set to finalise_scan so it
+        # skips artists already handled here instead of re-doing them.
+        if _essential_playlists_done:
+            options["_essential_playlists_done"] = _essential_playlists_done
+        if _essential_featured_rows is not None:
+            options["_essential_featured_rows"] = _essential_featured_rows
+
     for album_index, album_row in enumerate(albums, start=1):
 
         # ✅ Graceful stop support
         if effective_stop_file and is_stop_requested(effective_stop_file):
+            # Close out the in-progress artist section so a stop never
+            # silently skips their essential collection.
+            _close_artist_section(_section_artist)
             log_unified("Scan stopped by user request")
             finish(success=False)
             return False
 
         artist = album_row.get("artist") or ""
+
+        # ── Artist-section boundary ──────────────────────────────────────
+        # Candidates are grouped by artist; when the loop advances to a new
+        # artist the previous artist's section is complete — close it out
+        # (essential collection create/update) before moving on.  Skipped
+        # artists are closed out when the next artist's first album arrives.
+        if artist and artist != _section_artist:
+            _close_artist_section(_section_artist)
+            _section_artist = artist
         album = album_row.get("album") or ""
         tracks = album_row.get("tracks") or []
 
@@ -2154,6 +2242,12 @@ def run_scan(
             "Popularity Scan - All albums were skipped (recently scanned or up to "
             "date). Run in Forced mode to rescan."
         )
+
+    # ── Close out the final artist section ───────────────────────────────
+    # The loop's artist-boundary closeout fires when the NEXT artist starts,
+    # so the last artist in the scan is only closed here — after every album
+    # (processed or skipped) of that artist has been iterated.
+    _close_artist_section(_section_artist)
 
     update(stage="finalising", progress=98, message="Finalising popularity scan...", processed=total_albums, total_items=total_albums)
 

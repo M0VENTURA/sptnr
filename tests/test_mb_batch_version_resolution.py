@@ -233,6 +233,84 @@ class TestEditionGating:
         assert meta["isrc"] == "FIREPIC0001"
 
 
+# ── Similarity floor (#887 state bleed / partial-match follow-up) ────────────
+# The batch resolver must NOT resolve a track to a wrong sibling recording when
+# its own recording was starved out of the shared, truncated result pool.  A
+# weak title match (live / jam-along / alternate cut vs its studio sibling)
+# must be rejected so the per-track lookup decides instead.
+
+_SIBLING_CATALOGUE = [
+    {
+        "id": "studio-easy",
+        "title": "Almost Easy",
+        "isrcs": ["USSIB00001"],
+        "releases": [_rel("Avenged Sevenfold")],
+    },
+    {
+        "id": "studio-new-horizons",
+        "title": "New Horizons",
+        "isrcs": ["USNEW000234"],
+        "releases": [_rel("Season of Surrender")],
+    },
+]
+
+
+class TestAlbumBatchSimilarityFloor:
+    def test_wrong_sibling_below_floor_is_rejected(self):
+        # "Almost Easy (jam-along version)" has NO recording of its own in the
+        # pool — the best candidate is the studio "Almost Easy" at ~0.55.  The
+        # batch must leave it unmatched (falling back to the per-track lookup)
+        # instead of resolving to the studio recording and inheriting its ISRC.
+        svc = _service(_fake_http(_SIBLING_CATALOGUE))
+        batch = svc.lookup_album_metadata(
+            [("Almost Easy (jam-along version)", "Avenged Sevenfold")],
+            album="Avenged Sevenfold",
+        )
+        assert "avenged sevenfold::almost easy (jam-along version)" not in batch
+
+    def test_state_bleed_sibling_never_absorbs_unrelated_track(self):
+        # Regression for the #887 state-bleed report: "Legions" must not
+        # inherit "New Horizons"'s recording (ISRC / LB count).  The titles
+        # share no tokens, so the batch must leave it unmatched.
+        catalogue = [
+            {
+                "id": "legions",
+                "title": "Legions (feat. Mike Hranica)",
+                "isrcs": ["USLEG000075"],
+                "releases": [_rel("Season of Surrender")],
+            },
+            {
+                "id": "new-horizons",
+                "title": "New Horizons",
+                "isrcs": ["USNEW000234"],
+                "releases": [_rel("Season of Surrender")],
+            },
+        ]
+        svc = _service(_fake_http(catalogue))
+        batch = svc.lookup_album_metadata(
+            [("Legions (feat. Mike Hranica)", "August Burns Red")],
+            album="Season of Surrender",
+        )
+        meta = batch.get("august burns red::legions (feat. mike hranica)")
+        # The track's OWN recording is in the pool (exact match) → resolves to
+        # it, never to the "New Horizons" sibling.
+        assert meta is not None
+        assert meta["recording_mbid"] == "legions"
+        assert meta["isrc"] == "USLEG000075"
+
+    def test_remaster_anchor_above_floor_still_resolves(self):
+        # The remaster anchor case sits just above the floor (~0.606): a
+        # "(2018 Version)" cut on a REMASTER reuses the original recording.
+        svc = _service(_fake_http(_remaster_catalogue()))
+        batch = svc.lookup_album_metadata(
+            [("Last of Us (2018 Version)", "Arion")],
+            album="Last Of Us (2018 Remaster)",
+        )
+        meta = batch["arion::last of us (2018 version)"]
+        assert meta["recording_mbid"] == "orig-rec"
+        assert meta["isrc"] == "FIRORIG0001"
+
+
 class TestSuggestedMbidTieBreak:
     """``get_suggested_mbid`` has the same bracket-preserving comparison."""
 
