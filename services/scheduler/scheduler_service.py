@@ -128,7 +128,7 @@ class ResilientSQLAlchemyJobStore(SQLAlchemyJobStore):
         try:
             return self._execute(super().add_job, job)
         except (ConflictingIdError, IntegrityError) as exc:
-            logger.warning(
+            logger.info(
                 "[scheduler] Job %s already exists in jobstore (concurrent "
                 "worker race); applying as update: %s",
                 job.id,
@@ -330,10 +330,52 @@ def _register_default_jobs(scheduler: BackgroundScheduler, cfg: dict[str, Any]) 
             return None
         return f"{module}:{qualname}"
 
+    def _existing_job(job_id: str) -> Any:
+        """Return a job that already exists in the scheduler OR its stores.
+
+        ``scheduler.get_job`` only inspects in-memory ``_pending_jobs`` while
+        the scheduler is stopped (registration runs inside ``get_scheduler``,
+        before ``start()``), so a job already persisted in the DB job store —
+        written by the preflight import, a previous boot, or a sibling
+        hypercorn worker — is invisible to it.  Every worker would then
+        re-register the same default jobs and the loser would hit the
+        ``apscheduler_jobs_pkey`` unique constraint on ``start()``, logging a
+        scary (but benign, upserted) warning.  Querying the stores directly
+        closes that gap so already-registered jobs are skipped.
+        """
+        try:
+            existing = scheduler.get_job(job_id)
+            if existing is not None:
+                return existing
+        except Exception:
+            existing = None
+        for alias, store in getattr(scheduler, "_jobstores", {}).items():
+            try:
+                existing = store.lookup_job(job_id)
+            except Exception:
+                continue
+            if existing is not None:
+                return existing
+        return None
+
+    def _remove_persisted_job(job_id: str) -> None:
+        """Remove a job from the persisted stores (not just pending jobs).
+
+        ``scheduler.remove_job`` only removes from ``_pending_jobs`` while the
+        scheduler is stopped; the DB row would linger and the next
+        ``_put``/``start()`` would trip the duplicate-key race.  Dropping the
+        row here keeps trigger-changed re-registrations clean.
+        """
+        for alias, store in getattr(scheduler, "_jobstores", {}).items():
+            try:
+                store.remove_job(job_id)
+            except Exception:
+                continue
+
     def _put(job_id: str, name: str, trigger, replace: bool = True, **kwargs) -> None:
         """Add or replace a job only when missing or its trigger/callable changed."""
         try:
-            existing = scheduler.get_job(job_id)
+            existing = _existing_job(job_id)
             new_func = kwargs.get("func")
             _func_changed = (
                 new_func is not None
@@ -341,7 +383,11 @@ def _register_default_jobs(scheduler: BackgroundScheduler, cfg: dict[str, Any]) 
                 and getattr(existing, "func_ref", None) != _func_ref(new_func)
             )
             if existing is not None and (not _same_trigger(existing, trigger) or _func_changed):
-                scheduler.remove_job(job_id)
+                try:
+                    scheduler.remove_job(job_id)
+                except Exception:
+                    pass
+                _remove_persisted_job(job_id)
                 existing = None
             if existing is None:
                 scheduler.add_job(
@@ -359,8 +405,12 @@ def _register_default_jobs(scheduler: BackgroundScheduler, cfg: dict[str, Any]) 
     def _remove_job(job_id: str) -> None:
         """Remove a job when its gate was turned off."""
         try:
-            if scheduler.get_job(job_id) is not None:
-                scheduler.remove_job(job_id)
+            if _existing_job(job_id) is not None:
+                try:
+                    scheduler.remove_job(job_id)
+                except Exception:
+                    pass
+                _remove_persisted_job(job_id)
                 logger.info("APScheduler: removed %s (disabled in config)", job_id)
         except Exception as exc:
             logger.warning("APScheduler: failed to remove %s: %s", job_id, exc)
