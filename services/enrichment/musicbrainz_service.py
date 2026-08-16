@@ -105,6 +105,18 @@ _CACHE_IO_LOCK = threading.Lock()
 # unwieldy and the results get diluted across too many candidates.
 _MB_BATCH_CHUNK = 20
 
+# Minimum recording-title similarity for a batched match to be accepted.
+# The batch resolver picks each track's best candidate from ONE shared,
+# truncated result set (the OR query's top-N across ALL tracks in the chunk);
+# without a floor a track whose own recording was starved out of that pool can
+# resolve to a WRONG sibling recording (inheriting its ISRC / ListenBrainz
+# counts) — the "State bleed" / wrong-ISRC reports from #887.  Below the floor
+# the track is left unmatched so the per-track lookup decides (never a wrong
+# sibling).  0.6 keeps the remaster-anchor case ("Last of Us (2018 Version)"
+# → the plain "Last of Us" recording, sim ≈ 0.606) while rejecting live /
+# jam-along / alternate-cuts vs their studio sibling (sim ≈ 0.43-0.55).
+_MB_BATCH_SIMILARITY_FLOOR = 0.6
+
 
 # =============================================================================
 # HELPERS
@@ -532,7 +544,15 @@ class MusicBrainzService:
                             best = rec
                             best_album_anchor = album_anchor
                     mbid = (best or {}).get("id", "")
-                    if not best or not mbid:
+                    # Similarity floor: the best candidate in the shared pool
+                    # must be a confident title match.  A track whose true
+                    # recording was pushed out of the truncated result set by
+                    # other tracks' candidates would otherwise resolve to the
+                    # best WRONG sibling in the pool — inheriting that
+                    # recording's ISRC and ListenBrainz counts.  Below the
+                    # floor the track stays unmatched and falls back to the
+                    # per-track lookup (which queries its own focused search).
+                    if not best or not mbid or best_score < _MB_BATCH_SIMILARITY_FLOOR:
                         continue
                     confidence = round(best_score, 3)
                     results[self._cache_key(title, artist)] = self._recording_to_metadata(best, mbid, confidence)

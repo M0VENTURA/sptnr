@@ -363,6 +363,7 @@ INDEXES_TO_ENSURE: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_tracks_album_scope ON tracks (LOWER(COALESCE(NULLIF(album_artist, ''), artist)), LOWER(COALESCE(album, '')))",
     "CREATE INDEX IF NOT EXISTS idx_tracks_artist_norm ON tracks (LOWER(COALESCE(NULLIF(album_artist, ''), artist)))",
     "CREATE INDEX IF NOT EXISTS idx_tracks_album_norm ON tracks (LOWER(COALESCE(album, '')))",
+    "CREATE INDEX IF NOT EXISTS idx_tracks_album_artist_trim ON tracks (LOWER(TRIM(COALESCE(NULLIF(album_artist, ''), artist))))",
     "CREATE INDEX IF NOT EXISTS idx_album_art_artist_album ON album_art (LOWER(artist_name), LOWER(album_name))",
     "CREATE INDEX IF NOT EXISTS idx_mb_releases_status ON musicbrainz_releases(status)",
     "CREATE INDEX IF NOT EXISTS idx_mb_releases_created ON musicbrainz_releases(created_at DESC)",

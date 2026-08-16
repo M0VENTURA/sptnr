@@ -972,7 +972,45 @@ def _track_has_featured_artist(artist_field: str, target_artist: str) -> bool:
     )
 
 
-def _create_essential_m3u(artist: str) -> None:
+def _fetch_essential_featured_rows() -> list[dict[str, Any]]:
+    """All 4★/5★ feat.-credited tracks (pool for featured-artist essentials).
+
+    The feat-track pool is artist-INDEPENDENT — the per-artist filter (does
+    this artist appear in the guest list?) runs in ``_track_has_featured_artist``.
+    Fetching it once per scan and reusing it for every artist's essential
+    collection avoids the O(artists × library) re-query the per-artist path
+    used to issue (the ``artist ILIKE '%feat%'`` predicate has no usable
+    index and full-scans the tracks table each time).
+    """
+    from sqlalchemy import text as _text
+    from db.engine import db_session as _db_session
+
+    try:
+        with _db_session() as session:
+            result = session.execute(
+                _text("""
+                    SELECT id, title, file_path, duration,
+                           COALESCE(stars, star_rating) AS stars,
+                           COALESCE(is_live, 0) AS is_live,
+                           COALESCE(is_compilation, 0) AS is_compilation,
+                           COALESCE(popularity, final_score, 0) AS popularity_score,
+                           year, release_year, artist
+                    FROM tracks
+                    WHERE COALESCE(stars, star_rating) >= 4
+                      AND (
+                          artist ILIKE '% feat %' OR artist ILIKE '% feat.%'
+                          OR artist ILIKE '%feat.%' OR artist ILIKE '%featuring%'
+                          OR artist ILIKE '% ft %' OR artist ILIKE '% ft.%'
+                      )
+                """),
+            )
+            return [dict(r._mapping) for r in (result.fetchall() or [])]
+    except Exception as exc:
+        logger.debug("[finalise_stage] Featured-track fetch failed: %s", exc)
+        return []
+
+
+def _create_essential_m3u(artist: str, featured_rows: list | None = None) -> None:
     """Create/refresh or delete the artist's Essential Collection .m3u.
 
     Evaluated against the artist's FULL track history in the DB (not just the
@@ -997,6 +1035,11 @@ def _create_essential_m3u(artist: str) -> None:
     where the artist is a FEATURED guest ("Powerwolf feat. Unleash The
     Archers") join the featured artist's collection too — the track then
     appears on both bands' essential playlists.
+
+    ``featured_rows`` is an optional pre-fetched feat-track pool (see
+    ``_fetch_essential_featured_rows``); callers that build many collections
+    in one scan pass it so the library-wide feat query runs once, not once per
+    artist.
     """
     from sqlalchemy import text as _text
     from db.engine import db_session as _db_session
@@ -1036,30 +1079,14 @@ def _create_essential_m3u(artist: str) -> None:
     # below handles any overlap with the artist's own query).
     if _essential_include_featured_enabled():
         try:
-            with _db_session() as session:
-                result = session.execute(
-                    _text("""
-                        SELECT id, title, file_path, duration,
-                               COALESCE(stars, star_rating) AS stars,
-                               COALESCE(is_live, 0) AS is_live,
-                               COALESCE(is_compilation, 0) AS is_compilation,
-                               COALESCE(popularity, final_score, 0) AS popularity_score,
-                               year, release_year, artist
-                        FROM tracks
-                        WHERE COALESCE(stars, star_rating) >= 4
-                          AND LOWER(TRIM(COALESCE(NULLIF(album_artist, ''), artist))) <> LOWER(TRIM(:artist))
-                          AND (
-                              artist ILIKE '% feat %' OR artist ILIKE '% feat.%'
-                              OR artist ILIKE '%feat.%' OR artist ILIKE '%featuring%'
-                              OR artist ILIKE '% ft %' OR artist ILIKE '% ft.%'
-                          )
-                    """),
-                    {"artist": artist},
-                )
-                for row in (result.fetchall() or []):
-                    row_dict = dict(row._mapping)
-                    if _track_has_featured_artist(row_dict.get("artist") or "", artist):
-                        rows.append(row_dict)
+            _feat_rows = (
+                featured_rows
+                if featured_rows is not None
+                else _fetch_essential_featured_rows()
+            )
+            for row in _feat_rows:
+                if _track_has_featured_artist(row.get("artist") or "", artist):
+                    rows.append(row)
         except Exception as exc:
             logger.debug(
                 "[finalise_stage] Featured-track fetch failed for %s: %s", artist, exc
@@ -2414,11 +2441,22 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
         # to assign here, so only the DB-driven outputs run.
         try:
             if _essential_playlists_enabled(options):
-                _essential_refreshed = _refresh_all_essential_collections()
-                if _essential_refreshed:
+                # The runner already created/refreshed every artist's essential
+                # collection at the END of each artist's scan section — even in
+                # a skip-all scan (its section closeout still fires per artist).
+                # Only fall back to the full DB-driven refresh when the runner
+                # covered nobody (e.g. a scan that loaded zero albums).
+                if options.get("_essential_playlists_done"):
                     log_unified(
-                        f"[FINALISE_STAGE] Essential collections refreshed: {_essential_refreshed} artist(s)"
+                        f"[FINALISE_STAGE] Essential collections refreshed during scan: "
+                        f"{len(options['_essential_playlists_done'])} artist(s)"
                     )
+                else:
+                    _essential_refreshed = _refresh_all_essential_collections()
+                    if _essential_refreshed:
+                        log_unified(
+                            f"[FINALISE_STAGE] Essential collections refreshed: {_essential_refreshed} artist(s)"
+                        )
             if _genre_playlists_active():
                 _genre_playlists_written = _create_genre_top_track_playlists()
                 if _genre_playlists_written:
@@ -2561,7 +2599,18 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
             # Gated by config (playlists.essential_playlists_enabled) or an
             # explicit pipeline override (options.create_playlists).
             if _essential_playlists_enabled(options):
-                _create_essential_m3u(artist)
+                # The runner already created/refreshed every artist's
+                # collection at the END of its own scan section (including
+                # fully-skipped artists) — skip re-doing them here, and reuse
+                # the once-per-scan feat-track pool instead of re-querying the
+                # whole library per artist.
+                _done_artists = set(options.get("_essential_playlists_done") or set())
+                if artist.casefold() not in _done_artists:
+                    _featured_rows = options.get("_essential_featured_rows")
+                    if _featured_rows is not None:
+                        _create_essential_m3u(artist, featured_rows=_featured_rows)
+                    else:
+                        _create_essential_m3u(artist)
 
         # ── ISRC popularity sync (recording-level inheritance) ─────────────
         # Runs once per scan, after every track is persisted: duplicate rows
