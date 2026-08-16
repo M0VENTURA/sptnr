@@ -23,7 +23,9 @@ Usage:
 from __future__ import annotations
 
 import logging
+import os
 import threading
+from contextlib import contextmanager
 from typing import Any
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -201,6 +203,60 @@ def get_scheduler() -> BackgroundScheduler:
 
 
 # ---------------------------------------------------------------------------
+# Single-execution guards
+# ---------------------------------------------------------------------------
+
+def _scheduler_env_enabled() -> bool:
+    """Honour the ``ENABLE_SCHEDULER`` env gate (split-worker deployments).
+
+    Web workers in a split deployment set ``ENABLE_SCHEDULER=false`` and a
+    dedicated worker process/container runs the scheduler with it enabled.
+    Defaults to enabled so single-container installs are unchanged.
+    """
+    return str(os.environ.get("ENABLE_SCHEDULER", "1")).strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+_JOB_LOCK_KEY_MAP = {
+    "library_sync": "popularr_scheduler_library_sync",
+    "popularity_scan": "popularr_scheduler_popularity_scan",
+    "download_queue_processor": "popularr_scheduler_download_queue",
+    "missing_releases_scan": "popularr_scheduler_missing_releases",
+    "upcoming_wikipedia_scrape": "popularr_scheduler_upcoming_wikipedia",
+    "upcoming_musicbrainz_scan": "popularr_scheduler_upcoming_musicbrainz",
+}
+
+
+@contextmanager
+def _job_tick_lock(job_id: str):
+    """Cross-process mutual exclusion for ONE scheduled job tick.
+
+    Every hypercorn worker boots its own APScheduler against the SAME
+    DB-backed job store, so each job's tick fires once per worker.  Most
+    jobs (``library_sync``, ``popularity_scan``, ``missing_releases_scan``,
+    the ``upcoming_*`` pair) have no built-in cross-process guard — four
+    workers would run four concurrent library syncs / missing-release
+    refreshes at once.  This lock lets the first worker's tick win and the
+    rest skip, mirroring the ``queue_cycle_lock`` that ``process_cycle``
+    already uses.
+
+    The ``download_queue_processor`` job is intentionally NOT wrapped —
+    ``process_cycle`` already holds the queue-cycle advisory lock, and a
+    second lock on the same key inside the same process would make that
+    cycle skip itself.
+    """
+    from services.queue.queue_lock import queue_cycle_lock
+
+    key = _JOB_LOCK_KEY_MAP.get(job_id, f"popularr_scheduler_{job_id}")
+    with queue_cycle_lock(key=key, max_attempts=1, attempt_interval=0.1) as acquired:
+        yield acquired
+
+
+# ---------------------------------------------------------------------------
 # Job definitions
 # ---------------------------------------------------------------------------
 
@@ -255,11 +311,36 @@ def _register_default_jobs(scheduler: BackgroundScheduler, cfg: dict[str, Any]) 
         except Exception:
             return default
 
+    def _func_ref(callable_obj) -> str | None:
+        """Serialize a callable to its ``module:name`` reference.
+
+        APScheduler's SQLAlchemy job store persists the job's callable as a
+        ``module:function`` reference (``job.func_ref``).  Comparing the new
+        function's reference against the persisted one lets ``_put`` detect a
+        job whose callable changed between releases (e.g. a plain ``func``
+        swapped for its lock-guarded wrapper) even when the trigger is
+        identical, so the DB job store is re-registered on upgrade instead of
+        silently keeping the old callable.
+        """
+        if callable_obj is None:
+            return None
+        module = getattr(callable_obj, "__module__", None)
+        qualname = getattr(callable_obj, "__qualname__", None) or getattr(callable_obj, "__name__", None)
+        if not module or not qualname:
+            return None
+        return f"{module}:{qualname}"
+
     def _put(job_id: str, name: str, trigger, replace: bool = True, **kwargs) -> None:
-        """Add or replace a job only when missing or its trigger changed."""
+        """Add or replace a job only when missing or its trigger/callable changed."""
         try:
             existing = scheduler.get_job(job_id)
-            if existing is not None and not _same_trigger(existing, trigger):
+            new_func = kwargs.get("func")
+            _func_changed = (
+                new_func is not None
+                and getattr(existing, "func_ref", None) is not None
+                and getattr(existing, "func_ref", None) != _func_ref(new_func)
+            )
+            if existing is not None and (not _same_trigger(existing, trigger) or _func_changed):
                 scheduler.remove_job(job_id)
                 existing = None
             if existing is None:
@@ -290,11 +371,10 @@ def _register_default_jobs(scheduler: BackgroundScheduler, cfg: dict[str, Any]) 
     if _enabled("library_sync", "auto_import_enabled", True):
         interval_minutes = _interval("library_sync", "interval_minutes", 360)
         try:
-            from services.library.library_sync_service import request_library_sync
             _put(
                 "library_sync", "Library sync with Navidrome",
                 IntervalTrigger(minutes=interval_minutes),
-                func=request_library_sync,
+                func=_run_library_sync_job,
             )
         except Exception as exc:
             logger.warning("APScheduler: failed to register library_sync: %s", exc)
@@ -309,7 +389,7 @@ def _register_default_jobs(scheduler: BackgroundScheduler, cfg: dict[str, Any]) 
             _put(
                 "popularity_scan", "Popularity recalculation",
                 IntervalTrigger(minutes=interval_minutes),
-                func=_run_scheduled_popularity_scan,
+                func=_run_popularity_scan_job,
             )
         except Exception as exc:
             logger.warning("APScheduler: failed to register popularity_scan: %s", exc)
@@ -361,11 +441,10 @@ def _register_default_jobs(scheduler: BackgroundScheduler, cfg: dict[str, Any]) 
         enabled = bool(_feats.get("daily_musicbrainz_release_scan_enabled", True))
         if enabled:
             interval_minutes = _interval("missing_releases_scan", "interval_minutes", 1440)
-            from services.metadata.artist_scan_service import start_missing_release_scan
             _put(
                 "missing_releases_scan", "MusicBrainz missing releases refresh",
                 IntervalTrigger(minutes=interval_minutes),
-                func=start_missing_release_scan,
+                func=_run_missing_releases_job,
             )
         else:
             _remove_job("missing_releases_scan")
@@ -398,11 +477,10 @@ def _register_default_jobs(scheduler: BackgroundScheduler, cfg: dict[str, Any]) 
 
         # Weekly Sunday 04:00 — MusicBrainz release-groups for the collection.
         try:
-            from services.upcoming_releases.musicbrainz_fetcher_service import fetch_musicbrainz_upcoming_releases
             _put(
                 "upcoming_musicbrainz_scan", "Upcoming releases: MusicBrainz collection refresh",
                 CronTrigger(day_of_week="sun", hour=4, minute=0),
-                func=fetch_musicbrainz_upcoming_releases,
+                func=_run_upcoming_musicbrainz_job,
             )
         except Exception as exc:
             logger.warning("APScheduler: failed to register upcoming_musicbrainz_scan: %s", exc)
@@ -424,6 +502,9 @@ def reschedule_jobs_from_config() -> dict[str, Any]:
     try:
         from helpers.config_helpers import get_config
         cfg = get_config() or {}
+        if not _scheduler_env_enabled():
+            logger.info("APScheduler: config re-apply skipped — ENABLE_SCHEDULER is false")
+            return stats
         scheduler = get_scheduler()
         if not scheduler.running:
             scheduler.start()
@@ -443,16 +524,72 @@ def _run_wikipedia_scrape_task() -> None:
     Module-level (not a closure) so APScheduler's persistent SQLAlchemy job
     store can serialize the callable by ``module:function`` reference — a
     local closure inside ``_register_default_jobs`` fails with "This Job
-    cannot be serialized".
+    cannot be serialized".  Wrapped in the job-tick lock so only ONE worker
+    runs the scrape when the job fires across the worker fleet.
     """
-    from services.upcoming_releases.wikipedia_scraper_service import (
-        scrape as scrape_wikipedia,
-        purge_stale_upcoming_releases,
-    )
-    try:
-        scrape_wikipedia()
-    finally:
-        purge_stale_upcoming_releases()
+    with _job_tick_lock("upcoming_wikipedia_scrape") as _acquired:
+        if not _acquired:
+            logger.debug("[scheduler] Skipping upcoming_wikipedia_scrape tick — another worker holds the lock")
+            return
+        from services.upcoming_releases.wikipedia_scraper_service import (
+            scrape as scrape_wikipedia,
+            purge_stale_upcoming_releases,
+        )
+        try:
+            scrape_wikipedia()
+        finally:
+            purge_stale_upcoming_releases()
+
+
+def _run_library_sync_job() -> None:
+    """Scheduled library-sync tick, guarded so only ONE worker executes it.
+
+    Module-level so the persistent job store can serialize it by reference.
+    Without the lock every hypercorn worker would start its own Navidrome
+    library sync at the same moment (four concurrent syncs hammering
+    Navidrome and the DB); the advisory lock makes the first worker's tick
+    win and the rest skip.
+    """
+    with _job_tick_lock("library_sync") as _acquired:
+        if not _acquired:
+            logger.debug("[scheduler] Skipping library_sync tick — another worker holds the lock")
+            return
+        from services.library.library_sync_service import request_library_sync
+        request_library_sync()
+
+
+def _run_missing_releases_job() -> None:
+    """Scheduled MusicBrainz missing-releases refresh, guarded across workers."""
+    with _job_tick_lock("missing_releases_scan") as _acquired:
+        if not _acquired:
+            logger.debug("[scheduler] Skipping missing_releases_scan tick — another worker holds the lock")
+            return
+        from services.metadata.artist_scan_service import start_missing_release_scan
+        start_missing_release_scan()
+
+
+def _run_upcoming_musicbrainz_job() -> None:
+    """Scheduled MusicBrainz upcoming-releases refresh, guarded across workers."""
+    with _job_tick_lock("upcoming_musicbrainz_scan") as _acquired:
+        if not _acquired:
+            logger.debug("[scheduler] Skipping upcoming_musicbrainz_scan tick — another worker holds the lock")
+            return
+        from services.upcoming_releases.musicbrainz_fetcher_service import fetch_musicbrainz_upcoming_releases
+        fetch_musicbrainz_upcoming_releases()
+
+
+def _run_popularity_scan_job() -> None:
+    """Scheduled popularity scan, guarded against duplicate worker ticks.
+
+    The advisory lock ensures only one worker even reaches the
+    ``is_popularity_scan_active`` guard; the guard then prevents overlap
+    with a manual scan (both write the same shared scan-state row).
+    """
+    with _job_tick_lock("popularity_scan") as _acquired:
+        if not _acquired:
+            logger.debug("[scheduler] Skipping popularity_scan tick — another worker holds the lock")
+            return
+        _run_scheduled_popularity_scan()
 
 
 def _run_scheduled_popularity_scan() -> None:
@@ -508,6 +645,12 @@ def start_scheduler(app=None) -> BackgroundScheduler | None:
     ``helpers/task_manager.initialize_app_services()``.
     """
     try:
+        if not _scheduler_env_enabled():
+            logger.info(
+                "APScheduler skipped — ENABLE_SCHEDULER is false "
+                "(web worker in a split worker/scheduler deployment)"
+            )
+            return None
         scheduler = get_scheduler()
         if not scheduler.running:
             scheduler.start()
