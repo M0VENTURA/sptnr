@@ -280,6 +280,9 @@ main() {
     # the app loads fresh from the current files on every start.
     find /app -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 
+    # Confirm the running build actually has the album-Future unwrap fix.
+    verify_scan_unwrap_fix || true
+
     preflight_python || true
 
     # Test Quart app import BEFORE hypercorn
