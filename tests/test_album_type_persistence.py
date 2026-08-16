@@ -163,6 +163,81 @@ class TestEnsureAlbumTypeReturnsVerdict:
         assert persisted.get("album_type") == "album"
 
 
+class TestEnrichAlbumUnpacking:
+    """enrich_album must not raise when _run_full_enrichment returns a 2-tuple.
+
+    Regression: metadata-only scans run enrichment inline (defer_full_enrichment
+    is False), and enrich_album used to unpack 3 values from
+    ``_run_full_enrichment`` — which returns ``(meta, similar)`` — raising
+    "not enough values to unpack (expected 3, got 2)" and logging
+    "[album_stage] Enrichment failed for '<artist> - <album>'".
+    """
+
+    def test_metadata_pass_unpacks_two_values(self, monkeypatch):
+        from services.popularity.stages.album_stage import enrich_album
+        import services.popularity.stages.album_stage as album_stage
+
+        # No network / DB: MB album-type lookup and the persist are patched
+        # away, and _run_full_enrichment is stubbed to return its real
+        # 2-tuple contract (meta, similar).
+        monkeypatch.setattr(album_stage, "_lookup_musicbrainz_album_type", lambda artist, album: (None, None))
+        monkeypatch.setattr(album_stage, "_persist_album_type_to_tracks", lambda *a, **k: None)
+        monkeypatch.setattr(
+            album_stage,
+            "_run_full_enrichment",
+            lambda *a, **k: (
+                {"country": None, "bio": None, "image_url": None},
+                {"lastfm": [], "listenbrainz": []},
+            ),
+        )
+
+        album_row = {
+            "artist": "dArtagnan",
+            "album": "Feuer & Flamme",
+            "album_artist": "dArtagnan",
+            "tracks": [{"id": "t1", "title": "Feuer & Flamme"}],
+        }
+        result = enrich_album(
+            album_row=album_row,
+            album_context={},
+            stat_eligible_tracks=[],
+            options={"defer_full_enrichment": False},  # metadata-only scan
+        )
+
+        # The unpacking bug raised before returning; now it must succeed and
+        # surface the enrichment results.
+        assert result["detected_album_type"] == "album"
+        assert result["is_heterogeneous"] is False
+        assert result["artist_metadata"]["country"] is None
+        assert result["similar_artists"] == {"lastfm": [], "listenbrainz": []}
+
+    def test_full_scan_deferred_path_still_works(self, monkeypatch):
+        from services.popularity.stages.album_stage import enrich_album
+        import services.popularity.stages.album_stage as album_stage
+
+        # Full scans defer the heavy enrichment (defer_full_enrichment=True):
+        # only the MB artist ID is fetched now, so no 3-tuple unpack happens.
+        monkeypatch.setattr(album_stage, "_lookup_musicbrainz_album_type", lambda artist, album: (None, None))
+        monkeypatch.setattr(album_stage, "_persist_album_type_to_tracks", lambda *a, **k: None)
+        monkeypatch.setattr(album_stage, "_fetch_musicbrainz_artist_id", lambda *a, **k: None)
+
+        album_row = {
+            "artist": "dArtagnan",
+            "album": "Herzblut",
+            "album_artist": "dArtagnan",
+            "tracks": [{"id": "t1", "title": "Herzblut"}],
+        }
+        result = enrich_album(
+            album_row=album_row,
+            album_context={},
+            stat_eligible_tracks=[],
+            options={"defer_full_enrichment": True},  # full scan
+        )
+
+        assert result["detected_album_type"] == "album"
+        assert result["artist_metadata"]["country"] is None
+
+
 class TestSinglesOnlyPass:
     """process_track must run singles detection in singles-detection-only mode
     while skipping the metadata/popularity/cover/genre sections."""

@@ -692,7 +692,7 @@ function updateScanStatusBar(active) {
   }
   const scan = active[0];
   const name = SCAN_TYPE_DISPLAY_NAMES[scan.scan_type] || scan.scan_type;
-  const pct = Math.min(scan.progress || 0, 100);
+  const pct = Math.min(scan.percent_complete ?? scan.progress ?? 0, 100);
   line.textContent = `${name} — ${pct}%` + (scan.current_item ? ` · ${scan.current_item}` : "");
   icon.className = "scan-status-active";
   icon.innerHTML = '<i class="bi bi-activity"></i>';
@@ -720,7 +720,7 @@ function updateActiveScans() {
 
       panel.style.display = "";
       body.innerHTML = active.map(scan => {
-        const pct = Math.min(scan.progress || 0, 100);
+        const pct = Math.min(scan.percent_complete ?? scan.progress ?? 0, 100);
         return `
           <div class="mb-2">
             <div class="d-flex justify-content-between align-items-center mb-1">

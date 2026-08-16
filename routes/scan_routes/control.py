@@ -149,6 +149,7 @@ async def scan_stop_singles():
 @scans_bp.route("/scan/stop-all", methods=["POST"])
 async def scan_stop_all():
     for scan_type in [
+        "full_scan",
         "navidrome_scan",
         "popularity_scan",
         "singles_scan",

@@ -1132,7 +1132,7 @@ def enrich_album(
                 similar = _similar
                 _fetch_musicbrainz_artist_id(artist, None, options)
             else:
-                art_source, meta, similar = _run_full_enrichment(
+                meta, similar = _run_full_enrichment(
                     artist, album, album_context, album_tracks,
                     detected_type, options, discogs_token,
                 )

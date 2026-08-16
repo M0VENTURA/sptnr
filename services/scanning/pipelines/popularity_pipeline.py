@@ -47,10 +47,16 @@ def is_popularity_scan_active() -> bool:
     try:
         from services.scanning.scan_state import read_progress_file
 
-        state = read_progress_file(get_scan_progress_path("popularity_scan"))
-        return bool(state.get("is_running"))
+        # The dashboard "All" scan runs under the "full_scan" progress row;
+        # targeted popularity scans use "popularity_scan".  Check both so a
+        # scan running in another hypercorn worker is never double-started.
+        for _scan_type in ("popularity_scan", "full_scan"):
+            state = read_progress_file(get_scan_progress_path(_scan_type))
+            if state.get("is_running"):
+                return True
     except Exception:
         return False
+    return False
 
 
 # =============================================================================
@@ -74,6 +80,17 @@ def run_popularity_mode(
         singles_detection
         all
     """
+
+    if mode == "all":
+        # Dashboard "All" = full scan aligned with the artist page: iterate
+        # over every artist, running the full artist pipeline (Navidrome
+        # import → metadata → combined → essentia) for each, and report
+        # progress as % of total artists completed.
+        _run_full_scan_as_artist_pipeline(
+            force=force_rescan,
+            resume_from=resume_from,
+        )
+        return
 
     progress_file = progress_file or get_scan_progress_path("popularity_scan")
 
@@ -109,10 +126,6 @@ def run_popularity_mode(
             # No singles detection, metadata or cover work.
             scan_type = "popularity_scan"
             kwargs["popularity_only"] = True
-
-        elif mode == "all":
-            scan_type = "full_scan"
-            # No kwargs needed — full scan does everything
 
         else:
             logger.warning("Unknown popularity scan mode '%s' — defaulting to full scan", mode)
@@ -185,6 +198,112 @@ def run_popularity_mode(
         )
 
         raise
+
+
+# =============================================================================
+# FULL SCAN (dashboard "All") — aligned with the artist page pipeline
+# =============================================================================
+
+def _run_full_scan_as_artist_pipeline(
+    *,
+    force: bool = False,
+    resume_from: str | None = None,
+) -> None:
+    """Dashboard 'All' scan: iterate over every artist, running the full
+    artist pipeline (Navidrome import → metadata → combined → essentia) for
+    each, and report progress as % of total artists completed.
+
+    This aligns the dashboard's combined scan with the artist page's full
+    scan — the same per-artist pipeline runs for every artist in the library,
+    and the footer shows the percentage of total artists completed.
+    """
+    from db.repositories.library import get_all_artists
+    from services.scanning.pipeline import run_artist_scan_pipeline
+    from services.popularity.stages.load_stage import _artist_key
+
+    progress_file = get_scan_progress_path("full_scan")
+
+    artists = get_all_artists()
+    total = len(artists)
+
+    # Honour resume_from (legacy parity): skip artists before the resume
+    # point, tolerating case/punctuation variants.
+    if resume_from:
+        _resume_key = _artist_key(resume_from)
+        _started = False
+        _filtered: list[str] = []
+        for _a in artists:
+            if not _started:
+                if (
+                    _a.lower() == resume_from.lower()
+                    or _artist_key(_a) == _resume_key
+                    or (_resume_key and len(_resume_key) >= 3 and _resume_key in _artist_key(_a))
+                ):
+                    _started = True
+            if _started:
+                _filtered.append(_a)
+        artists = _filtered
+        total = len(artists)
+
+    write_progress_with_current_artist(
+        progress_file,
+        "full_scan",
+        True,
+        extra={
+            "status": "starting",
+            "mode": "all",
+            "force": force,
+            "total_artists": total,
+            "processed_artists": 0,
+            "percent_complete": 0,
+        },
+    )
+
+    status = "complete"
+    try:
+        for i, artist in enumerate(artists):
+            if is_stop_requested(progress_file):
+                status = "stopped"
+                log_unified("[FULL_SCAN] Stop requested — halting artist loop")
+                break
+
+            pct = int((i / total) * 100) if total else 100
+            write_progress_with_current_artist(
+                progress_file,
+                "full_scan",
+                True,
+                current_artist=artist,
+                extra={
+                    "status": "running",
+                    "mode": "all",
+                    "percent_complete": pct,
+                    "processed_artists": i,
+                    "total_artists": total,
+                    "current_item": artist,
+                },
+            )
+            log_unified(f"[FULL_SCAN] Artist {i + 1}/{total}: {artist} ({pct}%)")
+            run_artist_scan_pipeline(artist, force=force)
+    except Exception as exc:
+        status = "error"
+        logger.error("[FULL_SCAN] Artist loop failed: %s", exc, exc_info=True)
+        raise
+    finally:
+        write_progress_with_current_artist(
+            progress_file,
+            "full_scan",
+            False,
+            extra={
+                "status": status,
+                "mode": "all",
+                "exit_code": 0,
+                "percent_complete": 100 if status == "complete" else 0,
+                "processed_artists": total if status == "complete" else 0,
+                "total_artists": total,
+            },
+        )
+        log_unified(f"[FULL_SCAN] Finished with status={status}")
+        record_scan("all", status, message=f"full scan {status}", artist="_SCAN_SESSION_", album="all")
 
 
 # =============================================================================

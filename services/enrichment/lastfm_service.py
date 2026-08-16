@@ -21,7 +21,11 @@ from typing import Any
 
 from api_clients.lastfm_http import LastFmHttpClient, retry_with_backoff
 from helpers.config_helpers import get_lastfm_config
-from helpers.normalization_service import FEAT_SUFFIX_RE, strip_cover_attribution
+from helpers.normalization_service import (
+    FEAT_SUFFIX_RE,
+    strip_cover_attribution,
+    strip_featured_guest_suffix,
+)
 from services.popularity.popularity_sources import (
     get_aggregated_lastfm_popularity,
 )
@@ -556,7 +560,14 @@ class LastFmService:
         album_data = self._album_get_info(artist, track_title)
         if not album_data:
             return False
-        if (album_data.get("name") or "").lower().strip() != track_title.lower().strip():
+        # The Last.fm single may carry the guest credit ("Herzblut (feat.
+        # Melissa Bonny)") while the local track is the plain title
+        # ("Herzblut") — strip the featured-guest suffix from BOTH sides
+        # before comparing so the single still confirms (mirrors the search
+        # fallback in single_detection_service._detect_lastfm).
+        album_name = (album_data.get("name") or "").lower().strip()
+        track_name = track_title.lower().strip()
+        if strip_featured_guest_suffix(album_name) != strip_featured_guest_suffix(track_name):
             return False
         returned_artist = self.extract_artist_name(album_data.get("artist"))
         if not returned_artist or self.artist_match_score(artist, returned_artist) < 90:

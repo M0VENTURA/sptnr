@@ -31,6 +31,10 @@ from services.popularity.progress_tracker import get_state as get_tracker_state
 # -------------------------------------------------------------------------
 
 SCAN_TYPES = [
+    # "full_scan" first so the dashboard footer's primary scan (active[0])
+    # is the artist-based full-scan progress, not the per-artist sub-pipeline
+    # rows (navidrome/popularity/essentia) that flicker underneath it.
+    "full_scan",
     "library_scan",
     "navidrome_scan",
     "popularity_scan",

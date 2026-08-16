@@ -227,3 +227,64 @@ class TestLastFmSingleDetectionEditionGate:
             "Valhalla (Radio Edit)",
             [{"name": "Valhalla - Single"}],
         ) is True
+
+
+class _FakeLastFmHttp:
+    """Fake Last.fm HTTP client: ``album.getInfo`` returns a fixed album."""
+
+    def __init__(self, album_payload):
+        self._album_payload = album_payload
+
+    def get_json(self, method, timeout=None, **params):
+        if method == "album.getInfo":
+            return {"album": self._album_payload}
+        return {}
+
+
+class TestLastFmCheckTrackAsSingleFeaturedSuffix:
+    """``check_track_as_single`` must strip the featured-guest suffix from the
+    Last.fm album name before comparing to the local track title.
+
+    Regression: dArtagnan's "Herzblut" is stored on Last.fm as the single
+    "Herzblut (feat. Melissa Bonny)". The exact-name comparison failed, so the
+    Last.fm single evidence never fired and the track stayed at medium
+    confidence.
+    """
+
+    def _service(self, album_payload):
+        from services.enrichment.lastfm_service import LastFmService
+
+        return LastFmService(
+            api_key="test-key",
+            http_client=_FakeLastFmHttp(album_payload),
+        )
+
+    def test_featured_suffix_single_matches_plain_track(self):
+        album = {
+            "name": "Herzblut (feat. Melissa Bonny)",
+            "artist": "Dartagnan",
+            "mbid": "some-mbid",  # genuine release evidence
+            "tracks": {"track": [{"name": "Herzblut"}, {"name": "Herzblut (Instrumental)"}]},
+        }
+        svc = self._service(album)
+        assert svc.check_track_as_single("dArtagnan", "Herzblut") is True
+
+    def test_plain_single_still_matches(self):
+        album = {
+            "name": "Herzblut",
+            "artist": "Dartagnan",
+            "mbid": "some-mbid",
+            "tracks": {"track": [{"name": "Herzblut"}]},
+        }
+        svc = self._service(album)
+        assert svc.check_track_as_single("dArtagnan", "Herzblut") is True
+
+    def test_unrelated_album_does_not_match(self):
+        album = {
+            "name": "Feuer & Flamme",
+            "artist": "Dartagnan",
+            "mbid": "some-mbid",
+            "tracks": {"track": [{"name": "Feuer & Flamme"}]},
+        }
+        svc = self._service(album)
+        assert svc.check_track_as_single("dArtagnan", "Herzblut") is False

@@ -69,6 +69,16 @@ class TestIsPopularityScanActive:
 
         assert is_popularity_scan_active() is True
 
+    def test_true_when_full_scan_shared_state_running(self):
+        # The dashboard "All" scan runs under the "full_scan" progress row;
+        # the guard must treat it as an active popularity-family scan too.
+        _fresh_db()
+        _set_scan_running("full_scan", running=True)
+
+        from services.scanning.pipelines.popularity_pipeline import is_popularity_scan_active
+
+        assert is_popularity_scan_active() is True
+
     def test_false_when_shared_state_complete(self):
         _fresh_db()
         _set_scan_running("popularity_scan", running=False)

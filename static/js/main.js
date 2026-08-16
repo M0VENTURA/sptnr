@@ -297,7 +297,7 @@ function updateGlobalScanBar(data) {
     icon.innerHTML = '<i class="bi bi-circle"></i>';
     return;
   }
-  const pct = Math.min(scan.progress || 0, 100);
+  const pct = Math.min(scan.percent_complete ?? scan.progress ?? 0, 100);
   const name = String(scan.scan_type || 'scan').replace(/_/g, ' ');
   line.textContent = `${name} — ${pct}%` + (scan.current_item ? ` · ${scan.current_item}` : '');
   icon.className = 'scan-status-active';
