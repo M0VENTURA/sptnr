@@ -625,6 +625,36 @@ async def api_musicbrainz_search():
             })
             raw_groups = raw.get("release-groups", []) if isinstance(raw.get("release-groups"), list) else []
 
+            # ── Punctuation-free releasegroup fallback ────────────────────
+            # The quoted ``releasegroup:"…"`` phrase fails for punctuation-heavy
+            # titles — MusicBrainz's index tokenises "GOLDEN HOUR: Part.4"
+            # differently from the stored "GOLDEN HOUR : Part.4" (colon/spacing),
+            # so the phrase returns zero even though the release-group exists.
+            # Retry with an UNQUOTED term query (all terms ANDed), which ranks
+            # the exact group first, before the broader artist-only fallback.
+            if not raw_groups and album and not artist_only:
+                try:
+                    from helpers.normalization_service import normalize_title_for_lucene_query
+                    _rg_terms = normalize_title_for_lucene_query(album)
+                    if _rg_terms:
+                        _rg_fallback = client.get("release-group/", params={
+                            "query": f'artist:"{_esc(artist)}" AND releasegroup:{_rg_terms}',
+                            "fmt": "json",
+                            "limit": 20,
+                        })
+                        raw_groups = (
+                            _rg_fallback.get("release-groups", [])
+                            if isinstance(_rg_fallback.get("release-groups"), list)
+                            else []
+                        )
+                        if raw_groups:
+                            logger.info(
+                                "[MB_SEARCH] Quoted phrase '%s' returned 0 — falling back to unquoted releasegroup terms for '%s'",
+                                mb_query, album,
+                            )
+                except Exception as exc:
+                    logger.debug("[MB_SEARCH] Unquoted releasegroup fallback failed: %s", exc)
+
             # ── Artist+album fallback (legacy parity) ─────────────────────
             # MusicBrainz's release-group index applies strict phrase matching
             # on quoted ``artist:"…" AND releasegroup:"…"`` queries, so a

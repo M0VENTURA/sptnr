@@ -331,6 +331,70 @@ def _file_matches_queue_item(
     return bool(is_match), "filename"
 
 
+def _file_artist_matches_queue_item(file_path: str, queue_item: dict) -> Optional[bool]:
+    """Return whether the file's embedded artist clearly agrees with the queue item.
+
+    Returns:
+        - ``True``  — the file's artist (or album artist) matches the queue
+          item's artist (or album artist), so the file genuinely belongs to
+          this queue item.
+        - ``False`` — the file carries a concrete artist that does NOT match
+          the queue item (an unmatched-artist download).  Such a file must
+          never be auto-moved; it stays in the downloads folder until the
+          user approves the move manually.
+        - ``None``  — undetermined (missing artist tag, or a generic
+          compilation marker such as "Various Artists"), defer to other checks.
+
+    This is the gate that stops ``check_completed_downloads`` from claiming
+    and moving files for artists that don't align with an artist in the queue.
+    """
+    try:
+        from helpers.metadata_reader import read_mp3_metadata
+        from helpers.normalization_service import normalize_artist
+        from helpers.config_helpers import _GENERIC_COMPILATION_ARTISTS
+    except Exception:
+        return None
+
+    try:
+        meta = read_mp3_metadata(file_path) or {}
+    except Exception:
+        return None
+
+    file_artist = str(meta.get("artist") or "").strip()
+    file_album_artist = str(meta.get("album_artist") or "").strip()
+    file_artist_norm = normalize_artist(file_artist)
+    file_album_artist_norm = normalize_artist(file_album_artist)
+
+    queue_artist = str(queue_item.get("artist") or "").strip()
+    queue_album_artist = str(queue_item.get("album_artist") or "").strip()
+    queue_artist_norm = normalize_artist(queue_artist)
+    queue_album_artist_norm = normalize_artist(queue_album_artist)
+
+    # No artist evidence on the file side → undetermined.
+    if not file_artist_norm and not file_album_artist_norm:
+        return None
+
+    # Both file artist fields are generic compilation markers (or empty) →
+    # the per-track artist is unknown, so defer (can't prove a mismatch).
+    file_artists = [a for a in (file_artist_norm, file_album_artist_norm) if a]
+    if file_artists and all(a in _GENERIC_COMPILATION_ARTISTS for a in file_artists):
+        return None
+
+    queue_artists = [a for a in (queue_artist_norm, queue_album_artist_norm) if a]
+    if not queue_artists:
+        return None
+
+    # Positive alignment: any file artist value agrees with any queue value.
+    for fa in file_artists:
+        for qa in queue_artists:
+            if fa == qa or (fa and qa and (fa in qa or qa in fa)):
+                return True
+
+    # The file has a concrete, non-generic artist that matches nothing on the
+    # queue item → this is an unmatched-artist file: never auto-move it.
+    return False
+
+
 def _claim_file(file_path: str, claimed_files: set[str], downloads_dir: str) -> None:
     """Record *file_path* as claimed so no other queue item can take it."""
     try:
@@ -1163,18 +1227,33 @@ def check_completed_downloads() -> dict[str, Any]:
                             logger.debug("[COMPLETE] Queue %s: skipping claimed slskd-completed file: %s", queue_id, abs_path)
                             abs_path = None
                         else:
-                            is_match, match_source = _file_matches_queue_item(abs_path, item)
-                            if is_match:
-                                match_found = os.path.relpath(abs_path, downloads_dir)
-                                _claim_file(abs_path, claimed_files, downloads_dir)
+                            # Artist gate: an unmatched-artist file (a concrete
+                            # artist that does not match the queue item) must
+                            # never be auto-moved — it stays in the downloads
+                            # folder until the user approves the move.
+                            try:
+                                _artist_ok = _file_artist_matches_queue_item(abs_path, item)
+                            except Exception:
+                                _artist_ok = None
+                            if _artist_ok is False:
+                                logger.info(
+                                    "[COMPLETE] Queue %s: skipping slskd-completed file %s — artist does not match queue item",
+                                    queue_id, abs_path,
+                                )
+                                abs_path = None
                             else:
-                                logger.info("[COMPLETE] Queue %s: rejecting slskd-completed file (metadata mismatch): %s", queue_id, abs_path)
-                                _delete_mismatched_download(abs_path, queue_id, f"metadata mismatch ({match_source})")
-                                mark_failed(queue_id, "Downloaded file did not match queue item; deleted and rescheduled")
-                                stats["failed"] += 1
-                                log_unified(f"[QUEUE] {item.get('artist') or ''} - {item.get('title') or ''} → failed: downloaded file did not match queue item (deleted + rescheduled)")
-                                _log_queue_event("failed", f"{item.get('artist') or ''} - {item.get('title') or ''} → failed: downloaded file did not match queue item (deleted + rescheduled)", queue_id)
-                                continue
+                                is_match, match_source = _file_matches_queue_item(abs_path, item)
+                                if is_match:
+                                    match_found = os.path.relpath(abs_path, downloads_dir)
+                                    _claim_file(abs_path, claimed_files, downloads_dir)
+                                else:
+                                    logger.info("[COMPLETE] Queue %s: rejecting slskd-completed file (metadata mismatch): %s", queue_id, abs_path)
+                                    _delete_mismatched_download(abs_path, queue_id, f"metadata mismatch ({match_source})")
+                                    mark_failed(queue_id, "Downloaded file did not match queue item; deleted and rescheduled")
+                                    stats["failed"] += 1
+                                    log_unified(f"[QUEUE] {item.get('artist') or ''} - {item.get('title') or ''} → failed: downloaded file did not match queue item (deleted + rescheduled)")
+                                    _log_queue_event("failed", f"{item.get('artist') or ''} - {item.get('title') or ''} → failed: downloaded file did not match queue item (deleted + rescheduled)", queue_id)
+                                    continue
 
                 # 2. Exact filename match against filesystem files (indexed).
                 if match_found is None and found_fn:
@@ -1197,6 +1276,20 @@ def check_completed_downloads() -> dict[str, Any]:
                         rel = f["rel_path"].replace("\\", "/")
                         # Claimed files (other items) are never candidates here.
                         if _is_file_claimed(candidate, claimed_files, downloads_dir):
+                            continue
+                        # Artist gate: an unmatched-artist file (a concrete
+                        # artist that does not match the queue item) must never
+                        # be auto-moved — it stays in the downloads folder until
+                        # the user approves the move manually.
+                        try:
+                            _artist_ok = _file_artist_matches_queue_item(candidate, item)
+                        except Exception:
+                            _artist_ok = None
+                        if _artist_ok is False:
+                            logger.info(
+                                "[COMPLETE] Queue %s: skipping exact-filename candidate %s — artist does not match queue item",
+                                queue_id, rel,
+                            )
                             continue
                         is_match, match_source = _file_matches_queue_item(candidate, item, rel)
                         if not is_match:
@@ -1238,6 +1331,21 @@ def check_completed_downloads() -> dict[str, Any]:
                                 score = 0.0
                             if score < _SLSKD_MIN_ACCEPT_SCORE:
                                 continue
+
+                        # Artist gate: a file whose embedded artist clearly does
+                        # NOT match the queue item (an unmatched-artist download)
+                        # must never be auto-moved.  It stays in the downloads
+                        # folder until the user approves the move manually.
+                        try:
+                            _artist_ok = _file_artist_matches_queue_item(candidate, item)
+                        except Exception:
+                            _artist_ok = None
+                        if _artist_ok is False:
+                            logger.info(
+                                "[COMPLETE] Queue %s: skipping fuzzy candidate %s — artist does not match queue item",
+                                queue_id, rel,
+                            )
+                            continue
 
                         match_found = rel
                         abs_path = candidate

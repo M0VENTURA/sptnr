@@ -754,6 +754,23 @@ def _is_excluded_essential_artist(artist: str) -> bool:
     return str(artist or "").strip().casefold() in _ESSENTIAL_EXCLUDED_ARTISTS
 
 
+def _essential_strip_guest_credit(artist: str) -> str:
+    """Primary artist of a feat.-credited field, guest side only.
+
+    Strips ONLY explicit feat./ft./featuring credits ("Apocalyptica feat.
+    Ville Valo & Lauri Ylönen" → "Apocalyptica").  Deliberately does NOT
+    strip "&" / "with" / "and" — a genuine two-artist collaboration
+    ("Metallica & San Francisco Symphony") is its own project and must not
+    be folded onto either partner.  Mirrors ``_ESSENTIAL_FEAT_RE`` so the
+    primary side and the guest side (``_track_has_featured_artist``) use the
+    same credit markers.
+    """
+    match = _ESSENTIAL_FEAT_RE.search(str(artist or ""))
+    if not match:
+        return str(artist or "").strip()
+    return str(artist or "")[: match.start()].strip()
+
+
 def _refresh_all_essential_collections() -> int:
     """(Re)generate essential collections for every qualifying artist.
 
@@ -779,8 +796,22 @@ def _refresh_all_essential_collections() -> int:
         logger.debug("[finalise_stage] Essential collection artist scan failed: %s", exc)
         return 0
 
-    refreshed = 0
+    # Collapse feat.-credited artist names onto their primary artist
+    # ("Apocalyptica feat. Ville Valo & Lauri Ylönen" → "Apocalyptica") so the
+    # DB-driven refresh keys on the same artist identity as the scan path and
+    # never spawns a separate tiny collection for the guest suffix.
+    seen: set[str] = set()
+    unique_artists: list[str] = []
     for artist in artists:
+        primary = _essential_strip_guest_credit(artist) or artist
+        key = primary.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_artists.append(primary)
+
+    refreshed = 0
+    for artist in unique_artists:
         if _is_excluded_essential_artist(artist):
             continue
         try:
@@ -1047,6 +1078,18 @@ def _create_essential_m3u(artist: str, featured_rows: list | None = None) -> Non
     if _is_excluded_essential_artist(artist):
         return
 
+    # A feat.-credited artist section ("Apocalyptica feat. Ville Valo & Lauri
+    # Ylönen") is the SAME artist as its primary ("Apocalyptica") for essential-
+    # collection purposes: the feat. track belongs on the primary artist's
+    # collection, and no separate tiny collection is spawned for the guest
+    # suffix.  Normalise up-front so the playlist name, file name and the
+    # ``done``-set dedup all key on the primary artist.  Only feat./ft./
+    # featuring credits are stripped — genuine "&"/"with" collaborations are
+    # their own projects and keep their own artist identity.
+    artist = _essential_strip_guest_credit(artist) or artist
+    if _is_excluded_essential_artist(artist):
+        return
+
     playlists_dir = _essential_playlists_dir()
     playlist_name = _essential_playlist_name(artist)
     file_path = os.path.join(playlists_dir, f"{_sanitize_name(playlist_name)}.m3u")
@@ -1061,16 +1104,45 @@ def _create_essential_m3u(artist: str, featured_rows: list | None = None) -> Non
                            COALESCE(is_live, 0) AS is_live,
                            COALESCE(is_compilation, 0) AS is_compilation,
                            COALESCE(popularity, final_score, 0) AS popularity_score,
-                           year, release_year, artist
+                           year, release_year, artist, album_artist
                     FROM tracks
-                    WHERE LOWER(TRIM(COALESCE(NULLIF(album_artist, ''), artist))) = LOWER(TRIM(:artist))
-                      AND COALESCE(stars, star_rating) >= 4
+                    WHERE COALESCE(stars, star_rating) >= 4
+                      AND (
+                          LOWER(TRIM(COALESCE(NULLIF(album_artist, ''), artist))) = LOWER(TRIM(:artist))
+                          OR LOWER(TRIM(COALESCE(NULLIF(album_artist, ''), artist))) LIKE LOWER(TRIM(:artist)) || ' %'
+                      )
                 """),
                 {"artist": artist},
             )
             rows = [dict(r._mapping) for r in result.fetchall() or []]
     except Exception as exc:
         logger.debug("[finalise_stage] Essential collection fetch failed for %s: %s", artist, exc)
+
+    # Keep only rows that genuinely belong to this artist.  The SQL scopes rows
+    # to ``artist`` exactly OR a ``artist %`` prefix (a cheap pre-filter for
+    # feat.-credited rows like "Apocalyptica feat. Ville Valo & Lauri Ylönen").
+    # Exact matches are kept as-is; prefixed rows are adopted ONLY when they
+    # carry a feat./ft./featuring credit whose primary artist is this artist —
+    # a different artist whose name merely starts with the same prefix
+    # ("Apocalyptica Tribute Band") or a genuine "&" collaboration is never
+    # folded in.  Rows with no artist field (test/legacy fixtures) are kept.
+    _artist_lower = str(artist or "").strip().casefold()
+    _kept: list[dict[str, Any]] = []
+    for row in rows:
+        stored = str(row.get("album_artist") or row.get("artist") or "").strip()
+        if not stored:
+            _kept.append(row)
+            continue
+        stored_key = stored.casefold()
+        if stored_key == _artist_lower:
+            _kept.append(row)
+            continue
+        if (
+            _ESSENTIAL_FEAT_RE.search(stored)
+            and _essential_strip_guest_credit(stored).casefold() == _artist_lower
+        ):
+            _kept.append(row)
+    rows = _kept
 
     # Featured appearances: a "Powerwolf feat. Unleash The Archers" 4★/5★
     # track is stored under Powerwolf's album_artist, but the FEATURED band's

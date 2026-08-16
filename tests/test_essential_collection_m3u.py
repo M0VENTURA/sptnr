@@ -31,6 +31,7 @@ from services.popularity.stages import finalise_stage as fs
 _ESSENTIAL_COLUMNS = (
     "id", "title", "file_path", "duration", "stars", "is_live",
     "is_compilation", "popularity_score", "year", "release_year", "artist",
+    "album_artist",
 )
 
 
@@ -41,15 +42,15 @@ def _make_rows(rows_data: list[dict]) -> list:
         conn.execute(sa_text(
             "CREATE TABLE t (id TEXT, title TEXT, file_path TEXT, duration INT, "
             "stars INT, is_live INT, is_compilation INT, popularity_score REAL, "
-            "year INT, release_year INT, artist TEXT)"
+            "year INT, release_year INT, artist TEXT, album_artist TEXT)"
         ))
         for r in rows_data:
             conn.execute(
                 sa_text(
                     "INSERT INTO t (id, title, file_path, duration, stars, is_live, "
-                    "is_compilation, popularity_score, year, release_year, artist) "
+                    "is_compilation, popularity_score, year, release_year, artist, album_artist) "
                     "VALUES (:id, :title, :fp, :dur, :stars, :live, :comp, :score, "
-                    ":year, :ryear, :artist)"
+                    ":year, :ryear, :artist, :album_artist)"
                 ),
                 {
                     "id": r.get("id"),
@@ -63,6 +64,7 @@ def _make_rows(rows_data: list[dict]) -> list:
                     "year": r.get("year"),
                     "ryear": r.get("release_year"),
                     "artist": r.get("artist", ""),
+                    "album_artist": r.get("album_artist", ""),
                 },
             )
         return list(conn.execute(
@@ -338,6 +340,106 @@ class TestFinaliseScanEmptyResults:
 
         assert refreshed == []
         assert not any("Essential collections refreshed" in m for m in logged)
+
+
+class TestFeaturedPrimaryArtistFolding:
+    """Regression: a "Primary feat. Guest" album/single must fold into the
+    PRIMARY artist's essential collection (and not spawn a separate tiny one).
+
+    Reported: "Apocalyptica feat. Ville Valo & Lauri Ylönen" was treated as a
+    separate artist — its 4★/5★ track never joined "Apocalyptica"'s collection
+    and a separate below-threshold collection was attempted for the guest
+    suffix.  Only feat./ft./featuring credits fold; genuine "&"/"with"
+    collaborations and name-prefix lookalikes are never adopted.
+    """
+
+    def _write(self, tmp_path, rows, monkeypatch, artist="Apocalyptica"):
+        playlists_dir = tmp_path / "Playlists"
+        _patch_db(monkeypatch, rows)
+        monkeypatch.setattr(fs, "_essential_playlists_dir", lambda: str(playlists_dir))
+        fs._create_essential_m3u(artist)
+        return playlists_dir
+
+    def test_feat_credited_album_folds_into_primary_artist(self, tmp_path, monkeypatch):
+        # A 4★/5★ track credited "Apocalyptica feat. Ville Valo & Lauri Ylönen"
+        # (album_artist carries the feat. credit) joins "Apocalyptica"'s collection.
+        rows = [
+            {
+                **make_row("Bittersweet", stars=5, popularity_score=95.0,
+                           file_path="/music/Apocalyptica/Bittersweet/Bittersweet.flac"),
+                "album_artist": "Apocalyptica feat. Ville Valo & Lauri Ylönen",
+            },
+        ] + [make_row(t) for t in _unique_titles(12)]
+        playlists_dir = self._write(tmp_path, rows, monkeypatch)
+        m3u = playlists_dir / "Apocalyptica - Essential Collection.m3u"
+        assert m3u.exists()
+        content = m3u.read_text(encoding="utf-8")
+        assert "Bittersweet.flac" in content
+
+    def test_feat_suffixed_artist_section_uses_primary_name(self, tmp_path, monkeypatch):
+        # The scan closes the artist section with the full feat.-credited name;
+        # _create_essential_m3u must write the PRIMARY artist's playlist file.
+        rows = [make_row(t) for t in _unique_titles(13)]
+        playlists_dir = self._write(
+            tmp_path, rows, monkeypatch,
+            artist="Apocalyptica feat. Ville Valo & Lauri Ylönen",
+        )
+        assert (playlists_dir / "Apocalyptica - Essential Collection.m3u").exists()
+        assert not (playlists_dir / "Apocalyptica feat. Ville Valo & Lauri Ylönen - Essential Collection.m3u").exists()
+
+    def test_feat_guest_side_still_matches_guest_collection(self):
+        # The guest-side helper (featured artists get the track on THEIR
+        # collection too) is unchanged.
+        assert fs._track_has_featured_artist(
+            "Apocalyptica feat. Ville Valo & Lauri Ylönen", "Ville Valo"
+        )
+        assert fs._track_has_featured_artist(
+            "Apocalyptica feat. Ville Valo & Lauri Ylönen", "Lauri Ylönen"
+        )
+        assert not fs._track_has_featured_artist(
+            "Apocalyptica feat. Ville Valo & Lauri Ylönen", "Apocalyptica"
+        )
+
+    def test_ampersand_collaboration_not_folded(self, tmp_path, monkeypatch):
+        # "Metallica & San Francisco Symphony" is a genuine collaboration —
+        # it must NOT fold into "Metallica"'s collection (only feat. credits do).
+        rows = [
+            {
+                **make_row("Nothing Else Matters (Live)", stars=5, popularity_score=95.0,
+                           file_path="/music/Metallica/S&M/Nothing Else Matters.flac"),
+                "album_artist": "Metallica & San Francisco Symphony",
+            },
+        ] + [make_row(t) for t in _unique_titles(13)]
+        playlists_dir = self._write(tmp_path, rows, monkeypatch, artist="Metallica")
+        m3u = playlists_dir / "Metallica - Essential Collection.m3u"
+        assert m3u.exists()
+        content = m3u.read_text(encoding="utf-8")
+        assert "Nothing Else Matters.flac" not in content
+
+    def test_prefix_lookalike_not_folded(self, tmp_path, monkeypatch):
+        # "Apocalyptica Tribute Band" merely starts with the same prefix — it
+        # must never be adopted into "Apocalyptica"'s collection.
+        rows = [
+            {
+                **make_row("Tribute Track", stars=5, popularity_score=95.0,
+                           file_path="/music/Apocalyptica Tribute/Tribute.flac"),
+                "album_artist": "Apocalyptica Tribute Band",
+            },
+        ] + [make_row(t) for t in _unique_titles(13)]
+        playlists_dir = self._write(tmp_path, rows, monkeypatch)
+        m3u = playlists_dir / "Apocalyptica - Essential Collection.m3u"
+        assert m3u.exists()
+        content = m3u.read_text(encoding="utf-8")
+        assert "Tribute.flac" not in content
+
+    def test_strip_guest_credit_helper(self):
+        assert fs._essential_strip_guest_credit("Apocalyptica feat. Ville Valo & Lauri Ylönen") == "Apocalyptica"
+        assert fs._essential_strip_guest_credit("Apocalyptica ft. Ville Valo") == "Apocalyptica"
+        assert fs._essential_strip_guest_credit("Apocalyptica featuring Ville Valo") == "Apocalyptica"
+        # Genuine collaborations are preserved.
+        assert fs._essential_strip_guest_credit("Metallica & San Francisco Symphony") == "Metallica & San Francisco Symphony"
+        assert fs._essential_strip_guest_credit("Apocalyptica Tribute Band") == "Apocalyptica Tribute Band"
+        assert fs._essential_strip_guest_credit("Poppy") == "Poppy"
 
 
 class TestDedupWinner:

@@ -335,6 +335,14 @@ def filename_matches_queue_item(
 
     combined = (title_score * 0.70) + (artist_score * 0.30)
 
+    # A title-only match (artist_score 0.0) is NOT sufficient — the queue
+    # artist must appear in the path, otherwise a file for a different
+    # (unmatched) artist with the same track title would be claimed and
+    # auto-moved into the library.  This closes the hole where
+    # ``combined = 0.70 >= 0.65`` passed on title alone.
+    if artist_score <= 0.0:
+        return False
+
     return combined >= threshold
 
 

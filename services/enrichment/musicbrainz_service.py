@@ -775,12 +775,31 @@ class MusicBrainzService:
         if not artist_name or not album_name:
             return []
 
-        query = f'artist:"{escape_lucene_special_chars(artist_name)}" AND releasegroup:"{escape_lucene_special_chars(strip_search_keywords(album_name))}"'
+        clean_album = strip_search_keywords(album_name)
+        query = f'artist:"{escape_lucene_special_chars(artist_name)}" AND releasegroup:"{escape_lucene_special_chars(clean_album)}"'
 
         try:
             groups = self.http.search_release_groups(query, limit=limit)
         except Exception:
-            return []
+            groups = []
+
+        # Punctuation-heavy titles ("GOLDEN HOUR: Part.4") fail the QUOTED
+        # phrase — MusicBrainz's index tokenises the colon/spacing differently
+        # from the stored value ("GOLDEN HOUR : Part.4"), so the phrase returns
+        # zero even though the release-group exists.  Fall back to an UNQUOTED
+        # term query (all terms ANDed), which the exact release-group ranks
+        # first; ``calculate_match_score`` below re-scores locally so the exact
+        # title wins.
+        if not groups and clean_album:
+            terms = normalize_title_for_lucene_query(clean_album)
+            if terms:
+                try:
+                    groups = self.http.search_release_groups(
+                        f'artist:"{escape_lucene_special_chars(artist_name)}" AND releasegroup:{terms}',
+                        limit=limit,
+                    )
+                except Exception:
+                    groups = []
 
         matches = []
 

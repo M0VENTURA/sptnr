@@ -203,7 +203,18 @@ def _metadata_matches_queue_item(file_path: str, queue_item: QueueItem, threshol
             return False  # strong reject
 
         if diff <= STRICT_DURATION_SEC:
-            return True  # very strong evidence
+            # Exact title + duration is only "very strong evidence" when the
+            # artist ALSO agrees — a same-length track by a DIFFERENT artist
+            # (e.g. an unmatched download that shares the title) must never be
+            # claimed on duration alone.  Without this gate the duration
+            # shortcut returned True before any artist comparison, letting the
+            # completion service auto-move files for unmatched artists.
+            if artist_score > 0.0:
+                return True
+            if file_artist_generic or queue_is_compilation:
+                # Artist unknown / compilation → defer to filename matching.
+                return None
+            return False  # concrete artist mismatch → reject
 
     # ------------------------------------------------------------------
     # Combined score (original behaviour preserved)

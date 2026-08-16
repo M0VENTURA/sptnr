@@ -30,6 +30,7 @@ from services.popularity.stages.album_stage import enrich_album
 from services.popularity.stages.finalise_stage import (
     _create_essential_m3u,
     _essential_playlists_enabled,
+    _essential_strip_guest_credit,
     _fetch_essential_featured_rows,
     finalise_scan,
     post_album_star_ratings,
@@ -300,6 +301,12 @@ def _close_artist_essential_section(
     """
     if not artist_name or options.get("metadata_only"):
         return done, featured_rows
+    # A feat.-credited artist section ("Apocalyptica feat. Ville Valo & Lauri
+    # Ylönen") is the SAME artist as its primary for essential-collection
+    # purposes.  Normalise before the ``done``-set dedup so a feat.-credited
+    # album that closes after (or before) the primary artist's section does not
+    # re-create / re-log the same collection under a second key.
+    artist_name = _essential_strip_guest_credit(artist_name) or artist_name
     key = str(artist_name).strip().casefold()
     if not key or key in done:
         return done, featured_rows
@@ -2214,13 +2221,38 @@ def run_scan(
             # dependency — cannot silently terminate the whole scan thread.  The
             # scan continues with the next album; an operator who genuinely wants
             # to stop uses the dashboard stop button (checked per album).
-            logger.warning("[scan_runner] Album failed for '%s - %s': %s", artist, album, _album_exc)
+            #
+            # Defensive unwrap: a leaked ``concurrent.futures.Future`` (e.g. a
+            # worker object logged instead of its ``.result()``, or a future
+            # raised across an executor boundary) renders as the useless
+            # ``<Future at ... state=finished returned dict>``.  Surface the
+            # future's real exception / result so the log shows the actual cause
+            # instead of an opaque object repr.
+            _album_error = _album_exc
             try:
-                log_unified(f"[POPULARITY] Album '{artist} - {album}' failed ({_album_exc})")
+                import concurrent.futures as _cf
+                if isinstance(_album_exc, _cf.Future):
+                    _inner = _album_exc.exception()
+                    if _inner is not None:
+                        _album_error = _inner
+                    else:
+                        _result = _album_exc.result()
+                        _album_error = (
+                            RuntimeError(
+                                f"Album future completed with a value instead of raising — result type: {type(_result).__name__}"
+                            )
+                            if _result is not None
+                            else RuntimeError("Album future completed with None instead of raising")
+                        )
+            except Exception:
+                pass
+            logger.warning("[scan_runner] Album failed for '%s - %s': %s", artist, album, _album_error)
+            try:
+                log_unified(f"[POPULARITY] Album '{artist} - {album}' failed ({_album_error})")
             except Exception:
                 pass
             try:
-                record_scan(scan_type, "failed", message=f"Album failed: {_album_exc}", artist=artist, album=album)
+                record_scan(scan_type, "failed", message=f"Album failed: {_album_error}", artist=artist, album=album)
             except Exception:
                 pass
         albums_processed += 1
