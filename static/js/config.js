@@ -378,6 +378,10 @@ function buildConfigObject() {
         log_ratio_divergence_threshold: parseFloat(getValue('log_ratio_divergence_threshold', '0.85')) || 0.85,
         log_ratio_reject_lf_min_lb: parseInt(getValue('log_ratio_reject_lf_min_lb', '50'), 10) || 50,
         log_ratio_reject_lb_min_lf: parseInt(getValue('log_ratio_reject_lb_min_lf', '100'), 10) || 100,
+        interlude_lb_outlier_enabled: getChecked('interlude_lb_outlier_enabled', true),
+        interlude_lb_max_duration_s: parseInt(getValue('interlude_lb_max_duration_s', '180'), 10) || 180,
+        interlude_lb_ratio_factor: parseFloat(getValue('interlude_lb_ratio_factor', '3.0')) || 3.0,
+        interlude_lb_min_count: parseInt(getValue('interlude_lb_min_count', '500'), 10) || 500,
         star_5: {
           album_z: parseNumber('star5_album_z', 1.0),
           artist_z: parseNumber('star5_artist_z', 1.2)

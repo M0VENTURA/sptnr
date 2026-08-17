@@ -1717,6 +1717,40 @@
       </div>
 
       <hr class="my-3">
+      <h6 class="mb-3">3c · Short-Interlude ListenBrainz Outlier Filter</h6>
+      <p class="text-muted small mb-3">
+        A short ambient interlude legitimately has <strong>low</strong> Last.fm listeners — but its
+        ListenBrainz count should stay proportionally low too.  When a short track carries an LB count
+        far above the album's typical LB/LF relationship (e.g. an interlude with 20.6k LB listens on a
+        45.7k-LF track — higher than every single on the record), the count is usually a recording-MBID
+        artifact, not real audience.  The LB is rejected and the track scores on Last.fm alone.
+      </p>
+      <div class="row g-3">
+        <div class="col-12 col-sm-6 col-lg-3">
+          <div class="form-check form-switch mt-2">
+            <input class="form-check-input" type="checkbox" id="interlude_lb_outlier_enabled" {% if config.get('single_detection', {}).get('interlude_lb_outlier_enabled', True) %}checked{% endif %}>
+            <label class="form-check-label" for="interlude_lb_outlier_enabled">Enable interlude LB outlier filter</label>
+          </div>
+          <small class="form-text text-muted">Master switch for the short-interlude LB/LF ratio audit. Default: <strong>on</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-3">
+          <label class="form-label form-label-sm">Max Interlude Duration (s)</label>
+          <input type="number" step="5" min="10" max="600" class="form-control form-control-sm" id="interlude_lb_max_duration_s" placeholder="180" value="{{ config.get('single_detection', {}).get('interlude_lb_max_duration_s', 180) }}">
+          <small class="form-text text-muted">Tracks shorter than this are treated as interlude candidates. Default: <strong>180</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-3">
+          <label class="form-label form-label-sm">LB/LF Ratio Factor</label>
+          <input type="number" step="0.5" min="1.0" max="20" class="form-control form-control-sm" id="interlude_lb_ratio_factor" placeholder="3.0" value="{{ config.get('single_detection', {}).get('interlude_lb_ratio_factor', 3.0) }}">
+          <small class="form-text text-muted">Track's LB/LF ratio must exceed the album's median ratio by this factor before the LB is rejected. Default: <strong>3.0</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-3">
+          <label class="form-label form-label-sm">Min LB listens</label>
+          <input type="number" step="50" min="10" class="form-control form-control-sm" id="interlude_lb_min_count" placeholder="500" value="{{ config.get('single_detection', {}).get('interlude_lb_min_count', 500) }}">
+          <small class="form-text text-muted">ListenBrainz must be this healthy before the filter applies — tiny/noisy counts are never flagged. Default: <strong>500</strong></small>
+        </div>
+      </div>
+
+      <hr class="my-3">
       <h6 class="mb-3">4 · Single Detection Sources — Confidence Weights</h6>
       <p class="text-muted small mb-3">
         How much each detection source counts toward a track's single confidence (high / medium / low).

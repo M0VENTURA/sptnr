@@ -28,6 +28,7 @@ from db.repositories.tracks import upsert_track_payload, upsert_tracks_bulk
 from sqlalchemy import text
 from db.engine import db_session
 from helpers.logging_config import log_unified
+from helpers.normalization_service import strip_album_edition_marker
 from helpers.text_utils import _clean_artist_name_for_storage
 from services.scanning.cleanup import (
     cleanup_empty_artist_dirs,
@@ -138,13 +139,17 @@ def artist_album_name_diff(
     nav_names: set[str] = set()
     nav_counts: dict[str, int] = {}
     for album in nav_albums:
-        name = album.get("name") or ""
+        # Same edition-marker stripping as scan_artist_to_db — the DB stores
+        # release titles ("Slipknot"), so a Navidrome folder named
+        # "Slipknot (Clean)" must compare equal, not look changed/removed.
+        name = strip_album_edition_marker(album.get("name") or "")
         if name:
             nav_names.add(name)
             nav_counts[name] = int(album.get("songCount", 0) or 0)
 
     db_names: set[str] = set()
     db_counts: dict[str, int] = {}
+    db_raw_names: set[str] = set()
 
     try:
         with db_session() as session:
@@ -162,8 +167,13 @@ def artist_album_name_diff(
                 album_name = str(row[0])
                 count = int(row[1] or 0)
                 if album_name:
-                    db_names.add(album_name)
-                    db_counts[album_name] = count
+                    db_raw_names.add(album_name)
+                    # Compare against the release-title form (same stripping as
+                    # the Navidrome side) so legacy edition-suffixed rows don't
+                    # show up as removed once the DB starts storing clean names.
+                    stripped_db = strip_album_edition_marker(album_name)
+                    db_names.add(stripped_db)
+                    db_counts[stripped_db] = db_counts.get(stripped_db, 0) + count
     except Exception as exc:
         logging.debug("[NAVIDROME_SCAN] Could not query DB albums for '%s': %s", artist_name, exc)
         return False, set(), set()
@@ -173,7 +183,18 @@ def artist_album_name_diff(
         if nav_counts.get(album, 0) != db_counts.get(album, 0):
             changed.add(album)
 
-    removed = db_names - nav_names
+    # Legacy edition-suffixed DB rows: the DB still stores "Slipknot (Clean)"
+    # while Navidrome (stripped) says "Slipknot".  Stripped names match, but
+    # the stored name is stale — flag the album as CHANGED once so the import
+    # loop re-runs and the upsert rewrites ``album`` to the release title.
+    # Only genuinely-gone albums (no stripped-name match) are removed.
+    for raw_name in db_raw_names - nav_names:
+        if strip_album_edition_marker(raw_name) in nav_names:
+            changed.add(strip_album_edition_marker(raw_name))
+
+    # All returned names are in the stripped (release-title) form, matching
+    # ``existing_album_tracks`` in ``prefetch_artist_state``.
+    removed = {db_name for db_name in db_names if db_name not in nav_names}
     return (not changed), changed, removed
 
 
@@ -255,9 +276,14 @@ def prefetch_artist_state(*, canonical_artist_name: str) -> dict[str, Any]:
             if track_id:
                 existing_track_ids.add(str(track_id))
             if album and track_id:
-                existing_album_tracks.setdefault(str(album), set()).add(str(track_id))
+                # Key by the RELEASE-TITLE album name (same stripping as the
+                # import loop) so a legacy "Slipknot (Clean)" row is found
+                # under "Slipknot" on the first post-migration scan — the
+                # cached-id set then survives the rename and tracks are NOT
+                # re-defaulted as brand-new.
+                existing_album_tracks.setdefault(strip_album_edition_marker(str(album)), set()).add(str(track_id))
             if album and album_artist:
-                existing_album_artists[str(album)] = str(album_artist)
+                existing_album_artists[strip_album_edition_marker(str(album))] = str(album_artist)
 
     return {
         "existing_track_ids": existing_track_ids,
@@ -329,7 +355,7 @@ def scan_artist_to_db(
         # can skip them (the rows are still upserted from every entry).
         _album_name_counts: dict[str, int] = {}
         for _album in albums:
-            _name = str(_album.get("name") or "").strip()
+            _name = strip_album_edition_marker(str(_album.get("name") or "").strip())
             if _name:
                 _album_name_counts[_name] = _album_name_counts.get(_name, 0) + 1
         duplicate_album_names = {
@@ -362,7 +388,13 @@ def scan_artist_to_db(
         navi_client = active_client or _get_fallback_client()
 
         for album_index, album in enumerate(albums, 1):
-            album_name = album.get("name") or ""
+            # Album naming is based on the RELEASE TITLE, not the edition
+            # folder Navidrome happens to use.  "Slipknot (Clean)" stores as
+            # "Slipknot" — the parenthetical is an edition marker (Clean /
+            # Deluxe Edition / Remaster ...), not part of the release's
+            # canonical title.  Live/Remix markers are preserved: they change
+            # what the album IS, so they stay in the name.
+            album_name = strip_album_edition_marker(album.get("name") or "")
 
             # Honour dashboard stop requests (stop-all / stop-navidrome) so
             # the artist import halts cleanly instead of draining every album.

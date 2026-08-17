@@ -76,7 +76,18 @@ def _categorize_release(release_group: dict[str, Any]) -> str:
     if primary_type not in ("album", "ep", "single"):
         return "Album"
 
-    secondary = [s.lower() for s in (release_group.get("secondary-types") or release_group.get("secondary_types") or [])]
+    # The browse/search APIs return ``secondary-types`` as an ARRAY, but the
+    # search endpoint can also yield a comma-joined STRING ("Live,Compilation").
+    # Iterating a string character-by-character never matches — normalise to a
+    # list first (mirrors ``_parse_secondary_types`` in musicbrainz_service).
+    raw_secondary = release_group.get("secondary-types") or release_group.get("secondary_types") or []
+    if isinstance(raw_secondary, str):
+        raw_secondary = [raw_secondary]
+    secondary = [
+        s.lower()
+        for s in raw_secondary
+        if isinstance(s, str) and s.strip()
+    ]
 
     if "single" in secondary:
         return "Single"

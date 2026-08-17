@@ -82,4 +82,8 @@ interlude belongs.
 - `services/popularity/popularity_config.py` — `get_interlude_lb_outlier_config`.
 - `services/popularity/stages/track_stage.py` — interlude filter wired into
   fresh + stored scoring paths (`_score_track_popularity`, stored re-audit).
+- `templates/pages/config.html` + `static/js/config.js` — the four
+  `interlude_lb_*` options now surfaced in the Config page (Single Detection
+  card, section 3c) and collected on save, matching the
+  Config-page-as-source-of-truth contract.
 - `tests/test_interlude_lb_outlier.py`, `tests/test_two_pass_mpeak_calibration.py`.

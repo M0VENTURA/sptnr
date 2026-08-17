@@ -694,7 +694,7 @@ function checkMissingReleases(artistName, silent = false, background = false) {
 
   const safeForDomId = (value) => String(value || '').replace(/\s+/g, '_').replace(/[^\w\-]/g, '_');
   const categoryToSection = {
-    album: 'studio-albums',
+    album: 'albums',
     live_album: 'live-albums',
     remix_album: 'remix-albums',
     ep: 'eps',
@@ -709,12 +709,16 @@ function checkMissingReleases(artistName, silent = false, background = false) {
     if (categoryRaw.includes('remix')) return 'remix_album';
     if (categoryRaw.includes('single')) return 'single';
     if (categoryRaw.includes('ep')) return 'ep';
-    // Fallback: inspect the title for live/unplugged/remix keywords even when
-    // the stored category is the generic "album" value (e.g. secondary type
-    // missing from MusicBrainz at scan time).
+    // Fallback: inspect the title for type keywords even when the stored
+    // category is the generic "album" value (e.g. secondary type missing
+    // from MusicBrainz at scan time).  Mirrors the server-side fallback in
+    // ``release_cache_service._fallback_release_category``.
     const titleLower = String(item.title || '').toLowerCase();
-    if (titleLower.includes('live') || titleLower.includes('unplugged')) return 'live_album';
+    if (titleLower.includes('live') || titleLower.includes('unplugged') || titleLower.includes('in concert')) return 'live_album';
     if (titleLower.includes('remix')) return 'remix_album';
+    if (titleLower.includes('compilation') || titleLower.includes('greatest hits') || titleLower.includes('soundtrack')) return 'compilation';
+    if (titleLower.includes('single')) return 'single';
+    if (/\bep\b/.test(titleLower) || titleLower.includes('(ep)')) return 'ep';
     return 'album';
   };
 
@@ -812,7 +816,7 @@ function checkMissingReleases(artistName, silent = false, background = false) {
         addedCount += 1;
       });
 
-      ['studio-albums', 'live-albums', 'remix-albums', 'eps', 'singles', 'compilations'].forEach(sectionKey => {
+      ['albums', 'live-albums', 'remix-albums', 'eps', 'singles', 'compilations'].forEach(sectionKey => {
         const container = document.getElementById(`accordion-${sectionKey}`);
         if (container) {
           // A previously-empty category shows a server-rendered placeholder
@@ -826,7 +830,10 @@ function checkMissingReleases(artistName, silent = false, background = false) {
         // inline style would lose to the ``!important`` mobile-tab rules).
         if (touchedSections.has(sectionKey)) {
           const section = document.getElementById(`${sectionKey}-section`);
-          if (section) section.classList.remove('category-empty');
+          if (section) {
+            section.classList.remove('category-empty');
+            ensureToggleMissingButton(sectionKey);
+          }
         }
       });
 
@@ -2184,6 +2191,29 @@ function loadTracklist(artist, album, button = null, mbid = null) {
     button.disabled = false;
     contentDiv.innerHTML = `<div class="alert alert-danger"><i class="bi bi-x-circle"></i> Error: ${escapeHtml(error.message)}</div>`;
   });
+}
+
+// Ensure a section has a Show/Hide-Missing toggle button.  The server only
+// renders the button when the section already has missing rows (from the DB);
+// when checkMissingReleases() injects missing rows into a section that had
+// none, the button must be created here so the user can still collapse them.
+function ensureToggleMissingButton(category) {
+  const section = document.getElementById(category + '-section');
+  if (!section) return;
+  if (section.querySelector('.toggle-missing-btn')) return;
+
+  const header = section.querySelector('.card-header');
+  const actions = header && header.querySelector('.d-flex.gap-2');
+  if (!actions) return;
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'btn btn-sm btn-outline-secondary toggle-missing-btn';
+  btn.onclick = () => toggleMissing(category);
+  btn.title = 'Show/hide missing ' + category;
+  btn.setAttribute('data-show', 'false');
+  btn.innerHTML = '<i class="bi bi-eye-slash"></i> <span class="d-none d-sm-inline">Show Missing</span>';
+  actions.appendChild(btn);
 }
 
 // Toggle missing items visibility

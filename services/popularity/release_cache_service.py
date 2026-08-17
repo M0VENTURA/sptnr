@@ -44,9 +44,16 @@ def _derive_musicbrainz_category(release_group: dict[str, Any]) -> str:
     if primary not in ("album", "ep", "single"):
         return "Album"
 
+    # Search results can carry ``secondary-types`` as a comma-joined STRING
+    # ("Live,Compilation"); iterating it character-by-character never matches,
+    # so normalise to a list first (mirrors musicbrainz_service).
+    raw_secondary = release_group.get("secondary-types") or release_group.get("secondary_types") or []
+    if isinstance(raw_secondary, str):
+        raw_secondary = [raw_secondary]
     secondary = [
         s.lower()
-        for s in (release_group.get("secondary-types") or release_group.get("secondary_types") or [])
+        for s in raw_secondary
+        if isinstance(s, str) and s.strip()
     ]
 
     if "single" in secondary:

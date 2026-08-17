@@ -268,6 +268,35 @@ def strip_remaster_suffix(value: str) -> str:
     return REMASTER_SUFFIX_RE.sub("", value or "").strip()
 
 
+# Album edition/version markers that are NOT part of the release's canonical
+# title.  Navidrome's album folders routinely carry a parenthetical edition
+# ("Slipknot (Clean)", "Weezer (Deluxe Edition)") — those are *editions of the
+# release*, not the release title, so the canonical album name should drop
+# them.  Studio-affecting markers (Live, Remix, Acoustic, ...) and the
+# "Various Artists" disambiguator are deliberately NOT stripped — they change
+# what the album IS, not just which edition it is.
+_ALBUM_EDITION_STRIP_RE = re.compile(
+    r"\s*[\(\[]\s*(?:clean|explicit|deluxe(?:\s+edition)?|special\s+edition|"
+    r"expanded\s+edition|extended\s+edition|anniversary\s+edition|"
+    r"limited\s+edition|collector(?:'s)?\s+edition|super\s+deluxe|"
+    r"standard\s+edition|digital\s+edition|remaster(?:ed)?(?:\s+edition)?)"
+    r"\s*[\)\]]\s*$",
+    re.IGNORECASE,
+)
+
+
+def strip_album_edition_marker(value: str) -> str:
+    """Return the album title with a trailing edition marker removed.
+
+    ``"Slipknot (Clean)"`` → ``"Slipknot"``, ``"Weezer (Deluxe Edition)"`` →
+    ``"Weezer"``.  Only a trailing bracketed marker whose content is an
+    edition keyword counts; ``(Live)``, ``(Remix)``, ``(Explicit Version)``
+    and non-trailing markers are preserved.  Returns the input unchanged when
+    no marker matches (so already-canonical titles are untouched).
+    """
+    return _ALBUM_EDITION_STRIP_RE.sub("", value or "").strip() or (value or "")
+
+
 def strip_search_keywords(value: str) -> str:
     """Remove parenthetical edition markers for *same-song different-cut* variants.
 
