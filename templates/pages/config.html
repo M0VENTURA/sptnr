@@ -238,6 +238,7 @@
         <div class="row g-3">
           {# Keys that moved to dedicated cards (Scan Behaviour / Single Detection) — never shown here #}
           {% set moved_feature_keys = ['album_skip_days', 'popularity_skip_days', 'singles_skip_days', 'metadata_skip_days', 'album_skip_min_tracks', 'skip_unchanged_albums', 'run_singles_on_skipped_albums', 'cover_detection_enabled', 'mature_track_min_age_years',
+            'old_album_age_months', 'album_old_album_skip_days', 'popularity_old_album_skip_days', 'singles_old_album_skip_days', 'metadata_old_album_skip_days',
             'source_discogs_confidence', 'source_musicbrainz_confidence', 'source_musicbrainz_compilation_confidence',
             'source_discogs_video_confidence', 'source_lastfm_confidence', 'source_radio_edit_confidence'] %}
           {# Legacy keys from the old system with no readers in the current codebase — never shown or re-saved #}
@@ -1443,6 +1444,31 @@
           <label class="form-label form-label-sm">Metadata Scan Window (days)</label>
           <input type="number" step="1" min="0" max="365" class="form-control form-control-sm feature-field" name="feature_metadata_skip_days" value="{{ config.get('features', {}).get('metadata_skip_days', 0) }}">
           <small class="form-text text-muted">Albums whose <strong>Metadata</strong> scan ran within this many days are skipped. Set to <strong>0 to always run</strong> (default — metadata stays fresh).</small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-4">
+          <label class="form-label form-label-sm">Old Album Age Threshold (months)</label>
+          <input type="number" step="1" min="1" max="600" class="form-control form-control-sm feature-field" name="feature_old_album_age_months" value="{{ config.get('features', {}).get('old_album_age_months', 48) }}">
+          <small class="form-text text-muted">Albums released before this age (in months) are <strong>old albums</strong> and use the longer old-album windows below — their popularity changes far less often. Default: <strong>48</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-4">
+          <label class="form-label form-label-sm">Full Scan Old-Album Window (days)</label>
+          <input type="number" step="1" min="0" max="365" class="form-control form-control-sm feature-field" name="feature_album_old_album_skip_days" value="{{ config.get('features', {}).get('album_old_album_skip_days', 30) }}">
+          <small class="form-text text-muted">Old albums skipped by a <strong>full scan</strong> for this many days. Default: <strong>30</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-4">
+          <label class="form-label form-label-sm">Popularity Old-Album Window (days)</label>
+          <input type="number" step="1" min="0" max="365" class="form-control form-control-sm feature-field" name="feature_popularity_old_album_skip_days" value="{{ config.get('features', {}).get('popularity_old_album_skip_days', 30) }}">
+          <small class="form-text text-muted">Old albums re-scored by the <strong>Popularity</strong> scan for this many days. Default: <strong>30</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-4">
+          <label class="form-label form-label-sm">Singles Old-Album Window (days)</label>
+          <input type="number" step="1" min="0" max="365" class="form-control form-control-sm feature-field" name="feature_singles_old_album_skip_days" value="{{ config.get('features', {}).get('singles_old_album_skip_days', 30) }}">
+          <small class="form-text text-muted">Old albums whose <strong>Singles</strong> scan ran for this many days. Default: <strong>30</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-4">
+          <label class="form-label form-label-sm">Metadata Old-Album Window (days)</label>
+          <input type="number" step="1" min="0" max="365" class="form-control form-control-sm feature-field" name="feature_metadata_old_album_skip_days" value="{{ config.get('features', {}).get('metadata_old_album_skip_days', 30) }}">
+          <small class="form-text text-muted">Old albums whose <strong>Metadata</strong> scan ran for this many days. Default: <strong>30</strong></small>
         </div>
         <div class="col-12 col-sm-6 col-lg-4">
           <label class="form-label form-label-sm">Minimum Tracks for Album Skip Check</label>

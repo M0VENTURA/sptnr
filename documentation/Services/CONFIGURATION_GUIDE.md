@@ -70,13 +70,25 @@ single_detection:
 ```
 
 ### Scan Caching (`features`)
-Controls how often mature tracks are re-scored.
+Controls how often mature tracks are re-scored, plus the per-scan-type rescan
+windows.  Albums older than `old_album_age_months` (default 48) are **old
+albums** and use the longer `*_old_album_skip_days` windows (default 30) —
+their popularity changes far less often.  A singles scan refreshes stale
+popularity whenever an album is outside the popularity window.
 
 ```yaml
 features:
   mature_track_min_age_years: 2  # Tracks at/above this age keep existing popularity unless data missing
-  album_skip_days: 7             # Days before rescanning an album
+  album_skip_days: 7             # Full-scan rescan window (days)
+  popularity_skip_days: 7        # Popularity-scan rescan window (days)
+  singles_skip_days: 7           # Singles-scan rescan window (days)
+  metadata_skip_days: 0          # Metadata-scan rescan window (days)
   album_skip_min_tracks: 1       # Minimum tracks for a valid album
+  old_album_age_months: 48       # Album age (months) that makes an album "old"
+  album_old_album_skip_days: 30  # Full-scan window for old albums
+  popularity_old_album_skip_days: 30  # Popularity-scan window for old albums
+  singles_old_album_skip_days: 30     # Singles-scan window for old albums
+  metadata_old_album_skip_days: 30    # Metadata-scan window for old albums
 ```
 
 ### Single-Detection Source Confidence (`features.source_*_confidence`)

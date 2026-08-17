@@ -718,6 +718,11 @@ def process_track(
     metadata_only = bool(options.get("metadata_only"))
     popularity_only = bool(options.get("popularity_only"))
     frozen_track = bool(options.get("frozen_track"))
+    # Singles pass may refresh stale popularity: set by the scan runner when
+    # the album is outside the popularity rescan window (see
+    # ``refresh_popularity_if_due``).  When True, tracks with stored popularity
+    # are re-scored instead of carried through unchanged.
+    refresh_popularity = bool(options.get("refresh_popularity_if_due"))
     # Singles-only pass: used when an album is skipped for popularity (already
     # scored / recently scanned) but singles detection must still run so the
     # per-album singles output appears (legacy parity).  The metadata,
@@ -748,7 +753,7 @@ def process_track(
     _pop_summary: str = ""
     _single_summary: str = ""
 
-    if singles_detection_only or (singles_pass and _has_stored_popularity):
+    if singles_detection_only or (singles_pass and _has_stored_popularity and not refresh_popularity):
         # Carry the stored popularity through so the result dict and star
         # rating pass see the album's existing scores instead of 0, and so
         # singles detection still gets a popularity signal to work with.
@@ -808,6 +813,11 @@ def process_track(
                     score_data.update(_audit_score)
                     update_payload["final_score"] = _audited_final
                     update_payload["popularity"] = _audited_final
+                    # Let the album-relative normalization re-map this re-blend:
+                    # a stored raw-scale score (e.g. an LB-less fallback that
+                    # kept its absolute Last.fm value) must not stay on the raw
+                    # scale and explode the album's z-scores.
+                    update_payload["_raw_combined"] = float(_audited_final or 0)
                     log_unified(
                         f"[TRACK_STAGE] Log-MAD audit {_audit_verdict} re-scored \"{track_title}\" "
                         f"({track_artist}) from stored data: "
@@ -857,7 +867,7 @@ def process_track(
     if (
         not metadata_only
         and not singles_detection_only
-        and not (singles_pass and _has_stored_popularity)
+        and not (singles_pass and _has_stored_popularity and not refresh_popularity)
     ):
         try:
             effective_track = _build_effective_track(track, update_payload)

@@ -643,7 +643,15 @@ def calculate_combined_popularity_score(
     lastfm_log = calculate_lastfm_popularity_score(lastfm_listeners, 0)
     lb_log = calculate_listenbrainz_popularity_score(listenbrainz_listens)
 
-    if album_lf_listeners and listenbrainz_listens > 0:
+    if album_lf_listeners:
+        # Score Last.fm relative to the ALBUM's own listener distribution for
+        # EVERY track — with or without ListenBrainz evidence.  Scoring LB-less
+        # tracks on the absolute log scale put single-source fallbacks on a
+        # DIFFERENT scale from blended tracks (raw ~79.5 vs the album's
+        # ~45-65 blended band), which then inflated their z-scores and forced
+        # false 5★ ratings.  Trigger: sub-unit parenthetical titles (e.g.
+        # "Gone Away (HAN, Seungmin & I.N)") fail the ListenBrainz tracklist
+        # match → 0 listens → raw-scale score.
         lastfm_score = calculate_lastfm_zscore_popularity(
             lastfm_listeners,
             lastfm_listeners,  # playcount placeholder (unused by the z path)
@@ -651,10 +659,8 @@ def calculate_combined_popularity_score(
             album_lf_listeners,
         )
     else:
-        # No ListenBrainz evidence: score Last.fm on its absolute log
-        # popularity so a listener-rich track without LB data is not crushed
-        # by the catalogue-relative z-score (which compares against the
-        # artist's biggest hits) — it relies on Last.fm alone.
+        # No album distribution to compare against: fall back to the absolute
+        # log popularity (a 1-2 track "album" has no spread to normalise by).
         lastfm_score = lastfm_log
     lb_score = lb_log
 
@@ -746,8 +752,15 @@ def calculate_combined_popularity_score(
         # with 5.3k LB listens scored *below* a 133k-listener track with no LB
         # data, and the 179k-listener album lead scored lowest because its
         # under-counted LB weight out-voted its own Last.fm footprint.
+        # The absolute-evidence floor must only apply to a genuine MULTI-source
+        # blend (>=2 independent absolute components).  For a single-source
+        # track (Last.fm only — LB missing, and age derives from LB so it is 0
+        # too) the floor would re-inflate the raw log score back above the
+        # album-relative re-map, recreating the raw-vs-blended scale mismatch
+        # (the LB-less fallback bug).  With one source the album-relative score
+        # IS the honest score.
         absolute_components = [s for s in (lastfm_log, lb_log, age_score) if s > 0]
-        if absolute_components:
+        if len(absolute_components) >= 2:
             strongest = max(absolute_components)
             if strongest > combined:
                 combined = strongest

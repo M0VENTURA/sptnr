@@ -108,6 +108,69 @@ class TestBlendNeverDropsBelowStrongestEvidence:
         assert d["combined_score"] >= floor
 
 
+class TestLbMissingFallbackAlbumRelativeScale:
+    """LB-less fallback tracks must sit on the album-relative scale, not the
+    raw absolute Last.fm log scale.
+
+    Regression (Stray Kids "NOEASY"): sub-unit parenthetical titles
+    ("Gone Away (HAN, Seungmin & I.N)", "Surfin' (Lee Know, Changbin &
+    Felix)", "Red Lights (Bang Chan & Hyunjin)") fail the ListenBrainz
+    tracklist match → 0 listens → the single-source fallback scored on the
+    ABSOLUTE log scale (79.5-87.8) while LB-valid tracks were album-relative
+    (~45-65).  The raw scores exploded the album z-scores and forced false
+    5★ ratings (a 93.2k-listener track outranking the 373.7k-listener title
+    track).
+    """
+
+    def test_lb_less_track_scores_album_relative_not_absolute(self):
+        from services.popularity.popularity_math import (
+            calculate_combined_popularity_score,
+            calculate_lastfm_popularity_score,
+        )
+
+        # Gone Away: 93.2k LF, LB 0 (match failure) — sits below the album's
+        # LF median, so it must NOT keep the raw absolute (~79.5).
+        d = calculate_combined_popularity_score(
+            lastfm_listeners=93200,
+            listenbrainz_listens=0,
+            album_lf_listeners=[373700, 222400, 111000, 305100, 93200, 150000, 120000],
+        )
+        raw_absolute = calculate_lastfm_popularity_score(93200, 0)
+        assert raw_absolute > 70.0  # the old buggy scale
+        assert 0.0 < d["combined_score"] < 60.0  # now album-relative
+
+    def test_multi_source_floor_still_applies(self):
+        from services.popularity.popularity_math import (
+            calculate_combined_popularity_score,
+            calculate_lastfm_popularity_score,
+        )
+
+        # Thunderous: 373.7k LF, 15.8k LB → genuine multi-source evidence.
+        d = calculate_combined_popularity_score(
+            lastfm_listeners=373700,
+            listenbrainz_listens=15800,
+            album_lf_listeners=[373700, 222400, 111000, 305100, 93200, 150000, 120000],
+            age_source_value=15800,
+            release_date="2021-08-23",
+        )
+        floor = round(calculate_lastfm_popularity_score(373700, 0), 3)
+        # The strongest-absolute-evidence floor still guards multi-source blends.
+        assert d["combined_score"] >= floor
+
+    def test_no_album_distribution_keeps_absolute_fallback(self):
+        from services.popularity.popularity_math import (
+            calculate_combined_popularity_score,
+            calculate_lastfm_popularity_score,
+        )
+
+        # No album distribution to normalise by → absolute log fallback stays.
+        d = calculate_combined_popularity_score(
+            lastfm_listeners=93200,
+            listenbrainz_listens=0,
+        )
+        assert d["combined_score"] == round(calculate_lastfm_popularity_score(93200, 0), 3)
+
+
 class TestSingleBoostFade:
     """The confirmed-single boost tapers near the ceiling instead of saturating."""
 

@@ -210,6 +210,41 @@ def _resolve_scan_type(options: dict[str, Any]) -> str:
     return "combined"
 
 
+def _album_release_is_old(tracks: list[dict[str, Any]] | None, now=None) -> bool:
+    """Return True when an album's earliest known release year is older than
+    ``features.old_album_age_months`` (default 48 months).
+
+    Old albums are rescanned less often — their popularity metrics change far
+    less frequently — via the per-mode ``*_old_album_skip_days`` windows.
+    Albums with no usable release year are treated as recent (never "old").
+    """
+    try:
+        from helpers.config_helpers import get_feature
+        age_months = int(get_feature("old_album_age_months", 48) or 48)
+    except Exception:
+        age_months = 48
+    if age_months <= 0:
+        return False
+    try:
+        years: list[int] = []
+        for _t in tracks or []:
+            _y = _t.get("year") or _t.get("release_year")
+            if _y:
+                try:
+                    years.append(int(str(_y)[:4]))
+                except (TypeError, ValueError):
+                    continue
+        if not years:
+            return False
+        _min_year = min(years)
+        from datetime import datetime
+        _now = now or datetime.now()
+        _age_months = (_now.year - _min_year) * 12 + _now.month
+        return _age_months >= age_months
+    except Exception:
+        return False
+
+
 def _load_mb_single_titles(artist: str) -> set[str]:
     """Return MusicBrainz single titles cached in ``missing_releases``.
 
@@ -1280,18 +1315,31 @@ def run_scan(
             options.get("singles_only")
             or options.get("singles_with_missing_popularity")
         )
+        # Old-album rescan windows: albums older than ``old_album_age_months``
+        # (default 48) use a longer per-mode window (default 30 days) — their
+        # popularity metrics change far less often, so they are rescanned less
+        # frequently.  Unknown release year ⇒ treated as recent (normal window).
+        _album_is_old = _album_release_is_old(tracks)
         skip_album = False
         if not force and not album_filter:
             try:
                 from helpers.config_helpers import get_feature
                 if _mode_meta:
                     skip_days = int(get_feature("metadata_skip_days", 0) or 0)
+                    if _album_is_old:
+                        skip_days = int(get_feature("metadata_old_album_skip_days", 30) or 0)
                 elif _mode_pop:
                     skip_days = int(get_feature("popularity_skip_days", 7) or 0)
+                    if _album_is_old:
+                        skip_days = int(get_feature("popularity_old_album_skip_days", 30) or 0)
                 elif _mode_singles:
                     skip_days = int(get_feature("singles_skip_days", 7) or 0)
+                    if _album_is_old:
+                        skip_days = int(get_feature("singles_old_album_skip_days", 30) or 0)
                 else:
                     skip_days = int(get_feature("album_skip_days", 7) or 0)
+                    if _album_is_old:
+                        skip_days = int(get_feature("album_old_album_skip_days", 30) or 0)
             except Exception:
                 skip_days = 7
             if skip_days > 0:
@@ -1859,6 +1907,31 @@ def run_scan(
                 except Exception as exc:
                     logger.debug("[scan_runner] LB tag batch failed for %s - %s: %s", artist, album, exc)
 
+            # ── Singles pass: refresh stale popularity ──────────────────────
+            # A singles scan normally reuses stored popularity and only scores
+            # tracks with NO data.  When an album is outside the popularity
+            # scan window (its popularity data is stale), the singles pass
+            # refreshes popularity for the whole album too — so a singles scan
+            # doubles as a catch-up popularity pass.  A forced singles scan
+            # always refreshes (force bypasses the window); a window of 0
+            # (always rescan popularity) also refreshes.
+            _pop_due = False
+            if _mode_singles:
+                try:
+                    from helpers.config_helpers import get_feature
+                    _pop_window = int(get_feature("popularity_skip_days", 7) or 0)
+                    if _album_is_old:
+                        _pop_window = int(get_feature("popularity_old_album_skip_days", 30) or 0)
+                except Exception:
+                    _pop_window = 7
+                if force or _pop_window <= 0:
+                    _pop_due = True
+                else:
+                    _pop_scored_recently = (
+                        was_album_scanned(artist, album, "popularity", _pop_window)
+                        or was_album_scanned(artist, album, "combined", _pop_window)
+                    )
+                    _pop_due = not _pop_scored_recently
             # ── Per-track processing (bounded parallel pool) ────────────────
             # Each track's work is independent (own update payload, own API
             # calls), so the per-track calls run on a small thread pool.  The
@@ -1920,6 +1993,7 @@ def run_scan(
                 # inherit it).  Frozen tracks additionally set ``frozen_track``.
                 _track_options = dict(options)
                 _track_options["_deferred_persist"] = _deferred_persist
+                _track_options["refresh_popularity_if_due"] = _pop_due
                 if _frozen:
                     # Reuse the cached popularity score but still run the rest of
                     # the per-track pipeline (metadata/cover/singles/genre).
