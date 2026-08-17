@@ -535,7 +535,10 @@
         })
         .catch(function () { return []; });
     } else {
-      mbPromise = Promise.resolve([]);
+      // MusicBrainz scope — the tab IS the full MB result list, so the
+      // search must actually run here (previously it resolved to [] and the
+      // tab always showed "No MusicBrainz releases found").
+      mbPromise = fetchMb(query, MB_LIMIT_MB_TAB, mbOpts);
     }
 
     Promise.all([localPromise, mbPromise])

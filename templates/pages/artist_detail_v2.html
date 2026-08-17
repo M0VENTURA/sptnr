@@ -301,11 +301,11 @@
 
       <!-- Categories (Auto-hidden if 0 entries) -->
       {{ render_release_category('studio-albums', 'Studio Albums', 'bi-vinyl-fill', albums_by_category.album, artist_name) }}
+      {{ render_release_category('compilations', 'Compilations & Featured', 'bi-collection', albums_by_category.compilation, artist_name) }}
       {{ render_release_category('live-albums', 'Live Albums', 'bi-broadcast', albums_by_category.live_album, artist_name) }}
       {{ render_release_category('remix-albums', 'Remix Albums', 'bi-soundwave', albums_by_category.remix_album, artist_name) }}
       {{ render_release_category('eps', 'EPs', 'bi-disc', albums_by_category.ep, artist_name) }}
       {{ render_release_category('singles', 'Singles', 'bi-music-note-beamed', albums_by_category.single, artist_name) }}
-      {{ render_release_category('compilations', 'Compilations &amp; Featured', 'bi-collection', albums_by_category.compilation, artist_name) }}
 
       <!-- Covers in Collection -->
       <div class="card mb-3 category-section" id="covers-section">
