@@ -478,20 +478,71 @@ def start_missing_release_scan():
 
 
 def import_release(artist: str, release_id: str, title: str):
-    """Import a MusicBrainz release as placeholder track records.
+    """Import a missing release as placeholder track records.
 
-    This keeps the old public function but delegates DB save to existing save_to_db
-    as a compatibility bridge.
+    Supports BOTH sources that populate ``missing_releases``:
+
+    - **MusicBrainz** (UUID release or release-group MBID): fetched via the
+      MusicBrainz client, with a release-group → concrete-release fallback
+      (the artist page hands over release-group MBIDs; ``/release/{id}`` 404s
+      for those).
+    - **Discogs** (integer release ID): fetched via the Discogs client — the
+      Discogs release cache also seeds ``missing_releases`` with integer IDs.
+
+    Each track is saved via ``save_to_db`` with the full legacy record shape
+    (a stable ``id`` is REQUIRED — the previous refactor dropped it, which
+    would raise "track must include id").
     """
-    from api_clients.musicbrainz_http import MusicBrainzHttpClient
+    from datetime import datetime
 
-    client = MusicBrainzHttpClient()
-    data = client.get_release(release_id, inc="recordings")
-    if not data:
-        return {"error": "Release not found"}, 404
+    artist = str(artist or "").strip()
+    release_id = str(release_id or "").strip()
+    title = str(title or "").strip()
 
-    media = data.get("media", [])
-    if not media:
+    if not artist or not release_id or not title:
+        return {"error": "Artist, release_id, and title are required"}, 400
+
+    # Discogs release IDs are integers (e.g. "6834679"); MusicBrainz IDs are
+    # UUIDs.  Route by shape so a Discogs-sourced missing release imports
+    # instead of 404ing against MusicBrainz.
+    import re
+    is_mb_uuid = bool(re.fullmatch(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        release_id, re.IGNORECASE,
+    ))
+
+    release_year = ""
+    media: list[dict] = []
+
+    if is_mb_uuid:
+        from api_clients.musicbrainz_http import MusicBrainzHttpClient
+        client = MusicBrainzHttpClient()
+        data, _resolved = _resolve_mb_release(client, release_id)
+        if not data:
+            return {"error": "Release not found on MusicBrainz"}, 404
+        release_year = str(data.get("date") or "")[:4]
+        media = data.get("media") or []
+    else:
+        try:
+            from api_clients.discogs import DiscogsClient
+            from helpers.config_helpers import get_config as _get_cfg
+            _token = (_get_cfg().get("api_integrations", {}).get("discogs", {}) or {}).get("token") or ""
+            client = DiscogsClient(token=_token)
+            data = client.get_release(release_id)
+        except Exception as exc:
+            logger.debug("[MISSING_RELEASES] Discogs release fetch failed for %s: %s", release_id, exc)
+            data = None
+        if not data:
+            return {"error": "Release not found on Discogs"}, 404
+        release_year = str(data.get("year") or "")
+        # Discogs tracklist: [{position, title, duration}] — one flat list.
+        media = [{"tracks": [
+            {"title": t.get("title", ""), "duration": t.get("duration"),
+             "position": t.get("position")}
+            for t in (data.get("tracklist") or [])
+        ]}]
+
+    if not media or not any((d.get("tracks") or []) for d in media):
         return {"error": "No media found"}, 400
 
     try:
@@ -500,10 +551,38 @@ def import_release(artist: str, release_id: str, title: str):
         from db.repositories.popularity_repository import save_to_db  # compatibility fallback
 
     count = 0
-    for disc in media:
-        for i, track in enumerate(disc.get("tracks", []), start=1):
+    for disc_idx, disc in enumerate(media, start=1):
+        disc_number = disc.get("position", disc_idx)
+        for track_idx, track in enumerate(disc.get("tracks", []), start=1):
             recording = track.get("recording", {})
-            save_to_db({"title": recording.get("title"), "artist": artist, "album": title, "track_number": i})
+            track_title = recording.get("title") or track.get("title") or "Unknown"
+            duration = track.get("length") or recording.get("length")
+            if isinstance(duration, str) and duration.isdigit():
+                duration = int(duration)
+            mbid = recording.get("id", "")
+            # Legacy record shape — ``id`` is REQUIRED by save_to_db; fall back
+            # to a stable composite when the recording has no MBID.
+            track_record = {
+                "id": mbid or f"{release_id}_{disc_number}_{track_idx}",
+                "title": track_title,
+                "artist": artist,
+                "album": title,
+                "track_number": track_idx,
+                "disc_number": disc_number,
+                "duration": duration,
+                "year": release_year,
+                "mbid": mbid,
+                "writer": "[]",
+                "score": 0.0,
+                "spotify_score": 0,
+                "lastfm_score": 0,
+                "age_score": 0,
+                "genres": "[]",
+                "file_path": None,
+                "stars": 0,
+                "last_scanned": datetime.now().isoformat(),
+            }
+            save_to_db(track_record)
             count += 1
 
     # Remove the imported release from the missing-releases cache.
@@ -519,7 +598,39 @@ def import_release(artist: str, release_id: str, title: str):
     except Exception as exc:
         logger.debug("[MISSING_RELEASES] Could not clear imported release from cache: %s", exc)
 
-    return {"success": True, "tracks_imported": count}, 200
+    return {"success": True, "tracks_imported": count, "message": f"Imported {count} tracks from '{title}'"}, 200
+
+
+def _resolve_mb_release(client, mb_id: str) -> tuple[dict | None, str]:
+    """Resolve a MusicBrainz release OR release-group MBID to a release payload.
+
+    ``get_release`` raises ``httpx.HTTPStatusError`` on a 404 (release-group
+    MBIDs from the artist page), so the fallback browses the release-group for
+    a concrete release (mirrors download_folder_service._resolve_release).
+    """
+    try:
+        data = client.get_release(mb_id, inc="recordings")
+        if data and data.get("id"):
+            return data, str(data["id"])
+    except Exception:
+        pass
+    try:
+        release_search = client.get(
+            "release",
+            params={"release-group": mb_id, "limit": 1, "fmt": "json"},
+            timeout=15.0,
+        )
+        releases = (release_search or {}).get("releases") or []
+        if not releases:
+            return None, ""
+        release_mbid = str(releases[0].get("id") or "")
+        if not release_mbid:
+            return None, ""
+        data = client.get_release(release_mbid, inc="recordings")
+        return (data, release_mbid) if data else (None, "")
+    except Exception as exc:
+        logger.debug("[MISSING_RELEASES] release-group resolution failed for %s: %s", mb_id, exc)
+        return None, ""
 
 
 def scan_all_missing_releases() -> tuple[dict, int]:

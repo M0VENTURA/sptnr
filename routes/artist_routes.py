@@ -309,9 +309,12 @@ def api_artist_missing_releases():
 @artist_bp.route("/api/artist/import-release", methods=["POST"])
 async def api_import_release():
     payload = (await request.get_json()) or {}
-    artist = (payload.get("artist") or "").strip()
-    release_id = (payload.get("release_id") or "").strip()
-    title = (payload.get("title") or "").strip()
+    # Discogs release IDs are integers and arrive as JSON numbers — coerce to
+    # str BEFORE .strip() (a numeric release_id previously crashed with
+    # AttributeError: 'int' object has no attribute 'strip').
+    artist = str(payload.get("artist") or "").strip()
+    release_id = str(payload.get("release_id") or "").strip()
+    title = str(payload.get("title") or "").strip()
     data, code = scan_import_release(artist, release_id, title)
     return jsonify(data), code
 
