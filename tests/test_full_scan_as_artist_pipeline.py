@@ -37,8 +37,20 @@ def _patch_env(monkeypatch, artists, stop_after=None):
 
     calls = []
 
-    def fake_run(artist, force=False):
+    def fake_run(artist, force=False, progress_callback=None):
         calls.append((artist, force))
+        if callable(progress_callback):
+            # Simulate the real artist pipeline's stage sequence: a 4-album
+            # metadata pass, the combined pass (popularity then singles at the
+            # midpoint), and a coarse essentia pass.
+            for _i in range(4):
+                progress_callback("metadata", _i, 4, f"{artist} - Album {_i + 1}")
+            for _i in range(4):
+                progress_callback("popularity", _i, 4, f"{artist} - Album {_i + 1}")
+            for _i in range(4):
+                progress_callback("singles", _i, 4, f"{artist} - Album {_i + 1}")
+            progress_callback("essentia", 0, 1, artist)
+            progress_callback("essentia", 1, 1, artist)
 
     monkeypatch.setattr(library_mod, "get_all_artists", lambda: list(artists))
     monkeypatch.setattr(pipeline_mod, "run_artist_scan_pipeline", fake_run)
@@ -69,20 +81,37 @@ def _patch_env(monkeypatch, artists, stop_after=None):
 
 
 class TestFullScanAsArtistPipeline:
-    def test_runs_every_artist_and_reports_percent(self, monkeypatch):
+    def test_runs_every_artist_with_stage_aware_percent(self, monkeypatch):
         pp, recorder, calls = _patch_env(monkeypatch, ["Artist A", "Artist B", "Artist C"])
 
         pp._run_full_scan_as_artist_pipeline()
 
         assert calls == [("Artist A", False), ("Artist B", False), ("Artist C", False)]
 
-        # Progress writes: 1 starting + 3 per-artist running + 1 final.
-        per_artist = [c for c in recorder.calls if c["is_running"] and c["current_artist"]]
-        assert [c["current_artist"] for c in per_artist] == ["Artist A", "Artist B", "Artist C"]
-        # Artist-based percentages: 0%, 33%, 66% (0/3, 1/3, 2/3).
-        assert [c["extra"]["percent_complete"] for c in per_artist] == [0, 33, 66]
-        assert [c["extra"]["processed_artists"] for c in per_artist] == [0, 1, 2]
-        assert [c["extra"]["total_artists"] for c in per_artist] == [3, 3, 3]
+        # Running writes come from the progress callback (14 per artist).
+        running = [c for c in recorder.calls if c["is_running"] and c["current_artist"]]
+        assert len(running) == 3 * 14
+
+        # Monotonic overall % across the whole full scan (never jumps back).
+        pcts = [c["extra"]["percent_complete"] for c in running]
+        assert all(pcts[i] <= pcts[i + 1] for i in range(len(pcts) - 1))
+
+        # Stage labels appear in order per artist: 4×Metadata, 4×Popularity,
+        # 4×Singles Detection, 2×Essentia.
+        stages = [c["extra"]["current_stage"] for c in running]
+        assert stages[:4] == ["Metadata"] * 4
+        assert stages[4:8] == ["Popularity"] * 4
+        assert stages[8:12] == ["Singles Detection"] * 4
+        assert stages[12:14] == ["Essentia"] * 2
+
+        # A 4-album metadata stage on a 3-artist scan: the 1st album of Artist
+        # A is 1/4 of the first stage slot → (1/4 × 100/3 / 4) ≈ 2%.
+        assert running[0]["extra"]["percent_complete"] >= 2
+
+        # Each artist's share tops out at ~33 / 66 / 100%.
+        assert running[13]["extra"]["percent_complete"] <= 34
+        assert running[27]["extra"]["percent_complete"] <= 67
+        assert running[41]["extra"]["percent_complete"] == 100
 
         final = recorder.calls[-1]
         assert final["is_running"] is False

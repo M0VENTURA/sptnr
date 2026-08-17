@@ -34,6 +34,13 @@ _POOL_MAX_CONNECTIONS = 200
 _POOL_MAX_KEEPALIVE = 50
 _POOL_TIMEOUT = 30.0
 
+# Cap on a single Retry-After wait (seconds).  Matches the exponential-backoff
+# ceiling below so a provider sending a long header (e.g. "Retry-After: 300")
+# cannot stall a worker past the per-album track deadline — every per-track
+# future would otherwise time out ("N (of N) futures unfinished").  A repeated
+# 429/503 re-arms the wait, so capping only bounds the worst single pause.
+_MAX_RETRY_AFTER = 60.0
+
 
 def _build_pool_limits() -> httpx.Limits:
     """Build ``httpx.Limits`` for the shared session, httpx-version-safe.
@@ -139,7 +146,13 @@ class _RetryTransport(httpx.BaseTransport):
                     retry_after = response.headers.get("Retry-After")
             if retry_after:
                 try:
-                    return float(retry_after)
+                    # Cap the Retry-After wait (same 60s ceiling as the
+                    # exponential backoff below): an uncapped header (e.g.
+                    # "Retry-After: 300") would let a single request stall a
+                    # worker far past the per-album track deadline, so every
+                    # per-track future times out ("N (of N) futures
+                    # unfinished").  A repeated 429 re-arms the wait.
+                    return min(float(retry_after), _MAX_RETRY_AFTER)
                 except ValueError:
                     # HTTP-date form (e.g. "Wed, 21 Oct 2015 07:28:00 GMT").
                     from email.utils import parsedate_to_datetime
@@ -147,7 +160,10 @@ class _RetryTransport(httpx.BaseTransport):
                         when = parsedate_to_datetime(retry_after)
                         if when.tzinfo is None:
                             when = when.replace(tzinfo=datetime.timezone.utc)
-                        return max(0.0, (when - datetime.now(datetime.timezone.utc)).total_seconds())
+                        return min(
+                            max(0.0, (when - datetime.now(datetime.timezone.utc)).total_seconds()),
+                            _MAX_RETRY_AFTER,
+                        )
                     except Exception:
                         pass
             # Exponential backoff (legacy default).

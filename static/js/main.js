@@ -299,7 +299,8 @@ function updateGlobalScanBar(data) {
   }
   const pct = Math.min(scan.percent_complete ?? scan.progress ?? 0, 100);
   const name = String(scan.scan_type || 'scan').replace(/_/g, ' ');
-  line.textContent = `${name} — ${pct}%` + (scan.current_item ? ` · ${scan.current_item}` : '');
+  const stage = scan.current_stage ? ` · ${scan.current_stage}` : '';
+  line.textContent = `${name} — ${pct}%` + stage + (scan.current_item ? ` · ${scan.current_item}` : '');
   icon.className = 'scan-status-active';
   icon.innerHTML = '<i class="bi bi-activity"></i>';
 }

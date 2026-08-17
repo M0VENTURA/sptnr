@@ -41,6 +41,12 @@ _DISCOGS_CONSECUTIVE_ERRORS = 0
 # not atomic — concurrent scan threads could double-fire.  The lock makes the
 # pacing decision atomic (the cooldown window itself stays shared).
 _DISCOGS_THROTTLE_LOCK = threading.Lock()
+# Cap on a single 429 cooldown: a long Retry-After must not stall the whole
+# scan past the per-album track deadline (300s) — every per-track worker
+# would otherwise block on the shared throttle and the album's futures all
+# time out ("N (of N) futures unfinished").  A repeated 429 re-arms the
+# window, so capping only bounds the worst single wait.
+_DISCOGS_MAX_COOLDOWN = 60.0
 
 
 def build_discogs_session():
@@ -64,24 +70,34 @@ def get_retry_after_seconds(response, default: float = 60.0) -> float:
 
 
 def _set_rate_limit_window(wait_seconds: float) -> None:
-    """Record a shared rate-limit cooldown window."""
+    """Record a shared rate-limit cooldown window (capped)."""
     global _DISCOGS_RATE_LIMIT_UNTIL
-    _DISCOGS_RATE_LIMIT_UNTIL = max(_DISCOGS_RATE_LIMIT_UNTIL, time.time() + max(0.0, wait_seconds))
+    capped = min(max(0.0, wait_seconds), _DISCOGS_MAX_COOLDOWN)
+    _DISCOGS_RATE_LIMIT_UNTIL = max(_DISCOGS_RATE_LIMIT_UNTIL, time.time() + capped)
 
 
 def throttle_discogs() -> None:
-    """Respect Discogs request pacing and any active 429 cooldown."""
+    """Respect Discogs request pacing and any active 429 cooldown.
+
+    The cooldown sleep runs OUTSIDE the lock: holding the lock while sleeping
+    through a long 429 window would block every other scan thread for the
+    whole cooldown, making all per-track futures time out past the album
+    deadline ("N (of N) futures unfinished").  The lock only guards the
+    shared-state read/update; concurrent workers sleep in parallel.
+    """
     global _DISCOGS_LAST_REQUEST_TIME
 
     with _DISCOGS_THROTTLE_LOCK:
-        if _DISCOGS_RATE_LIMIT_UNTIL > time.time():
-            time.sleep(_DISCOGS_RATE_LIMIT_UNTIL - time.time())
-
-        elapsed = time.time() - _DISCOGS_LAST_REQUEST_TIME
-        if elapsed < _DISCOGS_MIN_INTERVAL:
-            time.sleep(_DISCOGS_MIN_INTERVAL - elapsed)
-
+        now = time.time()
+        cooldown_wait = _DISCOGS_RATE_LIMIT_UNTIL - now
+        elapsed = now - _DISCOGS_LAST_REQUEST_TIME
+        min_wait = _DISCOGS_MIN_INTERVAL - elapsed
         _DISCOGS_LAST_REQUEST_TIME = time.time()
+
+    if cooldown_wait > 0:
+        time.sleep(cooldown_wait)
+    if min_wait > 0:
+        time.sleep(min_wait)
 
 
 def check_circuit_breaker() -> bool:
@@ -165,7 +181,7 @@ class DiscogsHttpClient:
             response = self.session.request(method, url, headers=self.headers, params=params, timeout=timeout)
 
             if response.status_code == 429:
-                wait_seconds = get_retry_after_seconds(response)
+                wait_seconds = min(get_retry_after_seconds(response), _DISCOGS_MAX_COOLDOWN)
                 _set_rate_limit_window(wait_seconds)
                 logger.warning("Discogs rate limited; waiting %ss", int(wait_seconds))
                 time.sleep(wait_seconds)

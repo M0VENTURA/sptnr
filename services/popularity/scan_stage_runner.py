@@ -1455,6 +1455,17 @@ def run_scan(
         progress = 5 + int((album_index / total_albums) * 90)
         current_item = f"{artist} - {album}"
 
+        # Per-album progress hook (used by the dashboard full-scan
+        # orchestration to report stage-aware, monotonic % on the "full_scan"
+        # row).  Fires for EVERY album regardless of the checkpoint gate below,
+        # so artist-scoped passes still report each album.
+        _progress_cb = options.get("progress_callback")
+        if callable(_progress_cb):
+            try:
+                _progress_cb(album_index, total_albums, current_item)
+            except Exception as exc:
+                logger.debug("[scan_runner] progress_callback failed: %s", exc)
+
         if effective_stop_file and artist and artist != last_checkpoint_artist:
             try:
                 write_progress_with_current_artist(

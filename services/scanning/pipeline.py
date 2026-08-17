@@ -109,17 +109,31 @@ def _release_artist(artist_name: str) -> None:
 # Artist pipeline
 # -------------------------------------------------------------------------
 
-def run_artist_scan_pipeline(artist_name: str, force: bool = False):
+def run_artist_scan_pipeline(artist_name: str, force: bool = False, progress_callback=None):
     if not _try_claim_artist(artist_name):
         log_unified(f"⏭️ Artist scan already running for: {artist_name} — skipping duplicate trigger")
         return
     try:
-        _run_artist_scan_pipeline_inner(artist_name, force)
+        _run_artist_scan_pipeline_inner(artist_name, force, progress_callback=progress_callback)
     finally:
         _release_artist(artist_name)
 
 
-def _run_artist_scan_pipeline_inner(artist_name: str, force: bool = False):
+def _run_artist_scan_pipeline_inner(artist_name: str, force: bool = False, progress_callback=None):
+    # Optional per-album progress hook (stage, album_index, total_albums,
+    # item).  The dashboard full-scan orchestration uses it to report a
+    # stage-aware, monotonic overall percentage; standalone artist scans
+    # (artist page) call without it and keep their per-pipeline progress rows.
+    def _cb(stage, idx, total, item=None):
+        if callable(progress_callback):
+            try:
+                progress_callback(stage, idx, total, item or artist_name)
+            except Exception:
+                pass
+
+    if callable(progress_callback):
+        _cb("metadata", 0, 1, artist_name)
+
     log_unified(f"[SCAN_PIPELINE] Starting artist pipeline: {artist_name} (force={force})")
     record_scan("artist", "started", message=f"Artist scan: {artist_name}", artist=artist_name)
     try:
@@ -160,22 +174,34 @@ def _run_artist_scan_pipeline_inner(artist_name: str, force: bool = False):
             artist_filter=artist_name,
             metadata_only=True,
             progress_file="popularity_scan",
+            progress_callback=(lambda _i, _t, _it=None, _cb=_cb: _cb("metadata", _i, _t, _it)),
         )
 
-        # scoring pass (combined) — scoped to this artist only
+        # scoring pass (combined) — scoped to this artist only.  The combined
+        # pass does popularity + singles + genre + cover per track; the
+        # progress hook splits its album loop so the dashboard shows
+        # "Popularity" then "Singles Detection" within the one pass.
         run_popularity_scan(
             verbose=True,
             force=force,
             artist_filter=artist_name,
             progress_file="popularity_scan",
+            progress_callback=(lambda _i, _t, _it=None, _cb=_cb: _cb(
+                "popularity" if _i < ((_t or 1) + 1) // 2 else "singles",
+                _i, _t, _it,
+            )),
         )
 
         # optional essentia
+        if callable(progress_callback):
+            _cb("essentia", 0, 1, artist_name)
         try:
             from services.scanning.pipelines.essentia_scanner import run_essentia_mood_scan
             run_essentia_mood_scan(artist_filter=artist_name, force=force)
         except Exception as exc:
             logger.debug("[SCAN_PIPELINE] Essentia scan skipped for '%s': %s", artist_name, exc)
+        if callable(progress_callback):
+            _cb("essentia", 1, 1, artist_name)
 
         save_artist_scan_checkpoint(artist_name)
 

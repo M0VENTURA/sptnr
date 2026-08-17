@@ -260,6 +260,20 @@ def _run_full_scan_as_artist_pipeline(
     )
 
     status = "complete"
+    # Stage bands for the overall percentage.  Each artist contributes an
+    # equal share; within an artist the four stages (Metadata, Popularity,
+    # Singles Detection, Essentia) each take a quarter of that share.  The
+    # combined pass's album loop is split at its midpoint so the dashboard
+    # shows "Popularity" then "Singles Detection" (the combined pass does
+    # both per track).  With a 4-album artist this gives 2 albums into
+    # metadata = 12.5%, metadata done = 25%, popularity done = 50%, etc.
+    _STAGE_IDX = {"metadata": 0, "popularity": 1, "singles": 2, "essentia": 3}
+    _STAGE_LABEL = {
+        "metadata": "Metadata",
+        "popularity": "Popularity",
+        "singles": "Singles Detection",
+        "essentia": "Essentia",
+    }
     try:
         for i, artist in enumerate(artists):
             if is_stop_requested(progress_file):
@@ -267,23 +281,35 @@ def _run_full_scan_as_artist_pipeline(
                 log_unified("[FULL_SCAN] Stop requested — halting artist loop")
                 break
 
-            pct = int((i / total) * 100) if total else 100
-            write_progress_with_current_artist(
-                progress_file,
-                "full_scan",
-                True,
-                current_artist=artist,
-                extra={
-                    "status": "running",
-                    "mode": "all",
-                    "percent_complete": pct,
-                    "processed_artists": i,
-                    "total_artists": total,
-                    "current_item": artist,
-                },
-            )
-            log_unified(f"[FULL_SCAN] Artist {i + 1}/{total}: {artist} ({pct}%)")
-            run_artist_scan_pipeline(artist, force=force)
+            artist_base = (i / total) * 100.0 if total else 100.0
+            artist_share = (100.0 / total) if total else 100.0
+            stage_width = artist_share / 4.0
+
+            def _cb(stage, idx, t, item, _i=i, _base=artist_base, _sw=stage_width, _artist=artist):
+                try:
+                    si = _STAGE_IDX.get(stage, 0)
+                    frac = min(1.0, (int(idx) + 1) / float(t)) if t else 1.0
+                    overall = max(0, min(100, int(_base + si * _sw + frac * _sw)))
+                    write_progress_with_current_artist(
+                        progress_file,
+                        "full_scan",
+                        True,
+                        current_artist=_artist,
+                        extra={
+                            "status": "running",
+                            "mode": "all",
+                            "percent_complete": overall,
+                            "current_stage": _STAGE_LABEL.get(stage, stage),
+                            "current_item": item or _artist,
+                            "processed_artists": _i,
+                            "total_artists": total,
+                        },
+                    )
+                except Exception:
+                    pass
+
+            log_unified(f"[FULL_SCAN] Artist {i + 1}/{total}: {artist}")
+            run_artist_scan_pipeline(artist, force=force, progress_callback=_cb)
     except Exception as exc:
         status = "error"
         logger.error("[FULL_SCAN] Artist loop failed: %s", exc, exc_info=True)
