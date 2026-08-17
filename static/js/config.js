@@ -387,7 +387,8 @@ function buildConfigObject() {
           artist_z: parseNumber('star5_artist_z', 1.2)
         },
         star_4: {
-          album_z: parseNumber('star4_album_z', 0.5)
+          album_z: parseNumber('star4_album_z', 0.5),
+          artist_z: parseNumber('star4_artist_z', 1.0)
         },
         star_3: {
           album_z: parseNumber('star3_album_z', -0.5)

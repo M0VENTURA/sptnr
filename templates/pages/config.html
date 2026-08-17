@@ -1610,9 +1610,10 @@
           <div class="border rounded p-3 h-100">
             <h6 class="text-info mb-2">⭐⭐⭐⭐ 4★</h6>
             <div class="row g-2">
-              <div class="col-12"><label class="form-label form-label-sm">Album Z</label><input type="number" step="0.1" min="0" max="5" class="form-control form-control-sm" id="star4_album_z" placeholder="0.5" value="{{ config.get('single_detection', {}).get('star_4', {}).get('album_z', 0.5) }}"></div>
+              <div class="col-6"><label class="form-label form-label-sm">Album Z</label><input type="number" step="0.1" min="0" max="5" class="form-control form-control-sm" id="star4_album_z" placeholder="0.5" value="{{ config.get('single_detection', {}).get('star_4', {}).get('album_z', 0.5) }}"></div>
+              <div class="col-6"><label class="form-label form-label-sm">Artist Z</label><input type="number" step="0.1" min="0" max="5" class="form-control form-control-sm" id="star4_artist_z" placeholder="1.0" value="{{ config.get('single_detection', {}).get('star_4', {}).get('artist_z', 1.0) }}"></div>
             </div>
-            <small class="form-text text-muted d-block mt-2">Album z ≥ this value (default <strong>0.5</strong>) → album standout / fan favourite.</small>
+            <small class="form-text text-muted d-block mt-2">Album z ≥ this value (default <strong>0.5</strong>) AND artist-catalogue z ≥ the Artist Z gate (default <strong>1.0</strong>) → catalogue standout. The artist gate keeps a minor album's top track from auto-earning 4★.</small>
           </div>
         </div>
         <div class="col-12 col-md-3">

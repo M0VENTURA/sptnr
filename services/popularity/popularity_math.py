@@ -359,6 +359,100 @@ def calculate_listenbrainz_popularity_score(listen_count: int) -> float:
     return min(100.0, math.log10(listen_count + 1) * LOG_SCALE_MULTIPLIER)
 
 
+def album_prominence_score(
+    lastfm_listeners: int,
+    listenbrainz_listens: int,
+    *,
+    lf_weight: float = 0.55,
+    lb_weight: float = 0.45,
+) -> float:
+    """Return a log-scaled 0-100 prominence score for an album/track.
+
+    The album-relative popularity scores (``final_score`` / ``popularity``)
+    deliberately erase CROSS-ALBUM magnitude — every album's median is
+    re-anchored to ~50, so ``R_eff`` computed from them collapses every album
+    onto ``era=peak`` regardless of raw listener volume (a 900k-listener album
+    and a 50k-listener album both score ~50-67).
+
+    This helper reconstructs the catalogue-magnitude signal from the RAW
+    per-track listener/listen counts that ARE persisted: a log-scaled weighted
+    blend of Last.fm listeners and ListenBrainz listens, calibrated with the
+    same ``LOG_SCALE_MULTIPLIER`` as the final 0-100 scale.  Used by the era
+    model (``M_peak`` / ``R_eff``) so albums are classified by how popular
+    they actually are in the catalogue, not by their internal spread.
+    """
+    lf = int(lastfm_listeners or 0)
+    lb = int(listenbrainz_listens or 0)
+    if lf <= 0 and lb <= 0:
+        return 0.0
+    lf_score = calculate_lastfm_popularity_score(lf, 0)
+    lb_score = calculate_listenbrainz_popularity_score(lb)
+    if lf_score <= 0 and lb_score <= 0:
+        return 0.0
+    total_w = 0.0
+    weighted = 0.0
+    if lf_score > 0:
+        weighted += lf_score * lf_weight
+        total_w += lf_weight
+    if lb_score > 0:
+        weighted += lb_score * lb_weight
+        total_w += lb_weight
+    if total_w <= 0:
+        return 0.0
+    return min(100.0, max(0.0, weighted / total_w))
+
+
+def album_prominence_median(track_rows: list[dict[str, Any]]) -> float:
+    """Median album-prominence score across a set of track rows.
+
+    Each row must expose ``lastfm_listeners`` and ``listenbrainz_listens``
+    (dict keys or SQLAlchemy ``_mapping``).  Tracks with no listener data are
+    dropped (they cannot anchor a prominence benchmark); returns 0.0 when no
+    row has usable counts.
+    """
+    scores = [
+        album_prominence_score(
+            int(row_get_lf(row) or 0),
+            int(row_get_lb(row) or 0),
+        )
+        for row in (track_rows or [])
+    ]
+    valid = [s for s in scores if s > 0]
+    if not valid:
+        return 0.0
+    return median(valid)
+
+
+def row_get_lf(row: Any) -> Any:
+    """Best-effort ``lastfm_listeners`` read from a dict/SQLAlchemy row."""
+    if row is None:
+        return 0
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None:
+        try:
+            return mapping["lastfm_listeners"]
+        except Exception:
+            return 0
+    if isinstance(row, dict):
+        return row.get("lastfm_listeners", 0)
+    return 0
+
+
+def row_get_lb(row: Any) -> Any:
+    """Best-effort ``listenbrainz_listens`` read from a dict/SQLAlchemy row."""
+    if row is None:
+        return 0
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None:
+        try:
+            return mapping["listenbrainz_listens"]
+        except Exception:
+            return 0
+    if isinstance(row, dict):
+        return row.get("listenbrainz_listens", 0)
+    return 0
+
+
 def calculate_listenbrainz_percentile(lb_listens, album_lb_listens):
     """Calculate percentile of a track within album ListenBrainz distribution."""
     if lb_listens is None or lb_listens <= 0:

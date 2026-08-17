@@ -72,6 +72,7 @@ def _live_star_thresholds() -> dict[str, float]:
         "star5_album_z": _tier("star_5", "album_z", 1.0),
         "star5_artist_z": _tier("star_5", "artist_z", 1.2),
         "star4_album_z": _tier("star_4", "album_z", 0.5),
+        "star4_artist_z": _tier("star_4", "artist_z", 1.0),
         "star3_album_z": _tier("star_3", "album_z", -0.5),
         "star2_album_z": _tier("star_2", "album_z", -1.2),
         "epsilon": _safe_float(cfg.get("star_epsilon_score_points"), 0.5),
@@ -268,15 +269,22 @@ def _album_z_band_star(
     score: float,
     album_scores: list[float],
     reference_scores: list[float] | None = None,
+    artist_scores: list[float] | None = None,
 ) -> int:
     """Album-relative 1-4★ rating from the z-score bands.
 
     Spec rule 4: the album's tracks are ranked by popularity and sliced into
     z-score bands — top of the album (Z >= +0.5) → 4★, the standard middle
     (-0.5 <= Z < +0.5) → 3★, the lower band (-1.2 <= Z < -0.5) → 2★, and
-    bottom outliers (Z < -1.2) → 1★.  Purely album-relative: artist context
-    is never consulted, so every album has a meaningful internal ranking and
-    no track reaches 5★ from popularity alone.
+    bottom outliers (Z < -1.2) → 1★.
+
+    When ``artist_scores`` is provided, the 4★ band ALSO requires the track
+    to clear the artist-catalogue z minimum (``star_4.artist_z``, default
+    1.0) — 4★ reflects absolute catalogue prominence, not just "best track
+    on this specific record".  A track that tops a low-prominence album but
+    sits below the artist-catalogue z gate falls to 3★.  Without artist
+    context (compilation tracks, tiny catalogues) the pure album band stands
+    (legacy parity).
 
     ``reference_scores`` overrides the reference distribution (used for
     compilation / Best-Of albums, where the curated tracklist inflates the
@@ -305,7 +313,20 @@ def _album_z_band_star(
     # next tier down is preserved (bands are >= 0.5 z apart and the epsilon
     # is at most ~0.06 z).
     epsilon = _star_epsilon_z(spread, th["epsilon"])
-    if album_z >= th["star4_album_z"] - epsilon:
+    # 4★ artist-z hard minimum: the track must also be a catalogue standout
+    # (``star_4.artist_z``) when a REAL artist catalogue exists.  The gate
+    # only fires when the artist reference is a distinct, wider catalogue
+    # (more valid scores than the album reference) — when the artist reference
+    # IS the album (single-album artist / tiny catalogue) the pure album band
+    # stands, so 4★ never double-gates against the same distribution.  Only
+    # the 4★ band is gated — 3★/2★/1★ stay purely album-relative.
+    artist_eligible_4star = True
+    if artist_scores:
+        valid_artist = [float(s) for s in artist_scores if float(s or 0) > 0]
+        if len(valid_artist) >= 5 and len(valid_artist) > len(valid):
+            artist_z, artist_spread = _compute_artist_z(score, valid_artist)
+            artist_eligible_4star = artist_z >= th["star4_artist_z"] - _star_epsilon_z(artist_spread, th["epsilon"])
+    if album_z >= th["star4_album_z"] - epsilon and artist_eligible_4star:
         return 4
     if album_z >= th["star3_album_z"] - epsilon:
         return 3
@@ -360,10 +381,14 @@ def _build_album_model(
 ) -> dict[str, Any]:
     """3-step scaling model context for ONE album.
 
-    Step 1 — M_peak: the highest album-median across the artist's catalogue
-        (DB ``final_score`` per album, re-anchored onto the album-relative
-        scale so stored raw-scale albums are comparable; the current album's
-        fresh scan scores are merged in).
+    Step 1 — M_peak: the highest album-median across the artist's catalogue.
+        Prefers a RAW-LISTENER prominence benchmark (per-album median of the
+        log-scaled LF/LB blend) because the album-relative ``final_score``
+        values erase cross-album magnitude — every album's median re-anchors
+        to ~50, so R_eff computed from them collapses every album onto
+        ``era=peak`` regardless of raw listener volume.  Falls back to the
+        re-anchored score medians when no listener data is stored (legacy
+        rows / test fixtures).
     Step 2 — A_skew: age-skew multiplier from the album's release year vs
         the peak album's year (fresh releases / legacy albums boosted).
     Step 3 — R_eff = min(1.0, album_median * A_skew / M_peak).
@@ -375,6 +400,10 @@ def _build_album_model(
     try:
         from sqlalchemy import text as _text
         from db.engine import db_session as _db_session
+        from services.popularity.popularity_math import (
+            album_prominence_score,
+            album_prominence_median,
+        )
         current_album = str(album_results[0].get("album") or "")
         scanned_titles = {
             str(r.get("title") or "").strip().lower() for r in album_results
@@ -383,7 +412,10 @@ def _build_album_model(
         with _db_session() as session:
             rows = session.execute(
                 _text(
-                    "SELECT title, album, final_score, year FROM tracks "
+                    "SELECT title, album, final_score, year, "
+                    "COALESCE(lastfm_listeners, 0) AS lastfm_listeners, "
+                    "COALESCE(listenbrainz_listens, 0) AS listenbrainz_listens "
+                    "FROM tracks "
                     "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND final_score > 0"
                 ),
                 {"artist": artist},
@@ -391,6 +423,7 @@ def _build_album_model(
 
         by_album: dict[str, list[float]] = {}
         album_years: dict[str, int] = {}
+        prominence_by_album: dict[str, list[float]] = {}
         for row in rows:
             _title = str(row_get(row, "title") or "").strip().lower()
             if _title in scanned_titles:
@@ -399,44 +432,90 @@ def _build_album_model(
             _score = float(row_get(row, "final_score") or 0)
             if _score > 0:
                 by_album.setdefault(_album, []).append(_score)
+            _lf = int(row_get(row, "lastfm_listeners") or 0)
+            _lb = int(row_get(row, "listenbrainz_listens") or 0)
+            if _lf > 0 or _lb > 0:
+                prominence_by_album.setdefault(_album, []).append(
+                    album_prominence_score(_lf, _lb)
+                )
             _year = int(row_get(row, "year") or 0)
             if _year > 0:
                 album_years.setdefault(_album, _year)
 
         # Fresh scan scores for the current album (not yet stored) join its
-        # group; years fall back to the scan's track fields.
+        # group; years fall back to the scan's track fields.  The fresh
+        # results also carry the raw listener counts, so the current album's
+        # prominence (if any) joins the prominence benchmark too.
         for r in album_results:
             _score = float(r.get("popularity_score") or 0)
             if _score > 0 and not bool(r.get("exclude_from_stats")):
                 by_album.setdefault(current_album, []).append(_score)
+            _lf = int(r.get("lastfm_listeners") or 0)
+            _lb = int(r.get("listenbrainz_listens") or 0)
+            if _lf > 0 or _lb > 0:
+                prominence_by_album.setdefault(current_album, []).append(
+                    album_prominence_score(_lf, _lb)
+                )
             _year = int(r.get("year") or r.get("release_year") or 0)
             if _year > 0:
                 album_years.setdefault(current_album, _year)
 
-        # Re-anchor each album against its own distribution so the medians
-        # sit on the same (album-relative) scale.
-        medians: dict[str, float] = {}
-        for _album, _scores in by_album.items():
-            if not _scores:
-                continue
-            _reanchored = [
-                apply_album_relative_popularity(s, _scores) for s in _scores
-            ]
-            medians[_album] = median(_reanchored)
+        # ── Prominence benchmark (preferred) ─────────────────────────────
+        # Raw-listener prominence preserves CROSS-ALBUM magnitude: Mer de
+        # Noms (median ~700k listeners) scores ~86 while Eat the Elephant
+        # (median ~80k) scores ~70.  The log scale compresses a 10x listener
+        # gap to ~16 points, so the raw ratio (0.82) would still clear the
+        # peak-era 0.75 boundary — the ratio is therefore power-amplified
+        # (R_eff = ratio^k) so a 10x gap (0.82^2 = 0.67) lands in ``solid``
+        # and a ~20x gap (0.68^2 = 0.46) approaches ``minor``.  Requires
+        # >= 2 albums with listener data so the catalogue peak is meaningful.
+        prominence_medians: dict[str, float] = {
+            _album: album_prominence_median(_scores)
+            for _album, _scores in prominence_by_album.items()
+            if album_prominence_median(_scores) > 0
+        }
+        use_prominence = len(prominence_medians) >= 2
+        prominence_power = 2.0
+        if use_prominence:
+            m_peak = max(prominence_medians.values())
+            current_median = prominence_medians.get(current_album) or m_peak
+            peak_album = max(prominence_medians, key=prominence_medians.get)
+        else:
+            # ── Score-based fallback ──────────────────────────────────────
+            # Re-anchor each album against its own distribution so the
+            # medians sit on the same (album-relative) scale.  This flattens
+            # cross-album magnitude (every median → ~50), so it is only used
+            # when no listener data exists to benchmark against.
+            medians: dict[str, float] = {}
+            for _album, _scores in by_album.items():
+                if not _scores:
+                    continue
+                _reanchored = [
+                    apply_album_relative_popularity(s, _scores) for s in _scores
+                ]
+                medians[_album] = median(_reanchored)
+            if not medians:
+                return {}
+            m_peak = max(medians.values())
+            if m_peak <= 0:
+                return {}
+            current_median = medians.get(current_album) or m_peak
+            peak_album = max(medians, key=medians.get)
 
-        if not medians:
-            return {}
-        m_peak = max(medians.values())
-        if m_peak <= 0:
-            return {}
-        current_median = medians.get(current_album) or m_peak
-
-        peak_album = max(medians, key=medians.get)
         peak_year = album_years.get(peak_album, 0)
         album_year = album_years.get(current_album, 0)
 
         a_skew = age_skew_multiplier(album_year, datetime.now().year, peak_year)
-        reff = effective_album_ratio(current_median * a_skew, m_peak)
+        if use_prominence:
+            # Power-amplified prominence ratio: R_eff = min(1.0, (median/M_peak)^k).
+            # The log-scale prominence compresses a 10x listener gap to ~0.82
+            # raw ratio, which would still clear the peak-era 0.75 boundary;
+            # squaring (k=2) makes a 10x gap land in ``solid`` and a ~20x gap
+            # approach ``minor`` while a genuine peak stays at 1.0.
+            raw_ratio = min(1.0, max(0.0, float(current_median) / float(m_peak)))
+            reff = min(1.0, max(0.0, raw_ratio ** float(prominence_power)))
+        else:
+            reff = effective_album_ratio(current_median * a_skew, m_peak)
         era = _album_era_for_ratio(reff)
         _rules, _, _ = _live_album_scaling()
         rules = _rules.get(era, _rules["peak"])
@@ -448,6 +527,7 @@ def _build_album_model(
             "a_skew": a_skew,
             "reff": reff,
             "era": era,
+            "benchmark_source": "prominence" if use_prominence else "scores",
             "catalog_cutoff": _percentile_cutoff(
                 artist_scores, float(rules["catalog_top_pct"])
             ),
@@ -621,16 +701,16 @@ def _assign_stars(
             # that fails the 5★ criteria never drops below 4★ — unless the
             # organic floor is unmet, in which case it must not exceed 3★.
             if not popularity_only and single_confidence == "high":
-                band = _album_z_band_star(score, ref_scores)
+                band = _album_z_band_star(score, ref_scores, artist_scores=artist_scores)
                 return max(band, 4) if organic else min(band, 3)
             # Marked-only tracks below the era bar (medium-bumped singles
             # ranked 10-20% on a minor-era album) fall through to the band.
-            return _album_z_band_star(score, ref_scores)
+            return _album_z_band_star(score, ref_scores, artist_scores=artist_scores)
 
         return 5
 
     # ── 1-4★: album-relative z-score base ──
-    return _album_z_band_star(score, ref_scores)
+    return _album_z_band_star(score, ref_scores, artist_scores=artist_scores)
 
 
 # ---------------------------------------------------------------------------
@@ -2040,12 +2120,13 @@ def post_album_star_ratings(
             album_model = _build_album_model(artist, album_results, artist_scores)
             if album_model.get("has_benchmark"):
                 logger.info(
-                    "[finalise_stage] %s - %s → era=%s (M_peak=%.1f, album median=%.1f, A_skew=%.2f, R_eff=%.2f)",
+                    "[finalise_stage] %s - %s → era=%s (M_peak=%.1f, album median=%.1f, A_skew=%.2f, R_eff=%.2f, benchmark=%s)",
                     artist, album, album_model.get("era"),
                     float(album_model.get("m_peak") or 0),
                     float(album_model.get("album_median") or 0),
                     float(album_model.get("a_skew") or 1.0),
                     float(album_model.get("reff") or 0),
+                    album_model.get("benchmark_source", "scores"),
                 )
         except Exception as exc:
             logger.debug("[finalise_stage] Album model build failed for %s - %s: %s", artist, album, exc)
