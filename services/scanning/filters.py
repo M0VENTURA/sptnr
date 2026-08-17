@@ -53,12 +53,11 @@ def should_skip_cached_album(
     """Return True when the DB cache appears current for an album."""
     if force or album_needs_reimport or not tracks:
         return False
-    if len(cached_ids_for_album) >= len(tracks):
-        if verbose:
-            logging.getLogger(__name__).info("Skipping cached album: %s", album_name)
-        logging.debug("Skipping cached album '%s - %s' by count", artist_name, album_name)
-        return True
-    if cached_ids_for_album:
+    if len(cached_ids_for_album) == len(tracks):
+        # Equal counts — the ID comparison below decides whether the track
+        # set really is unchanged.  (A strict ``>=`` here would skip albums
+        # whose songs were REMOVED in Navidrome, because the DB then holds
+        # MORE ids than Navidrome — leaving the removed songs in the DB.)
         navidrome_album_ids = {track.get("id") for track in tracks if track.get("id")}
         if navidrome_album_ids and navidrome_album_ids == cached_ids_for_album:
             logging.debug("Skipping unchanged album '%s' (%s tracks, IDs match)", album_name, len(cached_ids_for_album))

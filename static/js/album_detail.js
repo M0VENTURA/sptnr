@@ -2409,13 +2409,18 @@ var _pageData = window._pageData || {};
 
     async function performBulkRename(trackIds) {
         let renamed = 0, skipped = 0, errors = [];
-        for (const trackId of trackIds) {
+        // Every track is rendered in BOTH a desktop row and a mobile row, so
+        // "select all" checks each track twice. Dedupe so a track is never
+        // renamed twice — double-renaming re-renders the same destination and
+        // produces " (1)"-suffixed files that look like deletions.
+        const uniqueIds = [...new Set(trackIds)];
+        for (const trackId of uniqueIds) {
             try {
                 const r = await fetch(`/api/track/${trackId}/rename-file`, { method: 'POST' });
                 const data = await r.json();
                 if (data.success) {
-                    if (data.renamed) renamed++;
-                    else skipped++;
+                    if (data.unchanged) skipped++;
+                    else renamed++;
                 } else {
                     errors.push(`Track ${trackId}: ${data.error || data.message || 'Failed'}`);
                 }

@@ -218,7 +218,7 @@ def test_artist_diff_marks_existing_album_changed_when_song_count_grows():
         ]
     )
 
-    skip_artist, changed_albums = artist_album_name_diff(
+    skip_artist, changed_albums, removed_albums = artist_album_name_diff(
         "Existing Artist",
         "ar-1",
         client=client,
@@ -226,6 +226,7 @@ def test_artist_diff_marks_existing_album_changed_when_song_count_grows():
 
     assert skip_artist is False
     assert changed_albums == {"Album"}
+    assert removed_albums == set()
 
 
 def test_artist_diff_skips_artist_when_counts_match():
@@ -248,7 +249,7 @@ def test_artist_diff_skips_artist_when_counts_match():
         ]
     )
 
-    skip_artist, changed_albums = artist_album_name_diff(
+    skip_artist, changed_albums, removed_albums = artist_album_name_diff(
         "Steady Artist",
         "ar-2",
         client=client,
@@ -256,3 +257,4 @@ def test_artist_diff_skips_artist_when_counts_match():
 
     assert skip_artist is True
     assert changed_albums == set()
+    assert removed_albums == set()

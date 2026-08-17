@@ -118,13 +118,22 @@ def artist_album_name_diff(
     artist_name: str,
     artist_id: str,
     client: NavidromeClient | None = None,
-) -> tuple[bool, set[str]]:
-    """Compare Navidrome album names/counts to current DB album names/counts."""
+) -> tuple[bool, set[str], set[str]]:
+    """Compare Navidrome album names/counts to current DB album names/counts.
+
+    Returns ``(skip_artist, changed_albums, removed_albums)``:
+    - ``changed_albums`` — albums whose track set changed (name added/removed
+      or Navidrome ``songCount`` differs from the DB count).
+    - ``removed_albums`` — albums present in the DB but gone from Navidrome.
+      They are a subset of ``changed_albums`` but never enter the album loop
+      (Navidrome no longer reports them), so callers must delete their cached
+      tracks explicitly.
+    """
     try:
         nav_albums = fetch_artist_albums(artist_id, client=client)
     except Exception as exc:
         logging.debug("[NAVIDROME_SCAN] Could not fetch albums for '%s': %s", artist_name, exc)
-        return False, set()
+        return False, set(), set()
 
     nav_names: set[str] = set()
     nav_counts: dict[str, int] = {}
@@ -157,14 +166,15 @@ def artist_album_name_diff(
                     db_counts[album_name] = count
     except Exception as exc:
         logging.debug("[NAVIDROME_SCAN] Could not query DB albums for '%s': %s", artist_name, exc)
-        return False, set()
+        return False, set(), set()
 
     changed = nav_names.symmetric_difference(db_names)
     for album in nav_names & db_names:
         if nav_counts.get(album, 0) != db_counts.get(album, 0):
             changed.add(album)
 
-    return (not changed), changed
+    removed = db_names - nav_names
+    return (not changed), changed, removed
 
 
 def album_artist_from_sources(
@@ -298,9 +308,10 @@ def scan_artist_to_db(
         sanitize_artist_rows_safe(canonical_artist_name=canonical_artist_name)
 
         changed_album_names: set[str] | None = None
+        removed_album_names: set[str] = set()
 
         if diff_mode and not force and not album_filter and not filter_missing:
-            skip_artist, changed_album_names = artist_album_name_diff(
+            skip_artist, changed_album_names, removed_album_names = artist_album_name_diff(
                 canonical_artist_name,
                 artist_id,
                 client=active_client,
@@ -475,6 +486,21 @@ def scan_artist_to_db(
                 artist_name=artist_name,
                 canonical_artist_name=canonical_artist_name,
             )
+
+        if diff_mode:
+            # Albums present in the DB but gone from Navidrome never enter the
+            # album loop above (they are not in ``albums``), and diff mode
+            # deliberately skips the artist-level stale cleanup — delete their
+            # cached tracks explicitly so full-album removals propagate.
+            for removed_album in removed_album_names:
+                removed_cached_ids = existing_album_tracks.get(removed_album, set())
+                if removed_cached_ids:
+                    cleanup_stale_album_tracks_if_needed(
+                        artist_name=artist_name,
+                        album_name=removed_album,
+                        cached_ids_for_album=removed_cached_ids,
+                        navidrome_tracks=[],
+                    )
 
         if diff_mode and changed_album_names is not None:
             return {"changed": True, "changed_albums": len(changed_album_names)}

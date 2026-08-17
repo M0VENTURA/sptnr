@@ -215,9 +215,6 @@ def api_track_rename_file(track_id):
             track_number = row[5]
             disc_number = row[6]
             year = row[7]
-        if not src or not os.path.isfile(src):
-            return jsonify({"success": False, "error": "File not found"}), 404
-
         cfg = get_config() or {}
         music_root = os.path.realpath(
             (cfg.get("music", {}) or {}).get("root")
@@ -225,6 +222,13 @@ def api_track_rename_file(track_id):
             or os.environ.get("MUSIC_FOLDER")
             or "/music"
         )
+        # Navidrome imports store RELATIVE paths ("Artist/Album/01 - Song.mp3").
+        # Resolve against the music root so the existence check, the unchanged
+        # comparison and the rename work regardless of the process CWD.
+        src_resolved = src if os.path.isabs(src) else os.path.join(music_root, src)
+        if not src or not os.path.isfile(src_resolved):
+            return jsonify({"success": False, "error": f"File not found: {src}"}), 404
+
         # Build the relative destination from the configured naming format and
         # resolve it under the music root.
         dest = _build_target_path(
@@ -235,14 +239,14 @@ def api_track_rename_file(track_id):
             artist,
             title,
             track_number,
-            src,
+            src_resolved,
             disc_number=disc_number,
         )
         dest = os.path.realpath(dest)
         if not is_path_under_directory(dest, music_root):
             return jsonify({"success": False, "error": "Refusing to move file outside the music library"}), 403
-        if os.path.normpath(dest) == os.path.normpath(src):
-            return jsonify({"success": True, "old_path": src, "new_path": dest, "unchanged": True})
+        if os.path.normpath(dest) == os.path.normpath(src_resolved):
+            return jsonify({"success": True, "renamed": False, "unchanged": True, "old_path": src, "new_path": dest})
 
         # Avoid clobbering an existing file.
         if os.path.exists(dest):
@@ -253,7 +257,17 @@ def api_track_rename_file(track_id):
                 counter += 1
 
         os.makedirs(os.path.dirname(dest), exist_ok=True)
-        os.rename(src, dest)
+        os.rename(src_resolved, dest)
+
+        # Remove now-empty source folders (only inside MUSIC_ROOT) so a
+        # successful rename does not leave an empty album shell behind.
+        try:
+            from services.infrastructure.filesystem_service import cleanup_empty_parents
+            if is_path_under_directory(src_resolved, music_root):
+                cleanup_empty_parents(src_resolved, music_root)
+        except Exception:
+            pass
+
         # Keep the stored path style: relative stays relative, absolute stays absolute.
         store_path = (
             os.path.relpath(dest, music_root)
@@ -265,7 +279,7 @@ def api_track_rename_file(track_id):
                 text("UPDATE tracks SET file_path = :path WHERE CAST(id AS TEXT) = :id"),
                 {"path": store_path, "id": track_id},
             )
-        return jsonify({"success": True, "old_path": src, "new_path": dest})
+        return jsonify({"success": True, "renamed": True, "old_path": src, "new_path": dest})
     except Exception as exc:
         logger.error("Error renaming track file %s: %s", track_id, exc, exc_info=True)
         return jsonify({"success": False, "error": str(exc)}), 500
