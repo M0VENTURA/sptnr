@@ -1777,6 +1777,27 @@ function buildQueueGroups(items) {
 }
 
 // Render a single (ungrouped) queue item row.
+// Manual Soulseek search for a queue item: prefill the Soulseek tab's query
+// box with the item's artist/title/album, make sure the tab is active, then
+// submit the form so the user can pick a result by hand instead of relying
+// on the automated queue search.  The query travels URL-encoded so quotes
+// and special characters survive the inline onclick attribute.
+function manualQueueSlskdSearch(encodedQuery) {
+  const query = decodeURIComponent(encodedQuery || '');
+  if (!query) return;
+  const input = document.getElementById('slskdSearchQuery');
+  if (input) input.value = query;
+  const tabBtn = document.getElementById('soulseek-tab');
+  if (tabBtn && typeof bootstrap !== 'undefined' && bootstrap.Tab) {
+    bootstrap.Tab.getOrCreateInstance(tabBtn).show();
+  }
+  const form = document.getElementById('slskdSearchForm');
+  if (form) {
+    form.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setTimeout(function () { form.dispatchEvent(new Event('submit')); }, 150);
+  }
+}
+
 function renderQueueItemRow(item, kind) {
   const st = item.status || 'queued';
 
@@ -1822,6 +1843,15 @@ function renderQueueItemRow(item, kind) {
 
   // Borderless icon actions (row-icon-btn) keep the right edge light.
   let actions = '';
+  if (kind !== 'completed') {
+    // Manual Soulseek search for this item (artist + title [+ album]) —
+    // the user picks a result by hand instead of the automated search.
+    const searchQuery = [item.artist, item.title, (item.album && item.album !== item.title) ? item.album : '']
+      .filter(Boolean).join(' ');
+    if (searchQuery) {
+      actions += '<button class="row-icon-btn text-info" title="Search Soulseek manually" onclick="manualQueueSlskdSearch(\'' + encodeURIComponent(searchQuery) + '\')"><i class="bi bi-search"></i></button>';
+    }
+  }
   if (kind === 'active') {
     if (st === 'downloading' || st === 'searching' || st === 'processing') {
       actions += '<button class="row-icon-btn text-danger" title="Cancel download" onclick="cancelQueueItem(' + item.id + ')"><i class="bi bi-x-circle"></i></button>';

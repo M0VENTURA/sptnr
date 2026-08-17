@@ -687,7 +687,9 @@ var _pageData = window._pageData || {};
             .replace(/&/g, ' ')
             .replace(/\s+/g, ' ')
             .trim();
-        window.location.href = `/downloads?search=${encodeURIComponent(query)}`;
+        // Manual Soulseek search page — the query is prefilled (editable)
+        // and the search runs on load (search_init.js reads the q= param).
+        window.location.href = `/downloads/search?q=${encodeURIComponent(query)}`;
     }
 
     function openAlbumArtModal() {

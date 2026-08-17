@@ -1573,7 +1573,9 @@ function openSlskdSearch(query, artistName) {
     .replace(/&/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-  window.location.href = `/downloads?search=${encodeURIComponent(searchQuery)}`;
+  // Manual Soulseek search page — the query is prefilled (editable)
+  // and the search runs on load (search_init.js reads the q= param).
+  window.location.href = `/downloads/search?q=${encodeURIComponent(searchQuery)}`;
 }
 
 function fetchArtistGenreRecommendations() {
