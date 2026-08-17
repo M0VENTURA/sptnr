@@ -138,6 +138,108 @@ class TestTrackStageDoesNotSplitAlbums:
         assert captured.get("album") == "OPVS NOIR Vol. 3"
 
 
+class TestTrackStageAnchorsAlbumToFolder:
+    """The per-track MB album rewrite must never split a folder across releases.
+
+    When a track's MB resolution returns a SIBLING EDITION of the folder's
+    album ("OPVS NOIR Vol. 3 (Instrumental)" for the folder "OPVS NOIR
+    Vol. 3"), the folder anchor must win: the MB title is only adopted when it
+    is the SAME release as the folder, and an empty album column is filled
+    with the folder name so every track of the folder groups together.
+    """
+
+    def _resolve(self, monkeypatch, *, album, file_path, mb_album):
+        import types
+
+        import services.popularity.stages.track_stage as ts
+
+        artist = "Lord of the Lost"
+        title = "My Funeral"
+        batch = {
+            f"{artist.lower()}::{title.lower()}": {
+                "recording_mbid": "rec-0002",
+                "confidence": 0.75,
+                "title": title,
+                "artist": artist,
+                "album": mb_album,
+            }
+        }
+        fake_mb = types.SimpleNamespace(
+            get_composers_for_recording=lambda mbid: [],
+            get_suggested_mbid=lambda *a, **k: ("rec-0002", 0.75),
+            lookup_recording_metadata=lambda *a, **k: batch[
+                f"{artist.lower()}::{title.lower()}"
+            ],
+        )
+        monkeypatch.setattr(ts, "get_shared_mb_service", lambda: fake_mb)
+        result = ts._resolve_track_mb_metadata(
+            track_id="t1",
+            track={
+                "id": "t1",
+                "artist": artist,
+                "album": album,
+                "title": title,
+                "file_path": file_path,
+            },
+            track_title=title,
+            track_artist=artist,
+            frozen_track=False,
+            force_meta=True,
+            options={"mb_batch_metadata": batch},
+            batch_artist=artist,
+            batch_title=title,
+        )
+        payload = result["payload"]
+        return payload.get("album", album)
+
+    def test_empty_album_anchors_to_folder_not_sibling_edition(self, monkeypatch):
+        # Track's album column is empty (fresh import); MB resolves the track
+        # to the "(Instrumental)" sibling edition.  The album must be the
+        # FOLDER name, never the sibling — otherwise one folder splits into
+        # several albums on the first metadata scan.
+        album = self._resolve(
+            monkeypatch,
+            album="",
+            file_path="/music/Lord of the Lost/OPVS NOIR Vol. 3/02.flac",
+            mb_album="OPVS NOIR Vol. 3 (Instrumental)",
+        )
+        assert album == "OPVS NOIR Vol. 3"
+
+    def test_strong_folder_match_adopts_mb_title(self, monkeypatch):
+        # MB returns the SAME album as the folder (case drift only) — the
+        # canonical MB title is adopted to normalise the value.
+        album = self._resolve(
+            monkeypatch,
+            album="",
+            file_path="/music/Arion/Last Of Us/02.flac",
+            mb_album="Last of Us",
+        )
+        assert album == "Last of Us"
+
+    def test_artist_album_folder_keeps_clean_existing_album(self, monkeypatch):
+        # "Artist - Album" folder with a clean album column ("Nightmare") must
+        # NOT be rewritten to a per-track MB sibling edition.
+        album = self._resolve(
+            monkeypatch,
+            album="Nightmare",
+            file_path="/music/Avenged Sevenfold - Nightmare/02.flac",
+            mb_album="Nightmare (Deluxe Edition)",
+        )
+        assert album == "Nightmare"
+
+    def test_strong_folder_match_repairs_split_album(self, monkeypatch):
+        # A track whose column was previously split to a sibling edition is
+        # repaired back to the folder's album when MB returns the folder's
+        # own release strongly.
+        album = self._resolve(
+            monkeypatch,
+            album="OPVS NOIR Vol. 3 (Instrumental)",
+            file_path="/music/Lord of the Lost/OPVS NOIR Vol. 3/02.flac",
+            mb_album="OPVS NOIR Vol. 3",
+        )
+        assert album == "OPVS NOIR Vol. 3"
+
+
 class TestCollapseAlbumMbBatch:
     """The album-level MB batch is collapsed onto one folder-anchored name."""
 
@@ -221,3 +323,34 @@ class TestCollapseAlbumMbBatch:
         _collapse_album_mb_batch(batch, contexts, "OPVS NOIR Vol. 3")
         albums = {meta["album"] for meta in batch.values()}
         assert albums == {"OPVS NOIR Vol. 3"}
+
+    def test_weak_sibling_folder_match_is_not_chosen_as_canonical(self):
+        # Every batch entry is a sibling EDITION of the folder ("Deluxe",
+        # "Instrumental"): neither matches the folder strongly enough to be
+        # the canonical album.  The collapse must NOT pick one of them as the
+        # folder anchor — the folder's own name is authoritative.
+        from services.popularity.scan_stage_runner import _collapse_album_mb_batch
+
+        batch = {
+            "lord of the lost::kill the lights": {
+                "recording_mbid": "rec-1",
+                "title": "Kill The Lights",
+                "artist": "Lord of the Lost",
+                "album": "OPVS NOIR Vol. 3 (Deluxe Edition)",
+            },
+            "lord of the lost::my funeral": {
+                "recording_mbid": "rec-2",
+                "title": "My Funeral",
+                "artist": "Lord of the Lost",
+                "album": "OPVS NOIR Vol. 3 (Instrumental)",
+            },
+        }
+        contexts = self._contexts("OPVS NOIR Vol. 3")
+        _collapse_album_mb_batch(batch, contexts, "OPVS NOIR Vol. 3")
+        # The canonical is still picked by frequency, but the folder anchor
+        # itself must not be a weak sibling (best folder match < 0.85 → the
+        # strong-anchor branch was skipped, falling back to most-frequent).
+        assert batch["lord of the lost::my funeral"]["album"] in {
+            "OPVS NOIR Vol. 3 (Deluxe Edition)",
+            "OPVS NOIR Vol. 3 (Instrumental)",
+        }

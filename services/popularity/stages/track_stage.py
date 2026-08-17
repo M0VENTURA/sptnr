@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+from difflib import SequenceMatcher
 from typing import Any
 
 # API clients (updated versions)
@@ -76,7 +77,11 @@ from services.enrichment.genre_aggregation_service import (
 from db.repositories.tracks import (
     insert_or_update_track,
 )
-from helpers.normalization_service import safe_int, safe_str
+from helpers.normalization_service import (
+    edition_annotations_compatible,
+    safe_int,
+    safe_str,
+)
 
 # Re-fetch threshold provider — returns hours based on track release age.
 from services.popularity.popularity_cache_policy import (
@@ -485,6 +490,37 @@ def _score_track_popularity(
     return score_data, lb_percentile
 
 
+# Minimum title similarity before a MusicBrainz release title may be adopted
+# as a track's album when a folder anchor exists.  A folder-anchored album must
+# never be rewritten to a SIBLING EDITION of the same album ("OPVS NOIR
+# Vol. 3 (Instrumental)" vs the folder "OPVS NOIR Vol. 3") — per-track MB
+# lookups resolve different tracks of one folder to different editions, and a
+# low threshold silently splits one album across releases on every metadata
+# scan.  Edition-annotation compatibility is checked separately (see
+# ``_same_album_release``); this similarity bar only accepts essentially the
+# SAME title (case/punctuation drift), never an extended sibling name.
+_ALBUM_MB_REWRITE_MIN_SIMILARITY = 0.85
+
+
+def _same_album_release(a: str, b: str) -> bool:
+    """True when two album titles denote the SAME release.
+
+    Both must be edition-annotation-compatible ("Valhalla (Epic Edition)" is
+    a different release from "Valhalla") AND near-identical on title
+    similarity.  A sibling edition whose annotation is not a release-edition
+    keyword ("(Instrumental)", "(Deluxe)") still fails the similarity bar
+    (~0.65-0.75), so it is never treated as the same album as the folder.
+    """
+    if not a or not b:
+        return False
+    if not edition_annotations_compatible(a, b):
+        return False
+    return (
+        SequenceMatcher(None, a.lower(), b.lower()).ratio()
+        >= _ALBUM_MB_REWRITE_MIN_SIMILARITY
+    )
+
+
 def _resolve_track_mb_metadata(
     *,
     track_id: str,
@@ -637,7 +673,6 @@ def _resolve_track_mb_metadata(
                 # track; only rewrite a folder-backed album when the column
                 # clearly disagrees with the folder or when there is no folder
                 # to anchor on.
-                from difflib import SequenceMatcher
                 folder_consistent = bool(
                     folder_name
                     and existing_album
@@ -648,15 +683,27 @@ def _resolve_track_mb_metadata(
                     ).ratio() >= 0.9
                 )
                 if mb_album and not folder_consistent:
-                    primary_ref = folder_name or existing_album
-                    if primary_ref:
-                        match_ratio = SequenceMatcher(None, primary_ref.lower(), mb_album.lower()).ratio()
-                        if match_ratio >= 0.6:
+                    if folder_name:
+                        # The FOLDER is the album anchor: every track in one
+                        # folder must keep the same album name, otherwise a
+                        # multi-edition album splits across releases on every
+                        # metadata scan (per-track MB lookups resolve
+                        # different tracks to different sibling editions).
+                        # Adopt the MB release title only when it is the SAME
+                        # album as the folder; never write a weak sibling
+                        # match.  A track whose column is empty is anchored to
+                        # the folder name so it stays grouped with its folder.
+                        if _same_album_release(folder_name, mb_album):
                             payload["album"] = mb_album
-                        elif folder_name and existing_album:
-                            old_ratio = SequenceMatcher(None, existing_album.lower(), mb_album.lower()).ratio()
-                            if old_ratio >= 0.6:
-                                payload["album"] = mb_album
+                            match_ratio = SequenceMatcher(
+                                None, folder_name.lower(), mb_album.lower()
+                            ).ratio()
+                        elif not existing_album:
+                            payload["album"] = folder_name
+                        # else: keep the existing (folder-inconsistent) value —
+                        # it may be a clean album name on an "Artist - Album"
+                        # folder, and rewriting to a per-track sibling would
+                        # only split the album further.
                     else:
                         payload["album"] = mb_album
                 elif folder_consistent:
