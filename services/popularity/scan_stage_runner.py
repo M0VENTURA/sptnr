@@ -186,7 +186,11 @@ def _collapse_album_mb_batch(
             ):
                 best_score = _sim
                 canonical = _name
-        if best_score < 0.6:
+        # The folder anchor must be the SAME album (near-identical title),
+        # never a sibling edition: a "(Instrumental)"/"(Deluxe)" release
+        # differs from the folder only by an edition suffix and would become
+        # the canonical album for the whole folder if accepted at a low bar.
+        if best_score < 0.85:
             canonical = None
     if not canonical and distinct_albums:
         canonical = max(distinct_albums, key=lambda n: (album_counts[n], len(n)))
