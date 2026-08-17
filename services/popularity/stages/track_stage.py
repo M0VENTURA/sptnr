@@ -35,8 +35,10 @@ from services.popularity.popularity_math import (
     evaluate_listenbrainz_validity,
     evaluate_log_ratio_deviation,
     fmt_count as _fmt_count,
+    is_interlude_lb_outlier,
 )
 from services.popularity.popularity_config import (
+    get_interlude_lb_outlier_config,
     get_live_weight_penalty,
     get_log_ratio_config,
     get_metadata_score_floor,
@@ -129,6 +131,23 @@ logger = logging.getLogger(__name__)
 
 _as_str = safe_str
 _as_int = safe_int
+
+
+def _safe_duration(value) -> float | None:
+    """Coerce a track duration to seconds, or ``None`` when unavailable.
+
+    Stored ``duration`` is in seconds; a stray millisecond value (> 10 min)
+    is normalised so the interlude gate compares like units.
+    """
+    try:
+        dur = float(value or 0)
+    except (TypeError, ValueError):
+        return None
+    if dur <= 0:
+        return None
+    if dur > 600:
+        dur = dur / 1000.0
+    return dur
 
 
 def _build_effective_track(
@@ -292,6 +311,7 @@ def _score_track_popularity(
     is_featured_track: bool,
     is_live_track: bool,
     artist_lf_context: dict[str, Any] | None,
+    track_duration: float | None = None,
 ) -> tuple[dict[str, Any], float]:
     """Compute the combined popularity score + LB percentile for one track.
 
@@ -459,6 +479,39 @@ def _score_track_popularity(
         except Exception as exc:
             logger.debug("[track_stage] Log-MAD audit failed for %s: %s", track_id, exc)
             _audit_verdict = "VALID"
+
+    # ── Short-interlude ListenBrainz outlier filter ─────────────────────
+    # A short ambient interlude legitimately has LOW Last.fm listeners — but
+    # its ListenBrainz count should stay proportionally low too.  When a
+    # short track carries an LB count far above the album's typical LB/LF
+    # relationship (e.g. an interlude with 20.6k LB listens on a 45.7k-LF
+    # track — higher than every single on the record), the count is a
+    # recording-MBID artifact, not real audience.  Scoring that LB at full
+    # weight lets the inflated sub-score outrank genuinely popular album
+    # tracks, so the LB is rejected here and the track scores on Last.fm
+    # only.  Overrides a Log-MAD REJECT_LF (which would otherwise score on
+    # the very LB this filter distrusts).
+    try:
+        _il_cfg = get_interlude_lb_outlier_config()
+        if _il_cfg.get("enabled", True) and track_duration is not None:
+            if is_interlude_lb_outlier(
+                duration_seconds=track_duration,
+                lastfm_listeners=lastfm_listeners,
+                listenbrainz_listens=listenbrainz_listens,
+                album_lf_lb_pairs=_album_lf_lb_pairs or None,
+                max_duration_s=float(_il_cfg.get("max_duration_s", 180.0)),
+                ratio_factor=float(_il_cfg.get("ratio_factor", 3.0)),
+                min_lb=int(_il_cfg.get("min_lb", 500)),
+            ):
+                _score_lb = 0
+                _audit_verdict = "REJECT_LB"
+                log_unified(
+                    f"[TRACK_STAGE] Short-interlude LB outlier for \"{title}\" ({artist}): "
+                    f"LF={_fmt_count(lastfm_listeners)}, LB={_fmt_count(listenbrainz_listens)}, "
+                    f"duration={track_duration:.0f}s — scoring on Last.fm only"
+                )
+    except Exception as exc:
+        logger.debug("[track_stage] Interlude LB outlier check failed for %s: %s", track_id, exc)
 
     score_data = calculate_combined_popularity_score(
         lastfm_listeners=lastfm_listeners,
@@ -874,6 +927,51 @@ def process_track(
                     )
         except Exception as _lr_exc:
             logger.debug("[track_stage] Log-MAD stored audit failed for %s: %s", track_id, _lr_exc)
+
+        # ── Short-interlude LB outlier filter on the STORED score ──────
+        # The same recording-MBID artifact can inflate a previously-scored
+        # interlude (an ambient piece with 20k+ LB listens on a ~45k-LF
+        # footprint).  A singles scan revisiting the album re-audits stored
+        # scores, so the interlude filter re-blends to Last.fm only here too.
+        try:
+            _il_cfg_stored = get_interlude_lb_outlier_config()
+            if _il_cfg_stored.get("enabled", True):
+                _stored_duration = _safe_duration(track.get("duration"))
+                if _stored_duration is not None:
+                    _pairs_for_interlude: list[tuple[int, int]] = []
+                    for _at in (album_tracks or []):
+                        _lfv = int(_at.get("lastfm_listeners") or 0)
+                        _lbv = int(_at.get("listenbrainz_listens") or 0)
+                        if _lfv > 0 and _lbv > 0:
+                            _pairs_for_interlude.append((_lfv, _lbv))
+                    if is_interlude_lb_outlier(
+                        duration_seconds=_stored_duration,
+                        lastfm_listeners=lastfm_listeners,
+                        listenbrainz_listens=listenbrainz_listens,
+                        album_lf_lb_pairs=_pairs_for_interlude or None,
+                        max_duration_s=float(_il_cfg_stored.get("max_duration_s", 180.0)),
+                        ratio_factor=float(_il_cfg_stored.get("ratio_factor", 3.0)),
+                        min_lb=int(_il_cfg_stored.get("min_lb", 500)),
+                    ):
+                        _audit_verdict = "REJECT_LB"
+                        # Re-blend the STORED per-source scores on Last.fm only,
+                        # exactly as the Log-MAD REJECT_LB branch does — the
+                        # inflated LB must not keep its weight in the stored blend.
+                        _lf_only = float(track.get("lastfm_score") or 0)
+                        _reblended = _lf_only if _lf_only > 0 else float(score_data.get("combined_score") or 0)
+                        score_data["listenbrainz_score"] = 0.0
+                        score_data["combined_score"] = round(max(0.0, min(100.0, _reblended)), 3)
+                        update_payload["final_score"] = float(score_data["combined_score"])
+                        update_payload["popularity"] = float(score_data["combined_score"])
+                        update_payload["_raw_combined"] = float(score_data["combined_score"])
+                        log_unified(
+                            f"[TRACK_STAGE] Short-interlude LB outlier (stored) for \"{track_title}\" "
+                            f"({track_artist}): LF={_fmt_count(lastfm_listeners)}, "
+                            f"LB={_fmt_count(listenbrainz_listens)}, duration={_stored_duration:.0f}s "
+                            f"→ {score_data['combined_score']:.1f} (scoring on Last.fm only)"
+                        )
+        except Exception as _il_exc:
+            logger.debug("[track_stage] Interlude LB stored-outlier check failed for %s: %s", track_id, _il_exc)
 
     # ── Metadata pre-resolution (combined/full scans) ──────────────────
     # Resolve the track's MusicBrainz metadata BEFORE popularity scoring so
@@ -1333,6 +1431,7 @@ def process_track(
                     is_featured_track=is_featured_flag,
                     is_live_track=is_live_flag,
                     artist_lf_context=artist_lf_context,
+                    track_duration=_safe_duration(effective_track.get("duration")),
                 )
                 # Freshly-scored flag: only the fresh path may re-run the
                 # score when single detection later adopts a higher LB count
@@ -1721,6 +1820,7 @@ def process_track(
                                         or is_live_or_alternate_track_title(sd_title)
                                     ),
                                     artist_lf_context=artist_lf_context,
+                                    track_duration=_safe_duration(effective_track.get("duration")),
                                 )
                                 update_payload.update(score_data)
                                 update_payload["final_score"] = float(score_data.get("combined_score") or 0)

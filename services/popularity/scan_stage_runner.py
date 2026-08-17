@@ -1018,6 +1018,16 @@ def run_scan(
     # work and only does artist_stats / playlists / summary.
     _artist_scan_results: dict[str, list[dict[str, Any]]] = {}
     _per_album_posted_keys: set[tuple[str, str]] = set()
+    # Two-pass era calibration: per-album star posting is DEFERRED to the
+    # artist-section boundary so the 3-step album-scaling model resolves
+    # catalog-wide M_peak BEFORE any album of the artist is era-classified.
+    # The album loop scores + persists every album of the artist first (the
+    # deferred persist sink flushes each album's tracks to the DB as it
+    # completes); only once the whole catalogue is stored does the rating pass
+    # run, so a first-scanned album no longer wins an uncalibrated
+    # ``M_peak=50`` (era=peak, R_eff=1.00) while later albums are damped
+    # against a catalogue that has grown to include it.
+    _artist_pending_albums: dict[str, list[dict[str, Any]]] = {}
     # Raw artist-catalogue rows memoized per artist — ``_load_artist_db_scores``
     # used to re-issue the full-catalogue SELECT once per ALBUM (an artist with
     # K albums re-queried the whole catalogue K times).  The rows for tracks
@@ -1211,6 +1221,46 @@ def run_scan(
             logger.debug("[scan_runner] Per-album star posting failed for %s: %s", artist, exc)
         return False
 
+    def _flush_artist_star_ratings(artist: str) -> None:
+        """Post star ratings for every album of ONE artist (two-pass pass 2).
+
+        The album loop deferred each of the artist's per-album star postings
+        (pass 1 scored + persisted every album's tracks).  At the artist's
+        section close, ALL of the artist's albums are in the DB, so the
+        era-calibration model resolves catalog-wide M_peak before classifying
+        ANY of them — the first album scanned is no longer rated against an
+        empty catalogue.  Albums are posted in scan order so album-relative
+        context stays deterministic.
+        """
+        pending = _artist_pending_albums.pop(artist, [])
+        if not pending or metadata_only:
+            return
+        for _pending in pending:
+            _album_results_this = _pending.get("album_results") or []
+            if not _album_results_this:
+                continue
+            _posted = _post_album_stars(
+                artist,
+                _album_results_this,
+                is_compilation=bool(_pending.get("is_compilation")),
+                is_va_compilation=bool(_pending.get("is_va_compilation")),
+            )
+            # Per-album genre playlist refresh — single-album / targeted
+            # scans refresh here (mirrors the old inline behaviour); multi-album
+            # scans defer to the once-per-scan full rebuild in finalise_scan.
+            if _posted and total_albums <= 1:
+                try:
+                    from services.popularity.stages.finalise_stage import (
+                        refresh_genre_playlists_for_album,
+                    )
+                    refresh_genre_playlists_for_album(
+                        artist, str(_pending.get("album") or "")
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "[scan_runner] Genre playlist refresh failed for %s: %s", artist, exc,
+                    )
+
     # ── Per-artist essential collection (section close) ─────────────────
     # The essential .m3u is created/updated at the END of EVERY artist's
     # section — not once at the end of the whole scan.  Star ratings are
@@ -1229,6 +1279,20 @@ def run_scan(
 
     def _close_artist_section(artist_name: str | None) -> None:
         nonlocal _essential_featured_rows, _essential_playlists_done
+        # Two-pass era calibration: flush the artist's DEFERRED per-album star
+        # ratings BEFORE the essential collection is written.  By the time an
+        # artist's section closes, every album of the artist has been scored
+        # and persisted, so the 3-step album-scaling model resolves
+        # catalog-wide M_peak from the artist's COMPLETE catalogue — the first
+        # album scanned no longer gets an uncalibrated era=peak while later
+        # albums are damped against a catalogue that already contains it.
+        if artist_name:
+            try:
+                _flush_artist_star_ratings(artist_name)
+            except BaseException as exc:
+                logger.debug(
+                    "[scan_runner] Deferred star-rating flush failed for %s: %s", artist_name, exc,
+                )
         _essential_playlists_done, _essential_featured_rows = _close_artist_essential_section(
             artist_name,
             options,
@@ -2249,39 +2313,27 @@ def run_scan(
             except Exception:
                 pass  # Non-critical — dashboard data is best-effort
 
-            # ── Per-album star rating posting ────────────────────────────────
-            # Assign, persist, log and sync THIS album's star ratings right after
-            # it completes (legacy parity) instead of batching them for the end of
-            # the scan.  For a full artist scan each album's "Star Ratings - Album"
-            # summary appears as the album finishes.
+            # ── Per-album star rating posting (DEFERRED — two-pass era) ──
+            # Assign/persist/log/sync star ratings is pass 2 of the two-pass
+            # era-calibration architecture.  The album loop is pass 1: it
+            # scores + persists THIS album's tracks (the deferred persist sink
+            # above flushed them), then queues the album for rating instead of
+            # posting immediately.  When the artist's section closes, every
+            # album of the artist is in the DB, so catalog-wide M_peak is
+            # resolved before ANY album of the artist is era-classified — the
+            # first album scanned no longer wins an uncalibrated era=peak while
+            # later albums are damped.  The "Star Ratings - Album" summaries
+            # for a full artist scan therefore appear as the artist's section
+            # completes.
             _album_results_this = results[_album_start:]
             if _album_results_this:
                 _artist_scan_results.setdefault(artist, []).extend(_album_results_this)
-                _posted = _post_album_stars(
-                    artist,
-                    _album_results_this,
-                    is_compilation=bool(album_context.get("is_compilation")),
-                    is_va_compilation=bool(album_context.get("is_va_compilation")),
-                )
-
-                # ── Per-album genre playlist refresh ─────────────────────────
-                # Star ratings (and hence which 4★/5★ tracks qualify for a
-                # genre's pool) changed for this album.  Only single-album /
-                # targeted scans refresh here — the per-album refresh re-queries
-                # the WHOLE library for the affected genres, so doing it once
-                # per album is O(albums × library).  Multi-album scans defer to
-                # the once-per-scan full rebuild in finalise_scan.
-                if _posted and total_albums <= 1:
-                    try:
-                        from services.popularity.stages.finalise_stage import (
-                            refresh_genre_playlists_for_album,
-                        )
-                        refresh_genre_playlists_for_album(artist, album)
-                    except Exception as exc:
-                        logger.debug(
-                            "[scan_runner] Genre playlist refresh failed for %s - %s: %s",
-                            artist, album, exc,
-                        )
+                _artist_pending_albums.setdefault(artist, []).append({
+                    "album_results": _album_results_this,
+                    "is_compilation": bool(album_context.get("is_compilation")),
+                    "is_va_compilation": bool(album_context.get("is_va_compilation")),
+                    "album": album,
+                })
 
         except BaseException as _album_exc:
             # A failure in ANY part of one album's processing (enrichment, the
