@@ -258,8 +258,18 @@ def build_delta_artist_index(
     """Build an artist index containing ONLY artists with changed content.
 
     Delta sources:
-    1. Recently added/changed albums (``getAlbumList2`` newest/recentlyAdded).
-    2. Songs modified since ``since_ts`` (``getSongs?modified=``, best-effort).
+    1. ``getIndexes?ifModifiedSince`` — the authoritative Subsonic delta
+       signal.  Navidrome returns the FULL album-artist index whenever a
+       library scan completed after ``since_ts`` (i.e. anything changed —
+       INCLUDING new songs added to existing albums) and an empty index
+       otherwise.  Album-list deltas are ordered by ``created`` and silently
+       miss new tracks dropped into existing albums, so this source is what
+       makes those changes visible.
+    2. Recently added/changed albums (``getAlbumList2`` newest/recentlyAdded)
+       — supplementary; catches new albums on servers with different
+       ``getIndexes`` semantics.
+    3. Songs modified since ``since_ts`` (``getSongs?modified=``, best-effort;
+       Navidrome itself does not implement ``getSongs``).
 
     Returns an artist map with the same shape as ``build_artist_index``
     (``{name: {id, album_count, track_count, last_updated}}``). When no delta
@@ -267,6 +277,30 @@ def build_delta_artist_index(
     exist) this returns ``{}`` so callers can fall back to a full scan.
     """
     artist_map: dict[str, dict[str, Any]] = {}
+
+    # 1) getIndexes?ifModifiedSince — Navidrome returns the full album-artist
+    #    index when any scan completed after the cutoff, so an artist whose
+    #    EXISTING album gained new songs becomes a candidate again.
+    try:
+        indexes = client.get_indexes(if_modified_since=since_ts) or {}
+        for group in indexes.get("index", []) or []:
+            for artist in group.get("artist", []) or []:
+                artist_name = str(artist.get("name") or "").strip()
+                artist_id = str(artist.get("id") or "").strip()
+                if not artist_name or not artist_id:
+                    continue
+                artist_map.setdefault(artist_name, {
+                    "id": artist_id,
+                    "album_count": 0,
+                    "track_count": 0,
+                    "last_updated": None,
+                })
+        if artist_map:
+            log_unified(
+                f"Delta artist index: {len(artist_map)} artists from getIndexes(ifModifiedSince)"
+            )
+    except Exception as exc:
+        logger.debug("Delta getIndexes failed (%s) — relying on album/song deltas", exc)
 
     changed_albums = fetch_changed_albums(
         client,

@@ -375,7 +375,10 @@ class NavidromeClient:
 
         Uses the standard Subsonic ``getIndexes`` endpoint with
         ``ifModifiedSince`` so servers that honour the parameter only return
-        artists whose content changed after the given time.
+        artists whose content changed after the given time.  Navidrome's
+        implementation is coarse: it returns the full album-artist index when
+        a library scan completed after the timestamp, and an empty index
+        otherwise.
 
         Returns:
             The raw ``indexes`` dict (``index`` list + ``lastModified``) or
@@ -385,7 +388,9 @@ class NavidromeClient:
             params: dict[str, Any] = {}
             ts = _coerce_modified_ts(if_modified_since)
             if ts is not None:
-                params["ifModifiedSince"] = ts
+                # Subsonic spec (and Navidrome's req.TimeOr) read
+                # ``ifModifiedSince`` as epoch MILLISECONDS.
+                params["ifModifiedSince"] = ts * 1000
             data = self._get_subsonic_response("getIndexes", timeout=60, **params)
             return data.get("indexes", {}) or {}
         except Exception as exc:
