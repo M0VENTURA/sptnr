@@ -163,3 +163,54 @@ def get_log_ratio_config(config: dict | None = None) -> dict:
         "reject_lf_min_lb": reject_lf_min_lb,
         "reject_lb_min_lf": reject_lb_min_lf,
     }
+
+
+DEFAULT_INTERLUDE_LB_OUTLIER = {
+    "enabled": True,
+    "max_duration_s": 180.0,
+    "ratio_factor": 3.0,
+    "min_lb": 500,
+}
+
+
+def get_interlude_lb_outlier_config(config: dict | None = None) -> dict:
+    """Return the short-interlude ListenBrainz outlier filter settings.
+
+    Reads ``single_detection.interlude_lb_*`` keys:
+    - ``interlude_lb_outlier_enabled`` (default True) — master switch
+    - ``interlude_lb_max_duration_s`` (default 180) — a track shorter than
+      this is treated as an interlude candidate
+    - ``interlude_lb_ratio_factor`` (default 3.0) — the track's LB/LF ratio
+      must exceed the album's median LB/LF ratio by this factor before the LB
+      is rejected (a short interlude with 20k+ LB listens on a 45k-LF track —
+      higher than every single — is a recording-MBID artifact, not real
+      audience)
+    - ``interlude_lb_min_count`` (default 500) — minimum LB count before the
+      filter applies (tiny/noisy counts are never flagged)
+    """
+    cfg = config if isinstance(config, dict) else get_config()
+    sd = cfg.get("single_detection", {}) if isinstance(cfg, dict) else {}
+    if not isinstance(sd, dict):
+        sd = {}
+    try:
+        enabled = bool(sd.get("interlude_lb_outlier_enabled", DEFAULT_INTERLUDE_LB_OUTLIER["enabled"]))
+    except Exception:
+        enabled = DEFAULT_INTERLUDE_LB_OUTLIER["enabled"]
+    try:
+        max_duration_s = float(sd.get("interlude_lb_max_duration_s", DEFAULT_INTERLUDE_LB_OUTLIER["max_duration_s"]))
+    except Exception:
+        max_duration_s = DEFAULT_INTERLUDE_LB_OUTLIER["max_duration_s"]
+    try:
+        ratio_factor = float(sd.get("interlude_lb_ratio_factor", DEFAULT_INTERLUDE_LB_OUTLIER["ratio_factor"]))
+    except Exception:
+        ratio_factor = DEFAULT_INTERLUDE_LB_OUTLIER["ratio_factor"]
+    try:
+        min_lb = int(sd.get("interlude_lb_min_count", DEFAULT_INTERLUDE_LB_OUTLIER["min_lb"]))
+    except Exception:
+        min_lb = DEFAULT_INTERLUDE_LB_OUTLIER["min_lb"]
+    return {
+        "enabled": enabled,
+        "max_duration_s": max_duration_s,
+        "ratio_factor": ratio_factor,
+        "min_lb": min_lb,
+    }

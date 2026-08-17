@@ -823,3 +823,63 @@ def adjust_weights(lastfm_listeners, lb_listens, is_featured_track=False, metada
         lf_weight = max(lf_weight, 0.25)
     lb_weight = 1.0 - lf_weight
     return lf_weight, lb_weight
+
+
+# ── Short-interlude ListenBrainz outlier filter ────────────────────────────
+# A short ambient interlude (e.g. "DLB" on Eat the Elephant) legitimately has
+# LOW Last.fm listeners — that is not an anomaly.  What IS anomalous is a
+# short track whose ListenBrainz count sits far above the album's typical
+# LB/LF relationship (e.g. 20.6k LB listens on a 45.7k-LF interlude, higher
+# than every single on the record).  Such a count is usually a recording-MBID
+# artifact (the interlude's LB recording aggregated another track's listens,
+# or a mismatched MBID resolved a big-count recording).  Weighting that LB at
+# 55% lets the inflated sub-score outrank genuinely popular album tracks, so
+# the filter rejects the LB and scores on Last.fm alone.
+
+INTERLUDE_LB_MAX_DURATION_S = 180.0  # interlude = under ~3 minutes
+INTERLUDE_LB_RATIO_FACTOR = 3.0      # LB/LF ratio must exceed album median × this
+INTERLUDE_LB_MIN_COUNT = 500         # only meaningful against non-trivial LB counts
+
+
+def is_interlude_lb_outlier(
+    *,
+    duration_seconds: float | None,
+    lastfm_listeners: int,
+    listenbrainz_listens: int,
+    album_lf_lb_pairs: Optional[List[tuple]] = None,
+    max_duration_s: float = INTERLUDE_LB_MAX_DURATION_S,
+    ratio_factor: float = INTERLUDE_LB_RATIO_FACTOR,
+    min_lb: int = INTERLUDE_LB_MIN_COUNT,
+) -> bool:
+    """True when a SHORT interlude carries an anomalously inflated LB count.
+
+    Compares the track's LB/LF ratio against the album's median LB/LF ratio:
+    a short track whose LB is ``ratio_factor``× (or more) above the album norm
+    is an outlier.  Requires ``min_lb`` listens so tiny/noisy counts are not
+    flagged, and a usable album baseline (>=3 tracks with both counts).  The
+    duration gate keeps legitimately popular short singles (radio edits) from
+    being caught — only genuine under-``max_duration_s`` interludes qualify.
+    """
+    try:
+        duration = float(duration_seconds or 0)
+    except (TypeError, ValueError):
+        return False
+    if duration <= 0 or duration > float(max_duration_s):
+        return False
+    lb = int(listenbrainz_listens or 0)
+    lf = int(lastfm_listeners or 0)
+    if lb < int(min_lb) or lf <= 0:
+        return False
+    ratios: list[float] = []
+    for a, b in (album_lf_lb_pairs or []):
+        a_i = int(a or 0)
+        b_i = int(b or 0)
+        if a_i > 0 and b_i > 0:
+            ratios.append(b_i / a_i)
+    if len(ratios) < LOG_RATIO_MIN_ALBUM_TRACKS:
+        return False
+    album_median_ratio = median(ratios)
+    if album_median_ratio <= 0:
+        return False
+    track_ratio = lb / lf
+    return track_ratio > album_median_ratio * float(ratio_factor)
