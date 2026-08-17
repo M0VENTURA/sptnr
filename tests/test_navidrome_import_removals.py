@@ -193,3 +193,52 @@ def test_scan_artist_to_db_diff_mode_removes_song_from_existing_album():
     assert isinstance(result, dict)
     assert result.get("changed") is True
     assert _db_track_ids() == {"k1", "g1", "g2"}  # k2 deleted, everything else survives
+
+
+def test_scan_artist_to_db_diff_mode_keeps_duplicate_album_tracks():
+    """Same album name listed twice (two MBIDs) — no sibling-track deletion.
+
+    The DB caches tracks by album NAME only, so two Navidrome entries with
+    the same name share one cached id set.  The per-album stale cleanup must
+    NOT run for duplicated names — ``cached - entry_tracks`` would otherwise
+    delete the sibling duplicate's rows (each entry sees the other's tracks
+    as "stale").
+    """
+    artist = "Dup Artist"
+    with db_session() as session:
+        session.execute(
+            text(
+                "INSERT INTO tracks (id, artist, album, album_artist) "
+                "VALUES (:id, :artist, :album, :album_artist)"
+            ),
+            [
+                {"id": "k1", "artist": artist, "album": "Keep Album", "album_artist": artist},
+                {"id": "k2", "artist": artist, "album": "Keep Album", "album_artist": artist},
+                {"id": "k3", "artist": artist, "album": "Keep Album", "album_artist": artist},
+                {"id": "k4", "artist": artist, "album": "Keep Album", "album_artist": artist},
+            ],
+        )
+
+    client = _FakeImportClient(
+        albums=[
+            {"id": "al-dup-x", "name": "Keep Album", "songCount": 2},
+            {"id": "al-dup-y", "name": "Keep Album", "songCount": 2},
+        ],
+        album_tracks={
+            "al-dup-x": [
+                _album_track("k1", "K One", artist),
+                _album_track("k2", "K Two", artist),
+            ],
+            "al-dup-y": [
+                _album_track("k3", "K Three", artist),
+                _album_track("k4", "K Four", artist),
+            ],
+        },
+    )
+
+    result = scan_artist_to_db(artist, "ar-3", diff_mode=True, client=client)
+
+    assert isinstance(result, dict)
+    assert result.get("changed") is True
+    # Both duplicates' tracks survive — no sibling deletion.
+    assert _db_track_ids() == {"k1", "k2", "k3", "k4"}

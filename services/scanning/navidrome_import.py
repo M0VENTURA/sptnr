@@ -321,6 +321,21 @@ def scan_artist_to_db(
 
         albums = fetch_artist_albums(artist_id, client=active_client) or []
 
+        # Same album NAME listed more than once (e.g. duplicate Navidrome
+        # entries with different MusicBrainz album MBIDs) — the DB caches
+        # tracks by album NAME only, so the per-album stale cleanup cannot
+        # attribute rows to one entry and would delete the sibling
+        # duplicate's tracks.  Collect duplicated names so the cleanup below
+        # can skip them (the rows are still upserted from every entry).
+        _album_name_counts: dict[str, int] = {}
+        for _album in albums:
+            _name = str(_album.get("name") or "").strip()
+            if _name:
+                _album_name_counts[_name] = _album_name_counts.get(_name, 0) + 1
+        duplicate_album_names = {
+            _name for _name, _count in _album_name_counts.items() if _count > 1
+        }
+
         # ── Data-loss guard ──────────────────────────────────────────────
         # ``fetch_artist_albums`` returns [] BOTH when the artist has no
         # albums AND when the Navidrome call failed (network/timeout).  If we
@@ -457,7 +472,7 @@ def scan_artist_to_db(
                     len(album_mbids_seen),
                 )
 
-            if diff_mode:
+            if diff_mode and album_name not in duplicate_album_names:
                 cleanup_stale_album_tracks_if_needed(
                     artist_name=artist_name,
                     album_name=album_name,
