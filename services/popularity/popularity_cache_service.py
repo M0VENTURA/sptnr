@@ -147,6 +147,14 @@ def _lf_top_tracks_map(lastfm_client: Any, artist: str) -> Dict[str, Dict[str, i
     and their counts are SUMMED, so a track whose local title matches only the
     plain title still picks up the high-listen feat. single.  The title kept
     for display is the version with the most listeners.
+
+    HARD version markers (live / acoustic / instrumental / orchestral /
+    remix / demo / remaster) NEVER collapse: "(Live)" / "(Acoustic)" /
+    "(Remix)" takes are different performances with their own audiences, and
+    summing their counts into the plain title inflates the studio track's
+    popularity (a 25k-listen live cut inflates the 80k studio recording to
+    105k).  Each hard-variant title keys on its OWN normalised key so a
+    local "(Live)" track matches its own count, never the studio sum.
     """
     try:
         # Use the PRIMARY artist for the API call — Last.fm does not recognise

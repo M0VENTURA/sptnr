@@ -40,7 +40,15 @@ class FakeLiveVariantLastFmClient:
         ]
 
     def get_artist_top_tracks(self, artist, limit=200):
-        return []
+        # The bulk prefetch's artist.getTopTracks also returns every
+        # published version — the cache map must keep each hard-variant
+        # version on its own key (never summed into the studio count).
+        return [
+            {"name": "See You in Hell", "listeners": 25600, "playcount": 300000},
+            {"name": "See You in Hell (acoustic)", "listeners": 600, "playcount": 8000},
+            {"name": "See You in Hell (instrumental)", "listeners": 300, "playcount": 4000},
+            {"name": "See You in Hell (Live)", "listeners": 1200, "playcount": 15000},
+        ]
 
     def get_track_info(self, artist, title, track_mbid=None):
         return {"listeners": 0, "track_play": 0}
@@ -121,3 +129,46 @@ class TestAggregatedPopularitySeparatesVariants:
             "Ad Infinitum", "See You in Hell", lastfm_client=lf,
         )
         assert res["listeners"] == 25600
+
+
+class TestPrefetchCacheSeparatesVariants:
+    """The bulk-cache prefetch must keep live/acoustic/remix versions on
+    their OWN cache entries — a version track must never inherit the studio
+    recording's summed count via the ``normalize_for_aggregation`` key."""
+
+    def _prefetch(self, client, tracks):
+        from services.popularity import popularity_cache_service as svc
+
+        svc._lf_top_tracks_cache.clear()
+        svc._lf_top_tracks_titles.clear()
+        svc._lf_top_tracks_tags.clear()
+        return svc.prefetch_artist_popularity(
+            "Ad Infinitum", tracks, lastfm_client=client, cache_full_catalogue=False,
+        )
+
+    def test_variant_titles_have_distinct_prefetch_entries(self):
+        lf = FakeLiveVariantLastFmClient()
+        entries = self._prefetch(lf, [
+            {"title": "See You in Hell", "recording_mbid": None},
+            {"title": "See You in Hell (acoustic)", "recording_mbid": None},
+            {"title": "See You in Hell (instrumental)", "recording_mbid": None},
+            {"title": "See You in Hell (Live)", "recording_mbid": None},
+        ])
+        # The map keys preserve the hard variant markers: the canonical
+        # "See You in Hell" entry holds ONLY the studio count (25600), and
+        # each version has its own key with its own (much smaller) count.
+        assert entries.get("see you in hell", {}).get("lastfm_listeners") == 25600
+        assert entries.get("see you in hell acoustic", {}).get("lastfm_listeners") == 600
+        assert entries.get("see you in hell instrumental", {}).get("lastfm_listeners") == 300
+        assert entries.get("see you in hell live", {}).get("lastfm_listeners") == 1200
+
+    def test_plain_track_lookup_does_not_inherit_variant_counts(self):
+        # The prefetch lookup in the track stage keys on the RAW title
+        # (``raw_title``), so a "(Live)" track hits its own entry — not the
+        # studio sum.  This test verifies the map itself never sums variants.
+        lf = FakeLiveVariantLastFmClient()
+        entries = self._prefetch(lf, [
+            {"title": "See You in Hell", "recording_mbid": None},
+        ])
+        # The studio entry must NOT be 25600+600+300+1200 = 27700.
+        assert entries.get("see you in hell", {}).get("lastfm_listeners") == 25600

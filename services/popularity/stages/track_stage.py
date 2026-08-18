@@ -1160,8 +1160,14 @@ def process_track(
                 # during this scan — those are authoritative.
                 # Keys are NORMALISED titles so a feat. variant of the same
                 # song ("Herzblut (feat. X)" cached as "herzblut") is found.
+                # ``raw_title`` is used (NOT the cleaned ``title``): the
+                # cleaned lastfm_title strips brackets, so a local
+                # "Beware (Live)" would key as "beware" and inherit the
+                # studio recording's cached sum.  ``normalize_for_aggregation``
+                # preserves hard version markers ("Beware (Live)" -> "beware
+                # live"), so the raw title hits the version's own cache entry.
                 _prefetch_entry = (prefetched_popularity or {}).get(
-                    normalize_for_aggregation(title or "")
+                    normalize_for_aggregation(raw_title or title or "")
                 )
                 if _force and _prefetch_entry and not _prefetch_entry.get("_album_tracklist"):
                     _prefetch_entry = None
