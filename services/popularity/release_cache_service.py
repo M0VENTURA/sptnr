@@ -513,6 +513,36 @@ def refresh_missing_releases_for_artist(artist: str) -> Dict[str, Any]:
 
     current_year = datetime.now().year
     seen: Set[str] = set()
+
+    # Existing categories (title -> category) so a generic/stale cache value
+    # never reverts a more specific category the artist-page scan already
+    # computed.  The artist-page "find missing" uses the MusicBrainz BROWSE
+    # endpoint (secondary-types as a list) which is authoritative for Live /
+    # Compilation / Remix; the cache-driven path (SEARCH endpoint) can hold
+    # stale "Album" rows written before the secondary-types parsing fix (or
+    # rows the search API returned without the secondary type).  Without the
+    # merge, a metadata sync's prefetch would DELETE + re-INSERT every
+    # missing release with the generic "Album" category, flattening all the
+    # correct Live/Compilation/Remix buckets the artist page just produced.
+    existing_categories: Dict[str, str] = {}
+    try:
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    SELECT title, category FROM missing_releases
+                    WHERE LOWER(artist) = LOWER(:artist)
+                      AND category IS NOT NULL AND TRIM(category) <> ''
+                """),
+                {"artist": artist},
+            )
+            for row in result.fetchall() or []:
+                t = str(row[0] or "").strip()
+                cat = str(row[1] or "").strip()
+                if t and cat:
+                    existing_categories[_norm_release_title(t)] = cat
+    except Exception as exc:
+        logger.debug("[RELEASE_CACHE] Existing missing-releases categories read failed for %s: %s", artist, exc)
+
     missing_rows: list[dict[str, Any]] = []
     for row in cached:
         title = str(row.get("title") or "").strip()
@@ -539,6 +569,14 @@ def refresh_missing_releases_for_artist(artist: str) -> Dict[str, Any]:
             category = str(row.get("category") or "").strip()
             if not category:
                 category = _fallback_release_category(title)
+            # Preserve a more specific EXISTING category (e.g. "Live Album"
+            # computed by the artist-page browse scan) when the cache only
+            # has the generic "Album" — the cache must never flatten an
+            # already-correct bucket.
+            if category.lower() == "album":
+                existing = existing_categories.get(norm)
+                if existing and existing.lower() != "album":
+                    category = existing
         missing_rows.append({
             "release_id": str(row.get("release_id") or "").strip() or f"{artist}-{norm}",
             "title": title,

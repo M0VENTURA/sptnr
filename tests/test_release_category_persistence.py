@@ -264,3 +264,44 @@ def test_refresh_skips_singles_outside_current_year(release_cache_db):
     titles = {r["title"] for r in rows}
     assert "New Single" in titles
     assert "Old Single" not in titles
+
+
+def test_refresh_preserves_specific_existing_category_over_generic_cache(release_cache_db):
+    """A metadata-sync refresh must NOT flatten a more specific category the
+    artist-page browse scan already computed.
+
+    Scenario: the artist page "find missing" wrote 'Live Album' / 'Compilation'
+    for two releases (browse API).  The cache (search API / pre-fix rows) only
+    has the generic 'Album'.  A metadata sync then refreshes missing_releases
+    from the cache — without the merge it would DELETE + re-INSERT everything
+    as 'Album', flattening the correct buckets."""
+    from services.popularity.release_cache_service import refresh_missing_releases_for_artist
+
+    _session, _open = release_cache_db
+    with _open() as session:
+        # Existing missing_releases rows with CORRECT categories (artist page).
+        from sqlalchemy import text
+        for title, cat in [("Live After Death", "Live Album"), ("Best Of The Beast", "Compilation")]:
+            session.execute(
+                text("""
+                    INSERT INTO missing_releases (artist, release_id, title, primary_type, category)
+                    VALUES (:artist, :rid, :title, 'album', :cat)
+                """),
+                {"artist": "Iron Maiden", "rid": f"rg-{title}", "title": title, "cat": cat},
+            )
+        # The CACHE holds the generic 'Album' (stale / search API).
+        _seed_cache(session, [
+            {"artist": "Iron Maiden", "title": "Live After Death", "release_type": "album",
+             "category": "Album", "source": "musicbrainz", "release_id": "rg-live", "year": 1985},
+            {"artist": "Iron Maiden", "title": "Best Of The Beast", "release_type": "album",
+             "category": "Album", "source": "musicbrainz", "release_id": "rg-comp", "year": 1996},
+        ])
+
+    refresh_missing_releases_for_artist("Iron Maiden")
+
+    with _open() as session:
+        rows = _read_missing(session)
+    by_title = {r["title"]: r["category"] for r in rows}
+    # The more specific existing categories survive the refresh.
+    assert by_title["Live After Death"] == "Live Album"
+    assert by_title["Best Of The Beast"] == "Compilation"
