@@ -1789,6 +1789,27 @@
     </div>
   </div>
 
+  <!-- Statistics Section -->
+  <div class="card shadow-sm mb-3" id="statistics-card">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-bar-chart-fill"></i> Statistics</h5>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12 col-sm-6 col-lg-4">
+          <label class="form-label form-label-sm">Interlude / Skit Duration Floor (seconds)</label>
+          <input type="number" step="5" min="0" class="form-control form-control-sm" id="statistics_exclude_below_seconds" placeholder="90"
+                 value="{{ config.get('statistics', {}).get('exclude_from_median_below_seconds', 90) }}">
+          <small class="form-text text-muted">
+            Tracks shorter than this are excluded from the album/artist median &amp; MAD used for
+            z-scores (ambient interludes / skits artificially compress the median and shrink the
+            variance, dragging real tracks down).  Default: <strong>90</strong> (1:30).  <code>0</code> disables.
+          </small>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Genre Aggregation Weights Section (NEW) -->
   <div class="card shadow-sm mb-3" id="genre-weights">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">

@@ -1671,6 +1671,15 @@ def process_track(
                     discogs_token=sd_discogs_token or None,
                     lastfm_client=sd_lastfm_client,
                     mb_client=get_shared_mb_client(),
+                    # Two-pass artist pre-calculation: the scan runner computed
+                    # the artist's full catalogue (all albums) before per-track
+                    # scoring, so the first album scanned gets a real
+                    # artist_z instead of ≈0 against an empty DB.
+                    artist_stats_override=(
+                        options.get("artist_stats_override")
+                        if isinstance(options, dict)
+                        else None
+                    ),
                 )
             else:
                 sd_result = None

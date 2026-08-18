@@ -97,6 +97,15 @@ def _bounded_call(fn, seconds: float, label: str) -> None:
         logger.warning("[scan_runner] %s failed: %s", label, _error["exc"])
 
 
+def _duration_seconds(value: Any) -> float | None:
+    """Best-effort track duration in seconds (None when unknown/zero)."""
+    try:
+        v = float(value or 0)
+        return v if v > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _refresh_album_live_context(album, album_context, track_contexts, album_type_field) -> None:
     """Apply the album TYPE as the authoritative live-album signal.
 
@@ -120,6 +129,7 @@ def _refresh_album_live_context(album, album_context, track_contexts, album_type
             is_live=int(_track.get("is_live") or 0),
             album_context_live=_tc["album_context_live"],
             album_type=str(album_type_field),
+            duration=_duration_seconds(_track.get("duration")),
         )
 
 
@@ -1327,6 +1337,62 @@ def run_scan(
         if artist and artist != _section_artist:
             _close_artist_section(_section_artist)
             _section_artist = artist
+
+        # ── Pass-1 artist pre-scan (two-pass artist pre-calculation) ─────
+        # Compute the artist's catalogue popularity ONCE, before any of the
+        # artist's albums are scored, and inject it as
+        # ``options.artist_stats_override`` so every track's single-detection
+        # z-score (artist_z) and the artist top-band marking are computed
+        # against the FULL catalogue — not the incremental DB state (the
+        # first album scanned would otherwise see an empty artist catalogue
+        # and every track of it gets artist_z ≈ 0, the scan-order artifact
+        # where "Dig" on Mudvayne's L.D. 50 missed the artist top band while
+        # later albums' singles got huge artist_z).
+        #
+        # The override combines the albums queued for THIS scan (this
+        # section's album_rows — their in-memory scores, which the fresh
+        # pass will compute/refresh) with the artist's STORED scores for
+        # albums NOT in this section, re-anchored onto the album-relative
+        # scale so raw and relative scores are comparable (same correction
+        # the star-rating pass applies).  Only set when there are enough
+        # scores to be meaningful.
+        if artist:
+            try:
+                _section_albums = [
+                    _ar for _ar in albums
+                    if (_ar.get("artist") or "") == artist
+                ]
+                _section_titles: set[str] = set()
+                _pre_scores: list[float] = []
+                for _ar in _section_albums:
+                    for _t in (_ar.get("tracks") or []):
+                        _t_title = str(_t.get("title") or "").strip().lower()
+                        _section_titles.add(_t_title)
+                        _score = float(
+                            _t.get("final_score")
+                            or _t.get("popularity")
+                            or _t.get("popularity_score")
+                            or 0
+                        )
+                        if _score > 0:
+                            _pre_scores.append(_score)
+                # Stored scores for albums OUTSIDE this scan section — the
+                # section's own titles are excluded so they are not
+                # double-counted (their in-memory scores above stand in).
+                _pre_scores += _load_artist_db_scores(artist, _section_titles)
+                _pre_primary = strip_featured_artist(artist)
+                if len(_pre_scores) >= ALBUM_RELATIVE_MIN_ALBUM_TRACKS:
+                    options["artist_stats_override"] = list(_pre_scores)
+                    log_unified(
+                        f"[scan_runner] Pass-1 artist pre-scan: {_pre_primary} — "
+                        f"{len(_pre_scores)} catalogue score(s) pre-loaded for artist_z"
+                    )
+                else:
+                    options.pop("artist_stats_override", None)
+            except Exception as exc:
+                logger.debug("[scan_runner] Pass-1 artist pre-scan failed for %s: %s", artist, exc)
+                options.pop("artist_stats_override", None)
+
         album = album_row.get("album") or ""
         tracks = album_row.get("tracks") or []
 

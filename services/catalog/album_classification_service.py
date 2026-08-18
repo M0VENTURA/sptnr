@@ -209,10 +209,36 @@ def should_exclude_track_from_stats(
     is_live: int = 0,
     album_context_live: int = 0,
     album_type: str = "",
+    duration: float | None = None,
+    exclude_below_seconds: float | None = None,
 ) -> bool:
+    """True when a track must not anchor the album/artist stats baseline.
 
+    Live / bonus / alternate titles are excluded (existing rules).  Ambient
+    interludes and skits — tracks shorter than
+    ``statistics.exclude_from_median_below_seconds`` (default 90s, 1:30) —
+    are excluded too: a 30-second ambient piece artificially compresses the
+    album median and shrinks the MAD used for z-scores, dragging real tracks
+    down and hiding genuine standouts (e.g. Mudvayne's L.D. 50 interludes).
+
+    ``duration`` is the track length in seconds; ``exclude_below_seconds``
+    is the configurable floor (None → live config, 0 disables the filter).
+    """
     if is_live or album_context_live:
         return True
+
+    # Short interludes / skits never anchor the stats baseline.
+    if duration is not None:
+        try:
+            if exclude_below_seconds is None:
+                from services.popularity.popularity_config import (
+                    get_exclude_from_median_below_seconds,
+                )
+                exclude_below_seconds = get_exclude_from_median_below_seconds()
+            if float(exclude_below_seconds) > 0 and float(duration) < float(exclude_below_seconds):
+                return True
+        except Exception:
+            pass
 
     # When the album is matched to an authoritative album type (MusicBrainz/
     # Spotify), the type alone decides the live verdict — title text like

@@ -36,6 +36,15 @@ from helpers.normalization_service import (
 )
 
 
+def _duration_seconds(value: Any) -> float | None:
+    """Best-effort track duration in seconds (None when unknown/zero)."""
+    try:
+        v = float(value or 0)
+        return v if v > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
 def prepare_album_context(
     *,
     artist: str,
@@ -138,6 +147,7 @@ def prepare_track_context(
         album_type=album_context.get("musicbrainz_album_type")
         or album_context.get("spotify_album_type")
         or "",
+        duration=_duration_seconds(track.get("duration")),
     )
 
     return {

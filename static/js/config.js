@@ -422,6 +422,13 @@ function buildConfigObject() {
         }
       }
     ),
+    statistics: Object.assign(
+      {},
+      (window.pageConfig && window.pageConfig.statistics) || {},
+      {
+        exclude_from_median_below_seconds: parseFloat(getValue('statistics_exclude_below_seconds', '90')) || 0
+      }
+    ),
     tagging: Object.assign(
       {},
       (window.pageConfig && window.pageConfig.tagging) || {},

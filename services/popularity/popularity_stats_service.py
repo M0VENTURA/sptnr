@@ -23,9 +23,27 @@ def _filter_bonus_rows(rows) -> list:
     scores would drag the album baseline down and inflate every core track's
     relative z.  DB rows carry no ``is_live``/``album_context_live`` flags, so
     the same title-pattern check used by the star-rating merges
-    (``is_bonus_track_title``) is applied here.
+    (``is_bonus_track_title``) is applied here.  Ambient interludes / skits
+    (``duration < statistics.exclude_from_median_below_seconds``, default 90s)
+    are excluded too — a 30-second ambient piece must not compress the album
+    median or shrink the MAD used for z-scores.
     """
-    return [row for row in (rows or []) if not is_bonus_track_title(str(row[0] or ""))]
+    from services.popularity.popularity_config import get_exclude_from_median_below_seconds
+
+    floor = get_exclude_from_median_below_seconds() or 0.0
+    out = []
+    for row in (rows or []):
+        if is_bonus_track_title(str(row[0] or "")):
+            continue
+        if floor > 0:
+            try:
+                _dur = float(row[3] if len(row) > 3 else 0)
+            except (TypeError, ValueError):
+                _dur = 0.0
+            if 0 < _dur < floor:
+                continue
+        out.append(row)
+    return out
 
 
 def calculate_album_stats(conn, artist: str, album: str) -> tuple[float, float, list[float]]:
@@ -33,9 +51,11 @@ def calculate_album_stats(conn, artist: str, album: str) -> tuple[float, float, 
 
     Bonus/alternate/live tracks (flagged by title pattern) are excluded from
     the distribution, mirroring ``finalise_stage``'s star-rating baseline and
-    ``scan_stage_runner._album_reference_scores``.  When fewer than 3 core
-    tracks remain (a genuine live album flags everything), the full tracklist
-    is used — a live album is scored against itself.
+    ``scan_stage_runner._album_reference_scores``.  Ambient interludes / skits
+    (``duration < statistics.exclude_from_median_below_seconds``, default 90s)
+    are excluded too.  When fewer than 3 core tracks remain (a genuine live
+    album flags everything), the full tracklist is used — a live album is
+    scored against itself.
 
     ``conn`` is kept for backward compatibility — the query runs on its own
     SQLAlchemy session.
@@ -46,7 +66,7 @@ def calculate_album_stats(conn, artist: str, album: str) -> tuple[float, float, 
         with _db_session() as session:
             rows = session.execute(
                 _text("""
-                    SELECT title, final_score FROM tracks
+                    SELECT title, final_score, duration FROM tracks
                     WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
                       AND album = :album
                       AND final_score > 0
@@ -76,6 +96,10 @@ def calculate_album_stats(conn, artist: str, album: str) -> tuple[float, float, 
 def calculate_artist_stats(conn, artist: str) -> tuple[float, float, list[float]]:
     """Return (mean, stdev, values) of popularity scores for an artist.
 
+    Interludes / skits (``duration < statistics.exclude_from_median_below_seconds``)
+    are excluded from the artist distribution too, so ambient tracks cannot
+    compress the artist-wide median/MAD.
+
     ``conn`` is kept for backward compatibility — the query runs on its own
     SQLAlchemy session.
     """
@@ -85,17 +109,18 @@ def calculate_artist_stats(conn, artist: str) -> tuple[float, float, list[float]
         with _db_session() as session:
             result = session.execute(
                 _text("""
-                    SELECT final_score FROM tracks
+                    SELECT title, final_score, duration FROM tracks
                     WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
                       AND final_score > 0
                 """),
                 {"artist": artist},
             )
-            values = [float(row[0] or 0) for row in result.fetchall() or []]
+            rows = result.fetchall() or []
     except Exception as exc:
         logger.debug("[POPULARITY_STATS] Artist stats session error for %s: %s", artist, exc)
         return 0.0, 0.0, []
 
+    values = [float(row[1] or 0) for row in _filter_bonus_rows(rows) if float(row[1] or 0) > 0]
     if not values:
         logger.debug("[POPULARITY_STATS] No valid score tracks found for artist: %s", artist)
         return 0.0, 0.0, []
@@ -125,7 +150,7 @@ def calculate_album_listener_stats(conn, artist: str, album: str) -> tuple[list[
         with _db_session() as session:
             result = session.execute(
                 _text("""
-                    SELECT title, lastfm_listeners, listenbrainz_listens FROM tracks
+                    SELECT title, lastfm_listeners, listenbrainz_listens, duration FROM tracks
                     WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
                       AND album = :album
                 """),

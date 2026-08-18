@@ -91,6 +91,23 @@ def get_live_weight_penalty(config: dict | None = None) -> float:
         return 0.5
 
 
+def get_exclude_from_median_below_seconds(config: dict | None = None) -> float:
+    """Return the minimum track duration (seconds) to count in stats.
+
+    Ambient interludes / skits (``< 1:30``) artificially compress the album
+    median and shrink the variance used for z-scores, dragging real tracks
+    down.  ``statistics.exclude_from_median_below_seconds`` (default 90)
+    drops shorter tracks from the album reference distribution so the
+    median/MAD measure the album's actual songs.
+    """
+    cfg = config if isinstance(config, dict) else get_config()
+    stats = cfg.get("statistics", {}) if isinstance(cfg, dict) else {}
+    try:
+        return float(stats.get("exclude_from_median_below_seconds", 90) or 0)
+    except Exception:
+        return 90.0
+
+
 def get_single_organic_floor(config: dict | None = None) -> tuple[float, float]:
     """Return the organic popularity floor gating single-driven star elevation.
 

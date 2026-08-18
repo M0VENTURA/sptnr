@@ -994,6 +994,7 @@ def detect_single_for_track(
     lastfm_listeners: int | None = None,
     album_lf_listeners: list[float] | None = None,
     album_lb_listens: list[float] | None = None,
+    artist_stats_override: list[float] | None = None,
     is_va_compilation: bool | None = None,
 ) -> dict[str, Any]:
     """Detect whether a track is a single using the 8-stage algorithm.
@@ -1052,18 +1053,27 @@ def detect_single_for_track(
     artist_z = 0.0
     if popularity is not None and popularity > 0 and not is_compilation:
         try:
-            # Artist-level stats
-            from services.popularity.popularity_stats_service import calculate_artist_stats, calculate_album_stats
+            # Artist-level stats.  The scan runner may pass a PRE-COMPUTED
+            # artist catalogue (``artist_stats_override``) from its pass-1
+            # pre-scan — on a fresh artist the DB is empty when the FIRST
+            # album is scored, so the DB-backed lookup returns nothing and
+            # every track of the first album gets an artist_z ≈ 0 (the
+            # "first album never stands out" scan-order artifact).  When the
+            # override is present it wins; otherwise fall back to the DB.
+            if artist_stats_override:
+                artist_vals = list(artist_stats_override)
+            else:
+                from services.popularity.popularity_stats_service import calculate_artist_stats
 
-            _, _, _raw_vals = calculate_artist_stats(None, _stats_artist)
-            if not _raw_vals:
-                _canon = strip_featured_artist(_stats_artist)
-                if _canon and _canon != _stats_artist:
-                    _, _, _canon_vals = calculate_artist_stats(None, _canon)
-                    if _canon_vals:
-                        _stats_artist = _canon
-                        _raw_vals = _canon_vals
-            artist_vals = _raw_vals
+                _, _, _raw_vals = calculate_artist_stats(None, _stats_artist)
+                if not _raw_vals:
+                    _canon = strip_featured_artist(_stats_artist)
+                    if _canon and _canon != _stats_artist:
+                        _, _, _canon_vals = calculate_artist_stats(None, _canon)
+                        if _canon_vals:
+                            _stats_artist = _canon
+                            _raw_vals = _canon_vals
+                artist_vals = _raw_vals
 
             if artist_vals:
                 art_med = stat_median(artist_vals)
@@ -1075,6 +1085,7 @@ def detect_single_for_track(
                 artist_z = (popularity - art_med) / art_spread if art_spread > 0 else 0
 
             if album:
+                from services.popularity.popularity_stats_service import calculate_album_stats
                 _, _, album_vals = calculate_album_stats(None, _stats_artist, album)
                 if album_vals:
                     alb_med = stat_median(album_vals)
