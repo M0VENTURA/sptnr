@@ -332,6 +332,7 @@ def upgrade() -> None:
         sa.Column("cover_art_url", sa.Text(), nullable=True),
         sa.Column("category", sa.Text(), nullable=True),
         sa.Column("last_checked", sa.DateTime(), server_default=sa.text("CURRENT_TIMESTAMP"), nullable=True),
+        sa.Column("tracklist", sa.Text(), nullable=True),
         sa.PrimaryKeyConstraint("id"),
     )
 

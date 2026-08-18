@@ -121,7 +121,8 @@ TABLES_TO_ENSURE: dict[str, str] = {
         CREATE TABLE IF NOT EXISTS missing_releases (
             id BIGSERIAL PRIMARY KEY, artist TEXT NOT NULL, release_id TEXT NOT NULL, 
             title TEXT, primary_type TEXT, first_release_date TEXT, cover_art_url TEXT, 
-            category TEXT, last_checked TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            category TEXT, last_checked TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            tracklist TEXT
         )
     """,
     "musicbrainz_release_tracks": """
@@ -306,6 +307,7 @@ COLUMN_REGISTRY: dict[str, dict[str, str]] = {
     "musicbrainz_releases": {"album_artist": "TEXT", "genres": "TEXT", "cover_art_url": "TEXT", "release_source": "TEXT"},
     "musicbrainz_release_tracks": {"composer": "TEXT", "album_artist": "TEXT", "year": "TEXT"},
     "artist_release_cache": {"is_promo": "BOOLEAN DEFAULT FALSE", "category": "TEXT"},
+    "missing_releases": {"tracklist": "TEXT"},
     "track_popularity_cache": {"lastfm_tags": "TEXT"},
     "scan_history": {
         "scan_type": "TEXT", "artist": "TEXT", "album": "TEXT",

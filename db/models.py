@@ -476,6 +476,7 @@ class MissingRelease(Base):
     cover_art_url = Column(String, nullable=True)
     category = Column(String, nullable=True)
     last_checked = Column(DateTime, server_default=text("CURRENT_TIMESTAMP"), nullable=True)
+    tracklist = Column(String, nullable=True)
 
     def __repr__(self) -> str:
         return f"<MissingRelease(id={self.id}, release_id={self.release_id!r})>"
