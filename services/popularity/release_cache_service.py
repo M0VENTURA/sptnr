@@ -492,6 +492,16 @@ def refresh_missing_releases_for_artist(artist: str) -> Dict[str, Any]:
     normalized title is not in the library is stored in ``missing_releases``
     with a category (Album / EP / Single — current-year singles only).  Pure
     DB work — no API calls — so it is safe to run during every artist prefetch.
+
+    MUSICBRAINZ-ONLY: the cache holds BOTH MusicBrainz and Discogs rows (the
+    Discogs rows feed singles detection), but only MusicBrainz rows may seed
+    ``missing_releases``.  Discogs format-token categories are less reliable
+    (a reissue/compilation-mislabeled row, an EP classified as an Album when
+    the format token is absent) and its release list includes thousands of
+    bootlegs/live audience recordings that are not real releases — including
+    them floods the artist page's missing buckets and mixes up the
+    Studio/Live/Remix/Compilation splitting.  MusicBrainz secondary types are
+    the authoritative category source.
     """
     if not artist:
         return {"missing": 0}
@@ -503,6 +513,7 @@ def refresh_missing_releases_for_artist(artist: str) -> Dict[str, Any]:
                     SELECT DISTINCT title, release_type, category, year, release_id, source
                     FROM artist_release_cache
                     WHERE LOWER(artist) = LOWER(:artist)
+                      AND source = 'musicbrainz'
                 """),
                 {"artist": artist},
             )

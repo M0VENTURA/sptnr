@@ -496,35 +496,25 @@ async function importMissingRelease(btn) {
   const releaseId = btn.dataset.releaseId;
   const title = btn.dataset.title;
 
-  if (!releaseId) {
-    alert('No release ID available for this release.');
+  // Open the canonical MusicBrainz search prepopulated with the missing
+  // entry, then queue the selected release for download through Soulseek.
+  // (The old flow called /api/artist/import-release, which created
+  // placeholder DB rows with no audio — the MB search → slskd download is
+  // the flow that actually produces playable files.)
+  if (typeof window.openGlobalMbSearch !== 'function') {
+    alert('MusicBrainz search is not available on this page.');
     return;
   }
-
-  const origHtml = btn.innerHTML;
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-
-  try {
-    const resp = await fetch('/api/artist/import-release', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ artist, release_id: releaseId, title })
-    });
-    const data = await resp.json();
-    if (data.success || data.queued_count > 0) {
-      btn.innerHTML = `<i class="bi bi-check-lg"></i> Queued (${data.queued_count || 0} tracks)`;
-      btn.classList.replace('btn-outline-success', 'btn-success');
+  window.openGlobalMbSearch(artist, title, function(selectedRelease) {
+    if (!selectedRelease) return;
+    if (typeof window.downloadMbRelease === 'function') {
+      window.downloadMbRelease(selectedRelease.id, selectedRelease.title, selectedRelease.artist, 'slskd');
+    } else if (typeof window.downloadReleaseViaSoulseek === 'function') {
+      window.downloadReleaseViaSoulseek(selectedRelease.id, selectedRelease.title, selectedRelease.artist);
     } else {
-      btn.disabled = false;
-      btn.innerHTML = origHtml;
-      alert('Import failed: ' + (data.error || 'Unknown error'));
+      alert('Soulseek download is not available on this page.');
     }
-  } catch (e) {
-    btn.disabled = false;
-    btn.innerHTML = origHtml;
-    alert('Network error: ' + e.message);
-  }
+  });
 }
 
 // ── Init ─────────────────────────────────────────────────────────────────────

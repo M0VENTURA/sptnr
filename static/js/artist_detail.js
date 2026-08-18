@@ -637,42 +637,24 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 function importMissingRelease(artistName, releaseId, releaseTitle) {
-  if (!confirm(`Import all tracks from "${releaseTitle}"?`)) return;
-  
-  const btn = event.target.closest('button');
-  const originalContent = btn.innerHTML;
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-  
-  fetch('/api/artist/import-release', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      artist: artistName,
-      release_id: releaseId,
-      title: releaseTitle
-    })
-  })
-  .then(response => response.json())
-  .then(data => {
-    if (data.success) {
-      alert(`✅ ${data.message}`);
-      // Refresh the page to show imported album
-      setTimeout(() => {
-        location.reload();
-      }, 1000);
+  // Open the canonical MusicBrainz search prepopulated with the missing
+  // entry, then queue the selected release for download through Soulseek.
+  // (The old flow called /api/artist/import-release, which created
+  // placeholder DB rows with no audio — the MB search → slskd download is
+  // the flow that actually produces playable files.)
+  if (typeof window.openGlobalMbSearch !== 'function') {
+    alert('MusicBrainz search is not available on this page.');
+    return;
+  }
+  window.openGlobalMbSearch(artistName, releaseTitle, function(selectedRelease) {
+    if (!selectedRelease) return;
+    if (typeof window.downloadMbRelease === 'function') {
+      window.downloadMbRelease(selectedRelease.id, selectedRelease.title, selectedRelease.artist, 'slskd');
+    } else if (typeof window.downloadReleaseViaSoulseek === 'function') {
+      window.downloadReleaseViaSoulseek(selectedRelease.id, selectedRelease.title, selectedRelease.artist);
     } else {
-      alert('❌ Error: ' + (data.error || 'Failed to import'));
-      btn.disabled = false;
-      btn.innerHTML = originalContent;
+      alert('Soulseek download is not available on this page.');
     }
-  })
-  .catch(error => {
-    alert('❌ Network error: ' + error.message);
-    btn.disabled = false;
-    btn.innerHTML = originalContent;
   });
 }
 
@@ -861,44 +843,27 @@ function checkMissingReleases(artistName, silent = false, background = false) {
     });
 }
 
-// Import a missing release into the database
+// Import a missing release into the library via the MusicBrainz search modal.
+// The old flow fetched the tracklist through /api/artist/import-release and
+// created PLACEHOLDER database rows (no audio files) — a dead-end.  The
+// canonical flow (shared with the downloads / queue sections) opens the
+// MusicBrainz search PREPOPULATED with the missing entry, and the selected
+// release is queued for download through Soulseek (slskd), which is the only
+// path that actually produces playable files.
 function importRelease(artist, releaseId, title) {
-  if (!confirm(`Import "${title}" by ${artist}?\n\nThis will fetch the full tracklist from MusicBrainz and add it to your library.`)) {
+  if (typeof window.openGlobalMbSearch !== 'function') {
+    alert('MusicBrainz search is not available on this page.');
     return;
   }
-  
-  const btn = window.event ? window.event.target.closest('button') : document.activeElement.closest('button');
-  const originalHtml = btn.innerHTML;
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-  
-  fetch('/api/artist/import-release', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      artist: artist,
-      release_id: releaseId,
-      title: title
-    })
-  })
-  .then(r => r.json())
-  .then(data => {
-    if (data.error) {
-      alert(`Error importing release: ${data.error}`);
-      btn.disabled = false;
-      btn.innerHTML = originalHtml;
+  window.openGlobalMbSearch(artist, title, function(selectedRelease) {
+    if (!selectedRelease) return;
+    if (typeof window.downloadMbRelease === 'function') {
+      window.downloadMbRelease(selectedRelease.id, selectedRelease.title, selectedRelease.artist, 'slskd');
+    } else if (typeof window.downloadReleaseViaSoulseek === 'function') {
+      window.downloadReleaseViaSoulseek(selectedRelease.id, selectedRelease.title, selectedRelease.artist);
     } else {
-      alert(`Success! Imported ${data.tracks_imported} tracks from "${title}"`);
-      // Reload the page to show the newly imported album
-      window.location.reload();
+      alert('Soulseek download is not available on this page.');
     }
-  })
-  .catch(err => {
-    alert(`Network error: ${err.message}`);
-    btn.disabled = false;
-    btn.innerHTML = originalHtml;
   });
 }
 

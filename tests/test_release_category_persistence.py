@@ -305,3 +305,38 @@ def test_refresh_preserves_specific_existing_category_over_generic_cache(release
     # The more specific existing categories survive the refresh.
     assert by_title["Live After Death"] == "Live Album"
     assert by_title["Best Of The Beast"] == "Compilation"
+
+
+def test_refresh_excludes_discogs_rows(release_cache_db):
+    """Discogs rows in the cache must NEVER seed missing_releases.
+
+    The cache holds both sources (Discogs rows feed singles detection), but
+    only MusicBrainz rows may produce missing releases — Discogs format-token
+    categories are unreliable and its release list includes bootlegs / live
+    audience recordings that flood the artist page's Studio/Live/Remix/
+    Compilation buckets.
+    """
+    from services.popularity.release_cache_service import refresh_missing_releases_for_artist
+
+    _session, _open = release_cache_db
+    with _open() as session:
+        _seed_cache(session, [
+            # MusicBrainz rows — these SHOULD become missing releases.
+            {"artist": "Tool", "title": "Lateralus", "release_type": "album",
+             "category": "Album", "source": "musicbrainz", "release_id": "rg-lat", "year": 2001},
+            # Discogs rows — these must be EXCLUDED.
+            {"artist": "Tool", "title": "Lateralus (Unofficial Bootleg Live)", "release_type": "album",
+             "category": "Live Album", "source": "discogs", "release_id": "dg-boot", "year": 2001},
+            {"artist": "Tool", "title": "Salival (Compilation)", "release_type": "album",
+             "category": "Compilation", "source": "discogs", "release_id": "dg-sal", "year": 2000},
+        ])
+
+    refresh_missing_releases_for_artist("Tool")
+
+    with _open() as session:
+        rows = _read_missing(session)
+    titles = {r["title"] for r in rows}
+    assert "Lateralus" in titles
+    # Discogs-only rows never appear.
+    assert "Lateralus (Unofficial Bootleg Live)" not in titles
+    assert "Salival (Compilation)" not in titles
