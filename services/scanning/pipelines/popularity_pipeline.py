@@ -226,6 +226,16 @@ def _run_full_scan_as_artist_pipeline(
     artists = get_all_artists()
     total = len(artists)
 
+    log_unified(
+        f"[FULL_SCAN] Starting full scan — {total} artist(s) queued"
+        f"{' (forced)' if force else ''}"
+    )
+    if not artists:
+        log_unified(
+            "[FULL_SCAN] No artists found in the library — nothing to scan. "
+            "Check the library has been imported (Navidrome sync)."
+        )
+
     # Honour resume_from (legacy parity): skip artists before the resume
     # point, tolerating case/punctuation variants.
     if resume_from:

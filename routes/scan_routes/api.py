@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import datetime
 
 from quart import jsonify, make_response, request
@@ -32,15 +33,21 @@ from services.scanning.runtime_state import (
     is_runtime_running,
     set_runtime,
     clear_runtime,
+    get_runtime,
+    is_process_alive,
 )
 import services.scanning.runtime_state as runtime_state  # for legacy globals
 
 from services.scanning.scan_state import (
     get_scan_progress_path,
     read_progress_file,
+    clear_progress_file,
 )
+from helpers.logging_config import log_unified
 
 from services.scanning.pipelines.artist_pipeline import run_artist_pipeline
+
+logger = logging.getLogger(__name__)
 
 
 # -------------------------------------------------------------------------
@@ -299,9 +306,13 @@ async def api_popularity_run_compat():
 
     force = bool(params.force or raw.get("force", False))
 
-    # Record "started" immediately so the dashboard sees it right away
+    # Record "started" only AFTER the duplicate guards below — a rejected
+    # start (already-running / stale DB state) must not leave an orphaned
+    # "started" scan_history row.  ``renderRecentScans`` renders ANY non-failed
+    # ``_SCAN_SESSION_`` group as "completed", so an orphaned "started" from a
+    # 409 looked like "full scan completed" with the footer idle and no worker
+    # ever launching (the exact "goes straight to completed" symptom).
     from services.scanning.scan_history_service import record_scan
-    record_scan(mode, "started", message=f"{mode} scan started", artist="_SCAN_SESSION_", album=mode)
 
     with scan_lock:
         if is_runtime_running("popularity"):
@@ -319,14 +330,62 @@ async def api_popularity_run_compat():
         from services.scanning.pipelines.popularity_pipeline import is_popularity_scan_active
 
         if is_popularity_scan_active():
-            return jsonify({
-                "success": False,
-                "error": "A popularity scan is already running",
-            }), 409
+            # Self-heal STALE scan-state rows: a crashed scan (daemon thread
+            # died before its finally, or a previous process was killed
+            # mid-scan) can leave ``scan_states.is_running=True`` forever.
+            # ``reset_stale_scan_states`` only runs at startup, so a row that
+            # went stale while the app stayed up blocks EVERY subsequent scan
+            # (dashboard + scheduler) with a phantom "already running".  If no
+            # live worker owns the row, clear it and proceed — otherwise it is
+            # a genuinely active scan and we reject.
+            _live_owner = False
+            for _scan_type in ("popularity_scan", "full_scan"):
+                _state = read_progress_file(get_scan_progress_path(_scan_type))
+                if _state.get("is_running"):
+                    # The in-process runtime registry is authoritative for
+                    # "someone in THIS worker owns it" — a row marked running
+                    # with no live thread is stale.
+                    _rt = get_runtime(_scan_type.replace("_scan", ""))
+                    if _rt is not None:
+                        _owner_thread = _rt.get("thread") if isinstance(_rt, dict) else _rt
+                        if is_process_alive(_owner_thread):
+                            _live_owner = True
+                            break
+            if _live_owner:
+                return jsonify({
+                    "success": False,
+                    "error": "A popularity scan is already running",
+                }), 409
+            # No live owner — the DB row is stale.  Reset it so THIS scan
+            # starts cleanly instead of being permanently blocked.
+            try:
+                for _scan_type in ("popularity_scan", "full_scan"):
+                    _state = read_progress_file(get_scan_progress_path(_scan_type))
+                    if _state.get("is_running"):
+                        clear_progress_file(get_scan_progress_path(_scan_type))
+                log_unified("Cleared stale scan-state rows (phantom 'already running') before starting scan")
+            except Exception:
+                pass
+
+        record_scan(mode, "started", message=f"{mode} scan started", artist="_SCAN_SESSION_", album=mode)
 
         def _worker():
             try:
                 run_popularity_mode(mode=mode, force_rescan=force)
+            except Exception as exc:
+                # A daemon-thread exception would otherwise be swallowed by
+                # ``run_async`` (no handler) — the route returns "started",
+                # the worker dies silently, and the dashboard shows an
+                # orphaned "started" record as "completed" with the footer
+                # idle and nothing in the logs.  Surface it so the failure is
+                # diagnosable.
+                import traceback
+                log_unified(f"[POPULARITY] Worker failed: {exc}")
+                logger.error("[POPULARITY] Worker failed: %s\n%s", exc, traceback.format_exc())
+                try:
+                    record_scan(mode, "failed", message=f"{mode} scan failed: {exc}", artist="_SCAN_SESSION_", album=mode)
+                except Exception:
+                    pass
             finally:
                 clear_runtime("popularity")
                 runtime_state.scan_process_popularity = None
