@@ -63,6 +63,42 @@ class TestInterludeDurationFloor:
         assert should_exclude_track_from_stats("Song (Live)", "Album") is True
 
 
+class TestIntroTitleExclusion:
+    """Intro / interlude titles never anchor the stats baseline."""
+
+    def test_dig_intro_is_excluded(self):
+        # The exact Mudvayne "By the People" case: a spoken intro with ~200
+        # listens must not crater the album floor.
+        assert should_exclude_track_from_stats(
+            "Dig Intro", "By the People, for the People", duration=42,
+        ) is True
+
+    def test_plain_intro_title_excluded(self):
+        assert should_exclude_track_from_stats("Intro", "Album") is True
+
+    def test_interlude_title_excluded(self):
+        assert should_exclude_track_from_stats(
+            "Golden Ratio (Interlude)", "Album", duration=35,
+        ) is True
+
+    def test_bracketed_intro_excluded(self):
+        assert should_exclude_track_from_stats(
+            "Silenced [Intro]", "Album", duration=28,
+        ) is True
+
+    def test_real_track_with_intro_word_kept(self):
+        # "Introduction" (full word) is not matched by the suffix regex.
+        assert should_exclude_track_from_stats(
+            "Introduction", "Album", duration=210,
+        ) is False
+
+    def test_empty_regex_disables(self):
+        assert should_exclude_track_from_stats(
+            "Dig Intro", "Album", duration=42,
+            exclude_title_regex="",
+        ) is False
+
+
 class TestTwoPassArtistStatsOverride:
     """detect_single_for_track uses the pre-computed artist catalogue."""
 
@@ -115,3 +151,60 @@ class TestTwoPassArtistStatsOverride:
         )
         decision = result["decision"]
         assert decision["artist_z"] <= 1.5, decision
+
+    def test_log_listens_artist_z(self, monkeypatch):
+        """artist_z from log10(listens) against the global listen catalogue.
+
+        Mudvayne's real distribution: Dig at 530k listeners vs a catalogue
+        dominated by 10k-90k tracks.  The log-scale z must put Dig clearly at
+        the top (artist_z >> 1) instead of the near-zero the score-based
+        album-relative baseline produced.
+        """
+        from services.enrichment import single_detection_service as sds
+
+        self._patch_db_empty(monkeypatch)
+
+        # Artist catalogue by raw Last.fm listeners (Mudvayne-like spread:
+        # one 530k monster, several 40-90k, many 5-15k demos, plus the
+        # 200-listen intros — which the runner strips before this override).
+        catalogue = [530000, 93000, 46000, 90000, 40000, 25000, 15000,
+                     14000, 11000, 10000, 8000, 6000, 5000, 3000, 2000, 1000]
+        result = sds.detect_single_for_track(
+            title="Dig",
+            artist="Mudvayne",
+            album="L.D. 50",
+            album_track_count=13,
+            popularity=73.4,
+            lastfm_listeners=530900,
+            album_type="album",
+            use_advanced_detection=False,
+            persist_result=False,
+            artist_listen_override=catalogue,
+        )
+        decision = result["decision"]
+        # log10(530900)≈5.72 vs median log10≈log10(13000)≈4.11 → z well above 2.
+        assert decision["artist_z"] > 2.0, decision
+
+    def test_log_listens_artist_z_low_track(self, monkeypatch):
+        """A mid-catalogue track gets a modest (not huge) artist_z."""
+        from services.enrichment import single_detection_service as sds
+
+        self._patch_db_empty(monkeypatch)
+
+        catalogue = [530000, 93000, 46000, 90000, 40000, 25000, 15000,
+                     14000, 11000, 10000, 8000, 6000, 5000, 3000, 2000, 1000]
+        result = sds.detect_single_for_track(
+            title="Severed",
+            artist="Mudvayne",
+            album="L.D. 50",
+            album_track_count=13,
+            popularity=50.0,
+            lastfm_listeners=120000,
+            album_type="album",
+            use_advanced_detection=False,
+            persist_result=False,
+            artist_listen_override=catalogue,
+        )
+        decision = result["decision"]
+        # log10(120000)≈5.08 vs median≈4.11 → z around +0.7-1.2 — mid-pack.
+        assert 0.3 < decision["artist_z"] < 2.0, decision

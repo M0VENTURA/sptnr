@@ -1585,6 +1585,16 @@
           <input type="number" step="0.01" min="0.01" max="1" class="form-control form-control-sm" id="sd_artist_medium_pct" placeholder="0.20" value="{{ config.get('single_detection', {}).get('artist_medium_bump_percentile', 0.20) }}">
           <small class="form-text text-muted">Widened marking band (default <strong>0.20</strong>): a track here with a MEDIUM-confidence single source is bumped to HIGH → 5★. Popularity alone below the top band never marks.</small>
         </div>
+        <div class="col-12 col-sm-6 col-lg-3">
+          <label class="form-label form-label-sm">Force 5★ Top % (raw listens)</label>
+          <input type="number" step="0.01" min="0" max="1" class="form-control form-control-sm" id="sd_force_5star_pct" placeholder="0.03" value="{{ config.get('single_detection', {}).get('artist_top_percentile_force_5_star', 0.03) }}">
+          <small class="form-text text-muted">Failsafe vs within-album normalization: a track in the artist's absolute top-% by raw Last.fm listeners is forced to 5★, bypassing album_z gating. Default: <strong>0.03</strong> (top 3%). <code>0</code> disables.</small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-3">
+          <label class="form-label form-label-sm">Force 4★ Top % (raw listens)</label>
+          <input type="number" step="0.01" min="0" max="1" class="form-control form-control-sm" id="sd_force_4star_pct" placeholder="0.10" value="{{ config.get('single_detection', {}).get('artist_top_percentile_force_4_star', 0.10) }}">
+          <small class="form-text text-muted">A track in the artist's absolute top-% by raw listeners is forced to at least 4★. Default: <strong>0.10</strong> (top 10%). <code>0</code> disables.</small>
+        </div>
       </div>
 
       <hr class="my-3">
@@ -1798,12 +1808,22 @@
       <div class="row g-3">
         <div class="col-12 col-sm-6 col-lg-4">
           <label class="form-label form-label-sm">Interlude / Skit Duration Floor (seconds)</label>
-          <input type="number" step="5" min="0" class="form-control form-control-sm" id="statistics_exclude_below_seconds" placeholder="90"
-                 value="{{ config.get('statistics', {}).get('exclude_from_median_below_seconds', 90) }}">
+          <input type="number" step="5" min="0" class="form-control form-control-sm" id="statistics_exclude_below_seconds" placeholder="60"
+                 value="{{ config.get('statistics', {}).get('exclude_from_median_below_seconds', 60) }}">
           <small class="form-text text-muted">
             Tracks shorter than this are excluded from the album/artist median &amp; MAD used for
             z-scores (ambient interludes / skits artificially compress the median and shrink the
-            variance, dragging real tracks down).  Default: <strong>90</strong> (1:30).  <code>0</code> disables.
+            variance, dragging real tracks down).  Default: <strong>60</strong> (1:00).  <code>0</code> disables.
+          </small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-8">
+          <label class="form-label form-label-sm">Exclude Intro / Interlude Title Regex</label>
+          <input type="text" class="form-control form-control-sm" id="statistics_exclude_title_regex"
+                 value="{{ config.get('filters', {}).get('exclude_title_regex', '(?i)(^intro$|\bintro$|interlude|\[intro\]|\(intro\))') }}">
+          <small class="form-text text-muted">
+            Titles matching this regex are excluded from the stats baseline (spoken intros / interludes
+            like "Dig Intro" crater the album floor).  Default matches <code>Intro</code> / <code>[Intro]</code> /
+            <code>Interlude</code> suffixes.  Leave empty to keep the default.
           </small>
         </div>
       </div>

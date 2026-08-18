@@ -1680,6 +1680,16 @@ def process_track(
                         if isinstance(options, dict)
                         else None
                     ),
+                    # Two-pass artist listen distribution: the scan runner
+                    # pre-collected the artist's raw Last.fm listener counts
+                    # (whole catalogue) so artist_z is computed on
+                    # log10(listens) across the global distribution rather
+                    # than within-album score deltas.
+                    artist_listen_override=(
+                        options.get("artist_listen_override")
+                        if isinstance(options, dict)
+                        else None
+                    ),
                 )
             else:
                 sd_result = None

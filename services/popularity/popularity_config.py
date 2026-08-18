@@ -96,16 +96,59 @@ def get_exclude_from_median_below_seconds(config: dict | None = None) -> float:
 
     Ambient interludes / skits (``< 1:30``) artificially compress the album
     median and shrink the variance used for z-scores, dragging real tracks
-    down.  ``statistics.exclude_from_median_below_seconds`` (default 90)
+    down.  ``statistics.exclude_from_median_below_seconds`` (default 60)
     drops shorter tracks from the album reference distribution so the
     median/MAD measure the album's actual songs.
     """
     cfg = config if isinstance(config, dict) else get_config()
     stats = cfg.get("statistics", {}) if isinstance(cfg, dict) else {}
     try:
-        return float(stats.get("exclude_from_median_below_seconds", 90) or 0)
+        return float(stats.get("exclude_from_median_below_seconds", 60) or 0)
     except Exception:
-        return 90.0
+        return 60.0
+
+
+_INTRO_INTERLUDE_TITLE_RE = r"(?i)(^intro$|\bintro$|interlude|\[intro\]|\(intro\))"
+
+
+def get_exclude_title_regex(config: dict | None = None) -> str:
+    """Return the title regex used to strip intro/interlude tracks from stats.
+
+    Spoken-word intros and interludes (``"Dig Intro"``, ``"[Interlude]"``,
+    ``"Golden Ratio (Interlude)"``) carry tiny listen counts and crater the
+    album floor, inflating ordinary tracks' relative scores and poisoning the
+    artist baseline.  ``filters.exclude_title_regex`` (default
+    ``(^intro$|\\bintro$|interlude|\\[intro\\]|\\(intro\\))``, case-
+    insensitive) matches them; empty disables.
+    """
+    cfg = config if isinstance(config, dict) else get_config()
+    filters = cfg.get("filters", {}) if isinstance(cfg, dict) else {}
+    try:
+        value = str(filters.get("exclude_title_regex", "") or "").strip()
+        return value or _INTRO_INTERLUDE_TITLE_RE
+    except Exception:
+        return _INTRO_INTERLUDE_TITLE_RE
+
+
+def get_artist_force_star_percentiles(config: dict | None = None) -> tuple[float, float]:
+    """Return the artist top-% (by raw listens) that FORCE 5★ / 4★.
+
+    A failsafe against within-album normalization: when a track sits in the
+    artist's absolute top-N% by raw Last.fm listeners, its popularity is
+    undeniable regardless of how tight its own album's distribution is (the
+    "consistent album" paradox — every L.D. 50 track is popular, so Dig's
+    album_z looks ordinary).  ``single_detection.artist_top_percentile_force_5_star``
+    (default 0.03 = top 3%) forces 5★; ``..._force_4_star`` (default 0.10 =
+    top 10%) forces at least 4★.  ``0`` disables.
+    """
+    cfg = config if isinstance(config, dict) else get_config()
+    sd = cfg.get("single_detection", {}) if isinstance(cfg, dict) else {}
+    try:
+        force5 = float(sd.get("artist_top_percentile_force_5_star", 0.03) or 0)
+        force4 = float(sd.get("artist_top_percentile_force_4_star", 0.10) or 0)
+    except Exception:
+        force5, force4 = 0.03, 0.10
+    return force5, force4
 
 
 def get_single_organic_floor(config: dict | None = None) -> tuple[float, float]:

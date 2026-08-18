@@ -548,6 +548,7 @@ def _assign_stars(
     popularity_only: bool = False,
     album_model: dict[str, Any] | None = None,
     is_compilation: bool = False,
+    artist_listen_distribution: list[float] | None = None,
 ) -> int:
     """Assign 1–5 star rating to a single track (album-relative spec).
 
@@ -657,6 +658,41 @@ def _assign_stars(
         and artist_z >= th["star5_artist_z"] - _star_epsilon_z(artist_spread, th["epsilon"])
         and (popularity_marked or z_standout_source)
     )
+
+    # ── Hard absolute floors (failsafe vs within-album normalization) ────
+    # A track in the artist's absolute top-N% by RAW Last.fm listeners is
+    # undeniable, regardless of how tight its own album's distribution is
+    # (the "consistent album" paradox: every L.D. 50 track is popular, so
+    # Dig's album_z looks ordinary).  Config:
+    #   artist_top_percentile_force_5_star: 0.03  (top 3% → 5★)
+    #   artist_top_percentile_force_4_star: 0.10  (top 10% → at least 4★)
+    # These bypass album_z gating but NEVER the live cap or user override.
+    _force_stars: int | None = None
+    if (
+        not is_live
+        and artist_listen_distribution
+        and not popularity_only
+    ):
+        try:
+            from services.popularity.popularity_config import get_artist_force_star_percentiles
+            _force5_pct, _force4_pct = get_artist_force_star_percentiles()
+            _track_listens = float(track.get("lastfm_listeners") or 0)
+            if _track_listens > 0 and (_force5_pct > 0 or _force4_pct > 0):
+                _valid = [float(v) for v in artist_listen_distribution if float(v or 0) > 0]
+                if len(_valid) >= 5:
+                    _valid.sort(reverse=True)
+                    _rank = sum(1 for v in _valid if v > _track_listens) + 1
+                    _pct = _rank / len(_valid)
+                    if _force5_pct > 0 and _pct <= _force5_pct:
+                        _force_stars = 5
+                    elif _force4_pct > 0 and _pct <= _force4_pct:
+                        _force_stars = 4
+        except Exception:
+            _force_stars = None
+    if _force_stars is not None and not is_live:
+        track["_force_floor"] = _force_stars
+        return _force_stars
+
     # Top-% popularity marking alone grants 5★ (spec rule 2): a track in the
     # artist's top 10% is "popular" regardless of single status, so it never
     # needs a single-detection source.  The medium→high bump (rule 3) already
@@ -2184,6 +2220,40 @@ def post_album_star_ratings(
         except Exception:
             _skip_unchanged = True
 
+        # ── Artist raw-listen distribution (hard absolute floors) ────────
+        # The artist's Last.fm listeners across ALL albums — this album's
+        # fresh results plus stored rows for the rest of the catalogue.  Used
+        # by ``_assign_stars`` for the force-5★/4★ failsafe: a track in the
+        # artist's absolute top-N% by raw listens bypasses album_z gating.
+        _artist_listen_distribution: list[float] = [
+            float(r.get("lastfm_listeners") or 0)
+            for r in album_results
+            if float(r.get("lastfm_listeners") or 0) > 0
+        ]
+        try:
+            _artist_titles = {
+                str(r.get("title") or "").strip().lower() for r in album_results
+            }
+            with _db_session() as _sess:
+                _artist_rows = _sess.execute(
+                    _text(
+                        "SELECT title, lastfm_listeners FROM tracks "
+                        "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
+                        "AND COALESCE(lastfm_listeners, 0) > 0"
+                    ),
+                    {"artist": artist},
+                ).fetchall() or []
+            for _r in _artist_rows:
+                _m = _r._mapping
+                _t = str(_m.get("title") or "").strip().lower()
+                _lf = float(_m.get("lastfm_listeners") or 0)
+                if _lf > 0 and _t not in _artist_titles:
+                    _artist_listen_distribution.append(_lf)
+        except Exception as exc:
+            logger.debug(
+                "[finalise_stage] Artist listen distribution failed for %s: %s", artist, exc,
+            )
+
         # Persist to database — one session for the whole album's rating
         # writes so the per-album assignment commits atomically.
         with _db_session() as session:
@@ -2202,6 +2272,7 @@ def post_album_star_ratings(
                         popularity_only=bool(options.get("popularity_only")),
                         album_model=album_model,
                         is_compilation=is_compilation,
+                        artist_listen_distribution=_artist_listen_distribution,
                     )
                 except Exception as exc:
                     logger.warning(

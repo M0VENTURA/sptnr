@@ -1097,6 +1097,39 @@ def run_scan(
             db_scores = [float(s) for _alb, s in db_rows]
         return db_scores
 
+    # Raw artist-catalogue listen counts memoized per artist — feeds the
+    # log-listens artist_z baseline (``artist_listen_override``).
+    _artist_db_listen_cache: dict[str, list[Any]] = {}
+
+    def _load_artist_db_listeners(artist: str, scanned_titles: set[str]) -> list[float]:
+        """Stored raw Last.fm listeners per artist track, EXCLUDING scanned
+        titles (they are carried by the in-memory section rows)."""
+        try:
+            from sqlalchemy import text as _text
+            from db.engine import db_session as _db_session
+            if artist not in _artist_db_listen_cache:
+                with _db_session() as session:
+                    rows = session.execute(
+                        _text(
+                            "SELECT title, lastfm_listeners FROM tracks "
+                            "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
+                            "AND COALESCE(lastfm_listeners, 0) > 0"
+                        ),
+                        {"artist": artist},
+                    ).fetchall()
+                _artist_db_listen_cache[artist] = rows or []
+            rows = _artist_db_listen_cache[artist]
+            return [
+                float(r[1] or 0)
+                for r in rows
+                if float(r[1] or 0) > 0
+                and str(r[0] or "").strip().lower() not in scanned_titles
+                and not is_bonus_track_title(str(r[0] or ""))
+            ]
+        except Exception as exc:
+            logger.debug("[scan_runner] Artist DB listen fetch failed for %s: %s", artist, exc)
+            return []
+
     def _post_album_stars(
         artist: str,
         album_results: list[dict[str, Any]],
@@ -1356,6 +1389,11 @@ def run_scan(
         # scale so raw and relative scores are comparable (same correction
         # the star-rating pass applies).  Only set when there are enough
         # scores to be meaningful.
+        #
+        # ``options.artist_listen_override`` carries the artist's RAW
+        # Last.fm listen distribution (same sources) so single detection can
+        # compute artist_z from log10(listens) — absolute catalogue
+        # prominence, immune to within-album normalization.
         if artist:
             try:
                 _section_albums = [
@@ -1364,6 +1402,7 @@ def run_scan(
                 ]
                 _section_titles: set[str] = set()
                 _pre_scores: list[float] = []
+                _pre_listens: list[float] = []
                 for _ar in _section_albums:
                     for _t in (_ar.get("tracks") or []):
                         _t_title = str(_t.get("title") or "").strip().lower()
@@ -1376,22 +1415,37 @@ def run_scan(
                         )
                         if _score > 0:
                             _pre_scores.append(_score)
+                        _lf = float(_t.get("lastfm_listeners") or 0)
+                        if _lf > 0:
+                            _pre_listens.append(_lf)
                 # Stored scores for albums OUTSIDE this scan section — the
                 # section's own titles are excluded so they are not
                 # double-counted (their in-memory scores above stand in).
                 _pre_scores += _load_artist_db_scores(artist, _section_titles)
+                # Stored raw listeners for albums outside the section feed
+                # the log-listens artist_z baseline too.
+                try:
+                    _pre_listens += _load_artist_db_listeners(artist, _section_titles)
+                except Exception as exc:
+                    logger.debug("[scan_runner] Pass-1 listen baseline failed for %s: %s", artist, exc)
                 _pre_primary = strip_featured_artist(artist)
                 if len(_pre_scores) >= ALBUM_RELATIVE_MIN_ALBUM_TRACKS:
                     options["artist_stats_override"] = list(_pre_scores)
-                    log_unified(
-                        f"[scan_runner] Pass-1 artist pre-scan: {_pre_primary} — "
-                        f"{len(_pre_scores)} catalogue score(s) pre-loaded for artist_z"
-                    )
                 else:
                     options.pop("artist_stats_override", None)
+                if len(_pre_listens) >= ALBUM_RELATIVE_MIN_ALBUM_TRACKS:
+                    options["artist_listen_override"] = list(_pre_listens)
+                else:
+                    options.pop("artist_listen_override", None)
+                log_unified(
+                    f"[scan_runner] Pass-1 artist pre-scan: {_pre_primary} — "
+                    f"{len(_pre_scores)} catalogue score(s), "
+                    f"{len(_pre_listens)} listen(s) pre-loaded for artist_z"
+                )
             except Exception as exc:
                 logger.debug("[scan_runner] Pass-1 artist pre-scan failed for %s: %s", artist, exc)
                 options.pop("artist_stats_override", None)
+                options.pop("artist_listen_override", None)
 
         album = album_row.get("album") or ""
         tracks = album_row.get("tracks") or []

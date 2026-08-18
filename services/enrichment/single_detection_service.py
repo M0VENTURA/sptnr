@@ -995,6 +995,7 @@ def detect_single_for_track(
     album_lf_listeners: list[float] | None = None,
     album_lb_listens: list[float] | None = None,
     artist_stats_override: list[float] | None = None,
+    artist_listen_override: list[float] | None = None,
     is_va_compilation: bool | None = None,
 ) -> dict[str, Any]:
     """Detect whether a track is a single using the 8-stage algorithm.
@@ -1053,36 +1054,63 @@ def detect_single_for_track(
     artist_z = 0.0
     if popularity is not None and popularity > 0 and not is_compilation:
         try:
-            # Artist-level stats.  The scan runner may pass a PRE-COMPUTED
-            # artist catalogue (``artist_stats_override``) from its pass-1
-            # pre-scan — on a fresh artist the DB is empty when the FIRST
-            # album is scored, so the DB-backed lookup returns nothing and
-            # every track of the first album gets an artist_z ≈ 0 (the
-            # "first album never stands out" scan-order artifact).  When the
-            # override is present it wins; otherwise fall back to the DB.
-            if artist_stats_override:
-                artist_vals = list(artist_stats_override)
+            # ── artist_z: log-listens vs score-based ─────────────────────
+            # The scan runner's pass-1 pre-scan passes the artist's raw
+            # listen distribution (``artist_listen_override``) — every track
+            # of the artist, by raw Last.fm listeners.  artist_z is then
+            # computed from log10(listens) across that global distribution:
+            #
+            #   z = (log10(listens) - median(log10(catalogue))) /
+            #       MAD(log10(catalogue))   [robust, scaled-MAD]
+            #
+            # This measures a track's ABSOLUTE popularity against the artist,
+            # immune to within-album normalization (the "consistent album"
+            # paradox where a tight album suppresses its own standouts).
+            if artist_listen_override and lastfm_listeners is not None:
+                import math as _math
+                _log_listens = [
+                    _math.log10(max(float(v), 1.0))
+                    for v in artist_listen_override
+                    if float(v or 0) > 0
+                ]
+                if len(_log_listens) >= 5:
+                    _track_log = _math.log10(max(float(lastfm_listeners), 1.0))
+                    _med = stat_median(_log_listens)
+                    _mad = stat_median([abs(v - _med) for v in _log_listens])
+                    _spread = max(_mad * 1.4826, 0.25)
+                    artist_z = (_track_log - _med) / _spread if _spread > 0 else 0
             else:
-                from services.popularity.popularity_stats_service import calculate_artist_stats
+                # Score-based artist stats.  The scan runner may pass a
+                # PRE-COMPUTED artist catalogue (``artist_stats_override``)
+                # from its pass-1 pre-scan — on a fresh artist the DB is
+                # empty when the FIRST album is scored, so the DB-backed
+                # lookup returns nothing and every track of the first album
+                # gets an artist_z ≈ 0 (the "first album never stands out"
+                # scan-order artifact).  When the override is present it
+                # wins; otherwise fall back to the DB.
+                if artist_stats_override:
+                    artist_vals = list(artist_stats_override)
+                else:
+                    from services.popularity.popularity_stats_service import calculate_artist_stats
 
-                _, _, _raw_vals = calculate_artist_stats(None, _stats_artist)
-                if not _raw_vals:
-                    _canon = strip_featured_artist(_stats_artist)
-                    if _canon and _canon != _stats_artist:
-                        _, _, _canon_vals = calculate_artist_stats(None, _canon)
-                        if _canon_vals:
-                            _stats_artist = _canon
-                            _raw_vals = _canon_vals
-                artist_vals = _raw_vals
+                    _, _, _raw_vals = calculate_artist_stats(None, _stats_artist)
+                    if not _raw_vals:
+                        _canon = strip_featured_artist(_stats_artist)
+                        if _canon and _canon != _stats_artist:
+                            _, _, _canon_vals = calculate_artist_stats(None, _canon)
+                            if _canon_vals:
+                                _stats_artist = _canon
+                                _raw_vals = _canon_vals
+                    artist_vals = _raw_vals
 
-            if artist_vals:
-                art_med = stat_median(artist_vals)
-                art_mad = stat_median([abs(v - art_med) for v in artist_vals]) if artist_vals else 0
-                # Adaptive spread floor (same rule as popularity_math): a
-                # uniform high-scoring catalogue must not amplify tiny score
-                # gaps into large z-swings.
-                art_spread = max(art_mad * 1.4826, 10.0, 0.10 * art_med)
-                artist_z = (popularity - art_med) / art_spread if art_spread > 0 else 0
+                if artist_vals:
+                    art_med = stat_median(artist_vals)
+                    art_mad = stat_median([abs(v - art_med) for v in artist_vals]) if artist_vals else 0
+                    # Adaptive spread floor (same rule as popularity_math): a
+                    # uniform high-scoring catalogue must not amplify tiny
+                    # score gaps into large z-swings.
+                    art_spread = max(art_mad * 1.4826, 10.0, 0.10 * art_med)
+                    artist_z = (popularity - art_med) / art_spread if art_spread > 0 else 0
 
             if album:
                 from services.popularity.popularity_stats_service import calculate_album_stats

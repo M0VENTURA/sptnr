@@ -368,6 +368,8 @@ function buildConfigObject() {
         artist_top_percentile_large: parseFloat(getValue('sd_artist_pct_large', '0.25')) || 0.25,
         artist_catalog_large_threshold: parseInt(getValue('sd_artist_pct_large_threshold', '30'), 10) || 30,
         artist_medium_bump_percentile: parseFloat(getValue('sd_artist_medium_pct', '0.20')) || 0.20,
+        artist_top_percentile_force_5_star: parseFloat(getValue('sd_force_5star_pct', '0.03')) || 0,
+        artist_top_percentile_force_4_star: parseFloat(getValue('sd_force_4star_pct', '0.10')) || 0,
         listener_5star_z_threshold: parseFloat(getValue('listener_5star_z_threshold', '1.0')) || 1.0,
         single_boost: parseFloat(getValue('single_boost', '1.15')) || 1.15,
         metadata_score_floor: parseFloat(getValue('metadata_score_floor', '5.0')) || 5.0,
@@ -426,7 +428,14 @@ function buildConfigObject() {
       {},
       (window.pageConfig && window.pageConfig.statistics) || {},
       {
-        exclude_from_median_below_seconds: parseFloat(getValue('statistics_exclude_below_seconds', '90')) || 0
+        exclude_from_median_below_seconds: parseFloat(getValue('statistics_exclude_below_seconds', '60')) || 0
+      }
+    ),
+    filters: Object.assign(
+      {},
+      (window.pageConfig && window.pageConfig.filters) || {},
+      {
+        exclude_title_regex: getValue('statistics_exclude_title_regex', '')
       }
     ),
     tagging: Object.assign(

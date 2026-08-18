@@ -211,18 +211,25 @@ def should_exclude_track_from_stats(
     album_type: str = "",
     duration: float | None = None,
     exclude_below_seconds: float | None = None,
+    exclude_title_regex: str | None = None,
 ) -> bool:
     """True when a track must not anchor the album/artist stats baseline.
 
     Live / bonus / alternate titles are excluded (existing rules).  Ambient
-    interludes and skits — tracks shorter than
-    ``statistics.exclude_from_median_below_seconds`` (default 90s, 1:30) —
-    are excluded too: a 30-second ambient piece artificially compresses the
-    album median and shrinks the MAD used for z-scores, dragging real tracks
-    down and hiding genuine standouts (e.g. Mudvayne's L.D. 50 interludes).
+    interludes and skits are excluded too:
+    - tracks shorter than ``statistics.exclude_from_median_below_seconds``
+      (default 90s, 1:30), and
+    - titles matching ``filters.exclude_title_regex`` — the default pattern
+      catches spoken-word intros / interludes that crater the album floor
+      ("Dig Intro", "Silenced Intro", "Golden Ratio [Interlude]"), which
+      would otherwise compress the median and shrink the MAD, dragging real
+      tracks down and inflating the artist baseline (the Mudvayne
+      "By the People, for the People" poisoning).
 
     ``duration`` is the track length in seconds; ``exclude_below_seconds``
-    is the configurable floor (None → live config, 0 disables the filter).
+    is the configurable floor (None → live config, 0 disables the filter);
+    ``exclude_title_regex`` is the configurable title pattern (None → live
+    config, empty disables).
     """
     if is_live or album_context_live:
         return True
@@ -237,6 +244,22 @@ def should_exclude_track_from_stats(
                 exclude_below_seconds = get_exclude_from_median_below_seconds()
             if float(exclude_below_seconds) > 0 and float(duration) < float(exclude_below_seconds):
                 return True
+        except Exception:
+            pass
+
+    # Intro / interlude titles never anchor the stats baseline either — a
+    # 200-listen spoken intro on a compilation must not sit in the same
+    # distribution as a 90k-listen track.
+    if title:
+        try:
+            if exclude_title_regex is None:
+                from services.popularity.popularity_config import (
+                    get_exclude_title_regex,
+                )
+                exclude_title_regex = get_exclude_title_regex()
+            if exclude_title_regex:
+                if re.search(exclude_title_regex, title, re.IGNORECASE):
+                    return True
         except Exception:
             pass
 
