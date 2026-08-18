@@ -2980,21 +2980,30 @@ function toggleArtistBio() {
 }
 
 // Album status filter: 'all' | 'library' | 'missing'
+// Acts as a TOGGLE: clicking "In Library" / "Missing" shows only those rows;
+// clicking the active toggle again (or clicking "All") clears the filter and
+// shows everything.  Applies to server-rendered rows (data-status=library /
+// missing) AND the dynamically-injected missing rows (data-source=live-missing).
 function setArtistFilter(filter) {
+  // Toggle semantics: clicking the already-active filter clears it back to
+  // "all" so the buttons behave as on/off switches.
+  const currentlyActive = document.querySelector('.artist-filter-btn.active')?.dataset?.filter;
+  const effective = (filter === currentlyActive && filter !== 'all') ? 'all' : filter;
+
   document.querySelectorAll('.artist-filter-btn').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.filter === filter);
+    btn.classList.toggle('active', btn.dataset.filter === effective);
   });
   document.querySelectorAll('.album-row').forEach(row => {
     const status = row.dataset.status || 'discovered';
-    if (filter === 'all') {
+    if (effective === 'all') {
       row.style.display = '';
       return;
     }
-    if (filter === 'library') {
+    if (effective === 'library') {
       row.style.display = status === 'missing' ? 'none' : '';
       return;
     }
-    if (filter === 'missing') {
+    if (effective === 'missing') {
       row.style.display = status === 'missing' ? '' : 'none';
     }
   });
@@ -3005,6 +3014,16 @@ function setArtistFilter(filter) {
       bootstrap.Collapse.getInstance(el)?.hide();
     });
   }
+
+  // Hide category sections that no longer have any visible rows (e.g. the
+  // "Studio Albums" card is pointless when the Missing filter leaves zero
+  // studio-album rows).  Only the sections that actually contain album rows
+  // participate; the toggle re-shows everything on "all".
+  document.querySelectorAll('.category-section').forEach(section => {
+    const rows = Array.from(section.querySelectorAll('.album-row'));
+    const hasVisible = rows.some(row => row.style.display !== 'none');
+    section.style.display = rows.length && !hasVisible ? 'none' : '';
+  });
 }
 
 // Mobile 4-tab navigation now runs from the shared engine in main.js
