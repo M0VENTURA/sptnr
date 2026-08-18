@@ -733,6 +733,15 @@ function renderMonitorQueueItemRow(item) {
   } else if (st === 'downloading' && typeof window.cancelQueueItem === 'function') {
     actions += '<button class="row-icon-btn text-secondary" title="Cancel download" onclick="cancelQueueItem(' + item.id + ')"><i class="bi bi-stop-circle"></i></button>';
   }
+  // Manual Soulseek search (legacy parity): opens the manual search modal
+  // pre-filled with this item's artist + title so the user can pick a
+  // different peer/version and link the download to this queue row.
+  if (st !== 'complete' && (item.title || '').trim() && typeof window.openSoulseekManualSearchModal === 'function') {
+    var _artistEnc = encodeInlineArg(item.artist || '');
+    var _titleEnc = encodeInlineArg(item.title || '');
+    var _id = parseInt(item.id, 10) || 0;
+    actions += '<button class="row-icon-btn text-info" title="Search Soulseek for this track" onclick="searchOtherSourcesFromEncoded(\'' + _artistEnc + '\',\'' + _titleEnc + '\', true, ' + _id + ')"><i class="bi bi-search"></i></button>';
+  }
   if (typeof window.deleteQueueItem === 'function') {
     actions += '<button class="row-icon-btn text-danger" title="Remove from queue" onclick="deleteQueueItem(' + item.id + ', false)"><i class="bi bi-trash"></i></button>';
   }
