@@ -17,6 +17,8 @@ popularity:
     lastfm: 0.55        # Default: 0.55 (55%)
     listenbrainz: 0.35  # Default: 0.35 (35%)
     age: 0.10           # Default: 0.10 (10%)
+  track_timeout_seconds: 600  # Per-album per-track collection deadline (default: 600, clamped 120-1800)
+  scan_threads: 4             # Concurrent per-track workers during a popularity scan (default: 4, 1-8)
 ```
 
 **Note:** Values are automatically normalized to sum to 1.0. `popularity.weights` takes precedence; the top-level `weights` block is used as a fallback.

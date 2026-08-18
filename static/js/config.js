@@ -422,7 +422,9 @@ function buildConfigObject() {
           lastfm: parseFloat(getValue('pop_weight_lastfm', '0.55')) || 0.55,
           listenbrainz: parseFloat(getValue('pop_weight_listenbrainz', '0.35')) || 0.35,
           age: parseFloat(getValue('pop_weight_age', '0.10')) || 0.10
-        }
+        },
+        track_timeout_seconds: parseInt(getValue('pop_track_timeout_seconds', '600'), 10) || 600,
+        scan_threads: parseInt(getValue('pop_scan_threads', '4'), 10) || 4
       }
     ),
     statistics: Object.assign(

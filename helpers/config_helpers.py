@@ -1488,6 +1488,30 @@ def get_scan_pipeline_config() -> dict[str, Any]:
     }
 
 
+def get_track_timeout_seconds() -> int:
+    """Return the per-album per-track collection deadline (seconds).
+
+    The popularity scan runs each album's per-track pipeline on a bounded
+    thread pool; ``as_completed(timeout=...)`` waits at most this long for
+    the slowest worker before the album finalises with the tracks that DID
+    complete.  A well-documented artist's per-track work spans multiple
+    rate-limited providers (MusicBrainz + Discogs + Last.fm + ListenBrainz),
+    so a too-short deadline silently drops slow-but-legitimate tracks (the
+    A Perfect Circle "Eat the Elephant" case: 4 of 12 futures unfinished at
+    300s → 2 tracks lost).
+
+    Config section: ``popularity.track_timeout_seconds`` in config.yaml.
+
+    Default: 600 (10 min).  Clamped 120-1800.
+    """
+    cfg = get_config()
+    try:
+        timeout = int((cfg.get("popularity") or {}).get("track_timeout_seconds", 600) or 600)
+    except (TypeError, ValueError):
+        timeout = 600
+    return max(120, min(timeout, 1800))
+
+
 # =============================================================================
 # Matching & Threshold Configuration
 # =============================================================================

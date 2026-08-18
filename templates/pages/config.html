@@ -1414,6 +1414,19 @@
           <small class="form-text text-muted">Used by the popularity scan pipeline. Default: <strong>0.10</strong></small>
         </div>
       </div>
+      <h6 class="mb-3 mt-4">Scan Parallelism &amp; Timeouts (<code>popularity.*</code>)</h6>
+      <div class="row g-3">
+        <div class="col-12 col-sm-6 col-lg-4">
+          <label class="form-label form-label-sm">Per-Album Track Timeout (seconds)</label>
+          <input type="number" step="30" min="120" max="1800" class="form-control form-control-sm" id="pop_track_timeout_seconds" placeholder="600" value="{{ config.get('popularity', {}).get('track_timeout_seconds', 600) }}">
+          <small class="form-text text-muted">How long an album waits for its slowest per-track worker before finalising with the completed tracks (a 60s grace window then catches late-but-legit lookups). Too short drops slow-but-fine tracks on well-documented artists. Default: <strong>600</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-4">
+          <label class="form-label form-label-sm">Scan Threads</label>
+          <input type="number" step="1" min="1" max="8" class="form-control form-control-sm" id="pop_scan_threads" placeholder="4" value="{{ config.get('popularity', {}).get('scan_threads', 4) }}">
+          <small class="form-text text-muted">Concurrent per-track workers during a popularity scan (each spans the rate-limited provider streams). Default: <strong>4</strong></small>
+        </div>
+      </div>
     </div>
   </div>
 
