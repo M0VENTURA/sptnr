@@ -1512,6 +1512,30 @@ def get_track_timeout_seconds() -> int:
     return max(120, min(timeout, 1800))
 
 
+def get_prefetch_budget_seconds() -> int:
+    """Return the per-artist prefetch / post-singles enrichment budget (seconds).
+
+    The per-artist prefetch and the per-album post-singles enrichment make
+    synchronous network calls (Last.fm / ListenBrainz bulk lookups, MusicBrainz
+    + Discogs release fetches, missing-release tracklists).  Each runs inside
+    ``_bounded_call`` with a hard wall-clock budget; when the budget expires
+    the call is abandoned and its caches stay cold for that album.  Heavy
+    catalogs (dozens of live albums / compilations / re-releases) need the
+    cross-release ListenBrainz tally to breathe — a too-tight budget makes the
+    whole album's bulk work get killed mid-flight.
+
+    Config section: ``popularity.prefetch_budget_seconds`` in config.yaml.
+
+    Default: 360 (6 min).  Clamped 120-1800.
+    """
+    cfg = get_config()
+    try:
+        budget = int((cfg.get("popularity") or {}).get("prefetch_budget_seconds", 360) or 360)
+    except (TypeError, ValueError):
+        budget = 360
+    return max(120, min(budget, 1800))
+
+
 # =============================================================================
 # Matching & Threshold Configuration
 # =============================================================================

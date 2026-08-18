@@ -424,7 +424,8 @@ function buildConfigObject() {
           age: parseFloat(getValue('pop_weight_age', '0.10')) || 0.10
         },
         track_timeout_seconds: parseInt(getValue('pop_track_timeout_seconds', '600'), 10) || 600,
-        scan_threads: parseInt(getValue('pop_scan_threads', '4'), 10) || 4
+        scan_threads: parseInt(getValue('pop_scan_threads', '4'), 10) || 4,
+        prefetch_budget_seconds: parseInt(getValue('pop_prefetch_budget_seconds', '360'), 10) || 360
       }
     ),
     statistics: Object.assign(

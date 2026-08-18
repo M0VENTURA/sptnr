@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import threading
 from typing import Any
 
 from helpers.config_helpers import get_config
@@ -976,6 +977,17 @@ def run_scan(
     # full scan when a worker is genuinely stuck, long enough to catch a
     # rate-limited lookup that lands a few seconds late.
     _track_grace_seconds = 60
+
+    # Per-artist prefetch / post-singles enrichment budget (seconds) — the
+    # wall-clock cap ``_bounded_call`` applies to the bulk network work.
+    # Raised to a configurable 360s (from a hardcoded 240s) so heavy catalogs
+    # (dozens of live / compilation / re-release cross-release LB tallies)
+    # are not killed mid-flight.
+    try:
+        from helpers.config_helpers import get_prefetch_budget_seconds
+        _prefetch_budget_seconds = get_prefetch_budget_seconds()
+    except Exception:
+        _prefetch_budget_seconds = 360
 
     # Surface the scan mode up-front so the unified log says what is running
     # (metadata / popularity / singles / combined) and how much is queued.
@@ -1957,7 +1969,7 @@ def run_scan(
                         except Exception as exc:
                             logger.debug("[scan_runner] Missing-releases refresh failed for %s: %s", artist, exc)
 
-                _bounded_call(_prefetch_artist_work, seconds=240, label=f"per-artist prefetch for '{artist}'")
+                _bounded_call(_prefetch_artist_work, seconds=_prefetch_budget_seconds, label=f"per-artist prefetch for '{artist}'")
                 prefetched_popularity = _prefetch_state["prefetched_popularity"]
 
             # ── Album-tracklist ListenBrainz lookup (release-first) ──────────
@@ -2378,7 +2390,29 @@ def run_scan(
             if _scan_threads > 1 and len(_track_jobs) > 1:
                 _pool = _futures.ThreadPoolExecutor(max_workers=_scan_threads)
                 try:
-                    _track_futures = [_pool.submit(_run_track_job, job) for job in _track_jobs]
+                    # ── Concurrency chunking ─────────────────────────────
+                    # Submitting EVERY track at once slams the rate-limited
+                    # providers (Last.fm / ListenBrainz / Discogs / MB) with
+                    # a full-album burst — 17 concurrent tracks can trigger
+                    # 429 storms whose shared-session backoff (up to 60s per
+                    # retry × 3) sleeps right through the album budget and
+                    # hangs the whole batch.  A per-worker semaphore caps how
+                    # many futures actually RUN at once: ``min(scan_threads,
+                    # 5)`` workers start, the rest block inside the worker
+                    # until a slot frees, so large albums drain in small
+                    # chunks instead of one giant concurrent wave.
+                    _track_futures = []
+                    _worker_slots = max(1, min(_scan_threads, 5))
+                    _slot_semaphore = threading.BoundedSemaphore(_worker_slots)
+
+                    def _submit_chunked(job):
+                        _slot_semaphore.acquire()
+                        try:
+                            return _run_track_job(job)
+                        finally:
+                            _slot_semaphore.release()
+
+                    _track_futures = [_pool.submit(_submit_chunked, job) for job in _track_jobs]
                     _track_results_ordered = _collect_track_results(_pool, _track_futures, _job_titles)
                 finally:
                     # ``shutdown(wait=False, cancel_futures=True)`` instead of
@@ -2487,7 +2521,7 @@ def run_scan(
 
                 _bounded_call(
                     _post_singles_enrichment_work,
-                    seconds=240,
+                    seconds=_prefetch_budget_seconds,
                     label=f"post-singles enrichment for '{artist} - {album}'",
                 )
 

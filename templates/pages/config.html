@@ -1424,7 +1424,12 @@
         <div class="col-12 col-sm-6 col-lg-4">
           <label class="form-label form-label-sm">Scan Threads</label>
           <input type="number" step="1" min="1" max="8" class="form-control form-control-sm" id="pop_scan_threads" placeholder="4" value="{{ config.get('popularity', {}).get('scan_threads', 4) }}">
-          <small class="form-text text-muted">Concurrent per-track workers during a popularity scan (each spans the rate-limited provider streams). Default: <strong>4</strong></small>
+          <small class="form-text text-muted">Concurrent per-track workers during a popularity scan (each spans the rate-limited provider streams). The per-track pool chunks to at most 5 simultaneous workers so a large album never slams the APIs. Default: <strong>4</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-4">
+          <label class="form-label form-label-sm">Per-Artist Prefetch Budget (seconds)</label>
+          <input type="number" step="30" min="120" max="1800" class="form-control form-control-sm" id="pop_prefetch_budget_seconds" placeholder="360" value="{{ config.get('popularity', {}).get('prefetch_budget_seconds', 360) }}">
+          <small class="form-text text-muted">Wall-clock budget for the per-artist prefetch / post-singles enrichment (the bulk Last.fm/ListenBrainz/MusicBrainz/Discogs work). Heavy catalogs with many live/compilation/re-release cross-release LB tallies need room to breathe. Default: <strong>360</strong></small>
         </div>
       </div>
     </div>

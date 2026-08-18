@@ -41,6 +41,16 @@ _POOL_TIMEOUT = 30.0
 # 429/503 re-arms the wait, so capping only bounds the worst single pause.
 _MAX_RETRY_AFTER = 60.0
 
+# Total wall-clock budget for ONE request's retry waits (seconds).  Even with
+# every wait capped at ``_MAX_RETRY_AFTER``, a provider that keeps answering
+# 429 can re-arm the backoff for each retry — 3 retries × 60s = 180s of pure
+# sleeping in a single worker, which eats the entire per-album budget when
+# the scan runs 17+ tracks concurrently.  Tenacity's ``stop_after_attempt``
+# only counts attempts, not elapsed time, so a hard cumulative cap is needed:
+# once the sum of waits exceeds this, the request gives up and returns the
+# last retryable response instead of sleeping through the scan.
+_TOTAL_RETRY_WAIT_BUDGET = 40.0
+
 
 def _build_pool_limits() -> httpx.Limits:
     """Build ``httpx.Limits`` for the shared session, httpx-version-safe.
@@ -130,13 +140,26 @@ class _RetryTransport(httpx.BaseTransport):
                 raise _RetryableStatus(response)
             return response
 
+        # Cumulative retry-wait budget: once the sum of all waits exceeds
+        # ``_TOTAL_RETRY_WAIT_BUDGET`` the request stops retrying and returns
+        # the last retryable response.  This caps the 429/503 storm — a peer
+        # that keeps answering 429 could otherwise re-arm the backoff on every
+        # retry (3 × capped 60s = 180s of pure sleeping in ONE worker), which
+        # eats the whole per-album budget when a scan runs 17+ tracks
+        # concurrently.  ``stop_after_attempt`` only counts attempts, not
+        # elapsed wait time, so the budget is enforced here.
+        _retry_waits: dict[str, float] = {"total": 0.0}
+
         def _wait(retry_state):
             """Wait before the next retry.
 
             Honors a ``Retry-After`` header on the last retryable response
             (429/503) when present — some APIs (MusicBrainz, Last.fm,
             Discogs) send an explicit seconds value or an HTTP-date.  Falls
-            back to exponential backoff otherwise.
+            back to exponential backoff otherwise.  Each wait is capped at
+            ``_MAX_RETRY_AFTER`` AND the cumulative sum is capped at
+            ``_TOTAL_RETRY_WAIT_BUDGET`` so a sustained 429 storm can never
+            stall a worker past the per-album track deadline.
             """
             exc = retry_state.outcome.exception()
             retry_after = None
@@ -146,13 +169,7 @@ class _RetryTransport(httpx.BaseTransport):
                     retry_after = response.headers.get("Retry-After")
             if retry_after:
                 try:
-                    # Cap the Retry-After wait (same 60s ceiling as the
-                    # exponential backoff below): an uncapped header (e.g.
-                    # "Retry-After: 300") would let a single request stall a
-                    # worker far past the per-album track deadline, so every
-                    # per-track future times out ("N (of N) futures
-                    # unfinished").  A repeated 429 re-arms the wait.
-                    return min(float(retry_after), _MAX_RETRY_AFTER)
+                    wait = min(float(retry_after), _MAX_RETRY_AFTER)
                 except ValueError:
                     # HTTP-date form (e.g. "Wed, 21 Oct 2015 07:28:00 GMT").
                     from email.utils import parsedate_to_datetime
@@ -160,15 +177,22 @@ class _RetryTransport(httpx.BaseTransport):
                         when = parsedate_to_datetime(retry_after)
                         if when.tzinfo is None:
                             when = when.replace(tzinfo=datetime.timezone.utc)
-                        return min(
+                        wait = min(
                             max(0.0, (when - datetime.now(datetime.timezone.utc)).total_seconds()),
                             _MAX_RETRY_AFTER,
                         )
                     except Exception:
-                        pass
-            # Exponential backoff (legacy default).
-            n = retry_state.attempt_number  # 1-based (1 = first failed attempt)
-            return min(self._backoff * (2 ** (n - 1)), 60.0)
+                        wait = min(self._backoff * (2 ** (retry_state.attempt_number - 1)), 60.0)
+            else:
+                # Exponential backoff (legacy default).
+                n = retry_state.attempt_number  # 1-based (1 = first failed attempt)
+                wait = min(self._backoff * (2 ** (n - 1)), 60.0)
+            # Enforce the cumulative budget: a request that has already slept
+            # past the cap gives up instead of sleeping again.
+            if _retry_waits["total"] + wait > _TOTAL_RETRY_WAIT_BUDGET:
+                return 0.0  # immediate retry — the stop condition below ends it
+            _retry_waits["total"] += wait
+            return wait
 
         retrying = Retrying(
             stop=stop_after_attempt(self._retries + 1),
