@@ -1190,6 +1190,20 @@ def check_completed_downloads() -> dict[str, Any]:
             try:
                 queue_id = item.get("id")
 
+                # Strict queue vs. local-disk boundary: a row whose source is
+                # local/discovered is a PASSIVE disk state (Matched Folders),
+                # never an active slskd download — it must not be auto-moved
+                # even if it somehow reached 'downloading'.  Such files are
+                # only moved by the explicit folder-match (confirm) flow.
+                _item_source = str(item.get("source") or "").lower()
+                if _item_source in ("local", "discovered"):
+                    logger.debug(
+                        "[COMPLETE] Queue %s: skipping passive local/discovered row (source=%s)",
+                        queue_id, _item_source,
+                    )
+                    stats["skipped"] += 1
+                    continue
+
                 # Reconciliation: file already in music library but status
                 # never flipped to imported (crash between verify and update).
                 existing_music = item.get("music_file_path")
@@ -1343,6 +1357,22 @@ def check_completed_downloads() -> dict[str, Any]:
                         if _artist_ok is False:
                             logger.info(
                                 "[COMPLETE] Queue %s: skipping fuzzy candidate %s — artist does not match queue item",
+                                queue_id, rel,
+                            )
+                            continue
+
+                        # Strict-match rule: when the embedded metadata is
+                        # UNDETERMINED (missing artist/title tags) AND the
+                        # artist gate is also undetermined (no embedded artist
+                        # to compare), a bare filename score (>= 0.45) is too
+                        # weak to auto-move — a wrong-version grab would be
+                        # imported.  Only a CONFIRMED metadata match (or a
+                        # confirmed artist match) may auto-move without a
+                        # duration/artist cross-check.  Unconfirmed files stay
+                        # in Matched Folders for manual approval.
+                        if meta_state is None and _artist_ok is not True:
+                            logger.info(
+                                "[COMPLETE] Queue %s: skipping fuzzy candidate %s — metadata undetermined and artist unconfirmed (manual match required)",
                                 queue_id, rel,
                             )
                             continue

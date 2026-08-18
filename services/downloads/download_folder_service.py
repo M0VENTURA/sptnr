@@ -229,10 +229,15 @@ def get_unmatched_folders() -> dict:
             files = _get_files_in_folder(full)
             # Read embedded Artist/Album metadata for each audio file so the
             # Matched Folders list can group by metadata (falling back to the
-            # folder path for files without tags).
+            # folder path for files without tags).  Each audio file also gets
+            # an ``imported`` flag so the UI can show per-track actions
+            # (files already moved to the library are not actionable).
             for f in files:
                 if f.get("is_audio"):
                     f.update(_read_audio_metadata(full, f.get("name") or ""))
+                    f["imported"] = bool(
+                        os.path.normpath(os.path.join(full, f.get("name") or "")) in imported
+                    )
             audio = [f for f in files if f.get("is_audio")]
             # Matched = every audio file's source path was imported to the
             # library (the import moves files, so remaining audio means the
@@ -305,6 +310,179 @@ def delete_download_folder(folder_path: str) -> dict:
         return {"success": True, "deleted": folder_abs}
     except Exception as exc:
         logger.error("[FOLDER_DELETE] Error: %s", exc, exc_info=True)
+        return {"success": False, "error": str(exc)}
+
+
+# =============================================================================
+# PER-TRACK ACTIONS (Matched Folders)
+# =============================================================================
+
+def _resolve_folder_abs(folder_path: str) -> tuple[str | None, str | None]:
+    """Resolve a Matched-Folders folder path under the downloads dir.
+
+    Returns ``(folder_abs, downloads_abs)`` or ``(None, None)`` when the
+    path is unsafe / not under the downloads directory.
+    """
+    try:
+        downloads_dir = resolve_downloads_dir()
+        folder_abs = os.path.abspath(folder_path or "")
+        downloads_abs = os.path.abspath(downloads_dir or "")
+        if not is_path_under_directory(folder_abs, downloads_abs) or folder_abs == downloads_abs:
+            return None, None
+        return folder_abs, downloads_abs
+    except Exception:
+        return None, None
+
+
+def _folder_files_with_metadata(folder_abs: str) -> list[dict]:
+    """Read every audio file in a folder with embedded metadata + size."""
+    files = _get_files_in_folder(folder_abs)
+    for f in files:
+        if f.get("is_audio"):
+            f.update(_read_audio_metadata(folder_abs, f.get("name") or ""))
+            f["full_path"] = os.path.join(folder_abs, f.get("name") or "")
+            try:
+                f["size"] = os.path.getsize(f["full_path"])
+            except Exception:
+                f["size"] = 0
+    return files
+
+
+def get_folder_tracks(folder_path: str) -> dict:
+    """Return the audio tracks of a Matched-Folders folder, one per file.
+
+    Each track carries the file name, embedded artist/album/title (best
+    effort), size, and whether the file's source path was already imported
+    to the library (``imported``).  Enables per-track actions (match/delete)
+    on folders that contain multiple copies of the same track.
+    """
+    folder_abs, _ = _resolve_folder_abs(folder_path)
+    if not folder_abs or not os.path.isdir(folder_abs):
+        return {"success": False, "error": f"Folder not found: {folder_path}"}
+
+    imported = _imported_source_paths()
+    tracks = []
+    for f in _folder_files_with_metadata(folder_abs):
+        if not f.get("is_audio"):
+            continue
+        full_path = f.get("full_path") or ""
+        tracks.append({
+            "name": f.get("name") or "",
+            "full_path": full_path,
+            "artist": f.get("artist") or "",
+            "album": f.get("album") or "",
+            "title": f.get("title") or "",
+            "size": int(f.get("size") or 0),
+            "imported": bool(full_path and os.path.normpath(full_path) in imported),
+        })
+
+    return {"success": True, "folder_path": folder_path, "tracks": tracks}
+
+
+def delete_folder_track(folder_path: str, file_name: str) -> dict:
+    """Delete ONE audio file from a Matched-Folders folder (safety-railed).
+
+    Only deletes an audio file under the downloads directory.  Never deletes
+    a file whose source path was already imported to the library — that would
+    orphan the library copy's provenance and could delete the only copy if
+    the import was a move (source already gone).
+    """
+    folder_abs, downloads_abs = _resolve_folder_abs(folder_path)
+    if not folder_abs or not os.path.isdir(folder_abs):
+        return {"success": False, "error": f"Folder not found: {folder_path}"}
+
+    base = os.path.basename(file_name or "")
+    if not base:
+        return {"success": False, "error": "No file name provided"}
+    full = os.path.join(folder_abs, base)
+    if not is_path_under_directory(full, downloads_abs):
+        return {"success": False, "error": f"Unsafe file path for deletion: {base}"}
+    if not os.path.isfile(full):
+        return {"success": False, "error": f"File not found: {base}"}
+
+    imported = _imported_source_paths()
+    if os.path.normpath(full) in imported:
+        return {"success": False, "error": f"'{base}' was already imported to the library — refusing to delete it here"}
+
+    try:
+        os.remove(full)
+        logger.info("[TRACK_DELETE] Deleted %s", full)
+        return {"success": True, "deleted": full}
+    except Exception as exc:
+        logger.error("[TRACK_DELETE] Error deleting %s: %s", full, exc)
+        return {"success": False, "error": str(exc)}
+
+
+def move_folder_track_to_library(folder_path: str, file_name: str) -> dict:
+    """Move ONE track out of a Matched-Folders folder into the library.
+
+    Uses the file's own embedded artist/album/title (falling back to the
+    folder name) so the library copy is placed under the correct artist /
+    album path.  This is the per-track equivalent of a folder "Confirm
+    Match" — it moves the file via ``move_track_to_library`` and records an
+    ``imported`` queue row so ``auto_delete_imported_folders`` can later
+    prune the folder once every file has been imported.
+    """
+    folder_abs, downloads_abs = _resolve_folder_abs(folder_path)
+    if not folder_abs or not os.path.isdir(folder_abs):
+        return {"success": False, "error": f"Folder not found: {folder_path}"}
+
+    base = os.path.basename(file_name or "")
+    if not base:
+        return {"success": False, "error": "No file name provided"}
+    full = os.path.join(folder_abs, base)
+    if not is_path_under_directory(full, downloads_abs):
+        return {"success": False, "error": f"Unsafe file path for deletion: {base}"}
+    if not os.path.isfile(full):
+        return {"success": False, "error": f"File not found: {base}"}
+
+    try:
+        meta = _read_audio_metadata(folder_abs, base)
+    except Exception:
+        meta = {}
+
+    artist = (meta.get("artist") or "").strip() or os.path.basename(os.path.dirname(folder_abs)) or "Unknown Artist"
+    album = (meta.get("album") or "").strip() or os.path.basename(folder_abs) or "Unknown Album"
+    title = (meta.get("title") or "").strip() or os.path.splitext(base)[0]
+
+    try:
+        from services.downloads.download_organize_helpers import move_track_to_library
+        from helpers.config_helpers import get_downloads_config
+        _music_root = os.environ.get("MUSIC_ROOT", "/music")
+        track = {"file_path": full, "artist": artist, "title": title}
+        release_metadata = {"album_artist": artist, "album": album}
+        move_result = move_track_to_library(track, release_metadata, _music_root)
+        if not move_result.get("success"):
+            return {"success": False, "error": move_result.get("error") or "move failed"}
+        target_path = move_result.get("target_path") or ""
+
+        # Record an imported queue row so the folder auto-prune can see this
+        # file as imported (the source file was moved away).
+        try:
+            from db.repositories.queue import insert_queue_item
+            row = insert_queue_item(
+                artist=artist,
+                title=title,
+                album=album,
+                source="folder_track",
+                status="imported",
+                file_path=target_path,
+                found_filename=base,
+                import_group="manual",
+            )
+        except Exception as _qexc:
+            logger.debug("[TRACK_MOVE] Queue record skipped: %s", _qexc)
+
+        return {
+            "success": True,
+            "target_path": target_path,
+            "moved": 1,
+            "artist": artist,
+            "album": album,
+            "title": title,
+        }
+    except Exception as exc:
+        logger.error("[TRACK_MOVE] Error moving %s: %s", full, exc, exc_info=True)
         return {"success": False, "error": str(exc)}
 
 

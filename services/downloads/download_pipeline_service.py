@@ -399,6 +399,11 @@ def _build_fallback_search_queries(item: dict, primary_query: str) -> list[str]:
     - album-artist + title
     - feat.-stripped artist + title
     - first meaningful word of artist + title
+    - ONE-WORD-DROPPED variants: each artist word and each title word is
+      dropped in turn ("Avenged Sevenfold - It's Not Easy" → "Avenged - It's
+      Not Easy", "Sevenfold - It's Not Easy", "Avenged Sevenfold - Not Easy",
+      "Avenged Sevenfold - Easy", then single-word pairs), covering peers who
+      split multi-word artists/titles differently.
     - title only (broadest, last resort)
     """
     from helpers.config_helpers import _FEAT_SUFFIX_RE
@@ -452,6 +457,57 @@ def _build_fallback_search_queries(item: dict, primary_query: str) -> list[str]:
         first_word = effective_artist.split()[0]
     if first_word and first_word.lower() != effective_artist.lower():
         _add(f"{first_word} - {title}")
+
+    # ── One-word-dropped variants ─────────────────────────────────────────
+    # Peers split multi-word artist/title strings differently, so drop each
+    # word one at a time from artist and title:
+    #   "Avenged Sevenfold - It's Not Easy"
+    #   → "Avenged - It's Not Easy" / "Sevenfold - It's Not Easy"
+    #   → "Avenged Sevenfold - Not Easy" / "Avenged Sevenfold - Easy"
+    #   → "Avenged - Not Easy" / "Sevenfold - Easy" / "Avenged - Easy" / ...
+    # Tries combinations in order of remaining words (keep most first) so the
+    # least-dropped query is attempted first.
+    def _drop_words(words: list[str], keep_at_least: int = 1) -> list[str]:
+        """Return progressively smaller phrase variants by dropping one word."""
+        phrases: list[str] = []
+        seen_phrases: set[str] = set()
+        n = len(words)
+        if n <= keep_at_least:
+            return phrases
+        # Drop one word at a time (breadth-first by remaining length).
+        for drop_count in range(1, n - keep_at_least + 1):
+            # Combinations of drop_count words to drop, ordered by keeping
+            # the earliest words first (prefix-preserving).
+            from itertools import combinations
+            for combo in combinations(range(n), drop_count):
+                kept = [w for i, w in enumerate(words) if i not in combo]
+                phrase = " ".join(kept).strip()
+                key = phrase.casefold()
+                if phrase and key not in seen_phrases:
+                    seen_phrases.add(key)
+                    phrases.append(phrase)
+        return phrases
+
+    artist_words = [w for w in effective_artist.split() if w.lower() not in _ARTICLE_WORDS]
+    title_words = [w for w in title.split()]
+
+    # Artist word-drops combined with the FULL title first (most specificity).
+    if len(artist_words) > 1:
+        for a_phrase in _drop_words(artist_words):
+            _add(f"{a_phrase} - {title}")
+
+    # Title word-drops combined with the FULL artist.
+    if len(title_words) > 1:
+        for t_phrase in _drop_words(title_words):
+            _add(f"{effective_artist} - {t_phrase}")
+
+    # Then paired drops (dropped artist + dropped title), most words first.
+    if len(artist_words) > 1 and len(title_words) > 1:
+        a_drops = _drop_words(artist_words)
+        t_drops = _drop_words(title_words)
+        for a_phrase in a_drops:
+            for t_phrase in t_drops:
+                _add(f"{a_phrase} - {t_phrase}")
 
     # Title only, as a last resort.
     _add(title)

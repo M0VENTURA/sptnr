@@ -190,15 +190,27 @@ def insert_queue_item(
             return row
 
         # ── Insert ──
+        # Status comes from the caller (``status`` kwarg) so passive local-disk
+        # rows (``source='discovered'`` / ``'local'``) are stored as
+        # ``'unmatched'`` — they must NEVER enter the active queue.  Before
+        # this fix the INSERT hardcoded ``'queued'``, so a file that arrived
+        # via another system (torrent/manual drop) was picked up by the queue
+        # processor, re-searched on Soulseek, downloaded again and moved into
+        # /music even though it was never matched to a queue item.
+        _status = str(kwargs.get("status") or "queued")
+        if str(kwargs.get("source") or "soulseek").lower() in ("local", "discovered"):
+            _status = "unmatched"
         result = session.execute(
             text("""
                 INSERT INTO download_queue
                     (artist, title, album, source, priority, track_number, disc_number,
                      album_artist, year, release_id, release_mbid, recording_mbid,
-                     duration, import_group, import_type, status, created_at, updated_at)
+                     duration, import_group, import_type, status, file_path, found_filename,
+                     created_at, updated_at)
                 VALUES (:artist, :title, :album, :source, :priority, :track_number, :disc_number,
                         :album_artist, :year, :release_id, :release_mbid, :recording_mbid,
-                        :duration, :import_group, :import_type, 'queued', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        :duration, :import_group, :import_type, :status, :file_path, :found_filename,
+                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 RETURNING id
             """),
             {
@@ -214,6 +226,9 @@ def insert_queue_item(
                 "duration": kwargs.get("duration"),
                 "import_group": kwargs.get("import_group"),
                 "import_type": kwargs.get("import_type") or "song",
+                "status": _status,
+                "file_path": kwargs.get("file_path"),
+                "found_filename": kwargs.get("found_filename"),
             },
         )
         new_id = result.scalar()
@@ -470,6 +485,11 @@ def get_ready_for_processing(limit: int = 100) -> List[Dict]:
                            OR (status IN ('backed_off', 'pending_release')
                                AND next_retry_at <= CURRENT_TIMESTAMP))
                       AND (next_retry_at IS NULL OR next_retry_at <= CURRENT_TIMESTAMP)
+                      -- Strict queue vs. local-disk boundary: rows whose
+                      -- source is local/discovered are PASSIVE disk states
+                      -- (the Matched Folders section) and must never be
+                      -- auto-searched/downloaded by the queue processor.
+                      AND LOWER(COALESCE(source, '')) NOT IN ('local', 'discovered')
                     ORDER BY priority DESC, created_at ASC
                     LIMIT :limit
                 """),

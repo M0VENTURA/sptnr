@@ -308,8 +308,22 @@ async function renderUnmatchedFolders(options) {
         fileHtml = '<ul class="list-unstyled mb-0 mt-1" style="max-height:160px;overflow-y:auto;">' +
           files.slice(0, 30).map(function(file) {
             var base = file && file.name ? file.name : String(file || '').split(/[\\/]/).pop();
-            return '<li class="text-muted" style="font-size:0.75rem;"><i class="bi bi-file-earmark-music me-1"></i>' +
-              '<span class="text-truncate d-inline-block" style="max-width:calc(100% - 1.4rem);vertical-align:bottom;" title="' + escapeHtml(base) + '">' + escapeHtml(cleanQueueFileName(base)) + '</span></li>';
+            var fileName = cleanQueueFileName(base);
+            // Per-track actions: move THIS file into the library using its
+            // embedded metadata, or delete just this file (useful when a
+            // folder holds multiple copies of the same track).  Files already
+            // imported are not actionable here.
+            var trackActions = '';
+            if (file.imported) {
+              trackActions = '<span class="badge status-pill status-complete ms-1" style="font-size:0.6rem;">imported</span>';
+            } else {
+              trackActions =
+                '<button class="btn btn-sm btn-outline-success py-0 ms-1 folder-track-move-btn" data-path="' + escapeHtml(f.name) + '" data-file="' + escapeHtml(base) + '" title="Move this track into the music library (uses its embedded artist/album/title)" style="font-size:0.65rem;"><i class="bi bi-box-arrow-right"></i></button>' +
+                '<button class="btn btn-sm btn-outline-danger py-0 ms-1 folder-track-delete-btn" data-path="' + escapeHtml(f.name) + '" data-file="' + escapeHtml(base) + '" title="Delete just this file from the downloads folder" style="font-size:0.65rem;"><i class="bi bi-trash3"></i></button>';
+            }
+            return '<li class="text-muted d-flex align-items-center" style="font-size:0.75rem;"><i class="bi bi-file-earmark-music me-1"></i>' +
+              '<span class="text-truncate d-inline-block" style="max-width:calc(100% - 6.5rem);vertical-align:bottom;" title="' + escapeHtml(base) + '">' + escapeHtml(fileName) + '</span>' +
+              trackActions + '</li>';
           }).join('') +
           (files.length > 30 ? '<li class="fst-italic small text-muted">+' + (files.length - 30) + ' more</li>' : '') +
           '</ul>';
@@ -478,6 +492,64 @@ function attachUnmatchedFolderActions(listEl) {
           body: JSON.stringify({ folder_path: folderPath }),
         });
         showToastMsg(data.success ? 'Folder deleted.' : (data.error || 'Delete failed'), !data.success);
+      } catch (error) {
+        showToastMsg('Network error: ' + error.message, true);
+      } finally {
+        btn.disabled = false;
+        if (typeof window.loadFolderGroups === 'function') {
+          window.loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true });
+        }
+      }
+    });
+  });
+
+  // ── Per-track actions (Matched Folders) ────────────────────────────────
+  // Move ONE file from a folder into the library, or delete just that file.
+  // Useful when a folder holds multiple copies of the same track — you don't
+  // have to move/delete the whole folder.
+  listEl.querySelectorAll('.folder-track-move-btn').forEach(function(btn) {
+    if (btn.getAttribute('data-bound')) return;
+    btn.setAttribute('data-bound', '1');
+    btn.addEventListener('click', async function() {
+      var folderPath = btn.getAttribute('data-path');
+      var fileName = btn.getAttribute('data-file');
+      if (!folderPath || !fileName) return;
+      if (!confirm('Move this track into the music library?\n\n' + fileName + '\n\nIt will be placed under its embedded artist/album path.')) return;
+      btn.disabled = true;
+      try {
+        var data = await fetchJsonOrThrow('/api/downloads/folder/' + encodeURIComponent(folderPath) + '/track/move', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ file_name: fileName }),
+        });
+        showToastMsg(data.success ? ('Moved to ' + (data.album_artist || data.artist || '') + ' - ' + (data.album || '') + (data.title ? ' / ' + data.title : '') + '.') : (data.error || 'Move failed'), !data.success);
+      } catch (error) {
+        showToastMsg('Network error: ' + error.message, true);
+      } finally {
+        btn.disabled = false;
+        if (typeof window.loadFolderGroups === 'function') {
+          window.loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true });
+        }
+      }
+    });
+  });
+
+  listEl.querySelectorAll('.folder-track-delete-btn').forEach(function(btn) {
+    if (btn.getAttribute('data-bound')) return;
+    btn.setAttribute('data-bound', '1');
+    btn.addEventListener('click', async function() {
+      var folderPath = btn.getAttribute('data-path');
+      var fileName = btn.getAttribute('data-file');
+      if (!folderPath || !fileName) return;
+      if (!confirm('Delete just this file from the downloads folder?\n\n' + fileName)) return;
+      btn.disabled = true;
+      try {
+        var data = await fetchJsonOrThrow('/api/downloads/folder/' + encodeURIComponent(folderPath) + '/track/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ file_name: fileName }),
+        });
+        showToastMsg(data.success ? 'File deleted.' : (data.error || 'Delete failed'), !data.success);
       } catch (error) {
         showToastMsg('Network error: ' + error.message, true);
       } finally {

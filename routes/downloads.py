@@ -144,6 +144,42 @@ async def api_delete_download_folder():
     return jsonify(await asyncio.to_thread(delete_download_folder, folder_path))
 
 
+# =============================================================================
+# ✅ PER-TRACK ACTIONS (Matched Folders)
+# =============================================================================
+
+@downloads_bp.route("/api/downloads/folder/<path:folder_path>/tracks")
+def api_folder_tracks(folder_path):
+    """List the audio tracks (files) inside a Matched-Folders folder, each
+    with embedded artist/album/title + imported state."""
+    from services.downloads.download_folder_service import get_folder_tracks
+    return jsonify(get_folder_tracks(folder_path))
+
+
+@downloads_bp.route("/api/downloads/folder/<path:folder_path>/track/delete", methods=["POST"])
+async def api_delete_folder_track(folder_path):
+    """Delete ONE audio file from a Matched-Folders folder (safety-railed;
+    refuses files already imported to the library)."""
+    payload = (await request.get_json(silent=True)) or {}
+    file_name = (payload.get("file_name") or "").strip()
+    if not file_name:
+        return jsonify({"success": False, "error": "file_name required"}), 400
+    from services.downloads.download_folder_service import delete_folder_track
+    return jsonify(await asyncio.to_thread(delete_folder_track, folder_path, file_name))
+
+
+@downloads_bp.route("/api/downloads/folder/<path:folder_path>/track/move", methods=["POST"])
+async def api_move_folder_track(folder_path):
+    """Move ONE audio file from a Matched-Folders folder into the library
+    (per-track equivalent of the folder Confirm Match)."""
+    payload = (await request.get_json(silent=True)) or {}
+    file_name = (payload.get("file_name") or "").strip()
+    if not file_name:
+        return jsonify({"success": False, "error": "file_name required"}), 400
+    from services.downloads.download_folder_service import move_folder_track_to_library
+    return jsonify(await asyncio.to_thread(move_folder_track_to_library, folder_path, file_name))
+
+
 @downloads_bp.route("/api/downloads/folder-status")
 def api_get_folder_status():
     """Return folder status summary (stub for now)."""
