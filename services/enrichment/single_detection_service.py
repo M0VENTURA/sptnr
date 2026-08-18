@@ -785,6 +785,7 @@ def determine_final_status(
     is_title_track: bool = False, is_compilation: bool = False,
     zscore_high: float = 1.0, zscore_medium: float = 0.6,
     high_sources: int | None = None, medium_sources: int | None = None,
+    metadata_medium_sources: int | None = None,
     discogs_promo: bool = False, musicbrainz_promo: bool = False,
     z_standout: bool = False,
 ) -> str:
@@ -794,18 +795,27 @@ def determine_final_status(
     boundaries (``single_detection.zscore_high_threshold`` /
     ``zscore_medium_threshold``). ``high_sources`` / ``medium_sources``
     optionally override the source-confidence counts (used to honour the
-    per-source ``source_*_confidence`` config knobs). ``discogs_promo`` /
-    ``musicbrainz_promo`` mark a confirmation that came from a promo-only
-    release — promotional evidence caps the verdict at 'medium' unless an
-    independent high-confidence source also confirms. ``z_standout`` marks a
-    catalog-size-aware popularity standout (dynamic z threshold) — it is NOT
-    single evidence on its own (a popular album track is not a single), but
-    it bolsters a track that already carries medium-confidence evidence to
-    'high' when the track's z-score hits the standout range. ``is_compilation``
-    disables popularity entirely: every track on a compilation has a different
-    artist, so the z-score bands and ``z_standout`` are ignored and the verdict
-    is decided by the metadata sources alone. Returns ``'high'``,
-    ``'medium'``, or ``'none'``.
+    per-source ``source_*_confidence`` config knobs).
+    ``metadata_medium_sources`` counts ONLY the genuine metadata
+    confirmations among those medium sources (Discogs official video,
+    Last.fm single evidence, MusicBrainz compilation appearance, ISRC
+    single release, single release-date match) — NOT title-based heuristics
+    (radio-edit marker) or listen-context signals (LB top-10).  A single
+    genuine metadata confirmation at z >= 0.6 is ``medium`` (an official
+    video or Last.fm single evidence is a real external statement that the
+    track was issued as a single); heuristic-only corroboration still
+    requires two sources (the +44 anti-overzealous guardrail).
+    ``discogs_promo`` / ``musicbrainz_promo`` mark a confirmation that came
+    from a promo-only release — promotional evidence caps the verdict at
+    'medium' unless an independent high-confidence source also confirms.
+    ``z_standout`` marks a catalog-size-aware popularity standout (dynamic z
+    threshold) — it is NOT single evidence on its own (a popular album track
+    is not a single), but it bolsters a track that already carries
+    medium-confidence evidence to 'high' when the track's z-score hits the
+    standout range. ``is_compilation`` disables popularity entirely: every
+    track on a compilation has a different artist, so the z-score bands and
+    ``z_standout`` are ignored and the verdict is decided by the metadata
+    sources alone. Returns ``'high'``, ``'medium'``, or ``'none'``.
 
     Popularity z is evaluated against the ALBUM's own tracklist (the local
     baseline): ``album_z`` is used when present, falling back to ``artist_z``
@@ -829,6 +839,22 @@ def determine_final_status(
     else:
         high = sum([discogs, musicbrainz])
         medium = sum([discogs_video, lastfm, mb_video, mb_compilation, radio_edit, date_match])
+    # Genuine-metadata medium count.  When the caller did not pass it
+    # explicitly, derive it from the boolean source flags: real external
+    # statements that the track was issued as a single (Discogs official
+    # video, Last.fm single evidence, MusicBrainz video/compilation
+    # appearance, release-date match).  Title-based heuristics (radio-edit
+    # marker) and listen-context signals (LB top-10) are NOT metadata — a
+    # lone heuristic must keep requiring a second source (the +44
+    # anti-overzealous guardrail).
+    if metadata_medium_sources is None:
+        metadata_medium_sources = sum(
+            [discogs_video, lastfm, mb_video, mb_compilation, date_match]
+        )
+    # The genuine-metadata count can never exceed the total medium count.
+    metadata_medium = max(0, metadata_medium_sources or 0)
+    if metadata_medium > medium:
+        metadata_medium = medium
 
     # A promo-only Discogs match is genuine confirmation the track was issued
     # as a (promotional) single, but never high-confidence on its own — legacy
@@ -862,6 +888,15 @@ def determine_final_status(
         # standout alone still returns 'none'.
         elif z_standout and medium >= 1:
             verdict = 'high'
+        # A lone GENUINE metadata confirmation (Discogs official video,
+        # Last.fm single evidence, MB compilation appearance, ISRC single
+        # release, release-date match) at high z is real evidence the track
+        # was issued as a single — it reaches 'medium' even without a second
+        # source (e.g. "One Night in Tokyo" album_z 2.63 with only a Discogs
+        # video). Title-based heuristics (radio-edit marker) and listen
+        # signals (LB top-10) still require corroboration below.
+        elif metadata_medium >= 1:
+            verdict = 'medium'
         else:
             verdict = 'none'
 
@@ -870,15 +905,18 @@ def determine_final_status(
         if high >= 1:
             verdict = 'high'
         # A medium-band z-score is medium-confidence single evidence when at
-        # least two weak signals corroborate it (legacy parity: the legacy
-        # engine required ``medium >= 2`` in this band). A single weak signal
-        # (radio edit, ISRC, …) must not flag every mid-album track as a
-        # single. Popularity alone is NEVER single evidence — the old
-        # metadata-poor fallback here flagged every mid-album track with a
-        # z-score in the 0.6-1.0 band as a single (Human Era / Ph4/NT0mA /
-        # Buried in Code on Unleash the Archers - Phantoma all got 'medium'
-        # with zero sources).
-        elif medium >= 2:
+        # least two signals corroborate it (legacy parity: the legacy engine
+        # required ``medium >= 2`` in this band). A lone GENUINE metadata
+        # confirmation (Discogs official video, Last.fm single evidence, ...)
+        # is enough on its own — the metadata is an external statement the
+        # track was issued as a single. A single title-based heuristic
+        # (radio-edit marker, ISRC marker alone) must not flag every
+        # mid-album track as a single. Popularity alone is NEVER single
+        # evidence — the old metadata-poor fallback here flagged every
+        # mid-album track with a z-score in the 0.6-1.0 band as a single
+        # (Human Era / Ph4/NT0mA / Buried in Code on Unleash the Archers -
+        # Phantoma all got 'medium' with zero sources).
+        elif metadata_medium >= 1 or medium >= 2:
             verdict = 'medium'
         else:
             verdict = 'none'
@@ -892,7 +930,7 @@ def determine_final_status(
     # 4:30, so duration alone would flag nearly every album's title track as
     # a single.
     else:
-        if is_remastered_only or high >= 1 or medium >= 2:
+        if is_remastered_only or high >= 1 or medium >= 2 or metadata_medium >= 1:
             if high >= 1:
                 verdict = 'high'
             elif medium >= 1 and not is_title_track:
@@ -1302,6 +1340,7 @@ def detect_single_for_track(
     _levels = _source_confidence_levels()
     high_sources = 0
     medium_sources = 0
+    metadata_medium_sources = 0
     for _src, _confirmed in (
         ("discogs", discogs_confirmed),
         ("musicbrainz", musicbrainz_confirmed),
@@ -1319,18 +1358,24 @@ def detect_single_for_track(
             high_sources += 1
         else:
             medium_sources += 1
+            metadata_medium_sources += 1
     if discogs_video_confirmed and _levels.get("discogs_video", "medium") != "low":
         medium_sources += 1
+        metadata_medium_sources += 1
     if lastfm_confirmed and _levels.get("lastfm", "medium") != "low":
         medium_sources += 1
+        metadata_medium_sources += 1
     if mb_compilation_confirmed and _levels.get("musicbrainz_compilation", "medium") != "low":
         medium_sources += 1
+        metadata_medium_sources += 1
     if radio_edit_found and _levels.get("radio_edit", "medium") != "low":
         medium_sources += 1
     if single_release_date_match:
         medium_sources += 1
+        metadata_medium_sources += 1
     if isrc_single_confirmed:
         medium_sources += 1
+        metadata_medium_sources += 1
     if lb_top10:
         medium_sources += 1
     # A catalog-size-aware z-score standout is popularity evidence, NOT a
@@ -1373,6 +1418,7 @@ def detect_single_for_track(
         zscore_medium=zscore_medium,
         high_sources=high_sources,
         medium_sources=medium_sources,
+        metadata_medium_sources=metadata_medium_sources,
         discogs_promo=discogs_promo,
         musicbrainz_promo=musicbrainz_promo,
         z_standout=z_standout,

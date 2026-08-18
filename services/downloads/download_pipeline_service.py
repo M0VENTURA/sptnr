@@ -614,25 +614,47 @@ def _score_result(
     # grabbing the wrong download.  A real artist name must be evidenced in
     # the candidate before it may qualify — otherwise the score is capped
     # below the qualification threshold.
+    #
+    # The artist must be evidenced in the ARTIST SEGMENT of the candidate
+    # (parsed artist field, or the remote path minus the track-title tokens) —
+    # never a lone token found anywhere in the path.  "Orville Peck - The
+    # Fall" must not match "The Fall of Troy - ... A Tribute to Orville
+    # Wilcox.flac": the "orville" token there comes from the TRACK TITLE, not
+    # the artist, so it is no evidence Orville Peck is present.
     artist_evidenced = True  # generic/unknown artists skip the gate
     if expected_artist and expected_artist.lower() not in {
         "unknown", "unidentified", "unidentified artist", "various", "various artists", "-",
     }:
         from helpers.config_helpers import _FEAT_SUFFIX_RE
         gate_artist = _FEAT_SUFFIX_RE.sub("", expected_artist).strip()
-        filename_tokens = set(re.findall(r"[a-z0-9]+", _normalise(filename)))
+        norm_gate = _normalise(gate_artist)
+        # The artist-segment tokens come from the PARSED artist field and the
+        # remote path with the final filename (track title) removed — the
+        # track-title's words must never evidence the artist.
+        parsed_artist = str(parts.get("artist") or "")
+        parsed_title = str(parts.get("title") or "")
+        norm_filename = _normalise(filename)
+        path_scope = norm_filename
+        if parsed_title:
+            path_scope = path_scope.replace(_normalise(parsed_title), " ")
+        artist_scope = f"{parsed_artist} {path_scope}"
+        artist_scope_tokens = set(re.findall(r"[a-z0-9]+", _normalise(artist_scope)))
         significant_words = [
-            w for w in re.findall(r"[a-z0-9]+", _normalise(gate_artist))
+            w for w in re.findall(r"[a-z0-9]+", norm_gate)
             if len(w) >= 4
         ]
+        # Evidence requires EITHER the parsed-artist similarity, OR the full
+        # artist phrase as a substring, OR at least TWO significant artist
+        # words appearing TOGETHER in the artist-scope tokens.  A single
+        # shared first name ("orville") is not artist evidence.
         artist_evidenced = (
             art_score >= 0.6
-            or (significant_words and any(w in filename_tokens for w in significant_words))
-            or _normalise(gate_artist) in _normalise(filename)
+            or norm_gate in _normalise(artist_scope)
+            or (len(significant_words) >= 2 and all(w in artist_scope_tokens for w in significant_words))
         )
     if not artist_evidenced:
         # Explicit artist-path rejection: the target artist must be evidenced
-        # in the full remote path (file name OR any parent folder) before the
+        # in the remote path (file name OR any parent folder) before the
         # candidate may be downloaded.  A same-titled track by another band
         # ("Put The Gun Down" by Andy Black/ZZ Ward vs Voice of Baceprot)
         # must never be grabbed while waiting for the right artist's peer.
@@ -658,6 +680,11 @@ def _score_result(
     if title_score > 0.7:
         score += 25 * min(1.0, title_score)
     elif _normalise(expected_title) in _normalise(filename):
+        # Partial title substring ("The Fall" ⊂ "The Fall of Troy ...") is
+        # weak evidence.  It only survives to this point when the artist
+        # evidence gate above already passed, so a same-worded title by a
+        # different band ("Orville Peck - The Fall" vs "The Fall of Troy -
+        # Mukiltearth") was already rejected for lacking artist evidence.
         score += 15  # partial match
 
     # Album match (bonus if searching for an album)
