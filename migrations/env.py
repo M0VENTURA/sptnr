@@ -57,6 +57,43 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+def _widen_version_num(connection) -> None:
+    """Widen ``alembic_version.version_num`` to ``varchar(64)``.
+
+    The default Alembic version table uses ``varchar(32)`` for the revision
+    id.  Revisions ``007_essential_playlist_artist_index`` (35 chars) and
+    ``008_add_missing_releases_tracklist`` (34 chars) exceed that, so
+    ``UPDATE alembic_version SET version_num = ...`` failed with
+    ``value too long for type character varying(32)`` on every boot — the
+    migrations were never recorded, and every ``alembic upgrade head``
+    retried (and failed) them, leaving the scan pipeline in a broken state
+    (the dashboard "All" scan completed instantly).
+
+    Idempotent: no-op once the column is already varchar(64)+.
+    """
+    try:
+        from sqlalchemy import inspect as sa_inspect, text as sa_text
+        inspector = sa_inspect(connection)
+        if "alembic_version" not in inspector.get_table_names():
+            return
+        col_type = None
+        for col in inspector.get_columns("alembic_version"):
+            if col["name"] == "version_num":
+                col_type = str(col["type"]).lower()
+                break
+        if not col_type or "varchar" not in col_type:
+            return
+        # Extract the declared length; if it's already >= 64, nothing to do.
+        import re
+        m = re.search(r"varchar\((\d+)\)", col_type)
+        if m and int(m.group(1)) >= 64:
+            return
+        connection.execute(sa_text("ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(64)"))
+        logger.info("Widened alembic_version.version_num to VARCHAR(64)")
+    except Exception as exc:
+        logger.warning("Could not widen alembic_version.version_num: %s", exc)
+
+
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode.
 
@@ -66,6 +103,9 @@ def run_migrations_online() -> None:
     connectable = get_engine()
 
     with connectable.connect() as connection:
+        # Widen the version column BEFORE Alembic records any revision, so
+        # the long 007/008 ids fit and the chain can finally advance.
+        _widen_version_num(connection)
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
