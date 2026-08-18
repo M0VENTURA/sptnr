@@ -147,7 +147,13 @@ def rename_album_files_service(
         return {"success": False, "error": f"Failed to load album tracks: {exc}"}
 
     if not rows:
+        logger.debug("[RENAME] No tracks found for '%s' / '%s' — nothing to rename", artist, album)
         return {"success": False, "error": "No tracks found for this album"}
+
+    logger.debug(
+        "[RENAME] Renaming %d file(s) for '%s' / '%s' (format=%r, conversion=%s)",
+        len(rows), artist, album, file_name_format, conversion_enabled,
+    )
 
     renamed_count = 0
     updated_db_count = 0
@@ -161,7 +167,9 @@ def rename_album_files_service(
         file_path_value = track.get("file_path")
         src_path = _resolve_existing(file_path_value)
         if not src_path:
-            errors.append(f"{track.get('title') or '?'}: file not found on disk ({file_path_value or 'no path'})")
+            _msg = f"{track.get('title') or '?'}: file not found on disk ({file_path_value or 'no path'})"
+            errors.append(_msg)
+            logger.warning("[RENAME] %s", _msg)
             continue
 
         ext = os.path.splitext(src_path)[1]
@@ -190,18 +198,27 @@ def rename_album_files_service(
 
                 converted = convert_flac_to_mp3(src_path, bitrate=f"{mp3_bitrate}k")
                 if not converted or not os.path.isfile(converted):
-                    errors.append(f"{fmt_vars['title']}: FLAC→MP3 conversion failed (is ffmpeg installed?)")
+                    _msg = f"{fmt_vars['title']}: FLAC→MP3 conversion failed (is ffmpeg installed?)"
+                    errors.append(_msg)
+                    logger.warning("[RENAME] %s (src=%s)", _msg, src_path)
                     continue
                 actual_src = converted
+                logger.debug(
+                    "[RENAME] Converted '%s' → '%s' (original FLAC deleted by converter)",
+                    src_path, converted,
+                )
                 if os.path.splitext(rel_target)[1].lower() == ".flac":
                     rel_target = os.path.splitext(rel_target)[0] + ".mp3"
             except Exception as exc:
-                errors.append(f"{fmt_vars['title']}: conversion failed ({exc})")
+                _msg = f"{fmt_vars['title']}: conversion failed ({exc})"
+                errors.append(_msg)
+                logger.warning("[RENAME] %s (src=%s)", _msg, src_path)
                 continue
 
         target_abs = os.path.join(music_root, rel_target)
 
         if os.path.normpath(target_abs) == os.path.normpath(actual_src):
+            logger.debug("[RENAME] '%s' already at target — skipped", actual_src)
             continue
 
         if os.path.exists(target_abs):
@@ -210,13 +227,18 @@ def rename_album_files_service(
             while os.path.exists(target_abs):
                 target_abs = f"{stem} ({counter}){suffix}"
                 counter += 1
+            logger.debug("[RENAME] Target exists — collision-resolved to '%s'", target_abs)
 
         try:
             os.makedirs(os.path.dirname(target_abs), exist_ok=True)
             shutil.move(actual_src, target_abs)
         except Exception as exc:
-            errors.append(f"{fmt_vars['title']}: move failed ({exc})")
+            _msg = f"{fmt_vars['title']}: move failed ({exc})"
+            errors.append(_msg)
+            logger.warning("[RENAME] %s (src=%s → target=%s)", _msg, actual_src, target_abs)
             continue
+
+        logger.debug("[RENAME] Moved '%s' → '%s'", actual_src, target_abs)
 
         old_dir = os.path.dirname(os.path.abspath(actual_src))
         if old_dir.startswith(music_root + os.sep):
@@ -238,7 +260,9 @@ def rename_album_files_service(
                 )
                 updated_db_count += result.rowcount or 0
         except Exception as exc:
-            errors.append(f"{fmt_vars['title']}: database update failed ({exc})")
+            _msg = f"{fmt_vars['title']}: database update failed ({exc})"
+            errors.append(_msg)
+            logger.warning("[RENAME] %s (track=%s)", _msg, track_id)
             # File already moved — keep counting the rename itself.
             renamed_count += 1
             details.append({
@@ -254,13 +278,25 @@ def rename_album_files_service(
             "old_path": str(file_path_value or ""),
             "new_path": store_path,
         })
+        logger.debug(
+            "[RENAME] '%s' → DB file_path updated to '%s' (track=%s)",
+            fmt_vars["title"], store_path, track_id,
+        )
 
     # Remove now-empty folders left behind (only inside MUSIC_ROOT).
     for directory in set(moved_src_dirs):
         try:
             cleanup_empty_parents(directory, music_root)
-        except Exception:
-            pass
+            logger.debug("[RENAME] Cleaned up empty parent dirs under '%s'", directory)
+        except Exception as exc:
+            logger.debug("[RENAME] Empty-dir cleanup failed for '%s': %s", directory, exc)
+
+    logger.debug(
+        "[RENAME] Done '%s' / '%s': renamed=%d updated_db=%d errors=%d",
+        artist, album, renamed_count, updated_db_count, len(errors),
+    )
+    if errors:
+        logger.warning("[RENAME] Errors for '%s' / '%s': %s", artist, album, "; ".join(errors))
 
     return {
         "success": renamed_count > 0 or not errors,
