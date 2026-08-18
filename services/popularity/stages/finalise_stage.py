@@ -1094,6 +1094,18 @@ def _create_new_music_playlist() -> int:
             handle.write("\n".join(lines) + "\n")
         logger.info("[finalise_stage] New Music playlist written (%d tracks)", len(winners))
         log_unified(f"📄 Playlist: Generated 'New Music.m3u' ({len(winners)} tracks)")
+        # Sync the Navidrome playlist IN PLACE (update, never recreate) so
+        # scans do not leave duplicate entries — the rolling cap pushes older
+        # tracks out and the newest stay, ordered by recency.
+        try:
+            _song_ids = [
+                str(r.get("id") or "") for r in winners
+                if str(r.get("id") or "").strip()
+            ]
+            if _song_ids:
+                _sync_playlist_to_navidrome("New Music", _song_ids)
+        except Exception:
+            pass
         return len(winners)
     except Exception as exc:
         logger.warning("[finalise_stage] New Music playlist write failed: %s", exc)
@@ -1353,6 +1365,19 @@ def _create_essential_m3u(artist: str, featured_rows: list | None = None) -> Non
                 file_path, len(winners),
             )
             log_unified(f"📄 Playlist: Generated '{playlist_name}.m3u' ({len(winners)} tracks)")
+            # Sync the Navidrome playlist IN PLACE (update, never recreate) so
+            # scans do not leave duplicate entries — old tracks that dropped
+            # below 4★/5★ are removed, new tracks added, ordered by the same
+            # popularity sort above.  Local track ids == Navidrome song ids.
+            try:
+                _song_ids = [
+                    str(r.get("id") or "") for r in winners
+                    if str(r.get("id") or "").strip()
+                ]
+                if _song_ids:
+                    _sync_playlist_to_navidrome(playlist_name, _song_ids)
+            except Exception:
+                pass
             # Best-effort: push the artist's image as the Navidrome playlist
             # cover (config: navidrome.playlist_cover_art).  Runs after the
             # .m3u is on disk so Navidrome's import has something to attach to.
@@ -1573,6 +1598,46 @@ def _sweep_orphaned_genre_playlists_from_navidrome() -> None:
         logger.warning("[finalise_stage] Genre playlist Navidrome sweep failed: %s", exc)
 
 
+def _sync_playlist_to_navidrome(playlist_name: str, song_ids: list[str]) -> dict:
+    """Create/update (IN PLACE) a generated playlist in Navidrome by name.
+
+    Wraps ``playlist_navidrome_service.sync_playlist_by_name`` for every
+    configured Navidrome user: an existing regular playlist with the same
+    name is UPDATED (old songs below the threshold removed, new songs added,
+    order per ``song_ids``), duplicate same-name playlists are deleted, and a
+    missing playlist is created.  Smart playlists (.nsp) with the same name
+    are left untouched.
+
+    This is the fix for the duplicate playlists in Navidrome: the generated
+    playlists are written as ``.m3u`` files into the watch folder and
+    Navidrome imported each rewritten file as a NEW playlist.  Syncing via
+    ``updatePlaylist`` keeps the playlist identity intact so scans never
+    recreate it.
+
+    ``song_ids`` are the local track ids (== Navidrome song ids — the library
+    is imported from Navidrome).  Best-effort, never raises.
+    """
+    try:
+        from services.playlists.playlist_navidrome_service import sync_playlist_by_name
+        synced = {"updated": 0, "created": 0, "deduped": 0}
+        for client in _navidrome_clients():
+            r = sync_playlist_by_name(client, playlist_name, list(song_ids))
+            if r.get("updated"):
+                synced["updated"] += 1
+            if r.get("created"):
+                synced["created"] += 1
+            synced["deduped"] += int(r.get("deduped") or 0)
+        if any(synced.values()):
+            logger.info(
+                "[finalise_stage] Navidrome playlist sync '%s': %s",
+                playlist_name, synced,
+            )
+        return synced
+    except Exception as exc:
+        logger.debug("[finalise_stage] Navidrome playlist sync failed for %s: %s", playlist_name, exc)
+        return {}
+
+
 def _genre_playlist_track_genres(
     row: Any,
     *,
@@ -1789,6 +1854,7 @@ def _create_genre_top_track_playlists(
     for row in rows:
         for genre in _track_genres(row):
             pools[genre].append({
+                "id": str(row.get("id") or ""),
                 "title": str(row.get("title") or "Unknown"),
                 "file_path": str(row.get("file_path") or ""),
                 "duration": row.get("duration"),
@@ -1879,6 +1945,20 @@ def _create_genre_top_track_playlists(
             log_unified(
                 f"📄 Playlist: Generated '{playlist_name}.m3u' ({len(winners)} tracks)"
             )
+            # Sync the Navidrome playlist IN PLACE (update, never recreate) so
+            # scans do not leave duplicate entries — old tracks that dropped
+            # below the star threshold are removed, new tracks added, ordered
+            # by the same popularity sort above.  Local track ids == Navidrome
+            # song ids.
+            try:
+                _song_ids = [
+                    str(t.get("id") or "") for t in winners
+                    if str(t.get("id") or "").strip()
+                ]
+                if _song_ids:
+                    _sync_playlist_to_navidrome(playlist_name, _song_ids)
+            except Exception:
+                pass
         except Exception as exc:
             logger.warning("[finalise_stage] Genre playlist write failed for %s: %s", genre, exc)
 

@@ -512,6 +512,51 @@ class NavidromeClient:
             logger.error("Failed to rename playlist %s: %s", playlist_id, exc)
             return False
 
+    def update_playlist_songs(self, playlist_id: str, song_ids: list[str]) -> bool:
+        """Replace a playlist's song list IN PLACE via ``updatePlaylist``.
+
+        Subsonic's ``updatePlaylist`` edits an existing playlist rather than
+        recreating it: ``songIndexToRemove`` (repeatable) removes the current
+        entries and ``songIdToAdd`` (repeatable) appends the new set.  This
+        keeps the playlist's identity (id, name, cover, created date) intact —
+        recreating a playlist on every scan is what left duplicate entries in
+        Navidrome's UI (each rewrite of a watch-folder ``.m3u`` was imported
+        as a NEW playlist).
+
+        The current track count is fetched first so ``songIndexToRemove``
+        uses only VALID indices (0..N-1) — Subsonic implementations reject
+        or ignore out-of-range indices, which would leave stale entries.
+
+        When ``song_ids`` is empty, every existing entry is removed and the
+        playlist is emptied (not deleted).
+
+        Returns True when Navidrome acknowledged the update.
+        """
+        try:
+            # Fetch the current entry count so removal indices are valid.
+            _current = self.fetch_playlist(playlist_id) or {}
+            _count = len(_current.get("tracks") or []) or 0
+            params: dict[str, Any] = {"playlistId": playlist_id}
+            if _count > 0:
+                params["songIndexToRemove"] = list(range(0, _count))
+            if song_ids:
+                params["songIdToAdd"] = list(song_ids)
+            data = self._get_subsonic_response(
+                "updatePlaylist",
+                timeout=60,
+                **params,
+            )
+            ok = data.get("status") == "ok"
+            if not ok:
+                logger.warning(
+                    "[NAVIDROME] updatePlaylist songs rejected for %s: %s",
+                    playlist_id, data,
+                )
+            return ok
+        except Exception as exc:
+            logger.error("Failed to update playlist %s songs: %s", playlist_id, exc)
+            return False
+
     # ------------------------------------------------------------------
     # Artist info (OpenSubsonic — requires external integration)
     # ------------------------------------------------------------------
