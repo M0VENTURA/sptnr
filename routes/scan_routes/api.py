@@ -371,7 +371,9 @@ async def api_popularity_run_compat():
 
         def _worker():
             try:
+                log_unified(f"[POPULARITY] Worker starting mode={mode} force={force}")
                 run_popularity_mode(mode=mode, force_rescan=force)
+                log_unified(f"[POPULARITY] Worker finished mode={mode}")
             except Exception as exc:
                 # A daemon-thread exception would otherwise be swallowed by
                 # ``run_async`` (no handler) — the route returns "started",

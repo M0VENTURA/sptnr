@@ -259,6 +259,7 @@ def _scan_activity_filter() -> re.Pattern:
     return re.compile(
         r'\[POPULARITY\]|\[TRACK_STAGE\]|\[TRACK\]|\[TRACK_RESULT\]|'
         r'\[ALBUM_STAGE\]|\[FINALISE_STAGE\]|\[LOAD_STAGE\]|'
+        r'\[FULL_SCAN\]|\[SCAN_PIPELINE\]|'
         r'\[scan_runner\]|\[LIBRARY_SYNC\]|'
         r'\[SINGLE\]|Navidrome Import|Artist scan|'
         r'popularity scan|Popularity |popularity_scan|'

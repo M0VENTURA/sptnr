@@ -63,6 +63,52 @@ class TestScanResultLinesVisible:
         assert _kept(line)
 
 
+class TestFullScanSessionLinesVisible:
+    """The dashboard 'All' (full-scan) worker's progress must be visible.
+
+    ``_run_full_scan_as_artist_pipeline`` emits ``[FULL_SCAN] ...`` and the
+    per-artist pipeline emits ``[SCAN_PIPELINE] ...`` lines.  Before these
+    were added to ``_scan_activity_filter`` the user saw "nothing in logs"
+    while the Recent Scans panel showed the full scan — the worker WAS
+    running (and could be failing instantly on an empty artist list) but
+    every line it wrote was silently filtered out of both the dashboard
+    scanning panel and the /logs unified view.
+    """
+
+    def test_full_scan_start_line(self):
+        line = "[FULL_SCAN] Starting full scan — 42 artist(s) queued"
+        assert _kept(line)
+
+    def test_full_scan_no_artists_line(self):
+        line = "[FULL_SCAN] No artists found in the library — nothing to scan. Check the library has been imported (Navidrome sync)."
+        assert _kept(line)
+
+    def test_full_scan_artist_progress_line(self):
+        line = "[FULL_SCAN] Artist 1/42: Beast in Black"
+        assert _kept(line)
+
+    def test_full_scan_artist_done_line(self):
+        line = "[FULL_SCAN] Artist 1/42 done: Beast in Black"
+        assert _kept(line)
+
+    def test_full_scan_artist_failed_line(self):
+        line = "[FULL_SCAN] Artist 2/42 FAILED: Some Artist — boom"
+        assert _kept(line)
+
+    def test_full_scan_finished_line(self):
+        line = "[FULL_SCAN] Finished with status=complete"
+        assert _kept(line)
+
+    def test_scan_pipeline_start_line(self):
+        line = "[SCAN_PIPELINE] Starting artist pipeline: Beast in Black (force=False)"
+        assert _kept(line)
+
+    def test_popularity_worker_start_finish_lines(self):
+        assert _kept("[POPULARITY] Worker starting mode=all force=True")
+        assert _kept("[POPULARITY] Worker finished mode=all")
+        assert _kept("[POPULARITY] Worker failed: boom")
+
+
 class TestNoiseStillFiltered:
     """Queue / watcher churn must stay out of the scanning panel."""
 

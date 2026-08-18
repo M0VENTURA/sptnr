@@ -223,7 +223,13 @@ def _run_full_scan_as_artist_pipeline(
 
     progress_file = get_scan_progress_path("full_scan")
 
-    artists = get_all_artists()
+    try:
+        artists = get_all_artists()
+    except Exception as exc:
+        log_unified(f"[FULL_SCAN] Failed to load artist list: {exc}")
+        logger.error("[FULL_SCAN] get_all_artists failed: %s", exc, exc_info=True)
+        record_scan("all", "failed", message=f"full scan failed: {exc}", artist="_SCAN_SESSION_", album="all")
+        return
     total = len(artists)
 
     log_unified(
@@ -319,7 +325,15 @@ def _run_full_scan_as_artist_pipeline(
                     pass
 
             log_unified(f"[FULL_SCAN] Artist {i + 1}/{total}: {artist}")
-            run_artist_scan_pipeline(artist, force=force, progress_callback=_cb)
+            try:
+                run_artist_scan_pipeline(artist, force=force, progress_callback=_cb)
+                log_unified(f"[FULL_SCAN] Artist {i + 1}/{total} done: {artist}")
+            except Exception as _aexc:
+                # run_artist_scan_pipeline swallows most errors internally, but
+                # a raised one must not silently end the whole scan loop as if
+                # it completed.
+                log_unified(f"[FULL_SCAN] Artist {i + 1}/{total} FAILED: {artist} — {_aexc}")
+                logger.warning("[FULL_SCAN] Artist %s failed: %s", artist, _aexc)
     except Exception as exc:
         status = "error"
         logger.error("[FULL_SCAN] Artist loop failed: %s", exc, exc_info=True)
