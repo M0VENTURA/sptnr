@@ -1681,6 +1681,11 @@
           <small class="form-text text-muted">Fraction applied to the Last.fm weight for live tracks. Default: <strong>0.5</strong> (50% reduction)</small>
         </div>
         <div class="col-12 col-sm-6 col-lg-3">
+          <label class="form-label form-label-sm">Instrumental Weight Penalty</label>
+          <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="instrumental_weight_penalty" placeholder="0.8" value="{{ config.get('single_detection', {}).get('instrumental_weight_penalty', 0.8) }}">
+          <small class="form-text text-muted">Fraction applied to the Last.fm weight for instrumental versions — suppresses their z-score so a massive instrumental doesn't bury the vocal tracks. Default: <strong>0.8</strong> (20% reduction)</small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-3">
           <label class="form-label form-label-sm">Organic Floor Score</label>
           <input type="number" step="0.5" min="0" max="100" class="form-control form-control-sm" id="single_organic_floor_score" placeholder="45.0" value="{{ config.get('single_detection', {}).get('single_organic_floor_score', 45.0) }}">
           <small class="form-text text-muted">Minimum popularity score a confirmed single needs before it can earn 5★ / the 4★ Single Floor (a metadata-tagged single with almost no audience must not leapfrog popular album tracks). Default: <strong>45.0</strong></small>

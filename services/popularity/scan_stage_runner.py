@@ -47,6 +47,7 @@ from services.scanning.scan_history_service import record_scan, was_album_scanne
 from services.catalog.album_classification_service import (
     detect_live_album_type,
     is_bonus_track_title,
+    is_instrumental_track_title,
     should_exclude_track_from_stats,
 )
 
@@ -491,6 +492,12 @@ def _apply_popularity_marking_bump(album_results: list[dict[str, Any]]) -> list[
             continue
         if str(tr.get("single_confidence") or "low") != "medium":
             continue
+        # Instrumental versions never get the popularity-marking bump to HIGH
+        # (their marked flag is cleared by the marking loops above; this is a
+        # defensive re-check for any legacy/standalone caller).
+        if is_instrumental_track_title(str(tr.get("title") or "")):
+            tr["popularity_marked"] = False
+            continue
         tr["single_confidence"] = "high"
         try:
             raw = tr.get("single_sources") or ""
@@ -549,7 +556,9 @@ def _mark_track_artist_top_band(album_results: list[dict[str, Any]]) -> None:
 
     catalogue_cache: dict[str, list[float]] = {}
     for _tr in album_results:
-        if bool(_tr.get("exclude_from_stats")):
+        if bool(_tr.get("exclude_from_stats")) or is_instrumental_track_title(
+            str(_tr.get("title") or "")
+        ):
             _tr["popularity_marked"] = False
             continue
         _score = float(_tr.get("popularity_score") or 0)
@@ -1232,7 +1241,13 @@ def run_scan(
                     # not part of the artist's core catalogue popularity — they
                     # never consume a top-% slot and never earn 5★ from the
                     # marking (a padded live cut must not outrank a real single).
-                    if bool(_tr.get("exclude_from_stats")):
+                    # Instrumental versions are excluded the same way: a massive
+                    # instrumental score must not steal the 5★ slot from a real
+                    # vocal track (the instrumental weight penalty already
+                    # suppresses its z-score; this closes the marking bypass).
+                    if bool(_tr.get("exclude_from_stats")) or is_instrumental_track_title(
+                        str(_tr.get("title") or "")
+                    ):
                         _tr["popularity_marked"] = False
                         continue
                     _score = float(_tr.get("popularity_score") or 0)

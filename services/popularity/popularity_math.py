@@ -703,16 +703,22 @@ def calculate_combined_popularity_score(
     has_metadata: bool = False,
     is_featured_track: bool = False,
     is_live_track: bool = False,
+    is_instrumental_track: bool = False,
     lastfm_weight_override: Optional[float] = None,
     source_audit: str = "VALID",
     single_boost: float = 1.15,
     metadata_score_floor: float = 5.0,
     live_weight_penalty: float = 0.5,
+    instrumental_weight_penalty: float = 0.8,
 ) -> Dict[str, float]:
     """Blend Last.fm + ListenBrainz + age into one weighted popularity score.
 
     Matches the legacy ``popularity_scan`` behaviour:
     - live tracks get a ``live_weight_penalty`` (default 50%) on the Last.fm weight
+    - instrumental tracks get an ``instrumental_weight_penalty`` (default 20%
+      reduction, i.e. a 0.8 weight fraction) on the Last.fm weight, so a
+      massive instrumental score does not mathematically bury the vocal
+      tracks on the album
     - source-mismatch weighting honours featured-track / metadata flags
     - ``source_audit`` (a Log-MAD verdict from ``evaluate_log_ratio_deviation``)
       forces the platform weights when the cross-platform ratio audit flagged a
@@ -778,15 +784,21 @@ def calculate_combined_popularity_score(
 
     # Live-track penalty: legacy logic halves the Last.fm weight because live
     # recordings are streamed far less than their studio counterparts.
-    # Weights are resolved LIVE from config on every call so a config.html
-    # edit applies without a process restart (the module-level constants
-    # used to freeze them at import time).
+    # Instrumental-track penalty: an instrumental version's raw counts are
+    # reduced by the instrumental weight fraction BEFORE the z-score so a
+    # massive instrumental score does not mathematically bury the vocal
+    # tracks on the album.  Weights are resolved LIVE from config on every
+    # call so a config.html edit applies without a process restart (the
+    # module-level constants used to freeze them at import time).
     _live_lf_w, _live_lb_w, _live_age_w = resolve_weights()
+    _inst_penalty = max(0.0, min(1.0, instrumental_weight_penalty))
     effective_lf_weight = lastfm_weight_override
     if effective_lf_weight is None:
         effective_lf_weight = _live_lf_w
         if is_live_track:
             effective_lf_weight = _live_lf_w * max(0.0, min(1.0, live_weight_penalty))
+        elif is_instrumental_track:
+            effective_lf_weight = _live_lf_w * _inst_penalty
 
     # Build active score/weight pairs so missing sources don't dilute the blend
     active_scores: list[float] = []
@@ -812,6 +824,8 @@ def calculate_combined_popularity_score(
             lf_weight, lb_weight = 1.0, 0.0
         if is_live_track:
             lf_weight = lf_weight * max(0.0, min(1.0, live_weight_penalty))
+        elif is_instrumental_track:
+            lf_weight = lf_weight * _inst_penalty
         if lastfm_score > 0 and lf_weight > 0:
             active_scores.append(lastfm_score)
             active_weights.append(lf_weight)

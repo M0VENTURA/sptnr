@@ -189,6 +189,26 @@ def is_live_or_alternate_track_title(title: str) -> bool:
     )
 
 
+_INSTRUMENTAL_TITLE_RE = re.compile(r"\binstrumental\b", re.IGNORECASE)
+
+
+def is_instrumental_track_title(title: str) -> bool:
+    """Return True when a track TITLE flags an instrumental version.
+
+    Whole-word ``instrumental`` marker — a "(instrumental)" suffix, "(Full
+    Instrumental)", or "- Instrumental" separator all match.  Used to:
+
+    - block instrumental tracks from the popularity ``z_standout`` upgrade
+      and the artist top-% ``popularity_marked`` 5★ award (an instrumental
+      with a massive score must not steal a 5★ slot from a real vocal
+      track), and
+    - apply the instrumental weight penalty (a reduced Last.fm weight so the
+      track's z-score does not mathematically bury the vocal tracks on the
+      album).
+    """
+    return bool(_INSTRUMENTAL_TITLE_RE.search(title or ""))
+
+
 def is_bonus_track_title(title: str) -> bool:
     """Return True when a track TITLE indicates a bonus / alternate version.
 

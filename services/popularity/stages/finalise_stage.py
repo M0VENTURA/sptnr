@@ -31,7 +31,10 @@ from services.popularity.popularity_math import (
     fmt_count as _fmt_count,
 )
 from services.popularity.popularity_zscore import composite_listener_z
-from services.catalog.album_classification_service import is_live_or_alternate_track_title
+from services.catalog.album_classification_service import (
+    is_instrumental_track_title,
+    is_live_or_alternate_track_title,
+)
 
 from helpers.config_helpers import get_standout_config
 from helpers.logging_config import log_unified
@@ -250,7 +253,13 @@ def _has_z_standout_source(track: dict[str, Any]) -> bool:
     signal recorded during single detection (a popularity confirmation, not a
     medium source).  The 5★ standout condition requires it (or the artist-wide
     top-10% ``popularity_marked`` flag) as the "popularityzstandout" proof.
+
+    Instrumental tracks can never qualify: a legacy row that predates the
+    single-detection instrumental gate may still carry the flag, so the
+    verdict is re-checked here (same exclusion the scan path applies).
     """
+    if is_instrumental_track_title(str(track.get("title") or "")):
+        return False
     try:
         raw = track.get("single_sources") or ""
         if isinstance(raw, str):
@@ -622,6 +631,11 @@ def _assign_stars(
     album_z, album_spread = _compute_album_z(score, ref_scores)
     artist_z, artist_spread = _compute_artist_z(score, artist_scores)
     popularity_marked = bool(track.get("popularity_marked"))
+    # Instrumental versions can never be 5★ via the popularity marking path
+    # (the runner clears the flag for them, but a legacy/standalone caller
+    # may still carry it) — the era caps should bounce them to 4★.
+    if is_instrumental_track_title(str(track.get("title") or "")):
+        popularity_marked = False
 
     # ── 5★: singles + standouts only ──
     # Scan synchronization for the ``popularity_z_standout`` proof: the flag
@@ -667,9 +681,13 @@ def _assign_stars(
     #   artist_top_percentile_force_5_star: 0.03  (top 3% → 5★)
     #   artist_top_percentile_force_4_star: 0.10  (top 10% → at least 4★)
     # These bypass album_z gating but NEVER the live cap or user override.
+    # Instrumental versions are ALSO excluded: a massive instrumental must
+    # not force its way to 5★ through raw listens any more than through the
+    # standout / marking paths — the era caps should bounce it to 4★.
     _force_stars: int | None = None
     if (
         not is_live
+        and not is_instrumental_track_title(str(track.get("title") or ""))
         and artist_listen_distribution
         and not popularity_only
     ):

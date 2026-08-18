@@ -113,6 +113,7 @@ def _log_scan_config() -> None:
             get_single_boost,
             get_metadata_score_floor,
             get_live_weight_penalty,
+            get_instrumental_weight_penalty,
             get_single_organic_floor,
         )
         z = get_zscore_thresholds(cfg)
@@ -128,7 +129,8 @@ def _log_scan_config() -> None:
             f"listener_z={float(sd.get('listener_5star_z_threshold') or 1.0):g} | "
             f"eps={float(sd.get('star_epsilon_score_points') or 0.5):g} "
             f"boost={get_single_boost(cfg):g} floor={get_metadata_score_floor(cfg):g} "
-            f"live_pen={get_live_weight_penalty(cfg):g}"
+            f"live_pen={get_live_weight_penalty(cfg):g} "
+            f"inst_pen={get_instrumental_weight_penalty(cfg):g}"
         )
 
         # ── star tiers + album-scaling era rules ────────────────────────

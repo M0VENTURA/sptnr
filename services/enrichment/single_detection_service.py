@@ -34,6 +34,8 @@ except ImportError:  # pragma: no cover — stdlib fallback keeps matching worki
 
 from services.popularity.popularity_zscore import composite_listener_z
 
+from services.catalog.album_classification_service import is_instrumental_track_title
+
 from helpers.normalization_service import (
     strip_single_release_suffix,
     normalize_title_for_lookup,
@@ -1174,29 +1176,39 @@ def detect_single_for_track(
     # determine_final_status).
     z_standout = False
     try:
-        # artist_vals was fetched above for the z-scores; reuse it here so a
-        # track costs one artist-stats query, not two.  On the FIRST scan of an
-        # artist the artist-stats table is empty (no stored scores yet), so the
-        # catalogue-size proxy falls back to the album's own track count —
-        # otherwise a genuinely dominant album track (District 9, album-z ~1.8)
-        # would never qualify as a standout on the pass that first scores it.
-        artist_track_count = max(len(artist_vals or []), len(album_vals or []))
-        # ALBUM-LOCAL baseline only: the composite listener z (or the album
-        # popularity z when no raw listener data exists) decides the standout —
-        # never the artist-wide z.  A standout album vs the rest of an artist's
-        # catalogue inflates every track's artist_z (36 Crazyfists: 7/12 tracks
-        # on Bitterness the Star had artist_z >= 2.6 but album z <= 0.9), so
-        # max(album_z, artist_z) promoted whole albums.
-        standout_z = z_composite or album_z
-        if artist_track_count >= 3 and standout_z > 0:
-            dyn_threshold = get_dynamic_z_threshold(
-                artist_track_count,
-                None,
-                is_compilation,
-            )
-            if standout_z >= dyn_threshold:
-                z_standout = True
-                reasons.append("z_score_standout")
+        # Instrumental tracks are NEVER popularity standouts: the z_standout
+        # upgrade is the only path that could give an instrumental 5★ without
+        # a single-detection source (detection itself already skips
+        # instrumentals via ``should_skip_single_detection``), and a massive
+        # instrumental score must not steal the 5★ slot from a real vocal
+        # track.  The track still keeps its full popularity score (and the
+        # era caps still apply) — only the standout upgrade is blocked.
+        if is_instrumental_track_title(title):
+            reasons.append("instrumental_version")
+        else:
+            # artist_vals was fetched above for the z-scores; reuse it here so a
+            # track costs one artist-stats query, not two.  On the FIRST scan of an
+            # artist the artist-stats table is empty (no stored scores yet), so the
+            # catalogue-size proxy falls back to the album's own track count —
+            # otherwise a genuinely dominant album track (District 9, album-z ~1.8)
+            # would never qualify as a standout on the pass that first scores it.
+            artist_track_count = max(len(artist_vals or []), len(album_vals or []))
+            # ALBUM-LOCAL baseline only: the composite listener z (or the album
+            # popularity z when no raw listener data exists) decides the standout —
+            # never the artist-wide z.  A standout album vs the rest of an artist's
+            # catalogue inflates every track's artist_z (36 Crazyfists: 7/12 tracks
+            # on Bitterness the Star had artist_z >= 2.6 but album z <= 0.9), so
+            # max(album_z, artist_z) promoted whole albums.
+            standout_z = z_composite or album_z
+            if artist_track_count >= 3 and standout_z > 0:
+                dyn_threshold = get_dynamic_z_threshold(
+                    artist_track_count,
+                    None,
+                    is_compilation,
+                )
+                if standout_z >= dyn_threshold:
+                    z_standout = True
+                    reasons.append("z_score_standout")
     except Exception as exc:
         logger.debug("Dynamic z-score standout check failed for %s / %s: %s", artist, title, exc)
 

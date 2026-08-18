@@ -32,6 +32,7 @@ single_detection:
   single_boost: 1.15                # Score multiplier for confirmed singles (default: 1.15)
   metadata_score_floor: 5.0         # Min score for tracks with a confirmed MBID (default: 5.0)
   live_weight_penalty: 0.5          # Last.fm weight fraction for live tracks (default: 0.5)
+  instrumental_weight_penalty: 0.8  # Last.fm weight fraction for instrumental versions (default: 0.8)
   popularity_5star_z_threshold: 2.0 # Popularity-only 5★ z threshold (default: 2.0)
   lb_unreliable_5star_threshold: 0.50 # LB percentile for Last.fm-unreliable 5★ rescue (default: 0.50)
 ```

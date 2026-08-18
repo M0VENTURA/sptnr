@@ -39,6 +39,7 @@ from services.popularity.popularity_math import (
 )
 from services.popularity.popularity_config import (
     get_interlude_lb_outlier_config,
+    get_instrumental_weight_penalty,
     get_live_weight_penalty,
     get_log_ratio_config,
     get_metadata_score_floor,
@@ -67,6 +68,7 @@ from services.enrichment.cover_detection_service import (
 
 # Track classification (bonus/live/alternate title detection)
 from services.catalog.album_classification_service import (
+    is_instrumental_track_title,
     is_live_or_alternate_track_title,
 )
 
@@ -310,6 +312,7 @@ def _score_track_popularity(
     has_mb_meta: bool,
     is_featured_track: bool,
     is_live_track: bool,
+    is_instrumental_track: bool = False,
     artist_lf_context: dict[str, Any] | None,
     track_duration: float | None = None,
 ) -> tuple[dict[str, Any], float]:
@@ -343,8 +346,9 @@ def _score_track_popularity(
         cfg_single_boost = get_single_boost()
         cfg_floor = get_metadata_score_floor()
         cfg_live_penalty = get_live_weight_penalty()
+        cfg_instrumental_penalty = get_instrumental_weight_penalty()
     except Exception:
-        cfg_single_boost, cfg_floor, cfg_live_penalty = 1.15, 5.0, 0.5
+        cfg_single_boost, cfg_floor, cfg_live_penalty, cfg_instrumental_penalty = 1.15, 5.0, 0.5, 0.8
 
     # Album Last.fm listener distribution (legacy parity): score Last.fm
     # against the ALBUM's own listener spread so the track with the most
@@ -525,11 +529,13 @@ def _score_track_popularity(
         has_metadata=has_mb_meta,
         is_featured_track=is_featured_track,
         is_live_track=is_live_track,
+        is_instrumental_track=is_instrumental_track,
         lastfm_weight_override=lastfm_weight_override,
         source_audit=_audit_verdict,
         single_boost=cfg_single_boost,
         metadata_score_floor=cfg_floor,
         live_weight_penalty=cfg_live_penalty,
+        instrumental_weight_penalty=cfg_instrumental_penalty,
     )
 
     # LB percentile within the album (used by star-rating rescue path).
@@ -1407,6 +1413,10 @@ def process_track(
                     or album_context.get("is_live_album")
                     or is_live_or_alternate_track_title(raw_title or title)
                 )
+                # Instrumental versions get a reduced Last.fm weight (the
+                # instrumental weight penalty) so their massive raw counts do
+                # not mathematically bury the album's vocal tracks.
+                is_instrumental_flag = is_instrumental_track_title(raw_title or title)
                 is_featured_flag = bool(
                     "feat" in str(artist or "").lower()
                     or "feat" in str(raw_title or title).lower()
@@ -1430,6 +1440,7 @@ def process_track(
                     has_mb_meta=has_mb_meta,
                     is_featured_track=is_featured_flag,
                     is_live_track=is_live_flag,
+                    is_instrumental_track=is_instrumental_flag,
                     artist_lf_context=artist_lf_context,
                     track_duration=_safe_duration(effective_track.get("duration")),
                 )
@@ -1838,6 +1849,7 @@ def process_track(
                                         or album_context.get("is_live_album")
                                         or is_live_or_alternate_track_title(sd_title)
                                     ),
+                                    is_instrumental_track=is_instrumental_track_title(sd_title),
                                     artist_lf_context=artist_lf_context,
                                     track_duration=_safe_duration(effective_track.get("duration")),
                                 )

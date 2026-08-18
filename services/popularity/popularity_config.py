@@ -91,6 +91,24 @@ def get_live_weight_penalty(config: dict | None = None) -> float:
         return 0.5
 
 
+def get_instrumental_weight_penalty(config: dict | None = None) -> float:
+    """Return the Last.fm weight penalty fraction for instrumental tracks (default 0.8).
+
+    An instrumental version carries the same "recorded performance" listener
+    counts as the vocal track but is not a single candidate, so its raw
+    Last.fm/ListenBrainz weight is reduced by this fraction BEFORE the
+    z-score is calculated — naturally suppressing its z-score so it does not
+    mathematically bury the vocal tracks on the album.  Mirrors the live
+    weight penalty.  ``0`` disables (no penalty).
+    """
+    cfg = config if isinstance(config, dict) else get_config()
+    sd = cfg.get("single_detection", {}) if isinstance(cfg, dict) else {}
+    try:
+        return float(sd.get("instrumental_weight_penalty", 0.8))
+    except Exception:
+        return 0.8
+
+
 def get_exclude_from_median_below_seconds(config: dict | None = None) -> float:
     """Return the minimum track duration (seconds) to count in stats.
 
