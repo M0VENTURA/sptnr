@@ -26,6 +26,7 @@ from api_clients.listenbrainz import (
 )
 from helpers.normalization_service import strip_cover_attribution
 from services.popularity.popularity_matching import (
+    ARTIST_JOIN_RE,
     choose_best_provider_counts,
     get_artist_lookup_candidates,
     get_primary_artist_preserve_case,
@@ -671,6 +672,45 @@ def get_aggregated_lastfm_popularity(
             matched.append(item)
             listeners += int(item.get("listeners", 0) or 0)
             playcount += int(item.get("playcount", item.get("track_play", 0)) or 0)
+
+    # ── Collab / multi-artist split ───────────────────────────────────────
+    # "BABYMETAL & Electric Callboy" (or "A x B", "A and B") indexes the same
+    # track separately under EACH artist's Last.fm catalogue — scrobbles get
+    # split across the two artist rows, so querying only the primary artist
+    # returns a fraction of the real popularity (RATATATA showed 1.1k LF on
+    # the Electric Callboy side while the track is one of the biggest metal
+    # songs of 2024).  When the primary catalogue finds nothing, split the
+    # credit and query each sub-artist's catalogue for the same title, merging
+    # the counts so the collab's real audience is recovered.
+    if not matched and ARTIST_JOIN_RE.search(artist or ""):
+        collab_parts = [p.strip() for p in ARTIST_JOIN_RE.split(artist or "") if p.strip()]
+        if len(collab_parts) >= 2:
+            for part in collab_parts:
+                try:
+                    from services.popularity.popularity_cache_service import get_artist_top_tracks_map
+                    _part_map = get_artist_top_tracks_map(lastfm_client, part) or {}
+                    _part_catalog = [
+                        {
+                            "name": key,
+                            "listeners": int(e.get("lastfm_listeners") or 0),
+                            "playcount": int(e.get("lastfm_playcount") or 0),
+                        }
+                        for key, e in _part_map.items()
+                        if e.get("lastfm_listeners")
+                    ]
+                    if not _part_catalog:
+                        _key = part.casefold().strip()
+                        if _key not in _lastfm_artist_catalog_cache and hasattr(lastfm_client, "get_artist_top_tracks"):
+                            _lastfm_artist_catalog_cache[_key] = lastfm_client.get_artist_top_tracks(part)
+                            _part_catalog = _lastfm_artist_catalog_cache.get(_key, [])
+                    for item in _part_catalog or []:
+                        item_title = item.get("name") or item.get("title") or ""
+                        if normalize_for_aggregation(item_title) == target:
+                            matched.append(item)
+                            listeners += int(item.get("listeners", 0) or 0)
+                            playcount += int(item.get("playcount", item.get("track_play", 0)) or 0)
+                except Exception:
+                    continue
 
     # Featured tracks: search for ALL versions (album + feat. single) and keep
     # the higher combined count so a low-listen album match can't shadow the

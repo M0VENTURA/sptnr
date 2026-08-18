@@ -67,6 +67,15 @@ def get_artist_lookup_candidates(artist: str, album_artist: str | None = None) -
     add(get_primary_artist_preserve_case(artist))
     add(album_artist)
     add(get_primary_artist_preserve_case(album_artist or ""))
+    # Collab / multi-artist credits ("BABYMETAL & Electric Callboy",
+    # "A x B", "A and B"): each sub-artist may index the same track under
+    # its own catalogue, so query each part individually too.
+    if ARTIST_JOIN_RE.search(artist or ""):
+        for part in ARTIST_JOIN_RE.split(artist or ""):
+            add(part.strip())
+    if album_artist and ARTIST_JOIN_RE.search(album_artist or ""):
+        for part in ARTIST_JOIN_RE.split(album_artist or ""):
+            add(part.strip())
     return candidates
 
 
