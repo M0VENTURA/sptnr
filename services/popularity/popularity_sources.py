@@ -31,6 +31,7 @@ from services.popularity.popularity_matching import (
     get_artist_lookup_candidates,
     get_primary_artist_preserve_case,
     normalize_for_aggregation,
+    title_variants_compatible,
 )
 
 logger = logging.getLogger(__name__)
@@ -843,6 +844,15 @@ def get_search_aggregated_lastfm_popularity(
                 continue
             item_title = str(item.get("name") or item.get("title") or "")
             if not item_title:
+                continue
+            # A hard version marker on one side but not the other means a
+            # DIFFERENT performance — "(Live)"/"(Acoustic)"/"(Instrumental)/
+            # (Orchestral)"/"(Remix)"/"(Demo)" must never inherit the
+            # canonical track's popularity (token_set_ratio treats
+            # "see you in hell acoustic" as a perfect superset of
+            # "see you in hell", so without this gate a live cut is scored
+            # with the studio recording's 25k+ listeners).
+            if not title_variants_compatible(track_title, item_title):
                 continue
             # Only keep versions of THIS song — normalised title comparison
             # correlates "Herzblut", "Herzblut (feat. Melissa Bonny)", etc.

@@ -22,6 +22,55 @@ def clean_artist_spacing(value: str) -> str:
     return re.sub(r"\s+", " ", (value or "").strip())
 
 
+# Hard version markers that distinguish a DIFFERENT take of a song from its
+# canonical recording.  A "(Live)" / "(Acoustic)" / "(Instrumental)" /
+# "(Orchestral)" / "(Remix)" / "(Demo)" version must never inherit the
+# canonical track's Last.fm / ListenBrainz popularity — the two are different
+# performances with different real audiences.
+#
+# Mirrors ``services/queue/queue_matching_config.TITLE_VARIANT_TOKENS`` (the
+# hard subset — "version"/"edit"/"radio" are soft annotations that may be
+# absent from either side without blocking the match).
+_HARD_VARIANT_TOKENS = frozenset({
+    "acoustic", "demo", "instrumental", "intro", "live",
+    "mix", "orchestral", "remaster", "remastered", "remix",
+})
+_SOFT_VARIANT_TOKENS = frozenset({"version", "edit", "radio"})
+
+
+def _extract_variant_tokens(title: str) -> frozenset[str]:
+    """Return the hard/soft version-marker tokens present in a title."""
+    if not title:
+        return frozenset()
+    words = set(re.sub(r"[^a-z0-9]+", " ", str(title).lower()).split())
+    return frozenset(words & (_HARD_VARIANT_TOKENS | _SOFT_VARIANT_TOKENS))
+
+
+def title_variants_compatible(title_a: str, title_b: str) -> bool:
+    """True when two titles carry COMPATIBLE version markers.
+
+    A hard variant marker (live / acoustic / instrumental / orchestral /
+    remix / demo / remaster) must align between the two titles: a
+    "(Live)" version is a different performance from the plain track, so
+    they must never be treated as the same recording for popularity
+    aggregation.  Soft markers ("version", "edit", "radio") may be absent
+    from either side.
+
+    Examples:
+        title_variants_compatible("See You in Hell", "See You in Hell (Live)")  -> False
+        title_variants_compatible("See You in Hell (Live)", "See You in Hell (Live)") -> True
+        title_variants_compatible("Hypa Hypa (Remix)", "Hypa Hypa")  -> False
+        title_variants_compatible("Herzblut", "Herzblut (Radio Edit)")  -> True  # soft
+    """
+    va = _extract_variant_tokens(title_a) - _SOFT_VARIANT_TOKENS
+    vb = _extract_variant_tokens(title_b) - _SOFT_VARIANT_TOKENS
+    if not va and not vb:
+        return True
+    if not va or not vb:
+        return False
+    return bool(va & vb)
+
+
 def build_artist_variants(artist: str) -> list[str]:
     """Generate artist name variants (main artist, featured artists, combinations)."""
     variants: set[str] = set()
