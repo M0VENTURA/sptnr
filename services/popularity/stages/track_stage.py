@@ -1918,8 +1918,33 @@ def process_track(
             _has_genres = bool((_mb_meta or {}).get("has_genres"))
             _force_meta = bool((_mb_meta or {}).get("force_meta"))
 
+            # Per-source genre gate: the shared ``_has_genres`` flag is True
+            # when ANY of the 5 source columns (MB / Discogs / ListenBrainz /
+            # Spotify / Last.fm) carries data, which skipped ALL genre fetches
+            # once ONE source was populated — a track with Last.fm tags never
+            # got MusicBrainz / Discogs / ListenBrainz genres on later scans.
+            # Each fetch now checks ITS OWN column independently, so a missing
+            # source is backfilled while already-populated sources are left
+            # alone (and a forced scan still refetches everything).
+            def _has_source_genres(column: str) -> bool:
+                raw = _build_effective_track(track, update_payload).get(column)
+                if not raw:
+                    return False
+                stripped = str(raw).strip()
+                if not stripped or stripped.lower() in ("[]", "{}", "null", "none"):
+                    return False
+                try:
+                    parsed = json.loads(stripped)
+                except (ValueError, TypeError):
+                    return True  # plain delimited string = genres
+                if isinstance(parsed, list):
+                    return any(str(g or "").strip() for g in parsed)
+                if isinstance(parsed, dict):
+                    return any(str(v or "").strip() for v in parsed.values())
+                return bool(str(parsed or "").strip())
+
             # Also fetch genre/tag data from MusicBrainz via genre-aware endpoint
-            if title and artist and (not _has_genres or _force_meta):
+            if title and artist and (not _has_source_genres("musicbrainz_genres") or _force_meta):
                 try:
                     mb_raw = get_shared_mb_client()
                     mb_genres: list = []
@@ -2002,7 +2027,7 @@ def process_track(
                     logger.debug("[track_stage][MB_GENRE] %s: %s", track_id, e)
 
             # Fetch Discogs genres for the track
-            if title and artist and (not _has_genres or _force_meta):
+            if title and artist and (not _has_source_genres("discogs_genres") or _force_meta):
                 try:
                     from api_clients.discogs_http import DiscogsHttpClient
                     from helpers.config_helpers import get_config as _get_discogs_cfg
@@ -2043,7 +2068,7 @@ def process_track(
 
             # Fetch ListenBrainz genres for the track (legacy parity) — only
             # when a recording MBID is known and the column is still empty.
-            if title and artist and not track.get("listenbrainz_genres") and not update_payload.get("listenbrainz_genres"):
+            if title and artist and (not _has_source_genres("listenbrainz_genres") or _force_meta):
                 try:
                     _lb_mbid = (
                         (mb_data or {}).get("recording_mbid")
