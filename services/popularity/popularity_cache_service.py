@@ -185,6 +185,10 @@ def _lf_top_tracks_map(lastfm_client: Any, artist: str) -> Dict[str, Dict[str, i
             continue
         listeners = int(track.get("listeners") or 0)
         playcount = int(track.get("playcount") or 0)
+        # Key the top-track by a hard-variant-aware key: the plain title and
+        # soft variants ("feat.", "radio edit") share the canonical key, but a
+        # live / acoustic / remix / instrumental / demo version gets its OWN
+        # key so its counts never bleed into the studio recording's sum.
         entry = acc.setdefault(key, {"lastfm_listeners": 0, "lastfm_playcount": 0})
         entry["lastfm_listeners"] += listeners
         entry["lastfm_playcount"] += playcount
