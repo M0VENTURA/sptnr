@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import threading
+import time
 from typing import Any
 
 from helpers.config_helpers import get_config
@@ -2317,7 +2318,7 @@ def run_scan(
                 def _collect_finished(deadline: float) -> None:
                     """Collect futures completed by ``deadline`` (epoch secs)."""
                     try:
-                        _remaining = max(0.0, deadline - _futures.monotonic())
+                        _remaining = max(0.0, deadline - time.monotonic())
                     except Exception:
                         _remaining = 0.0
                     try:
@@ -2345,12 +2346,12 @@ def run_scan(
                         pass  # handled by the caller's still-running sweep
 
                 # Phase 1: main deadline.
-                _collect_finished(_futures.monotonic() + _deadline_seconds)
+                _collect_finished(time.monotonic() + _deadline_seconds)
 
                 # Phase 2: bounded grace window for late-but-legit workers.
                 _still_running = [f for f in _track_futures if not f.done()]
                 if _still_running:
-                    _collect_finished(_futures.monotonic() + _track_grace_seconds)
+                    _collect_finished(time.monotonic() + _track_grace_seconds)
                     _still_running = [f for f in _track_futures if not f.done()]
 
                 # Sweep: whatever is STILL running after both phases is
