@@ -60,16 +60,49 @@ var _pageData = window._pageData || {};
             const year = (group.first_release_date || '').toString().split('-')[0] || '';
             const albumType = _buildAlbumType(group.primary_type, group.secondary_types);
             const cover = group.cover_art_url || '';
-            populateAlbumFields(
-                selected.title || group.title || album,
-                year,
-                albumType,
-                releaseMbid,
-                '',
-                cover,
-                '',
-                rgMbid
-            );
+
+            // When the user picked a RELEASE-GROUP (the common case — the
+            // search returns groups, and the group's auto-picked "best"
+            // release is often the wrong edition/format/country), ask them
+            // which specific release they want via the Release Picker.  It
+            // lists every concrete release of the group (date, country,
+            // format, track count) so the correct version is applied instead
+            // of silently guessing.  Only a genuinely specific release
+            // selection (an explicit release id from the group's release
+            // list) is applied directly.
+            if (releaseMbid) {
+                populateAlbumFields(
+                    selected.title || group.title || album,
+                    year,
+                    albumType,
+                    releaseMbid,
+                    '',
+                    cover,
+                    '',
+                    rgMbid
+                );
+            } else if (rgMbid && typeof openReleasePickerModal === 'function') {
+                openReleasePickerModal(
+                    rgMbid,
+                    selected.title || group.title || album,
+                    year,
+                    albumType,
+                    null,
+                    null,
+                    cover
+                );
+            } else {
+                populateAlbumFields(
+                    selected.title || group.title || album,
+                    year,
+                    albumType,
+                    releaseMbid,
+                    '',
+                    cover,
+                    '',
+                    rgMbid
+                );
+            }
         };
 
         // The shared /api/musicbrainz/search endpoint strips release-groups
@@ -418,7 +451,7 @@ var _pageData = window._pageData || {};
     // ── Release Picker Modal ────────────────────────────────────────────────
     let _releasePickerCache = null; // { rgMbid, title, year, albumType, releases, bestRelease }
 
-    async function openReleasePickerModal(rgMbid, title, year, albumType, preloadedReleases = null, preloadedBest = null) {
+    async function openReleasePickerModal(rgMbid, title, year, albumType, preloadedReleases = null, preloadedBest = null, coverArtUrl = '') {
         const statusEl = document.getElementById('releasePickerStatus');
         const errorEl = document.getElementById('releasePickerError');
         const resultsEl = document.getElementById('releasePickerResults');
@@ -456,7 +489,7 @@ var _pageData = window._pageData || {};
             }
         }
 
-        _releasePickerCache = { rgMbid, title, year, albumType, releases, bestRelease };
+        _releasePickerCache = { rgMbid, title, year, albumType, releases, bestRelease, coverArtUrl };
         statusEl.style.display = 'none';
         _renderReleasePickerResults(releases, year, albumType, bestRelease);
     }
