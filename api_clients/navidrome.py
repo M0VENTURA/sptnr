@@ -236,6 +236,49 @@ class NavidromeClient:
             )
         return {}
 
+    def _post_subsonic_response(self, endpoint: str, *, timeout: int = 60, **params) -> dict[str, Any]:
+        """Call a Navidrome endpoint with a FORM-ENCODED POST body.
+
+        Subsonic's REST endpoints accept both GET (params in the URL query)
+        and POST (params in the request body); Navidrome implements both.
+        The POST body is the only safe path for LARGE parameter sets —
+        repeated ``songIdToAdd`` / ``songIdToRemove`` / ``songId`` values for
+        a 1000+ song playlist exceed the URL length limit as query params
+        (``URL component 'query' too long``) but fit comfortably in a body.
+
+        Repeated list values are sent as repeated (key, value) form pairs
+        (``songIdToAdd=id1&songIdToAdd=id2&...``) — the standard Subsonic
+        repeatable-param encoding.
+
+        Returns the parsed ``subsonic-response`` dict, or {} on failure.
+        """
+        _body_pairs: list[tuple[str, str]] = []
+        for _k, _v in (self._build_params(**params) or {}).items():
+            if isinstance(_v, (list, tuple)):
+                for _item in _v:
+                    _body_pairs.append((_k, str(_item)))
+            else:
+                _body_pairs.append((_k, str(_v)))
+        url = f"{self.base_url}/rest/{endpoint}"
+        try:
+            response = self.session.post(url, data=_body_pairs, timeout=timeout)
+            response.raise_for_status()
+            return response.json().get("subsonic-response", {}) or {}
+        except Exception as exc:
+            _now = time.time()
+            _last = _nav_error_log_ts.get(endpoint, 0.0)
+            if _now - _last >= _NAV_ERROR_LOG_COOLDOWN_SECONDS:
+                _nav_error_log_ts[endpoint] = _now
+                logger.error(
+                    "Navidrome %s POST failed after %s: %s (%s)",
+                    endpoint, timeout, exc, type(exc).__name__,
+                )
+            else:
+                logger.debug(
+                    "Navidrome %s POST failed again (suppressed): %s", endpoint, exc,
+                )
+            return {}
+
     # ------------------------------------------------------------------
     # Library read endpoints
     # ------------------------------------------------------------------
@@ -530,6 +573,13 @@ class NavidromeClient:
         When ``song_ids`` is empty, every existing entry is removed and the
         playlist is emptied (not deleted).
 
+        LARGE PLAYLISTS: the song list is sent as a form-encoded POST body,
+        NOT query parameters.  Subsonic's REST endpoints accept both GET and
+        POST with params in the body; Navidrome implements it.  Sending 1000+
+        ``songIdToAdd`` values as query params blew past the URL length limit
+        (``URL component 'query' too long``) — a 1119-song "Nu Metal - Top
+        Tracks" playlist failed every sync.  The POST body has no such limit.
+
         Returns True when Navidrome acknowledged the update.
         """
         try:
@@ -541,9 +591,13 @@ class NavidromeClient:
                 params["songIndexToRemove"] = list(range(0, _count))
             if song_ids:
                 params["songIdToAdd"] = list(song_ids)
-            data = self._get_subsonic_response(
+
+            # Form-encoded POST body — the song list can exceed the URL query
+            # length limit (a 1119-song playlist failed every sync with
+            # ``URL component 'query' too long``); the body has no such cap.
+            data = self._post_subsonic_response(
                 "updatePlaylist",
-                timeout=60,
+                timeout=120,
                 **params,
             )
             ok = data.get("status") == "ok"
@@ -556,6 +610,27 @@ class NavidromeClient:
         except Exception as exc:
             logger.error("Failed to update playlist %s songs: %s", playlist_id, exc)
             return False
+
+    def create_playlist(self, name: str, song_ids: list[str]) -> dict[str, Any]:
+        """Create a playlist via ``createPlaylist`` with a form-encoded POST.
+
+        Sends ``name`` + the repeatable ``songId`` list in the request body —
+        the same URL-length-safe path as ``update_playlist_songs`` (a fresh
+        1000+ song "New Music" / genre playlist would otherwise exceed the
+        query limit).
+
+        Returns the parsed ``subsonic-response`` dict (status + the created
+        playlist, when acknowledged).
+        """
+        try:
+            params: dict[str, Any] = {"name": str(name or "")}
+            _ids = [str(s) for s in (song_ids or []) if str(s or "").strip()]
+            if _ids:
+                params["songId"] = _ids
+            return self._post_subsonic_response("createPlaylist", timeout=120, **params)
+        except Exception as exc:
+            logger.error("Failed to create playlist '%s': %s", name, exc)
+            return {}
 
     # ------------------------------------------------------------------
     # Artist info (OpenSubsonic — requires external integration)

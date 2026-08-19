@@ -127,13 +127,12 @@ def sync_playlist_by_name(
             logger.warning("[PLAYLISTS] updatePlaylist raised for '%s': %s", name, exc)
         return result
 
-    # No existing regular playlist — create it.
+    # No existing regular playlist — create it.  Uses the client's
+    # form-encoded POST (the song list can exceed the URL query limit for
+    # 1000+ song playlists; the query-param path also mis-serialised the
+    # ``songId`` list through ``_get_subsonic_response``).
     try:
-        data = client._get_subsonic_response(
-            "createPlaylist",
-            timeout=60,
-            params={"name": name, "songId": song_ids},
-        )
+        data = client.create_playlist(name, song_ids)
         pid = str((data.get("playlist") or {}).get("id") or "")
         result["created"] = data.get("status") == "ok"
         result["playlist_id"] = pid
