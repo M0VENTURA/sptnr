@@ -33,7 +33,7 @@ Params:
     favourite_onclick='',
     favourite_checked=false
 ) %}
-<div class="d-flex align-items-center gap-2 my-2 overflow-x-auto pb-1">
+<div class="d-flex align-items-center gap-2 my-2 overflow-x-auto pb-1 scan-toolbar">
   {% if play_onclick %}
   <button type="button" class="btn btn-success btn-sm d-flex align-items-center gap-1 flex-shrink-0" onclick="{{ play_onclick|safe }}" title="Play">
     <i class="bi bi-play-fill"></i> <span class="d-none d-sm-inline">Play</span>
@@ -46,15 +46,15 @@ Params:
     {% if scan_album %}<input type="hidden" name="album" value="{{ scan_album }}">{% endif %}
     {% if scan_track_id %}<input type="hidden" name="track_id" value="{{ scan_track_id }}">{% endif %}
     {% if scan_selector %}{% include 'components/_scan_selector.html' ignore missing %}{% endif %}
+    <button type="submit" class="btn btn-outline-success btn-sm d-flex align-items-center gap-1 order-first" title="Run scan">
+      <i class="bi bi-lightning-charge-fill"></i> <span class="d-none d-sm-inline">Run</span>
+    </button>
     {% if scan_force %}
     <div class="form-check form-check-inline mb-0" title="Force full rescan (ignore change detection)">
       <input class="form-check-input" type="checkbox" id="heroScanForce" name="force" value="1">
       <label class="form-check-label small" for="heroScanForce">Force</label>
     </div>
     {% endif %}
-    <button type="submit" class="btn btn-outline-success btn-sm d-flex align-items-center gap-1" title="Run scan">
-      <i class="bi bi-lightning-charge-fill"></i> <span class="d-none d-sm-inline">Scan</span>
-    </button>
   </form>
   {% endif %}
 

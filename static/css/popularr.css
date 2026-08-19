@@ -409,6 +409,30 @@ option:checked { background-color: var(--spotify-green); color: #000; }
 .btn-secondary { background-color: var(--tertiary-bg); border-color: var(--border-color); color: var(--text-primary); }
 .btn-warning { background-color: #ff6b00; border-color: #ff6b00; color: #fff; font-weight: 600; }
 
+/* Scan toolbar Force checkboxes — consistent size across every page
+   (album / artist / dashboard / hero).  Bootstrap's default form-check-input
+   is 1em, which follows the label font-size — a "small" label shrinks the
+   checkbox, so the album page's Force tick appeared tiny next to the artist
+   page's.  A fixed rem size keeps every page identical regardless of the
+   surrounding label class. */
+.scan-toolbar .form-check-input,
+.scan-toolbar-force,
+form .form-check-input[name="force"] {
+  width: 1.25rem;
+  height: 1.25rem;
+  margin-top: 0;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.scan-toolbar .form-check-label,
+.scan-toolbar-force + .form-check-label,
+form .form-check-input[name="force"] + .form-check-label {
+  font-size: 0.85rem;
+  line-height: 1.25rem;
+  cursor: pointer;
+  user-select: none;
+}
+
 /* Alerts */
 .alert { background-color: var(--secondary-bg); border: 1px solid var(--border-color); }
 .alert-info { border-left: 4px solid var(--spotify-green); }

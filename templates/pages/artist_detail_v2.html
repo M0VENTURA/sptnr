@@ -211,25 +211,25 @@
       </div>
 
       <!-- Admin Controls Row -->
-      <form id="artistScanForm" action="{{ url_for('scans.scan_artist_custom') }}" method="post" class="d-flex align-items-center gap-2 mb-3">
+      <form id="artistScanForm" action="{{ url_for('scans.scan_artist_custom') }}" method="post" class="d-flex align-items-center gap-2 mb-3 scan-toolbar">
         <input type="hidden" name="artist" value="{{ artist_name }}">
 
         <div class="flex-grow-1" style="max-width: 160px;">
           {% include 'components/_scan_selector.html' ignore missing %}
         </div>
 
-        <div class="form-check form-check-inline m-0 extra-small text-muted">
-          <input class="form-check-input" type="checkbox" id="artistForceScan" name="force" value="1">
-          <label class="form-check-label small text-white" for="artistForceScan">Force</label>
-        </div>
-
-        <button type="submit" class="btn btn-warning px-3 ms-auto" title="Run Scan">
-          <i class="bi bi-lightning-fill"></i>
+        <button type="submit" class="btn btn-warning btn-sm" title="Run Scan">
+          <i class="bi bi-lightning-fill"></i> <span class="d-none d-sm-inline">Run</span>
         </button>
 
-        <div class="dropdown">
-          <button class="btn btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
-            <i class="bi bi-three-dots"></i>
+        <div class="form-check form-check-inline m-0" title="Force full rescan (ignore change detection)">
+          <input class="form-check-input" type="checkbox" id="artistForceScan" name="force" value="1">
+          <label class="form-check-label" for="artistForceScan">Force</label>
+        </div>
+
+        <div class="dropdown ms-auto">
+          <button class="btn btn-outline-secondary btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" title="More actions">
+            <i class="bi bi-three-dots-vertical"></i> <span class="d-none d-sm-inline">Actions</span>
           </button>
           <ul class="dropdown-menu dropdown-menu-end">
             <li><a class="dropdown-item" href="{{ url_for('ui.artist_corrections', name=artist_name) }}"><i class="bi bi-wrench me-2"></i> Corrections</a></li>
