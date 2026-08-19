@@ -108,6 +108,38 @@ class TestBuildAlbumListenerDistributions:
         assert lf == [500.0, 600.0, 700.0]
         assert lb == [250.0, 300.0, 350.0]
 
+    def test_excludes_remix_cuts(self):
+        """Remix versions are excluded from the fresh album distribution.
+
+        Regression: the DB-stored stats paths (``_filter_bonus_rows`` /
+        ``is_bonus_track_title``, which match ``\\bremix\\b``) exclude remix
+        titles, but the FRESH in-memory helper did not — so singles
+        detection's z_composite / standout saw a remix-polluted album baseline
+        while the star-rating baseline excluded it.  The fresh distribution
+        must match the stored paths.
+        """
+        from services.popularity.stages.track_stage import _build_album_listener_distributions
+
+        # Deluxe album: 3 core tracks + a remix cut with extreme counts that
+        # would skew the album baseline.
+        ctx = _album_ctx(["Track A", "Track B", "Track C", "Track D (Remix)"])
+        prefetch = _prefetch([
+            ("Track A", 100, 50),
+            ("Track B", 200, 100),
+            ("Track C", 300, 150),
+            ("Track D (Remix)", 900000, 800000),  # would inflate the median
+        ])
+
+        lf, lb, pairs = _build_album_listener_distributions(
+            album_context=ctx,
+            prefetched_popularity=prefetch,
+        )
+        # The remix cut is excluded — its massive counts would crush the
+        # core tracks' z (same rule as the DB-stored bonus-row filter).
+        assert lf == [100.0, 200.0, 300.0]
+        assert lb == [50.0, 100.0, 150.0]
+        assert pairs == [(100, 50), (200, 100), (300, 150)]
+
 
 class TestSingleDetectionUsesFreshDistributions:
     """detect_single_for_track must use the supplied fresh distributions."""

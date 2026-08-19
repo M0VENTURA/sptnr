@@ -68,6 +68,7 @@ from services.enrichment.cover_detection_service import (
 
 # Track classification (bonus/live/alternate title detection)
 from services.catalog.album_classification_service import (
+    is_bonus_track_title,
     is_instrumental_track_title,
     is_live_or_alternate_track_title,
 )
@@ -184,10 +185,11 @@ def _build_album_listener_distributions(
     Deluxe/expanded albums pad the tracklist with live/acoustic/demo/bonus
     cuts — their low listener counts must not drag the core tracks' album-
     local z down.  Drop every album track flagged for exclusion or matching
-    the live/alternate title patterns (same rule as the star-rating
-    baseline).  A genuine LIVE album flags everything: fewer than 3 core
-    tracks then falls back to the full tracklist, so it is still scored
-    against itself (as before).
+    the live/alternate/remix title patterns (same rule as the star-rating
+    baseline and the DB-stored stats paths — ``_filter_bonus_rows`` /
+    ``is_bonus_track_title``, which match ``\bremix\b``).  A genuine LIVE
+    album flags everything: fewer than 3 core tracks then falls back to the
+    full tracklist, so it is still scored against itself (as before).
     """
     album_lf_listeners: list[float] | None = None
     album_lb_listens: list[float] | None = None
@@ -203,6 +205,12 @@ def _build_album_listener_distributions(
             if bool(t.get("exclude_from_stats"))
             or bool(t.get("is_live"))
             or is_live_or_alternate_track_title(str(t.get("title") or ""))
+            # Remix versions are excluded too — they match ``is_bonus_track_title``
+            # on the DB-stored stats paths, so the FRESH in-memory distribution
+            # must treat them identically or singles detection's z_composite /
+            # standout would see a remix-polluted album baseline while the
+            # star-rating baseline excludes it.
+            or is_bonus_track_title(str(t.get("title") or ""))
         }
         _all_lf_vals: list[float] = []
         _all_lb_vals: list[float] = []
