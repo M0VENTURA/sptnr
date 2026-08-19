@@ -279,6 +279,8 @@ def _album_z_band_star(
     album_scores: list[float],
     reference_scores: list[float] | None = None,
     artist_scores: list[float] | None = None,
+    is_live: bool = False,
+    single_confidence: str = "low",
 ) -> int:
     """Album-relative 1-4★ rating from the z-score bands.
 
@@ -294,6 +296,15 @@ def _album_z_band_star(
     sits below the artist-catalogue z gate falls to 3★.  Without artist
     context (compilation tracks, tiny catalogues) the pure album band stands
     (legacy parity).
+
+    LIVE-TRACK 4★ GATE (``single_detection.live_4star_requires_single``,
+    default ON): a live / acoustic / unplugged / demo / alternate track may
+    only reach the 4★ band when it is marked as a single (``single_confidence``
+    high/medium/user).  A live track that is NOT a single is capped at 3★ —
+    the 4★ band is reserved for studio singles / genuine standouts, so a bonus
+    live cut (or a live album's crowd-pleaser) cannot sit alongside real
+    singles at 4★ unless it was actually issued as one.  Turn the config key
+    off to restore the old behaviour (live tracks reach 4★ on album-z alone).
 
     ``reference_scores`` overrides the reference distribution (used for
     compilation / Best-Of albums, where the curated tracklist inflates the
@@ -335,6 +346,19 @@ def _album_z_band_star(
         if len(valid_artist) >= 5 and len(valid_artist) > len(valid):
             artist_z, artist_spread = _compute_artist_z(score, valid_artist)
             artist_eligible_4star = artist_z >= th["star4_artist_z"] - _star_epsilon_z(artist_spread, th["epsilon"])
+    # Live-track 4★ gate: a non-single live track cannot reach the 4★ band.
+    if is_live and album_z >= th["star4_album_z"] - epsilon:
+        try:
+            _requires_single = bool(
+                get_standout_config().get("live_4star_requires_single", True)
+            )
+        except Exception:
+            _requires_single = True
+        if _requires_single and str(single_confidence or "low").lower() not in (
+            "high", "medium", "user",
+        ):
+            # Capped at 3★ — falls through to the 3★ band check below.
+            album_z = float("-inf")
     if album_z >= th["star4_album_z"] - epsilon and artist_eligible_4star:
         return 4
     if album_z >= th["star3_album_z"] - epsilon:
@@ -769,16 +793,25 @@ def _assign_stars(
             # that fails the 5★ criteria never drops below 4★ — unless the
             # organic floor is unmet, in which case it must not exceed 3★.
             if not popularity_only and single_confidence == "high":
-                band = _album_z_band_star(score, ref_scores, artist_scores=artist_scores)
+                band = _album_z_band_star(
+                    score, ref_scores, artist_scores=artist_scores,
+                    is_live=is_live, single_confidence=single_confidence,
+                )
                 return max(band, 4) if organic else min(band, 3)
             # Marked-only tracks below the era bar (medium-bumped singles
             # ranked 10-20% on a minor-era album) fall through to the band.
-            return _album_z_band_star(score, ref_scores, artist_scores=artist_scores)
+            return _album_z_band_star(
+                score, ref_scores, artist_scores=artist_scores,
+                is_live=is_live, single_confidence=single_confidence,
+            )
 
         return 5
 
     # ── 1-4★: album-relative z-score base ──
-    return _album_z_band_star(score, ref_scores, artist_scores=artist_scores)
+    return _album_z_band_star(
+        score, ref_scores, artist_scores=artist_scores,
+        is_live=is_live, single_confidence=single_confidence,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -375,6 +375,7 @@ function buildConfigObject() {
         metadata_score_floor: parseFloat(getValue('metadata_score_floor', '5.0')) || 5.0,
         live_weight_penalty: parseFloat(getValue('live_weight_penalty', '0.5')) || 0.5,
         instrumental_weight_penalty: parseFloat(getValue('instrumental_weight_penalty', '0.8')) || 0.8,
+        live_4star_requires_single: getChecked('live_4star_requires_single', true),
         single_organic_floor_score: parseFloat(getValue('single_organic_floor_score', '45.0')) || 45.0,
         single_organic_floor_listeners: parseFloat(getValue('single_organic_floor_listeners', '1000')) || 1000,
         log_ratio_enabled: getChecked('log_ratio_enabled', true),

@@ -596,6 +596,7 @@ def get_standout_config() -> dict[str, Any]:
         "listener_5star_z_threshold": 1.0,
         "standout_gap_z": 0.75,
         "star_epsilon_score_points": 0.5,
+        "live_4star_requires_single": True,
         "star_5": {"album_z": 1.0, "artist_z": 1.2, "artist_pct": 0.10},
         "star_4": {"album_z": 0.5, "artist_z": 1.0, "artist_pct": 0.20},
         "star_3": {"album_z": -0.5},
@@ -612,7 +613,8 @@ def get_standout_config() -> dict[str, Any]:
                 "artist_min_tracks",
                 "popularity_5star_z_threshold", "lb_unreliable_5star_threshold",
                 "listener_5star_z_threshold",
-                "standout_gap_z", "star_epsilon_score_points"):
+                "standout_gap_z", "star_epsilon_score_points",
+                "live_4star_requires_single"):
         if key in sd_config:
             result[key] = sd_config[key]
 
