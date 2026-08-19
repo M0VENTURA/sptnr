@@ -31,6 +31,11 @@ def _album_ctx(titles):
     return {"tracks": [{"title": t} for t in titles]}
 
 
+def _album_ctx_tracks(tracks):
+    """Build an album_context whose ``tracks`` carry the given dicts."""
+    return {"tracks": list(tracks)}
+
+
 def _prefetch(entries):
     """Build a prefetched_popularity map keyed by normalized title."""
     from services.popularity.popularity_matching import normalize_for_aggregation
@@ -136,6 +141,75 @@ class TestBuildAlbumListenerDistributions:
         )
         # The remix cut is excluded — its massive counts would crush the
         # core tracks' z (same rule as the DB-stored bonus-row filter).
+        assert lf == [100.0, 200.0, 300.0]
+        assert lb == [50.0, 100.0, 150.0]
+        assert pairs == [(100, 50), (200, 100), (300, 150)]
+
+    def test_excludes_short_tracks_and_intros(self):
+        """Tracks < 30s and intro/interlude titles are excluded from the z baseline.
+
+        Regression: the fresh in-memory album distribution used
+        ``album_context["tracks"]``, which is NEVER populated in production
+        (``prepare_album_context`` returns album metadata only) — so the
+        exclusion never fired and intro/short tracks polluted singles
+        detection's z-composite baseline.  The helper now reads
+        ``album_tracks`` (the raw DB rows enriched with ``exclude_from_stats``)
+        and applies the 30s floor + title patterns.
+        """
+        from services.popularity.stages.track_stage import _build_album_listener_distributions
+
+        ctx = _album_ctx_tracks([
+            {"title": "Track A", "duration": 210},   # core
+            {"title": "Track B", "duration": 195},   # core
+            {"title": "Track C", "duration": 205},   # core
+            {"title": "Intro", "duration": 25},      # < 30s → excluded
+            {"title": "Track D", "duration": 20},    # < 30s → excluded
+        ])
+        prefetch = _prefetch([
+            ("Track A", 100, 50),
+            ("Track B", 200, 100),
+            ("Track C", 300, 150),
+            ("Intro", 5, 2),        # would compress the median
+            ("Track D", 10, 5),     # would compress the median
+        ])
+
+        lf, lb, pairs = _build_album_listener_distributions(
+            album_context=ctx,
+            album_tracks=ctx.get("tracks"),
+            prefetched_popularity=prefetch,
+        )
+        # Only the three core tracks remain.
+        assert lf == [100.0, 200.0, 300.0]
+        assert lb == [50.0, 100.0, 150.0]
+        assert pairs == [(100, 50), (200, 100), (300, 150)]
+
+    def test_uses_album_tracks_not_empty_album_context(self):
+        """The helper must read album_tracks, not album_context['tracks'].
+
+        In production ``album_context`` has no ``tracks`` key — the runner
+        passes the loaded DB rows as ``album_tracks``.  With an empty
+        album_context and populated album_tracks, the core tracks must still
+        be included (previously the empty context emptied the distribution).
+        """
+        from services.popularity.stages.track_stage import _build_album_listener_distributions
+
+        ctx = {}  # production shape: no "tracks" key
+        album_tracks = [
+            {"title": "Track A", "duration": 200},
+            {"title": "Track B", "duration": 200},
+            {"title": "Track C", "duration": 200},
+        ]
+        prefetch = _prefetch([
+            ("Track A", 100, 50),
+            ("Track B", 200, 100),
+            ("Track C", 300, 150),
+        ])
+
+        lf, lb, pairs = _build_album_listener_distributions(
+            album_context=ctx,
+            album_tracks=album_tracks,
+            prefetched_popularity=prefetch,
+        )
         assert lf == [100.0, 200.0, 300.0]
         assert lb == [50.0, 100.0, 150.0]
         assert pairs == [(100, 50), (200, 100), (300, 150)]

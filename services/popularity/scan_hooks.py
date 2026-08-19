@@ -150,6 +150,19 @@ def prepare_track_context(
         duration=_duration_seconds(track.get("duration")),
     )
 
+    # Write the exclusion verdict back onto the RAW track dict (the same
+    # object ``track_dicts`` / ``album_tracks`` reference in the scan runner).
+    # The fresh in-memory album listener distributions
+    # (``_build_album_listener_distributions``) filter on this flag; without
+    # it the raw DB rows — which have no ``exclude_from_stats`` column —
+    # would include live / intro / short tracks in singles detection's
+    # album-z baseline even though the star-rating and DB-stored stats paths
+    # exclude them.
+    try:
+        track["exclude_from_stats"] = exclude_from_stats
+    except Exception:
+        pass
+
     return {
         "track": track,
         "title": title,

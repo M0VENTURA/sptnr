@@ -153,6 +153,21 @@ def _safe_duration(value) -> float | None:
     return dur
 
 
+def _duration_below_floor(track: dict[str, Any]) -> bool:
+    """True when a track's duration is below the 30-second stats floor.
+
+    Short interludes / skits / intros never anchor the album or artist
+    z-distributions — a 20-second ambient piece would compress the median
+    and shrink the MAD used for z-scores (same rule as
+    ``should_exclude_track_from_stats``'s duration floor, applied to the
+    raw DB rows that carry no precomputed ``exclude_from_stats``).
+    """
+    dur = _safe_duration(track.get("duration"))
+    if dur is None:
+        return False
+    return dur < 30.0
+
+
 def _build_effective_track(
     track: dict[str, Any],
     update_payload: dict[str, Any],
@@ -165,6 +180,7 @@ def _build_effective_track(
 def _build_album_listener_distributions(
     *,
     album_context: dict[str, Any],
+    album_tracks: list[dict[str, Any]] | None = None,
     prefetched_popularity: dict[str, dict[str, Any]] | None,
 ) -> tuple[list[float] | None, list[float] | None, list[tuple[int, int]]]:
     """Build FRESH album-level listener distributions from the prefetch.
@@ -182,14 +198,18 @@ def _build_album_listener_distributions(
     - ``album_lf_lb_pairs`` — per-track (LF, LB) pairs used by the
       ListenBrainz realism / Log-MAD / interlude-outlier checks.
 
-    Deluxe/expanded albums pad the tracklist with live/acoustic/demo/bonus
-    cuts — their low listener counts must not drag the core tracks' album-
-    local z down.  Drop every album track flagged for exclusion or matching
-    the live/alternate/remix title patterns (same rule as the star-rating
-    baseline and the DB-stored stats paths — ``_filter_bonus_rows`` /
-    ``is_bonus_track_title``, which match ``\bremix\b``).  A genuine LIVE
-    album flags everything: fewer than 3 core tracks then falls back to the
-    full tracklist, so it is still scored against itself (as before).
+    ``album_tracks`` (the loaded DB track dicts, which the scan runner has
+    enriched with ``exclude_from_stats`` via ``prepare_track_context``) is
+    the exclusion reference — NOT ``album_context["tracks"]``, which is never
+    populated (``prepare_album_context`` returns album metadata only).  Each
+    excluded title matches the same rule as the star-rating baseline and the
+    DB-stored stats paths (``_filter_bonus_rows`` / ``is_bonus_track_title``):
+    live / acoustic / unplugged / demo / alternate / remix titles,
+    ``exclude_from_stats`` (which covers live albums, short interludes and
+    intro/interlude title patterns), and tracks below the 30-second floor.
+    A genuine LIVE album flags everything: fewer than 3 core tracks then
+    falls back to the full tracklist, so it is still scored against itself
+    (as before).
     """
     album_lf_listeners: list[float] | None = None
     album_lb_listens: list[float] | None = None
@@ -197,11 +217,11 @@ def _build_album_listener_distributions(
     try:
         _album_titles = {
             normalize_for_aggregation(str(t.get("title") or ""))
-            for t in (album_context.get("tracks") or [])
+            for t in (album_tracks or album_context.get("tracks") or [])
         }
         _excluded_titles = {
             normalize_for_aggregation(str(t.get("title") or ""))
-            for t in (album_context.get("tracks") or [])
+            for t in (album_tracks or album_context.get("tracks") or [])
             if bool(t.get("exclude_from_stats"))
             or bool(t.get("is_live"))
             or is_live_or_alternate_track_title(str(t.get("title") or ""))
@@ -211,6 +231,9 @@ def _build_album_listener_distributions(
             # standout would see a remix-polluted album baseline while the
             # star-rating baseline excludes it.
             or is_bonus_track_title(str(t.get("title") or ""))
+            # Short tracks (< 30s) never anchor the album baseline — the same
+            # floor the stats paths apply to interludes/skits.
+            or _duration_below_floor(t)
         }
         _all_lf_vals: list[float] = []
         _all_lb_vals: list[float] = []
@@ -447,6 +470,7 @@ def _score_track_popularity(
     _album_lf_listeners, _album_lb_fresh, _album_lf_lb_pairs = (
         _build_album_listener_distributions(
             album_context=album_context,
+            album_tracks=album_tracks,
             prefetched_popularity=prefetched_popularity,
         )
     )
@@ -1644,6 +1668,7 @@ def process_track(
             # math-engine bridge ordering is honoured (gather → math → singles).
             _sd_album_lf, _sd_album_lb, _ = _build_album_listener_distributions(
                 album_context=album_context,
+                album_tracks=album_tracks,
                 prefetched_popularity=prefetched_popularity,
             )
             if not _sd_album_lb and album_lb_listens:
