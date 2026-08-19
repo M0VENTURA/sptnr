@@ -502,6 +502,12 @@ def refresh_missing_releases_for_artist(artist: str) -> Dict[str, Any]:
     them floods the artist page's missing buckets and mixes up the
     Studio/Live/Remix/Compilation splitting.  MusicBrainz secondary types are
     the authoritative category source.
+
+    SELECTIVE REPLACEMENT: only cache-owned rows are replaced (matched by
+    normalized title against the cache titles being inserted).  Rows the
+    artist-page "Check Missing" live scan persisted that the cache does not
+    know about are preserved — a prefetch must never erase the user's
+    freshly-detected missing releases.
     """
     if not artist:
         return {"missing": 0}
@@ -597,12 +603,43 @@ def refresh_missing_releases_for_artist(artist: str) -> Dict[str, Any]:
             "source": str(row.get("source") or "musicbrainz"),
         })
 
+    # Selectively replace cache-owned rows instead of wiping the artist's
+    # whole bucket.  The artist-page "Check Missing" live scan (MusicBrainz
+    # BROWSE endpoint) persists releases the cache's SEARCH endpoint may not
+    # know about (and preserves richer secondary-type categories).  A blind
+    # DELETE-all here would silently erase those rows on the next
+    # metadata/popularity scan prefetch — the user's freshly-detected missing
+    # releases "reset" when they re-enter the artist page.  Only rows whose
+    # normalized title matches a cache-derived row being re-inserted are
+    # deleted (they get replaced with fresh cache data); unrelated rows
+    # (artist-page finds, album-page manual adds) are left intact.
     try:
         with db_session() as session:
-            session.execute(
-                text("DELETE FROM missing_releases WHERE LOWER(artist) = LOWER(:artist)"),
+            existing = session.execute(
+                text("""
+                    SELECT id, title FROM missing_releases
+                    WHERE LOWER(artist) = LOWER(:artist)
+                """),
                 {"artist": artist},
-            )
+            ).fetchall()
+            replace_ids: list[int] = []
+            for row in existing:
+                rid, rtitle = row[0], str(row[1] or "")
+                if not rtitle:
+                    continue
+                norm = _norm_release_title(rtitle)
+                # Replace rows owned by the cache (their title is being
+                # re-inserted), and drop stale rows whose release is now in
+                # the library (mirrors the old DELETE-all's implicit cleanup
+                # — the artist page filters these out anyway, but they must
+                # not linger for the download queue).
+                if norm in seen or norm in library:
+                    replace_ids.append(rid)
+            for rid in replace_ids:
+                session.execute(
+                    text("DELETE FROM missing_releases WHERE id = :id"),
+                    {"id": rid},
+                )
             for item in missing_rows:
                 session.execute(
                     text("""

@@ -364,7 +364,15 @@ def get_missing_releases(artist: str, background: bool = False):
     try:
         _persist_missing_releases(artist, missing_items)
     except Exception as exc:
-        logger.warning("[MISSING_RELEASES] Could not persist missing releases for %s: %s", artist, exc)
+        # The API response is built from ``missing_items`` regardless, so the
+        # frontend always shows the freshly-detected rows even when the DB
+        # write fails — log loudly (error, with traceback) so a persistence
+        # failure is never invisible (it used to be a warning, which users
+        # mistook for "the DB was populated").
+        logger.error(
+            "[MISSING_RELEASES] Could not persist missing releases for %s — they will reset on page reload: %s",
+            artist, exc, exc_info=True,
+        )
 
     return {
         "artist": artist,

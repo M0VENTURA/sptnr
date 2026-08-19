@@ -340,3 +340,76 @@ def test_refresh_excludes_discogs_rows(release_cache_db):
     # Discogs-only rows never appear.
     assert "Lateralus (Unofficial Bootleg Live)" not in titles
     assert "Salival (Compilation)" not in titles
+
+
+def test_refresh_preserves_artist_page_rows_not_in_cache(release_cache_db):
+    """A prefetch refresh must NOT wipe rows the artist-page live scan persisted.
+
+    Regression: the artist page "Check Missing" uses the MusicBrainz BROWSE
+    endpoint and persists releases the cache (SEARCH endpoint) may not know
+    about.  The old implementation did ``DELETE FROM missing_releases WHERE
+    LOWER(artist) = LOWER(:artist)`` then re-inserted only cache-derived
+    rows — so on the next metadata/popularity scan prefetch, the user's
+    freshly-detected missing releases vanished (they "reset" on page
+    reload).  The refresh must only replace rows it owns (matching cache
+    titles) and leave everything else intact.
+    """
+    from services.popularity.release_cache_service import refresh_missing_releases_for_artist
+
+    _session, _open = release_cache_db
+    with _open() as session:
+        # Artist-page browse scan persisted these (NOT in the cache).
+        from sqlalchemy import text
+        for title, cat in [("Obscure B-Side EP", "EP"), ("Rare Live Recording", "Live Album")]:
+            session.execute(
+                text("""
+                    INSERT INTO missing_releases (artist, release_id, title, primary_type, category)
+                    VALUES (:artist, :rid, :title, 'album', :cat)
+                """),
+                {"artist": "Iron Maiden", "rid": f"rg-{title}", "title": title, "cat": cat},
+            )
+        # The cache only knows about one studio album.
+        _seed_cache(session, [
+            {"artist": "Iron Maiden", "title": "Powerslave", "release_type": "album",
+             "category": "Album", "source": "musicbrainz", "release_id": "rg-studio", "year": 1984},
+        ])
+
+    refresh_missing_releases_for_artist("Iron Maiden")
+
+    with _open() as session:
+        rows = _read_missing(session)
+    by_title = {r["title"]: r["category"] for r in rows}
+    # Cache row is present.
+    assert by_title["Powerslave"] == "Album"
+    # Artist-page rows SURVIVE the refresh.
+    assert by_title["Obscure B-Side EP"] == "EP"
+    assert by_title["Rare Live Recording"] == "Live Album"
+
+
+def test_refresh_replaces_cache_owned_rows(release_cache_db):
+    """Cache-owned rows ARE replaced by the refresh (categories updated)."""
+    from services.popularity.release_cache_service import refresh_missing_releases_for_artist
+
+    _session, _open = release_cache_db
+    with _open() as session:
+        # Existing missing_releases row with a STALE category.
+        from sqlalchemy import text
+        session.execute(
+            text("""
+                INSERT INTO missing_releases (artist, release_id, title, primary_type, category)
+                VALUES (:artist, :rid, :title, 'album', :cat)
+            """),
+            {"artist": "Iron Maiden", "rid": "rg-live", "title": "Live After Death", "cat": "Album"},
+        )
+        # The cache has the CORRECT category for the same title.
+        _seed_cache(session, [
+            {"artist": "Iron Maiden", "title": "Live After Death", "release_type": "album",
+             "category": "Live Album", "source": "musicbrainz", "release_id": "rg-live", "year": 1985},
+        ])
+
+    refresh_missing_releases_for_artist("Iron Maiden")
+
+    with _open() as session:
+        rows = _read_missing(session)
+    by_title = {r["title"]: r["category"] for r in rows}
+    assert by_title["Live After Death"] == "Live Album"
