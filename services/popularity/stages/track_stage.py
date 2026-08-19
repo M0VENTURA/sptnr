@@ -161,6 +161,84 @@ def _build_effective_track(
     return effective_track
 
 
+def _build_album_listener_distributions(
+    *,
+    album_context: dict[str, Any],
+    prefetched_popularity: dict[str, dict[str, Any]] | None,
+) -> tuple[list[float] | None, list[float] | None, list[tuple[int, int]]]:
+    """Build FRESH album-level listener distributions from the prefetch.
+
+    Returns ``(album_lf_listeners, album_lb_listens, album_lf_lb_pairs)``:
+
+    - ``album_lf_listeners`` — the album's own Last.fm listener counts from
+      the current scan's prefetch (not the DB, which still holds the previous
+      scan's values mid-run).  Used to score Last.fm against the album's own
+      listener spread and to give single detection a FRESH album z baseline.
+    - ``album_lb_listens`` — the album's own ListenBrainz listen counts from
+      the same prefetch (the caller already has ``album_lb_listens`` for the
+      percentile anchor; this helper derives the bonus-excluded variant for
+      single detection).
+    - ``album_lf_lb_pairs`` — per-track (LF, LB) pairs used by the
+      ListenBrainz realism / Log-MAD / interlude-outlier checks.
+
+    Deluxe/expanded albums pad the tracklist with live/acoustic/demo/bonus
+    cuts — their low listener counts must not drag the core tracks' album-
+    local z down.  Drop every album track flagged for exclusion or matching
+    the live/alternate title patterns (same rule as the star-rating
+    baseline).  A genuine LIVE album flags everything: fewer than 3 core
+    tracks then falls back to the full tracklist, so it is still scored
+    against itself (as before).
+    """
+    album_lf_listeners: list[float] | None = None
+    album_lb_listens: list[float] | None = None
+    album_lf_lb_pairs: list[tuple[int, int]] = []
+    try:
+        _album_titles = {
+            normalize_for_aggregation(str(t.get("title") or ""))
+            for t in (album_context.get("tracks") or [])
+        }
+        _excluded_titles = {
+            normalize_for_aggregation(str(t.get("title") or ""))
+            for t in (album_context.get("tracks") or [])
+            if bool(t.get("exclude_from_stats"))
+            or bool(t.get("is_live"))
+            or is_live_or_alternate_track_title(str(t.get("title") or ""))
+        }
+        _all_lf_vals: list[float] = []
+        _all_lb_vals: list[float] = []
+        _lf_vals: list[float] = []
+        _lb_vals: list[float] = []
+        for _k, _e in (prefetched_popularity or {}).items():
+            _norm_k = normalize_for_aggregation(str(_k or ""))
+            if _norm_k not in _album_titles:
+                continue
+            _lfv = int(_e.get("lastfm_listeners") or 0)
+            _lbv = int(_e.get("listenbrainz_listens") or 0)
+            if _lfv > 0:
+                _all_lf_vals.append(float(_lfv))
+            if _lbv > 0:
+                _all_lb_vals.append(float(_lbv))
+            if _norm_k not in _excluded_titles:
+                if _lfv > 0:
+                    _lf_vals.append(float(_lfv))
+                if _lbv > 0:
+                    _lb_vals.append(float(_lbv))
+                if _lfv > 0 and _lbv > 0:
+                    album_lf_lb_pairs.append((_lfv, _lbv))
+        if len(_lf_vals) < 3:
+            _lf_vals = _all_lf_vals
+        if len(_lb_vals) < 3:
+            _lb_vals = _all_lb_vals
+        if len(_lf_vals) >= 3:
+            album_lf_listeners = _lf_vals
+        if len(_lb_vals) >= 3:
+            album_lb_listens = _lb_vals
+    except Exception:
+        album_lf_listeners = None
+        album_lb_listens = None
+    return album_lf_listeners, album_lb_listens, album_lf_lb_pairs
+
+
 _GENRE_SOURCE_COLUMNS = (
     "musicbrainz_genres",
     "discogs_genres",
@@ -358,50 +436,17 @@ def _score_track_popularity(
     # which crushed every album track below the artist's biggest hits.
     # The same filter builds the album's LF/LB ratio pairs used by the
     # ListenBrainz realism check below.
-    _album_lf_listeners = None
-    _album_lf_lb_pairs: list[tuple[int, int]] = []
-    try:
-        _album_titles = {
-            normalize_for_aggregation(str(t.get("title") or ""))
-            for t in (album_context.get("tracks") or [])
-        }
-        # Deluxe/expanded albums pad the tracklist with
-        # live/acoustic/demo/bonus cuts — their low listener
-        # counts must not drag the core tracks' album-local z
-        # down.  Drop every album track flagged for exclusion or
-        # matching the live/alternate title patterns from the
-        # distribution (same rule as the star-rating baseline).
-        # A genuine LIVE album flags everything: fewer than 3 core
-        # tracks then falls back to the full tracklist, so it is
-        # still scored against itself (as before).
-        _excluded_titles = {
-            normalize_for_aggregation(str(t.get("title") or ""))
-            for t in (album_context.get("tracks") or [])
-            if bool(t.get("exclude_from_stats"))
-            or bool(t.get("is_live"))
-            or is_live_or_alternate_track_title(str(t.get("title") or ""))
-        }
-        _all_lf_vals = []
-        _lf_vals = []
-        for _k, _e in (prefetched_popularity or {}).items():
-            _norm_k = normalize_for_aggregation(str(_k or ""))
-            if _norm_k not in _album_titles:
-                continue
-            _lfv = int(_e.get("lastfm_listeners") or 0)
-            _lbv = int(_e.get("listenbrainz_listens") or 0)
-            if _lfv > 0:
-                _all_lf_vals.append(_lfv)
-            if _norm_k not in _excluded_titles:
-                if _lfv > 0:
-                    _lf_vals.append(_lfv)
-                if _lfv > 0 and _lbv > 0:
-                    _album_lf_lb_pairs.append((_lfv, _lbv))
-        if len(_lf_vals) < 3:
-            _lf_vals = _all_lf_vals
-        if len(_lf_vals) >= 3:
-            _album_lf_listeners = _lf_vals
-    except Exception:
-        _album_lf_listeners = None
+    _album_lf_listeners, _album_lb_fresh, _album_lf_lb_pairs = (
+        _build_album_listener_distributions(
+            album_context=album_context,
+            prefetched_popularity=prefetched_popularity,
+        )
+    )
+    # The caller's ``album_lb_listens`` (percentile anchor) may be the raw
+    # prefetch list; prefer the bonus-excluded fresh variant for the realism
+    # checks when it exists.
+    if _album_lb_fresh:
+        album_lb_listens = _album_lb_fresh
 
     # ── ListenBrainz realism check ───────────────────────────
     # A mismatched recording MBID (wrong / split / obscure
@@ -1576,6 +1621,38 @@ def process_track(
 
             album_track_count = len(album_context.get("tracks") or []) or 1
 
+            # ── FRESH album listener distributions (math-engine bridge) ──
+            # Single detection's z-scores (``album_z`` / ``artist_z`` /
+            # ``z_composite``) must be computed against the CURRENT scan's
+            # freshly gathered counts, NOT the DB-stored values from the
+            # previous scan.  Mid-scan the per-track workers have only
+            # flushed their scores at the END of the album (deferred
+            # persist), so the DB still holds last run's distribution — a
+            # newly imported album / refreshed playcount would never shift
+            # the median within the same run, and the Standout Single
+            # fallback would evaluate stale z-scores.  The fresh counts are
+            # already in memory (``prefetched_popularity`` / the caller's
+            # ``album_lb_listens``); forward them into detection so the
+            # math-engine bridge ordering is honoured (gather → math → singles).
+            _sd_album_lf, _sd_album_lb, _ = _build_album_listener_distributions(
+                album_context=album_context,
+                prefetched_popularity=prefetched_popularity,
+            )
+            if not _sd_album_lb and album_lb_listens:
+                _sd_album_lb = list(album_lb_listens)
+            # A singles pass has no prefetch map — include THIS track's fresh
+            # counts in the album distribution so a gap-filled track shifts
+            # its own album z (mirrors the Log-MAD audit's fresh-pair rule).
+            # The track's own value never inflates the median by itself; it
+            # keeps the distribution current with this scan's data.
+            try:
+                if singles_pass and lastfm_listeners and _sd_album_lf:
+                    _sd_album_lf = list(_sd_album_lf) + [float(lastfm_listeners)]
+                if singles_pass and listenbrainz_listens and _sd_album_lb:
+                    _sd_album_lb = list(_sd_album_lb) + [float(listenbrainz_listens)]
+            except Exception:
+                pass
+
             # Resolve optional detection inputs the service can use as
             # corroborating evidence (Discogs token, Last.fm client).
             sd_discogs_token = ""
@@ -1685,6 +1762,14 @@ def process_track(
                     ),
                     listenbrainz_listens=int(listenbrainz_listens or 0),
                     lastfm_listeners=int(lastfm_listeners or 0),
+                    # Fresh album listener distributions from THIS scan's
+                    # prefetch — the math-engine bridge.  Detection uses them
+                    # for ``z_composite`` / the standout fallback instead of
+                    # the stale DB-stored counts (which mid-scan still hold
+                    # the previous run's values; fresh scores are only
+                    # flushed when the album completes).
+                    album_lf_listeners=_sd_album_lf,
+                    album_lb_listens=_sd_album_lb,
                     discogs_token=sd_discogs_token or None,
                     lastfm_client=sd_lastfm_client,
                     mb_client=get_shared_mb_client(),

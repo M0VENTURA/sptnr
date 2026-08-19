@@ -2159,14 +2159,21 @@ def run_scan(
                 except Exception as exc:
                     logger.debug("[scan_runner] LB tag batch failed for %s - %s: %s", artist, album, exc)
 
-            # ── Singles pass: refresh stale popularity ──────────────────────
+            # ── Singles pass: refresh stale popularity (smart gap-fill) ────
             # A singles scan normally reuses stored popularity and only scores
             # tracks with NO data.  When an album is outside the popularity
             # scan window (its popularity data is stale), the singles pass
             # refreshes popularity for the whole album too — so a singles scan
-            # doubles as a catch-up popularity pass.  A forced singles scan
-            # always refreshes (force bypasses the window); a window of 0
-            # (always rescan popularity) also refreshes.
+            # doubles as a catch-up popularity pass.
+            #
+            # SMART GAP-FILL (forced singles): the FORCE flag re-runs singles
+            # detection and the math engine, but it must NOT force-refetch
+            # every track's playcounts — the DB check happens per-track inside
+            # process_track (``_has_stored_popularity``): tracks with stored
+            # popularity are carried through unchanged, tracks with NULL
+            # popularity are fetched.  A fully-populated DB therefore skips
+            # the API instantly, even in forced mode.  Only a popularity
+            # window of 0 (config: always rescan popularity) force-refreshes.
             _pop_due = False
             if _mode_singles:
                 try:
@@ -2176,7 +2183,8 @@ def run_scan(
                         _pop_window = int(get_feature("popularity_old_album_skip_days", 30) or 0)
                 except Exception:
                     _pop_window = 7
-                if force or _pop_window <= 0:
+                if _pop_window <= 0:
+                    # Config says popularity should always be refreshed.
                     _pop_due = True
                 else:
                     _pop_scored_recently = (
