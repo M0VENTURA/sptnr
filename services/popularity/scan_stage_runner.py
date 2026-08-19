@@ -520,6 +520,83 @@ def _apply_popularity_marking_bump(album_results: list[dict[str, Any]]) -> list[
     return album_results
 
 
+def _compute_global_5star_locked_titles(
+    artist: str,
+    all_results: list[dict[str, Any]],
+    options: dict[str, Any],
+) -> set[str]:
+    """Return the artist's GLOBAL 5★ pool (normalized titles) for this scan.
+
+    Global-first allocation: before ANY of the artist's albums is finalised
+    (per-album star posting), rank the ENTIRE catalogue by its RAW cross-album
+    score (``_raw_combined`` — the pre-re-anchor weighted score, the only
+    scale that preserves cross-album magnitude; the album-relative
+    ``popularity_score`` erases it by design, re-centring every album at ~50).
+
+    The pool is the artist's top ``global_5star_catalog_top_pct`` (default
+    matches the peak-era catalog top-20%) restricted to genuine 5★ candidates:
+    a track must either be a confirmed/standout single (single confidence
+    high/medium with a single source) or sit in the absolute top of the raw
+    catalogue — so the pool is sparse (the band's biggest hits), never every
+    album's top-3.
+
+    Locked tracks bypass the per-album era gate AND the 5★ slot cap in
+    ``finalise_stage._assign_stars``, so the artist's biggest hits keep 5★
+    regardless of album processing order (Battle Beast: Eden raw 80.4 — the
+    catalog #1 — was demoted to 4★ by its album's per-album era/slot gating
+    while lower-scored tracks on earlier albums kept 5★).
+    """
+    try:
+        _sd = get_config().get("single_detection") or {}
+        _top_pct = float(_sd.get("global_5star_catalog_top_pct", 0.20) or 0.20)
+        _min_raw = float(_sd.get("global_5star_min_raw_score", 60.0) or 60.0)
+    except Exception:
+        _top_pct, _min_raw = 0.20, 60.0
+
+    eligible: list[dict[str, Any]] = []
+    for _tr in all_results:
+        if bool(_tr.get("exclude_from_stats")) or bool(_tr.get("is_live")):
+            continue
+        _raw = float(_tr.get("_raw_combined") or 0)
+        if _raw <= 0:
+            continue
+        # A genuine 5★ candidate: confirmed/standout single (high confidence,
+        # or medium with a source, or a z-standout flag) OR the raw score is
+        # strong enough to stand on catalogue popularity alone.
+        _conf = str(_tr.get("single_confidence") or "low").lower()
+        _src_raw = _tr.get("single_sources") or ""
+        _has_src = False
+        try:
+            _parsed = json.loads(_src_raw) if isinstance(_src_raw, str) and _src_raw.strip() else _src_raw
+            _has_src = any(
+                isinstance(s, dict) and bool(s.get("matched"))
+                for s in (_parsed or [])
+            )
+        except Exception:
+            _has_src = False
+        _candidate = (
+            _conf in ("high", "medium")
+            or _has_src
+            or bool(_tr.get("popularity_marked"))
+        )
+        if not _candidate:
+            continue
+        eligible.append((_raw, _tr))
+
+    if not eligible:
+        return set()
+    eligible.sort(key=lambda pair: pair[0], reverse=True)
+    n = max(1, math.ceil(len(all_results) * _top_pct))
+    # Also cap at the number of genuinely strong candidates — the pool never
+    # force-5★s a track whose raw score is weak just to fill a percentage.
+    locked = {
+        str(_tr.get("title") or "").strip().lower()
+        for _raw, _tr in eligible[:n]
+        if _raw >= _min_raw
+    }
+    return locked
+
+
 def _mark_track_artist_top_band(album_results: list[dict[str, Any]]) -> None:
     """Set ``popularity_marked`` per TRACK ARTIST on a VA-compilation album.
 
@@ -1065,6 +1142,11 @@ def run_scan(
     # work and only does artist_stats / playlists / summary.
     _artist_scan_results: dict[str, list[dict[str, Any]]] = {}
     _per_album_posted_keys: set[tuple[str, str]] = set()
+    # Global-first 5★ allocation: tracks locked into the artist's protected
+    # 5★ pool at the artist-section pre-pass (keyed by normalized title).
+    # Locked tracks bypass the per-album era gate and the 5★ slot cap so the
+    # artist's biggest hits keep 5★ regardless of album processing order.
+    _artist_5star_locked_titles: dict[str, set[str]] = {}
     # Two-pass era calibration: per-album star posting is DEFERRED to the
     # artist-section boundary so the 3-step album-scaling model resolves
     # catalog-wide M_peak BEFORE any album of the artist is era-classified.
@@ -1220,6 +1302,23 @@ def run_scan(
         _db_scores = _load_artist_db_scores(artist, scanned_titles)
         artist_scores = scan_scores + _db_scores
 
+        # ── Global 5★ pool lock (order-independent top billing) ─────────
+        # The artist-section pre-pass computed the catalog's protected 5★
+        # pool from RAW cross-album scores.  Mark this album's locked tracks
+        # so ``finalise_stage._assign_stars`` bypasses the per-album era gate
+        # and the 5★ slot cap for them — a track like Eden (catalog #1 by
+        # raw score) keeps 5★ even when its album is finalised late.
+        _locked_set = _artist_5star_locked_titles.get(artist) or set()
+        if _locked_set:
+            for _tr in album_results:
+                if str(_tr.get("title") or "").strip().lower() in _locked_set:
+                    _tr["_global_5star_locked"] = True
+                    if not bool(_tr.get("exclude_from_stats")) and not bool(_tr.get("is_live")):
+                        log_unified(
+                            f"[scan_runner] '{_tr.get('title')}' → GLOBAL 5★ LOCKED "
+                            f"(raw {float(_tr.get('_raw_combined') or 0):.1f}, catalog top)"
+                        )
+
         # ── Artist top-% popularity marking + medium→high bump ────────────
         # Spec steps 3-4: mark the top of the artist's catalogue by popularity
         # (``popularity_marked``), then upgrade any MEDIUM-confidence single in
@@ -1321,6 +1420,37 @@ def run_scan(
         pending = _artist_pending_albums.pop(artist, [])
         if not pending or metadata_only:
             return
+
+        # ── GLOBAL-FIRST 5★ ALLOCATION (pre-pass) ─────────────────────────
+        # The per-album era gate awards 5★ against the ALBUM's relative
+        # distribution, so album processing ORDER decides which tracks keep
+        # 5★: an early album's strong track consumes the catalog share before
+        # a later album's even stronger track arrives (Battle Beast: King for
+        # a Day 78.1 → 5★ while Eden 80.4, the catalog #1 by raw score, was
+        # demoted to 4★ by its album's era/slot gating).  Before ANY album is
+        # finalised, lock the artist's genuinely top tracks by RAW cross-album
+        # score (``_raw_combined`` — the pre-re-anchor weighted score, the only
+        # scale that preserves cross-album magnitude) into a protected 5★ pool.
+        # Locked tracks bypass the per-album era gate and the 5★ slot cap, so
+        # the artist's biggest hits always take top billing regardless of
+        # release date or album scan order.
+        try:
+            _all_artist_results = _artist_scan_results.get(artist, [])
+            if len(_all_artist_results) >= 5:
+                _locked_titles = _compute_global_5star_locked_titles(
+                    artist,
+                    _all_artist_results,
+                    options,
+                )
+                if _locked_titles:
+                    _artist_5star_locked_titles[artist] = _locked_titles
+                    log_unified(
+                        f"[scan_runner] Global 5★ pre-pass: locked {len(_locked_titles)} "
+                        f"catalog top track(s) for '{artist}' (order-independent)"
+                    )
+        except Exception as exc:
+            logger.debug("[scan_runner] Global 5★ pre-pass failed for %s: %s", artist, exc)
+
         for _pending in pending:
             _album_results_this = _pending.get("album_results") or []
             if not _album_results_this:

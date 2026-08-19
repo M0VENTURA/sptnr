@@ -638,6 +638,20 @@ def _assign_stars(
         popularity_marked = False
 
     # ── 5★: singles + standouts only ──
+    # GLOBAL-FIRST 5★ POOL: the scan runner's artist-section pre-pass locked
+    # the catalog's top tracks (by RAW cross-album score, order-independent)
+    # into a protected 5★ pool.  A locked track is the artist's biggest hit —
+    # it keeps 5★ regardless of its album's per-album era gate or the 5★ slot
+    # cap (which otherwise demote late-processed strong tracks: Battle Beast's
+    # Eden, the catalog #1 by raw score, was demoted to 4★ by its album's
+    # era/slot gating while lower-scored tracks on earlier albums kept 5★).
+    # The lock still respects the organic floor (a locked track with no real
+    # audience is not a hit) and the live cap.
+    if track.get("_global_5star_locked") and not popularity_only:
+        if not is_live and organic:
+            track["_global_5star_locked"] = True
+            return 5
+
     # Scan synchronization for the ``popularity_z_standout`` proof: the flag
     # was recorded during single detection, so it must be re-verified against
     # the album's raw listener distribution here.  A standalone album vs the
@@ -2466,7 +2480,11 @@ def post_album_star_ratings(
             # ── Era 5★ slot cap (scaling model step 4) ────────────────────
             # The era's slot budget limits how many 5★ singles one album can
             # carry via the catalog/album-rank path; surplus (weakest by album
-            # z-score) are demoted to the 4★ Single Floor.
+            # z-score) are demoted to the 4★ Single Floor.  GLOBAL-FIRST 5★
+            # pool locks are exempt: a catalog-locked track is the artist's
+            # biggest hit and must never be demoted by its album's slot cap
+            # (Battle Beast: Eden was the catalog #1 but a late-processed
+            # album's slot gating demoted it while earlier albums kept 5★).
             if album_model.get("has_benchmark"):
                 _rules, _, _ = _live_album_scaling()
                 max_slots = int(
@@ -2477,14 +2495,22 @@ def post_album_star_ratings(
                     t for t in album_results
                     if t.get("_era_5star") and int(t.get("stars") or 0) == 5
                 ]
+                # Locked tracks never consume a slot cap position — they are
+                # removed from the pool BEFORE the weakest-by-album-z demotion
+                # so they can never be the surplus that gets cut.
                 if len(slot_tracks) > max_slots:
-                    slot_tracks.sort(
+                    locked_kept = [t for t in slot_tracks if t.get("_global_5star_locked")]
+                    demotable = [t for t in slot_tracks if not t.get("_global_5star_locked")]
+                    demotable.sort(
                         key=lambda t: _compute_album_z(
                             float(t.get("popularity_score") or 0), album_scores
                         )[0],
                         reverse=True,
                     )
-                    for t in slot_tracks[max_slots:]:
+                    # Re-add the locked tracks as protected leaders, then
+                    # demote the surplus from the non-locked tail.
+                    reordered = list(locked_kept) + list(demotable)
+                    for t in reordered[max_slots:]:
                         t["stars"] = 4
                         _tid = str(t.get("track_id") or "")
                         if _tid:
