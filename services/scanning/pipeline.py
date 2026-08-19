@@ -11,8 +11,12 @@ Key Responsibilities:
 Pipeline Stages:
     1. Navidrome Sync: Fetch latest data from Navidrome server
     2. Artist Import: Process each artist through scan_artist_to_db()
-    3. Metadata Scan: First pass metadata extraction
-    4. Popularity Scan: Second pass popularity calculation
+    3. Combined Scan: ONE popularity pass per artist — metadata resolution +
+       popularity + singles detection + genres + covers in a single scrape
+       (the standalone metadata pre-pass was removed; the combined pass is a
+       strict superset of it and resolves MB metadata BEFORE scoring, so a
+       forced artist scan no longer scrapes the APIs twice)
+    4. Essentia: mood/feature scan (optional)
     
 State Management:
     - Checkpoints saved after each artist completes
@@ -166,28 +170,43 @@ def _run_artist_scan_pipeline_inner(artist_name: str, force: bool = False, progr
         else:
             log_unified(f"Navidrome import skipped for '{artist_name}' (no Navidrome artist ID found)")
 
-        # metadata first pass — scoped to this artist only (artist_filter,
-        # NOT resume_from, which would scan the whole library onwards)
-        run_popularity_scan(
-            verbose=True,
-            force=force,
-            artist_filter=artist_name,
-            metadata_only=True,
-            progress_file="popularity_scan",
-            progress_callback=(lambda _i, _t, _it=None, _cb=_cb: _cb("metadata", _i, _t, _it)),
-        )
-
-        # scoring pass (combined) — scoped to this artist only.  The combined
-        # pass does popularity + singles + genre + cover per track; the
-        # progress hook splits its album loop so the dashboard shows
-        # "Popularity" then "Singles Detection" within the one pass.
+        # SINGLE combined pass — scoped to this artist only (artist_filter,
+        # NOT resume_from, which would scan the whole library onwards).
+        #
+        # The combined pass is a STRICT SUPERSET of the old metadata pass:
+        # it resolves MusicBrainz metadata (album batch + per-track fallback
+        # + writer backfill) BEFORE popularity scoring (metadata
+        # pre-resolution runs first inside process_track), then does
+        # popularity + singles + genre + cover per track, then the album-
+        # level enrichment (art, artist metadata, tags).  Running a separate
+        # metadata_only pass first made a forced artist scan scrape the APIs
+        # TWICE: the metadata pass resolved MBIDs/tags, then the combined
+        # pass re-resolved them (forced scans bypass the MBID freshness gate)
+        # and re-fetched every popularity count.  A 26-minute Battle Beast
+        # scan was ~10 minutes of duplicate API work — the metadata pass is
+        # gone and one combined pass does the whole scrape once.
+        #
+        # The dashboard's 4-stage progress model (Metadata / Popularity /
+        # Singles Detection / Essentia) is preserved by splitting the combined
+        # pass's album loop into bands: each album genuinely runs metadata
+        # resolution → popularity → singles in that order, so the first
+        # quarter of albums map to "Metadata", the last quarter to "Singles
+        # Detection" and the middle half to "Popularity".
         run_popularity_scan(
             verbose=True,
             force=force,
             artist_filter=artist_name,
             progress_file="popularity_scan",
             progress_callback=(lambda _i, _t, _it=None, _cb=_cb: _cb(
-                "popularity" if _i < ((_t or 1) + 1) // 2 else "singles",
+                (
+                    "metadata"
+                    if _i < max(1, ((_t or 1) + 3) // 4)
+                    else (
+                        "singles"
+                        if _i >= (_t or 1) - max(1, ((_t or 1) + 3) // 4)
+                        else "popularity"
+                    )
+                ),
                 _i, _t, _it,
             )),
         )

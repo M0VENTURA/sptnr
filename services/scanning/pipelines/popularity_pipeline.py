@@ -279,10 +279,14 @@ def _run_full_scan_as_artist_pipeline(
     # Stage bands for the overall percentage.  Each artist contributes an
     # equal share; within an artist the four stages (Metadata, Popularity,
     # Singles Detection, Essentia) each take a quarter of that share.  The
-    # combined pass's album loop is split at its midpoint so the dashboard
-    # shows "Popularity" then "Singles Detection" (the combined pass does
-    # both per track).  With a 4-album artist this gives 2 albums into
-    # metadata = 12.5%, metadata done = 25%, popularity done = 50%, etc.
+    # artist pipeline now runs ONE combined pass (the standalone metadata
+    # pass was removed — it re-scraped every API the combined pass scrapes);
+    # the pass's album loop is split so the dashboard shows "Metadata" for
+    # the first quarter of albums, "Popularity" for the middle half and
+    # "Singles Detection" for the last quarter (each album genuinely runs
+    # metadata resolution → popularity → singles in that order).  With a
+    # 4-album artist this gives 1 album into metadata = ~6%, metadata done
+    # = 25%, popularity done = 75%, etc.
     _STAGE_IDX = {"metadata": 0, "popularity": 1, "singles": 2, "essentia": 3}
     _STAGE_LABEL = {
         "metadata": "Metadata",
