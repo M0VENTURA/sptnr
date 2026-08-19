@@ -248,20 +248,18 @@ class NavidromeClient:
 
         Repeated list values are sent as repeated (key, value) form pairs
         (``songIdToAdd=id1&songIdToAdd=id2&...``) — the standard Subsonic
-        repeatable-param encoding.
+        repeatable-param encoding.  httpx's ``encode_urlencoded_data``
+        flattens a dict's list values into exactly those repeated pairs, so
+        the body is passed as a DICT (a raw list of tuples is NOT a Mapping
+        and httpx 0.28 treats it as raw byte-content — the ``sequence item
+        1: expected a bytes-like object, tuple found`` TypeError).
 
         Returns the parsed ``subsonic-response`` dict, or {} on failure.
         """
-        _body_pairs: list[tuple[str, str]] = []
-        for _k, _v in (self._build_params(**params) or {}).items():
-            if isinstance(_v, (list, tuple)):
-                for _item in _v:
-                    _body_pairs.append((_k, str(_item)))
-            else:
-                _body_pairs.append((_k, str(_v)))
+        _body = self._build_params(**params) or {}
         url = f"{self.base_url}/rest/{endpoint}"
         try:
-            response = self.session.post(url, data=_body_pairs, timeout=timeout)
+            response = self.session.post(url, data=_body, timeout=timeout)
             response.raise_for_status()
             return response.json().get("subsonic-response", {}) or {}
         except Exception as exc:

@@ -26,7 +26,9 @@ class _FakeSession:
         self.posted = []  # (url, data, kwargs)
 
     def post(self, url, data=None, **kwargs):
-        self.posted.append((url, list(data or []), kwargs))
+        # Record the dict as-is; _body_dict flattens list values into the
+        # repeated form pairs httpx's encode_urlencoded_data would produce.
+        self.posted.append((url, dict(data or {}), kwargs))
         response = _FakeResponse(self._status_code)
         return response
 
@@ -60,12 +62,43 @@ class _FakeClient(NavidromeClient):
         return {"id": playlist_id, "tracks": [{"id": f"t{i}"} for i in range(self._current_count)]}
 
 
-def _body_dict(pairs):
-    """Collapse repeated form pairs into a dict of lists (assert helper)."""
+def _body_dict(body):
+    """Flatten a dict-of-lists into a dict-of-lists of str values.
+
+    Mirrors httpx's ``encode_urlencoded_data``: a dict whose value is a list
+    becomes repeated ``key=value`` pairs (``songIdToAdd=a&songIdToAdd=b``),
+    scalars stay single.  Values are stringified (httpx uses
+    ``primitive_value_to_str``).
+    """
     out: dict[str, list[str]] = {}
-    for k, v in pairs:
-        out.setdefault(k, []).append(v)
+    for k, v in (body or {}).items():
+        if isinstance(v, (list, tuple)):
+            out.setdefault(k, []).extend(str(item) for item in v)
+        else:
+            out.setdefault(k, []).append(str(v))
     return out
+
+
+def test_update_playlist_uses_dict_body_not_tuple_list():
+    """The POST body must be a DICT, never a raw list of tuples.
+
+    httpx 0.28's ``encode_request`` treats a non-Mapping ``data`` (e.g. a
+    list of ``(key, value)`` tuples) as RAW byte content — ``b"".join(...)``
+    then fails with ``sequence item 1: expected a bytes-like object, tuple
+    found`` (the reported regression).  A dict is the only form httpx
+    url-encodes correctly, flattening list values into repeated pairs.
+    """
+    session = _FakeSession()
+    client = _FakeClient(session, current_count=0)
+
+    ok = client.update_playlist_songs("playlist-1", ["a", "b"])
+
+    assert ok is True
+    _, body, _ = session.posted[0]
+    # The recorded data must be a dict (httpx encode_urlencoded_data input).
+    assert isinstance(body, dict)
+    assert body["playlistId"] == "playlist-1"
+    assert body["songIdToAdd"] == ["a", "b"]
 
 
 def test_update_playlist_large_song_list_uses_post_body():

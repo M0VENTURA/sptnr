@@ -75,5 +75,8 @@ class WikipediaClient:
 
             return data.get("parse", {})
         except Exception as exc:
-            logger.error("Failed to fetch Wikipedia page '%s': %s", page_title, exc)
+            logger.error(
+                "Failed to fetch Wikipedia page '%s': %s (%s)",
+                page_title, exc or "no detail", type(exc).__name__,
+            )
             return {}
