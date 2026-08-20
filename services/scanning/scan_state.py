@@ -99,10 +99,26 @@ def write_progress_with_current_artist(
         state.is_running = is_running
         state.status = status
         
-        # Determine the artist priority
+        # Determine the artist priority — the value MUST be a plain string:
+        # ``current_artist`` is a VARCHAR column and psycopg2 cannot adapt a
+        # dict/list.  Several callers used to pass a dict
+        # (``{"current_artist": ..., "processed_artists": ..., ...}``) via
+        # ``extra``, which crashed the whole write with "can't adapt type
+        # 'dict'" — the scan then started without a progress row, the
+        # dashboard showed nothing, and the first checkpoint write later
+        # re-created the row.  Defensively coerce any non-string value to a
+        # display string (dicts become JSON-ish text) so no caller can ever
+        # re-introduce the crash.
         final_artist = current_artist or extra.get("current_artist") or extra.get("resume_from")
-        if final_artist:
-            state.current_artist = final_artist
+        if final_artist is not None:
+            if isinstance(final_artist, str):
+                state.current_artist = final_artist
+            else:
+                try:
+                    import json as _json
+                    state.current_artist = _json.dumps(final_artist, default=str)[:255]
+                except Exception:
+                    state.current_artist = str(final_artist)[:255]
             
         if "stop_requested" in extra:
             state.stop_requested = stop_requested

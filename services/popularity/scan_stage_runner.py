@@ -1801,6 +1801,35 @@ def run_scan(
                             )
                             return None
 
+                    # The skip pass runs the SAME per-track singles pipeline
+                    # (rate-limited MB/Discogs/Last.fm/LB calls) as the main
+                    # pass — a hung worker here must not burn the album's
+                    # 600s budget either.  Same wall-clock cap as the main
+                    # track workers.
+                    def _run_skip_job_bounded(job: tuple) -> dict[str, Any] | None:
+                        import threading as _th2
+                        _skip_box: dict[str, Any] = {"result": None, "exc": None, "done": False}
+
+                        def _skip_work() -> None:
+                            try:
+                                _skip_box["result"] = _run_skip_job(job)
+                            except BaseException as _exc:  # noqa: BLE001
+                                _skip_box["exc"] = _exc
+                            finally:
+                                _skip_box["done"] = True
+
+                        _t2 = _th2.Thread(target=_skip_work, name="skip-worker", daemon=True)
+                        _t2.start()
+                        _t2.join(timeout=_track_worker_hard_timeout)
+                        if not _skip_box["done"]:
+                            _stitle = str((job[0] or {}).get("title") or "?")
+                            logger.warning(
+                                "[scan_runner] Skip singles worker for '%s - %s' exceeded %ss — abandoning",
+                                artist, _stitle, _track_worker_hard_timeout,
+                            )
+                            return None
+                        return _skip_box["result"]
+
                     def _collect_skip_results(_pool: Any, _skip_futures: list[Any]) -> list[dict[str, Any] | None]:
                         collected: list[dict[str, Any] | None] = [None] * len(_skip_futures)
                         _index_by_future = {_f: _i for _i, _f in enumerate(_skip_futures)}
@@ -1854,7 +1883,7 @@ def run_scan(
                     if _scan_threads > 1 and len(_skip_jobs) > 1:
                         _pool = _futures2.ThreadPoolExecutor(max_workers=_scan_threads)
                         try:
-                            _skip_futures = [_pool.submit(_run_skip_job, job) for job in _skip_jobs]
+                            _skip_futures = [_pool.submit(_run_skip_job_bounded, job) for job in _skip_jobs]
                             _skip_results = _collect_skip_results(_pool, _skip_futures)
                         finally:
                             try:
@@ -1862,7 +1891,7 @@ def run_scan(
                             except Exception:
                                 pass
                     else:
-                        _skip_results = [_run_skip_job(job) for job in _skip_jobs]
+                        _skip_results = [_run_skip_job_bounded(job) for job in _skip_jobs]
                     # Verdicts are persisted inside process_track; the result
                     # dicts are deliberately NOT appended to ``results`` so
                     # finalise never re-posts star ratings or re-syncs
@@ -2429,6 +2458,59 @@ def run_scan(
                         pass
                     return None
 
+            # ── Per-worker wall-clock timeout ──────────────────────────────
+            # ``process_track`` makes dozens of rate-limited provider calls
+            # (MusicBrainz 1 req/s, Discogs 0.35s pacing, Last.fm/LB 1 req/s)
+            # plus single-detection searches.  When the shared rate limiter
+            # sleeps UNDER ITS LOCK, four concurrent workers can serialise on
+            # the same provider and a single track can easily exceed the
+            # album's 600s budget — the 8-hour "N of N futures unfinished"
+            # cascade was exactly this: every track on every album after the
+            # first stall burned the full deadline, so NO album ever
+            # completed.  A wall-clock cap per track bounds the damage: a
+            # genuinely stuck track (rate-limited to death, DB stall, hung
+            # socket) is abandoned after ``min(track_timeout, _track_budget)``
+            # and the slot frees for the next track instead of starving the
+            # whole album.  The worker keeps running on a daemon thread and
+            # its results are simply discarded once abandoned — the deferred
+            # persist sink still flushes whatever it wrote.
+            _track_worker_hard_timeout = max(60, min(_track_timeout_seconds, 300))
+
+            def _run_track_job_bounded(job: tuple) -> dict[str, Any] | None:
+                """Run one track's pipeline, abandoning it past the cap."""
+                import threading as _th
+
+                _box: dict[str, Any] = {"result": None, "exc": None, "done": False}
+
+                def _work() -> None:
+                    try:
+                        _box["result"] = _run_track_job(job)
+                    except BaseException as _exc:  # noqa: BLE001
+                        _box["exc"] = _exc
+                    finally:
+                        _box["done"] = True
+
+                _t = _th.Thread(target=_work, name="track-worker", daemon=True)
+                _t.start()
+                _t.join(timeout=_track_worker_hard_timeout)
+                if not _box["done"]:
+                    _title = str((job[0] or {}).get("title") or "?")
+                    logger.warning(
+                        "[scan_runner] Track worker for '%s - %s - %s' exceeded %ss — abandoning, scan continues",
+                        artist, album, _title, _track_worker_hard_timeout,
+                    )
+                    try:
+                        log_unified(
+                            f"[TRACK_STAGE] '{_title}' exceeded {_track_worker_hard_timeout}s — "
+                            f"track skipped for this pass (scan continues)"
+                        )
+                    except Exception:
+                        pass
+                    return None
+                if _box["exc"] is not None:
+                    return None
+                return _box["result"]
+
             def _collect_track_results(_pool: Any, _track_futures: list[Any], _job_titles: list[str]) -> list[dict[str, Any] | None]:
                 """Collect per-track results with a per-album deadline.
 
@@ -2484,8 +2566,46 @@ def run_scan(
                         pass  # handled by the caller's still-running sweep
 
                 # Phase 1: main deadline.
-                _collect_finished(time.monotonic() + _deadline_seconds)
-
+                # ── Stall progress log ───────────────────────────────────
+                # The 8-hour stall logs showed a 600s album deadline with ZERO
+                # per-track output in between — the operator had no signal
+                # that the album was stuck until the deadline hit.  Emit a
+                # heartbeat once per minute while waiting so a stalled album
+                # is diagnosable in real time (which tracks are still running
+                # and how long they've been in flight).
+                _phase1_started = time.monotonic()
+                _last_heartbeat = _phase1_started
+                _heartbeat_interval = 60.0
+                _deadline_at = time.monotonic() + _deadline_seconds
+                while True:
+                    _remaining_phase = max(0.0, _deadline_at - time.monotonic())
+                    if _remaining_phase <= 0:
+                        break
+                    _wait_chunk = min(_remaining_phase, _heartbeat_interval)
+                    _collect_finished(time.monotonic() + _wait_chunk)
+                    _now_hb = time.monotonic()
+                    if _now_hb - _last_heartbeat >= _heartbeat_interval:
+                        _last_heartbeat = _now_hb
+                        _in_flight = [
+                            _job_titles[_index_by_future[f]]
+                            for f in _track_futures
+                            if not f.done() and _index_by_future[f] < len(_job_titles)
+                        ]
+                        if _in_flight:
+                            logger.warning(
+                                "[scan_runner] Album '%s - %s' still waiting on %d track(s) after %ds — in flight: %s",
+                                artist, album, len(_in_flight),
+                                int(_now_hb - _phase1_started),
+                                ", ".join(_in_flight[:8]) + ("…" if len(_in_flight) > 8 else ""),
+                            )
+                            try:
+                                log_unified(
+                                    f"[TRACK_STAGE] '{artist} - {album}' still waiting on "
+                                    f"{len(_in_flight)} track(s) after {int(_now_hb - _phase1_started)}s "
+                                    f"— in flight: {', '.join(_in_flight[:8])}"
+                                )
+                            except Exception:
+                                pass
                 # Phase 2: bounded grace window for late-but-legit workers.
                 _still_running = [f for f in _track_futures if not f.done()]
                 if _still_running:
@@ -2547,7 +2667,7 @@ def run_scan(
                     def _submit_chunked(job):
                         _slot_semaphore.acquire()
                         try:
-                            return _run_track_job(job)
+                            return _run_track_job_bounded(job)
                         finally:
                             _slot_semaphore.release()
 
@@ -2563,7 +2683,7 @@ def run_scan(
                     except Exception:
                         pass
             else:
-                _track_results_ordered = [_run_track_job(job) for job in _track_jobs]
+                _track_results_ordered = [_run_track_job_bounded(job) for job in _track_jobs]
 
             # ── Batch-persist the album's deferred track writes ─────────────
             # Every worker pushed its per-track upsert into the shared sink
@@ -2625,6 +2745,23 @@ def run_scan(
                             )
                 tracks_processed += 1
 
+            # ── Track-worker failure ratio (resource-exhaustion guard) ────
+            # The 8-hour stall logs showed a self-sustaining cascade: once the
+            # shared rate limiter's lock-sleep made the first album's track
+            # workers time out, EVERY subsequent album dropped ALL of its
+            # tracks (each album's 600s budget burned on rate-limit sleeps),
+            # and the serial follow-up passes (post-singles enrichment, cover
+            # detection) only deepened the contention.  This ratio is hoisted
+            # to album scope so BOTH the post-singles enrichment and the cover
+            # pass can skip themselves when the album's track workers were
+            # already starved — giving the next album's workers the rate-limit
+            # budget instead of competing with yet another serial consumer.
+            _track_failure_ratio = (
+                (len(_track_jobs) - sum(1 for r in _track_results_ordered if r is not None))
+                / max(1, len(_track_jobs))
+                if _track_jobs else 0.0
+            )
+
             # ── Full metadata import (post-singles) ─────────────────────────
             # The heavy album-level enrichment (art cache, artist metadata,
             # similar artists, Last.fm tags, Discogs ID, live/remix tagging,
@@ -2658,11 +2795,17 @@ def run_scan(
                     except Exception as exc:
                         logger.debug("[scan_runner] Post-singles enrichment failed for %s - %s: %s", artist, album, exc)
 
-                _bounded_call(
-                    _post_singles_enrichment_work,
-                    seconds=_prefetch_budget_seconds,
-                    label=f"post-singles enrichment for '{artist} - {album}'",
-                )
+                if _track_failure_ratio >= 0.5:
+                    logger.warning(
+                        "[scan_runner] Skipping post-singles enrichment for '%s - %s' — %.0f%% of track workers failed/stalled this album (resource exhaustion guard)",
+                        artist, album, _track_failure_ratio * 100,
+                    )
+                else:
+                    _bounded_call(
+                        _post_singles_enrichment_work,
+                        seconds=_prefetch_budget_seconds,
+                        label=f"post-singles enrichment for '{artist} - {album}'",
+                    )
 
             # ── Full cover detection stage (after per-track singles/cover
             #    detection) ────────────────────────────────────────────────
@@ -2674,12 +2817,22 @@ def run_scan(
             # and file tags. Run AFTER singles detection so the album enrichment
             # section (art caching / artist metadata) never blocks on serial
             # cover API lookups.
-            _run_album_cover_detection(
-                artist=artist,
-                album=album,
-                tracks=tracks,
-                options=options,
-            )
+            # Resource-exhaustion guard: cover detection is a serial MB-heavy
+            # pass; when the album's track workers were already starved, skip
+            # it so the next album's tracks get the rate-limit budget instead
+            # of yet another serial consumer.
+            if _track_failure_ratio < 0.5:
+                _run_album_cover_detection(
+                    artist=artist,
+                    album=album,
+                    tracks=tracks,
+                    options=options,
+                )
+            else:
+                logger.debug(
+                    "[scan_runner] Skipping cover detection for '%s - %s' — track workers stalled this album (resource exhaustion guard)",
+                    artist, album,
+                )
 
             # ── End-of-album file-tag fill + correction recording ──────
             # After the per-track MB metadata is persisted (and cover renames

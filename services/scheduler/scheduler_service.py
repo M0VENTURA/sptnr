@@ -469,10 +469,38 @@ def _register_default_jobs(scheduler: BackgroundScheduler, cfg: dict[str, Any]) 
             # items never returned to the retry loop when the worker wasn't
             # running (e.g. APScheduler-only deployments).
             from services.queue.queue_orchestrator import process_cycle
+            # The queue tick runs in the SAME hypercorn worker as the web
+            # app; a long maintenance pass (filesystem walk + metadata reads
+            # + slskd polling) previously blocked that worker's event loop
+            # and starved the popularity scan's own worker threads (the
+            # scan's per-track workers share the process GIL + DB pool).
+            # Run the cycle on a daemon thread so it never blocks the loop;
+            # the orchestrator's own ``queue_cycle_lock`` still serialises
+            # cycles across the standalone worker + scheduler, so a
+            # best-effort daemon spawn cannot double-process.
+            def _download_queue_processor_tick() -> None:
+                try:
+                    import threading as _th
+                    def _run_cycle() -> None:
+                        try:
+                            process_cycle()
+                        except Exception as _exc:
+                            logger.warning(
+                                "APScheduler: download_queue_processor cycle failed: %s", _exc,
+                            )
+                    _th.Thread(
+                        target=_run_cycle,
+                        name="queue-cycle",
+                        daemon=True,
+                    ).start()
+                except Exception as _exc:
+                    logger.warning(
+                        "APScheduler: download_queue_processor spawn failed: %s", _exc,
+                    )
             _put(
                 "download_queue_processor", "Process download queue",
                 IntervalTrigger(seconds=interval_seconds),
-                func=process_cycle,
+                func=_download_queue_processor_tick,
                 max_instances=1,
                 coalesce=True,
                 misfire_grace_time=30,

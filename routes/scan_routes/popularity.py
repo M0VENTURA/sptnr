@@ -210,7 +210,8 @@ async def api_scan_from_artist():
                 progress_file,
                 "popularity_scan",
                 True,
-                {
+                current_artist=artist,
+                extra={
                     "status": "starting",
                     "resume_from": artist,
                     "current_artist": artist,
