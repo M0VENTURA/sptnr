@@ -357,8 +357,45 @@ async def slskd_queue_download():
         return jsonify({"error": "queue_id, username, and filename required"}), 400
     try:
         from api_clients.slskd_http import SlskdHttpClient
+        from db.repositories.queue import get_queue_item, update_queue_item
+        from services.downloads.slskd_service import SlskdService
+
         client = SlskdHttpClient(slskd_config["web_url"], slskd_config.get("api_key", ""))
-        result = await asyncio.to_thread(client.enqueue_download, username, filename)
+        slskd = SlskdService(http_client=client)
+        result = await asyncio.to_thread(slskd.download_file, username, filename)
+
+        if not result:
+            # slskd may accept the enqueue but report failure; fall back to the
+            # raw enqueue for parity with /api/slskd/download.
+            await asyncio.to_thread(client.enqueue_download, username, filename)
+
+        # Link the transfer to the queue row so the completion service can
+        # match the downloaded file back to this song and promote it to
+        # 'downloading' → 'imported'.  Without found_filename + status the
+        # file would land on disk orphaned and the queue item would stay
+        # queued forever (the reported "selecting a file doesn't match it to
+        # the song" bug).  Normalise Windows backslash separators so Linux
+        # path handling works (same rule as the automatic pipeline).
+        _stored_filename = str(filename).replace("\\", "/").strip()
+        try:
+            update_queue_item(
+                queue_id,
+                found_filename=_stored_filename,
+                slskd_username=username,
+                status="downloading",
+                is_manual_download=True,
+            )
+        except Exception as db_err:
+            logger.warning("[SLSKD] Could not link queue %s to download: %s", queue_id, db_err)
+
+        try:
+            from helpers.logging_config import log_queue
+            log_queue(
+                f"[MANUAL] {username} → queue {queue_id}: {_stored_filename} (downloading)"
+            )
+        except Exception:
+            pass
+
         return jsonify({"success": True, "result": result})
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500

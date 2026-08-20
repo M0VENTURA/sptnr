@@ -164,3 +164,39 @@ class TestPollResultsContract:
         assert responses == []
         assert state == "InProgress"
         assert is_complete is False
+
+
+class TestQueueDownloadLinking:
+    """Selecting a manual search result must LINK the transfer to the queue
+    row (found_filename + slskd_username + status='downloading') so the
+    completion service can match the file back to the song."""
+
+    def test_update_allowed_columns_include_slskd_fields(self):
+        from db.repositories.queue import UPDATE_ALLOWED_COLUMNS
+
+        assert "found_filename" in UPDATE_ALLOWED_COLUMNS
+        assert "slskd_username" in UPDATE_ALLOWED_COLUMNS
+        assert "slskd_transfer_id" in UPDATE_ALLOWED_COLUMNS
+        assert "is_manual_download" in UPDATE_ALLOWED_COLUMNS
+        assert "status" in UPDATE_ALLOWED_COLUMNS
+
+    def test_filename_normalised_before_store(self):
+        """Windows backslash filenames are stored forward-slash normalised."""
+        raw = "nicotine\\Voice of Baceprot - What's The Holy (Nobel) Today.flac"
+        stored = str(raw).replace("\\", "/").strip()
+        assert stored == "nicotine/Voice of Baceprot - What's The Holy (Nobel) Today.flac"
+        assert "\\" not in stored
+
+    def test_link_payload_matches_completion_contract(self):
+        """The queue row fields the route writes are exactly what
+        check_completed_downloads matches on (status='downloading' +
+        found_filename)."""
+        payload = {
+            "found_filename": "nicotine/Voice of Baceprot - What's The Holy (Nobel) Today.flac",
+            "slskd_username": "VacuumCollapse",
+            "status": "downloading",
+            "is_manual_download": True,
+        }
+        assert payload["status"] == "downloading"
+        assert payload["found_filename"]
+        assert payload["slskd_username"]

@@ -41,6 +41,8 @@ UPDATE_ALLOWED_COLUMNS = frozenset({
     # File / path tracking
     "file_path", "matched_file_path", "music_file_path", "found_filename",
     "progress", "speed",
+    # Soulseek transfer linkage
+    "slskd_username", "slskd_transfer_id", "is_manual_download",
     # Retry / backoff
     "retry_count", "max_retries", "retry_delay_minutes", "next_retry_at",
     "failure_reason",
