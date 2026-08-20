@@ -124,9 +124,25 @@ async def slskd_search():
             await asyncio.to_thread(slskd_service.clear_stale_searches, budget_seconds=6)
         except Exception:
             pass
+        # Search-slot check FIRST so a busy slot is surfaced as slotBusy
+        # (the frontend shows a "slot busy — auto-retry" banner), matching
+        # the legacy contract.  start_search blocks up to 20s on slskd HTTP
+        # — offload so the event loop keeps serving other requests.
+        try:
+            active = await asyncio.to_thread(slskd_service.list_searches, 8)
+            active_states = {"None", "Queued", "Requested", "InProgress", "Initializing", "In Progress"}
+            busy = [s for s in (active or []) if (s.get("state") or s.get("State") or "") in active_states]
+            if busy:
+                a = busy[0]
+                return jsonify({
+                    "slotBusy": True,
+                    "activeSearchId": a.get("id") or a.get("searchId") or "",
+                    "activeSearchQuery": a.get("searchText") or a.get("query") or "",
+                    "activeSearchState": a.get("state") or a.get("State") or "",
+                }), 202
+        except Exception:
+            pass
         started = time.time()
-        # start_search blocks up to 20s on slskd HTTP — offload so the event
-        # loop keeps serving other requests.
         search_id = await asyncio.to_thread(slskd_service.start_search, query, 20)
         if search_id:
             with _manual_search_lock:
@@ -141,8 +157,11 @@ async def slskd_search():
                 duration_seconds=round(time.time() - started, 1),
                 notes="search_started",
             )
-            return jsonify({"success": True, "search_id": search_id})
-        return jsonify({"success": False, "error": "Search failed to start"}), 500
+            # Legacy contract: the frontend reads ``searchId`` (camelCase) —
+            # the migration renamed it to ``search_id`` and the manual-search
+            # modal started throwing "Search did not return a search ID".
+            return jsonify({"searchId": search_id, "status": "searching"})
+        return jsonify({"error": "Failed to start search — slskd search slot may be busy. Try again in a moment."}), 500
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -182,24 +201,56 @@ def slskd_search_results(search_id):
         return jsonify({"error": "slskd not enabled"}), 400
     try:
         from api_clients.slskd_http import SlskdHttpClient
+        from services.downloads.slskd_service import SlskdService
         client = SlskdHttpClient(slskd_config["web_url"], slskd_config.get("api_key", ""))
-        results = client.get_search_results(search_id, timeout=10)
+        slskd_service = SlskdService(http_client=client)
+        # Rich poll result: (responses, state, is_complete) — the legacy
+        # contract the frontend polls against (``results`` / ``state`` /
+        # ``responseCount`` / ``isComplete``).  The plain client
+        # ``get_search_results`` returns a flat list with NO state/completion
+        # signal, so the modal polled forever and always showed "searching".
+        responses, state, is_complete = slskd_service.get_search_results(search_id, timeout=10)
+
+        results = []
+        for resp in responses or []:
+            username = getattr(resp, "username", "") or ""
+            for file in getattr(resp, "files", []) or []:
+                results.append({
+                    "username": username,
+                    "filename": getattr(file, "filename", "") or "",
+                    "size": getattr(file, "size", 0) or 0,
+                    "size_mb": f"{getattr(file, 'size_mb', 0):.2f}",
+                    "bitrate": getattr(file, "bitrate", 0) or 0,
+                    "sample_rate": getattr(file, "sample_rate", 0) or 0,
+                    "length": getattr(file, "length", 0) or 0,
+                    "duration": getattr(file, "duration_formatted", "0:00") or "0:00",
+                })
+
         count = len(results or [])
+        response_count = len(responses or [])
 
         # Log manual search results when the count first settles, without
         # spamming a line for every 1s poll of the same search.
         with _manual_search_lock:
-            state = _manual_search_state.get(search_id)
-            if state is not None and count != state.get("last_result_count", -1):
-                state["last_result_count"] = count
+            state_entry = _manual_search_state.get(search_id)
+            if state_entry is not None and count != state_entry.get("last_result_count", -1):
+                state_entry["last_result_count"] = count
                 _log_manual_search_event(
                     search_type="manual",
-                    query=state.get("query") or search_id,
+                    query=state_entry.get("query") or search_id,
                     result_count=count,
                     notes="results_returned",
                 )
+            if is_complete and search_id in _manual_search_state:
+                _manual_search_state.pop(search_id, None)
 
-        return jsonify({"success": True, "results": results or []})
+        return jsonify({
+            "results": results,
+            "state": state or "InProgress",
+            "responseCount": response_count,
+            "fileCount": count,
+            "isComplete": bool(is_complete),
+        })
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
