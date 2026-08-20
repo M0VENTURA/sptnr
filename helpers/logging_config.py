@@ -279,6 +279,65 @@ def _setup_standard_logging(service_name: str, log_dir: str) -> None:
                 "level": "INFO",
                 "propagate": False,
             },
+            # ── Queue module loggers ──────────────────────────────────────
+            # Queue lifecycle code (services.queue.* plus the queue-lifecycle
+            # services.downloads modules) logs via its module logger
+            # (``logging.getLogger(__name__)``), which would otherwise
+            # propagate to the ROOT logger and pollute unified_scan.log /
+            # info.log / debug.log with queue activity.  Route them to
+            # queue.log ONLY (propagate=False), and to error.log for ERROR
+            # records — the queue belongs in queue.log, never in the general
+            # app logs, unless it is an error.
+            "services.queue": {
+                "handlers": ["queue_file", "error_file"],
+                "level": "INFO",
+                "propagate": False,
+            },
+            "services.downloads.download_completion_service": {
+                "handlers": ["queue_file", "error_file"],
+                "level": "INFO",
+                "propagate": False,
+            },
+            "services.downloads.download_pipeline_service": {
+                "handlers": ["queue_file", "error_file"],
+                "level": "INFO",
+                "propagate": False,
+            },
+            "services.downloads.download_processing_service": {
+                "handlers": ["queue_file", "error_file"],
+                "level": "INFO",
+                "propagate": False,
+            },
+            "services.downloads.download_queue_normalizer": {
+                "handlers": ["queue_file", "error_file"],
+                "level": "INFO",
+                "propagate": False,
+            },
+            "services.downloads.download_queue_service": {
+                "handlers": ["queue_file", "error_file"],
+                "level": "INFO",
+                "propagate": False,
+            },
+            "services.downloads.download_retry_service": {
+                "handlers": ["queue_file", "error_file"],
+                "level": "INFO",
+                "propagate": False,
+            },
+            "services.downloads.slskd_service": {
+                "handlers": ["queue_file", "error_file"],
+                "level": "INFO",
+                "propagate": False,
+            },
+            "services.downloads.download_organize_helpers": {
+                "handlers": ["queue_file", "error_file"],
+                "level": "INFO",
+                "propagate": False,
+            },
+            "services.downloads.download_verification_service": {
+                "handlers": ["queue_file", "error_file"],
+                "level": "INFO",
+                "propagate": False,
+            },
             "urllib3": {"level": "ERROR"},
             "httpx": {"level": "ERROR"},
             "apscheduler.schedulers.background": {"level": "WARNING"},

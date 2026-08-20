@@ -48,11 +48,6 @@ def requeue_failed_items(limit: int = 50) -> int:
         requeued = requeue_due_failed_items(limit=limit)
         if requeued:
             logger.info("[RETRY_SCHEDULER] Requeued %s failed item(s)", len(requeued))
-            try:
-                from helpers.logging_config import log_queue
-                log_queue(f"[RETRY_SCHEDULER] Requeued {len(requeued)} failed item(s)")
-            except Exception:
-                pass
         return len(requeued)
     except Exception as exc:
         logger.error("[RETRY_SCHEDULER] Failed to requeue items: %s", exc)

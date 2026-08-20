@@ -1303,12 +1303,7 @@ def transfer_and_verify_download(
 def start_release_download(release_id, release_title, artist, method='slskd', create_folder_group=True):
 
     try:
-        logger.info(f"[START_DOWNLOAD] {release_id}")
-        try:
-            from helpers.logging_config import log_queue
-            log_queue(f"[START_DOWNLOAD] {release_id} — {artist} - {release_title}")
-        except Exception:
-            pass
+        logger.info(f"[START_DOWNLOAD] {release_id} — {artist} - {release_title}")
 
         # The MB search UI hands over a release-group MBID (the search endpoint
         # returns release-groups). /ws/2/release/{id} 404s for a release-group
