@@ -1413,10 +1413,22 @@ async def album_detail(album_path: str):
 
             # Genres — write to both DB and audio file
             if genres_str:
-                genres_list = [g.strip() for g in genres_str.split(",") if g.strip()]
+                # Split on ALL separators (comma, semicolon, slash, backslash)
+                # so a ``metal\nu metal\rock`` input becomes three genres —
+                # the genre string flows into the DB column, the file tags and
+                # the genre playlist pools, and a single literal backslash
+                # string would surface as ONE broken ``metal\nu metal\rock``
+                # genre folder in Navidrome.
+                import re as _re
+                genres_list = [
+                    g.strip()
+                    for g in _re.split(r"[,;/\\]+", genres_str)
+                    if g.strip()
+                ]
+                genres_str_clean = ", ".join(genres_list)
                 if genres_list:
                     from db.repositories.metadata import update_track_genres
-                    update_track_genres(track_id=track_id, genres_str=genres_str)
+                    update_track_genres(track_id=track_id, genres_str=genres_str_clean)
                     # Write to audio file — resolve through the shared helper
                     # so the file write targets the REAL file even when the
                     # stored path is relative to the music root.
@@ -2246,6 +2258,17 @@ async def track_detail(track_id: str):
                 # Keep genre aliases in sync where those columns exist.
                 genres_value = form.get("genres", "").strip() if "genres" in form else None
                 if genres_value is not None:
+                    # Normalise a backslash/comma/semicolon-joined genre string
+                    # (the edit form joins with ``\``) to a clean comma-joined
+                    # list — a literal ``metal\nu metal\rock`` string would
+                    # surface as ONE broken genre folder in Navidrome.
+                    import re as _re
+                    _g_parts = [
+                        g.strip()
+                        for g in _re.split(r"[,;/\\]+", genres_value)
+                        if g.strip()
+                    ]
+                    genres_value = ", ".join(_g_parts) if _g_parts else None
                     for column_name in [
                         "genres",
                         "manual_genres",

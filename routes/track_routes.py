@@ -391,6 +391,25 @@ async def api_track_update_metadata():
             # integer/numeric columns don't reject string payloads either.
             updates = _normalize_track_updates(updates, _get_track_column_types(session))
 
+            # Normalise a genres payload that arrived as a single
+            # backslash/comma/semicolon-joined string (the edit modals join
+            # with ``\`` — ``metal\nu metal\rock``).  Store a clean
+            # comma-joined list so the DB, the file tags and the genre
+            # playlist pools all see three genres, never one literal
+            # ``metal\nu metal\rock`` string.
+            if "genres" in updates and updates["genres"] is not None:
+                _g_raw = updates["genres"]
+                if isinstance(_g_raw, list):
+                    _g_parts = [str(g).strip() for g in _g_raw if str(g).strip()]
+                else:
+                    import re as _re
+                    _g_parts = [
+                        g.strip()
+                        for g in _re.split(r"[,;/\\]+", str(_g_raw))
+                        if g.strip()
+                    ]
+                updates["genres"] = ", ".join(_g_parts) if _g_parts else None
+
             # Album-scoped fields describe the release as a whole. By default a
             # single-track edit only touches that one track — fixing a song that
             # was mis-tagged onto the wrong album must not rewrite every sibling

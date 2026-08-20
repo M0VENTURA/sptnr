@@ -210,7 +210,17 @@ def _album_top_genres(
                 try:
                     _vals = json.loads(raw)
                 except Exception:
-                    _vals = [g.strip() for g in raw.split(",") if g.strip()]
+                    # Plain delimited text (navidrome_genres is backslash-
+                    # separated, essentia semicolon-separated, manual_genres
+                    # comma-separated).  Split on ALL separators so a
+                    # ``metal\nu metal\rock`` value yields three genres, not
+                    # one literal backslash-joined string.
+                    import re as _re
+                    _vals = [
+                        g.strip()
+                        for g in _re.split(r"[,;/\\]+", raw)
+                        if g.strip()
+                    ]
             else:
                 _vals = raw
             if not isinstance(_vals, list):

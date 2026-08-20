@@ -306,7 +306,18 @@ def write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
                     if isinstance(value, list):
                         genres = [str(v).strip() for v in value if str(v).strip()]
                     else:
-                        genres = [g.strip() for g in re.split(r"[,;/]+", str(value)) if g.strip()]
+                        # Split on ALL genre separators the app uses: commas,
+                        # semicolons, slashes AND backslashes (Navidrome /
+                        # ID3v2.3 conventions join genres with ``\`` — e.g.
+                        # ``metal\nu metal\rock`` — which must become THREE
+                        # TCON values, never one literal ``metal\nu metal\rock``
+                        # genre that Navidrome would render as a single broken
+                        # genre folder).
+                        genres = [
+                            g.strip()
+                            for g in re.split(r"[,;/\\]+", str(value))
+                            if g.strip()
+                        ]
 
                     if genres:
                         tag_obj.add(TCON(encoding=3, text=genres))
@@ -471,6 +482,18 @@ def write_flac_tags(file_path: str, tags: Dict[str, Any]) -> bool:
                 # A genres list must become MULTIPLE Vorbis values — writing
                 # str(list) would embed the literal "['Rock', 'Metal']".
                 audio[field] = [str(v).strip() for v in value if str(v).strip()]
+            elif field == "genre":
+                # A single genre string may carry the app's separators
+                # (comma, semicolon, slash, backslash — e.g. ``metal\nu
+                # metal\rock``).  Split it into multiple Vorbis GENRE values
+                # so Navidrome sees three genres, never one literal
+                # backslash-joined string.
+                import re as _re
+                audio[field] = [
+                    g.strip()
+                    for g in _re.split(r"[,;/\\]+", str(value))
+                    if g.strip()
+                ]
             else:
                 audio[field] = [str(value)]
 
