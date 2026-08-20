@@ -211,3 +211,59 @@ class TestCompletionArtistGate:
             assert _file_artist_matches_queue_item(path, self._queue_item()) is True
         finally:
             os.remove(path)
+
+
+class TestMatchingFileExistsUnconfirmed:
+    """The re-download loop guard: a matching file on disk stops the retry."""
+
+    def _item(self, artist="Stray Kids", title="The Little Things"):
+        return {"artist": artist, "title": title}
+
+    def _fs_files(self, names):
+        return [{"rel_path": n, "full_path": "/downloads/" + n} for n in names]
+
+    def test_duplicate_suffix_file_is_detected(self):
+        from services.downloads.download_completion_service import (
+            _matching_file_exists_unconfirmed,
+        )
+
+        # slskd's duplicate-rename pattern: base + "_<timestamp>".
+        files = self._fs_files([
+            "skz-Replay 2026 Pt.1/Stray Kids_SKZ-REPLAY 2026 Pt.1_05_The Little Things_639227549704072837.flac",
+        ])
+        hit = _matching_file_exists_unconfirmed(self._item(), files, "/downloads")
+        assert hit is not None
+        assert "The Little Things" in hit
+
+    def test_matching_file_detected(self):
+        from services.downloads.download_completion_service import (
+            _matching_file_exists_unconfirmed,
+        )
+
+        files = self._fs_files([
+            "skz-Replay 2026 Pt.1/Stray Kids_SKZ-REPLAY 2026 Pt.1_05_The Little Things.flac",
+        ])
+        hit = _matching_file_exists_unconfirmed(self._item(), files, "/downloads")
+        assert hit is not None
+
+    def test_unrelated_file_returns_none(self):
+        from services.downloads.download_completion_service import (
+            _matching_file_exists_unconfirmed,
+        )
+
+        files = self._fs_files([
+            "somewhere/Something Entirely Different.flac",
+        ])
+        assert _matching_file_exists_unconfirmed(self._item(), files, "/downloads") is None
+
+    def test_apostrophe_title_detected(self):
+        from services.downloads.download_completion_service import (
+            _matching_file_exists_unconfirmed,
+        )
+
+        item = {"artist": "Voice of Baceprot", "title": "What's The Holy (Nobel) Today"}
+        files = self._fs_files([
+            "nicotine/Voice of Baceprot - What's The Holy (Nobel) Today_639226592128975884.flac",
+        ])
+        hit = _matching_file_exists_unconfirmed(item, files, "/downloads")
+        assert hit is not None

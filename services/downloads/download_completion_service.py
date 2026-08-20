@@ -331,6 +331,58 @@ def _file_matches_queue_item(
     return bool(is_match), "filename"
 
 
+def _matching_file_exists_unconfirmed(
+    item: dict,
+    fs_files: list[dict[str, Any]],
+    downloads_dir: str,
+) -> Optional[str]:
+    """Return a disk file that LOOKS like this queue item but was not claimed.
+
+    The re-download loop guard: when a queue item is stale in ``downloading``
+    and no file was confirmed this cycle, a file that shares the item's
+    title/artist tokens on disk means the download DID land — it just could
+    not be auto-confirmed (missing/undetermined embedded metadata, artist
+    gate, duration mismatch).  Re-queueing + re-downloading in that case
+    makes slskd write ``name_<timestamp>`` copies indefinitely (the 30+
+    ``_639...`` duplicates observed in /downloads).  Returning a path lets
+    the caller surface the item for manual review instead of re-downloading.
+
+    Returns the first plausible path, or None when no file resembles the item.
+    """
+    try:
+        from services.queue.queue_scoring import (
+            _tokenize_meaningful,
+            normalize_core_title,
+        )
+        from helpers.normalization_service import normalize_artist
+    except Exception:
+        return None
+
+    item_title = normalize_core_title(item.get("title") or "")
+    item_artist = normalize_artist(item.get("artist") or "")
+    if not item_title:
+        return None
+    title_tokens = set(_tokenize_meaningful(item_title))
+    artist_tokens = set(_tokenize_meaningful(item_artist)) if item_artist else set()
+    if not title_tokens:
+        return None
+
+    for f in (fs_files or []):
+        rel = str(f.get("rel_path") or "").replace("\\", "/")
+        base = os.path.basename(rel).lower()
+        norm = _normalize_transfer_key(rel) or ""
+        # A plausible candidate shares most of the item's title tokens in the
+        # basename (the `_<timestamp>` duplicate suffix is stripped by the
+        # tokenizer's digit/punctuation removal).
+        hit = 0
+        for tok in title_tokens:
+            if tok in base:
+                hit += 1
+        if title_tokens and hit >= max(1, (len(title_tokens) + 1) // 2):
+            return rel
+    return None
+
+
 def _file_artist_matches_queue_item(file_path: str, queue_item: dict) -> Optional[bool]:
     """Return whether the file's embedded artist clearly agrees with the queue item.
 
@@ -1397,6 +1449,34 @@ def check_completed_downloads() -> dict[str, Any]:
                             stats["failed"] += 1
                             continue
                     if _is_stale_queue_item(item, stale_minutes=_STALE_DOWNLOADING_MINUTES, now=db_now):
+                        # A file that landed on disk with a matching basename
+                        # but could NOT be confirmed (metadata/artist gate
+                        # skipped it) must NOT be requeued and re-downloaded
+                        # forever — slskd appends a `_<timestamp>` suffix to
+                        # every re-download of the same name, so each retry
+                        # piles up another copy (the 30+ `_639...` duplicates
+                        # in /downloads/*).  Surface it for MANUAL review
+                        # instead: leave the file in place, drop the item out
+                        # of the auto-download loop, and log why.
+                        _unconfirmed = _matching_file_exists_unconfirmed(item, fs_files, downloads_dir)
+                        if _unconfirmed:
+                            logger.warning(
+                                "[COMPLETE] Queue %s: stale in downloading but a matching file exists on disk (%s) — "
+                                "cannot auto-confirm (metadata/artist gate); marking for manual review, NOT re-downloading",
+                                queue_id, _unconfirmed,
+                            )
+                            log_unified(
+                                f"[QUEUE] {item.get('artist') or ''} - {item.get('title') or ''} → needs manual review: "
+                                f"file exists but metadata/artist unconfirmed ({_unconfirmed})"
+                            )
+                            _log_queue_event(
+                                "manual_review",
+                                f"{item.get('artist') or ''} - {item.get('title') or ''} → file exists but "
+                                f"metadata/artist unconfirmed: {_unconfirmed}",
+                                queue_id,
+                            )
+                            stats["skipped"] += 1
+                            continue
                         logger.warning("[COMPLETE] Queue %s: no file found and stale in downloading — scheduling retry", queue_id)
                         mark_failed(queue_id, "No file found while marked downloading")
                         stats["failed"] += 1
