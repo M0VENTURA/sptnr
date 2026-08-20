@@ -371,6 +371,7 @@ function buildConfigObject() {
         artist_top_percentile_force_5_star: parseFloat(getValue('sd_force_5star_pct', '0.03')) || 0,
         artist_top_percentile_force_4_star: parseFloat(getValue('sd_force_4star_pct', '0.10')) || 0,
         listener_5star_z_threshold: parseFloat(getValue('listener_5star_z_threshold', '1.0')) || 1.0,
+        always_check_discogs_video: getChecked('always_check_discogs_video', false),
         single_boost: parseFloat(getValue('single_boost', '1.15')) || 1.15,
         metadata_score_floor: parseFloat(getValue('metadata_score_floor', '5.0')) || 5.0,
         live_weight_penalty: parseFloat(getValue('live_weight_penalty', '0.5')) || 0.5,

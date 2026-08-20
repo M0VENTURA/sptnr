@@ -351,6 +351,25 @@ def _source_confidence_levels() -> dict[str, str]:
     return result
 
 
+def _always_check_discogs_video() -> bool:
+    """Whether Discogs-video corroboration runs even after a primary confirm.
+
+    Default False — the Discogs-video check is a rate-limited Discogs API
+    call, so by default it only fires for tracks where NEITHER Discogs nor
+    MusicBrainz confirmed (weak-evidence corroboration).  Set
+    ``single_detection.always_check_discogs_video: true`` to also run it when
+    a primary source already confirmed, so a track that is BOTH an MB single
+    AND has a Discogs video shows the extra corroboration in the source table.
+    """
+    try:
+        from helpers.config_helpers import get_config
+        cfg = get_config() or {}
+        sd = cfg.get("single_detection", {}) or {}
+        return bool(sd.get("always_check_discogs_video", False))
+    except Exception:
+        return False
+
+
 # ── Stage 5-7: Source detection methods ───────────────────────────────────
 
 # Per-artist ListenBrainz top-10% context cache (keyed by artist MBID) so the
@@ -1251,9 +1270,17 @@ def detect_single_for_track(
 
     # Discogs official-video evidence (MEDIUM confidence, legacy parity): a
     # track with an official/promo music video on Discogs was issued as a
-    # single. Runs only when neither Discogs nor MusicBrainz confirmed — it
-    # corroborates weak evidence, it is not a primary source.
-    if use_advanced_detection and not discogs_confirmed and not musicbrainz_confirmed:
+    # single.  By default it runs only when neither Discogs nor MusicBrainz
+    # confirmed — it corroborates weak evidence, it is not a primary source,
+    # and each call is a rate-limited Discogs API hit.  Set
+    # ``single_detection.always_check_discogs_video: true`` to also run it
+    # when a primary source ALREADY confirmed (a track can be both an MB
+    # single AND have a Discogs video — the extra corroboration shows in the
+    # source table) at the cost of one Discogs call per confirmed track.
+    if use_advanced_detection and not discogs_confirmed and (
+        not musicbrainz_confirmed
+        or _always_check_discogs_video()
+    ):
         dv = _detect_discogs_video(lookup_title, artist, discogs_token)
         if dv.get("matched"):
             discogs_video_confirmed = True
@@ -1310,9 +1337,16 @@ def detect_single_for_track(
 
     # ── ISRC-based MusicBrainz release lookup ──
     # If the track has an ISRC, look it up on MusicBrainz to see if the
-    # associated release is a single or EP.
+    # associated release is a single or EP.  Runs for EVERY track with an
+    # ISRC — even when MusicBrainz already confirmed via the release-group —
+    # because a track can be a single on one release while its recording's
+    # release-groups on other releases (or its ISRC's canonical recording)
+    # carry different primary types.  The ISRC path is bounded (only tracks
+    # with an ISRC), MB-cached, and gives genuine cross-release corroboration
+    # that the release-group match can miss (e.g. a track confirmed as a
+    # studio album track on one release but a single on its original).
     isrc_single_confirmed = False
-    if isrc and not musicbrainz_confirmed:
+    if isrc:
         try:
             if mb_client is None:
                 from api_clients.musicbrainz_http import MusicBrainzHttpClient
