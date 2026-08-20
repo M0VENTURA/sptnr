@@ -564,7 +564,7 @@ def get_album_queue_status_db(artist: str, album: str):
 # =============================================================================
 
 def apply_genres_to_album(artist: str, album: str, genres: list[str]):
-    from services.metadata.tag_file_service import update_file_tags
+    from services.metadata.tag_file_service import update_file_tags, resolve_music_file_path
 
     genres_clean = [g.strip() for g in genres if g.strip()]
     genres_str = ",".join(genres_clean)
@@ -579,8 +579,12 @@ def apply_genres_to_album(artist: str, album: str, genres: list[str]):
         title = t.get("title") if hasattr(t, "get") else t[1]
         path = t.get("file_path") if hasattr(t, "get") else t[2]
 
-        if path and os.path.exists(path):
-            if update_file_tags(path, {"genres": genres_clean}):
+        # Resolve the stored path (may be relative to the music root) so the
+        # file write targets the REAL file, never fails on a relative path.
+        resolved = resolve_music_file_path(path)
+
+        if resolved:
+            if update_file_tags(resolved, {"genres": genres_clean}):
                 update_track_genres(track_id=track_id, genres_str=genres_str)
                 updated += 1
             else:
@@ -622,7 +626,7 @@ def apply_discogs_id_to_album(artist, album, discogs_id, is_single):
 
 def bulk_tag_tracks(payload: dict) -> tuple[dict, int]:
     """Add genre tags to multiple tracks — DB columns + audio file tags."""
-    from services.metadata.tag_file_service import update_file_tags
+    from services.metadata.tag_file_service import update_file_tags, resolve_music_file_path
 
     track_ids = [str(t) for t in (payload.get("track_ids") or []) if t]
     genres = [g.strip() for g in (payload.get("genres") or []) if g and g.strip()]
@@ -660,9 +664,14 @@ def bulk_tag_tracks(payload: dict) -> tuple[dict, int]:
                 new_genres = ", ".join(sorted(existing))
                 new_manual = ", ".join(sorted(manual_existing))
 
-                if file_path and os.path.exists(file_path):
-                    if not update_file_tags(file_path, {"genres": sorted(existing)}):
+                # Resolve the stored path (may be relative to the music root)
+                # so the file write targets the REAL file.
+                resolved = resolve_music_file_path(file_path)
+                if resolved:
+                    if not update_file_tags(resolved, {"genres": sorted(existing)}):
                         failed_files.append(title or f"Track ID: {track_id}")
+                else:
+                    failed_files.append(title or f"Track ID: {track_id}")
 
                 session.execute(
                     text("UPDATE tracks SET genres = :genres, manual_genres = :manual WHERE id = :id"),
@@ -714,7 +723,13 @@ def bulk_delete_tracks(payload: dict) -> tuple[dict, int]:
 
 
 def update_album_ids(payload: dict) -> tuple[dict, int]:
-    """Update release IDs (MusicBrainz release/release-group, Discogs) for an album's tracks."""
+    """Update release IDs (MusicBrainz release/release-group, Discogs) for an album's tracks.
+
+    DB columns AND the audio files stay in sync: the MusicBrainz release /
+    release-group IDs are written to each track's file tags
+    (``musicbrainz_albumid`` / ``musicbrainz_releasegroupid`` frames) so the
+    files carry the same release linkage as the DB (metadata fan-out rule).
+    """
     artist = str(payload.get("artist") or "").strip()
     album = str(payload.get("album") or "").strip()
     if not artist or not album:
@@ -744,6 +759,13 @@ def update_album_ids(payload: dict) -> tuple[dict, int]:
     bind_values["artist"] = artist
     bind_values["album"] = album
 
+    file_tag_updates: dict[str, Any] = {}
+    if musicbrainz_id:
+        file_tag_updates["musicbrainz_albumid"] = musicbrainz_id
+    if release_group_id:
+        file_tag_updates["musicbrainz_releasegroupid"] = release_group_id
+
+    file_updated = 0
     with db_session() as session:
         result = session.execute(
             text(
@@ -754,7 +776,29 @@ def update_album_ids(payload: dict) -> tuple[dict, int]:
         )
         rows = result.rowcount or 0
 
-    return {"success": True, "rows_updated": rows}, 200
+        # Metadata fan-out: write the release linkage to each track's audio
+        # file tags too (the files must carry what the DB now carries).
+        if file_tag_updates:
+            from services.metadata.tag_file_service import (
+                resolve_music_file_path,
+                update_file_tags,
+            )
+            for r in session.execute(
+                text(
+                    "SELECT id, file_path FROM tracks "
+                    "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album"
+                ),
+                {"artist": artist, "album": album},
+            ).fetchall() or []:
+                _path = resolve_music_file_path(str(r[1] or "") if r[1] else None)
+                if _path:
+                    try:
+                        if update_file_tags(_path, file_tag_updates):
+                            file_updated += 1
+                    except Exception as exc:
+                        logger.debug("[album_ids] File tag write failed for %s: %s", r[0], exc)
+
+    return {"success": True, "rows_updated": rows, "files_updated": file_updated}, 200
 
 
 # =============================================================================

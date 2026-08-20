@@ -380,6 +380,17 @@ def write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
                 if value:
                     tag_obj.add(TXXX(encoding=3, desc="MUSICBRAINZ WORK ID", text=[str(value)]))
 
+            elif field == "writer":
+                # TXXX:WRITER — the tag config's writer aliases
+                # (``tags.writer.aliases``) read this frame back.  Clears any
+                # existing WRITER/LYRICIST variants before writing so an
+                # edited writer never leaves a stale duplicate frame.
+                _clear_txxx_variants(tag_obj, "writer")
+                _clear_txxx_variants(tag_obj, "lyricist")
+
+                if value:
+                    tag_obj.add(TXXX(encoding=3, desc="WRITER", text=[str(value)]))
+
             elif field == "cover_art_data" and value:
                 tag_obj.delall("APIC")
 
@@ -408,12 +419,30 @@ def write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
 # VorbisComment field-name mapping — FLAC uses its own standard names, NOT
 # the internal field names (Navidrome/mutagen read ``date``/``tracknumber``/
 # ``discnumber``/``albumartist``; writing ``year``/``track_number`` etc.
-# produced non-standard comments that players ignore).
+# produced non-standard comments that players ignore).  Genres are stored
+# under ``GENRE`` (singular) in Vorbis comments; the MP3 writer's plural
+# ``genres`` key must map to it too.
 _VORBIS_FIELD_MAP: Dict[str, str] = {
     "track_number": "tracknumber",
     "disc_number": "discnumber",
     "album_artist": "albumartist",
     "year": "date",
+    "genres": "genre",
+    "genre": "genre",
+    "musicbrainz_albumid": "MUSICBRAINZ_ALBUMID",
+    "musicbrainz_album_mbid": "MUSICBRAINZ_ALBUMID",
+    "musicbrainz_releaseid": "MUSICBRAINZ_ALBUMID",
+    "musicbrainz_artistid": "MUSICBRAINZ_ARTISTID",
+    "musicbrainz_artist_id": "MUSICBRAINZ_ARTISTID",
+    "musicbrainz_albumartistid": "MUSICBRAINZ_ALBUMARTISTID",
+    "musicbrainz_trackid": "MUSICBRAINZ_TRACKID",
+    "mbid": "MUSICBRAINZ_TRACKID",
+    "beets_mbid": "MUSICBRAINZ_TRACKID",
+    "musicbrainz_releasegroupid": "MUSICBRAINZ_RELEASEGROUPID",
+    "musicbrainz_releasetrackid": "MUSICBRAINZ_RELEASETRACKID",
+    "musicbrainz_workid": "MUSICBRAINZ_WORKID",
+    "musicbrainz_albumtype": "RELEASETYPE",
+    "musicbrainz_albumstatus": "RELEASESTATUS",
 }
 
 
@@ -438,7 +467,12 @@ def write_flac_tags(file_path: str, tags: Dict[str, Any]) -> bool:
                     pass
                 continue
 
-            audio[field] = [str(value)]
+            if isinstance(value, (list, tuple, set)):
+                # A genres list must become MULTIPLE Vorbis values — writing
+                # str(list) would embed the literal "['Rock', 'Metal']".
+                audio[field] = [str(v).strip() for v in value if str(v).strip()]
+            else:
+                audio[field] = [str(value)]
 
         audio.save()
         return True
@@ -510,6 +544,124 @@ def _resolve_music_file_path(path_value: str | None) -> str | None:
         if os.path.isfile(candidate):
             return candidate
     return None
+
+
+# Public alias — album/track edit routes resolve stored (often relative)
+# Navidrome paths through the SAME helper so every file write targets the
+# real file instead of failing silently on a relative path.
+resolve_music_file_path = _resolve_music_file_path
+
+
+# DB column name → tag writer field name.  Used to convert an edit payload
+# (or the track row's columns) into the field names ``write_tags_to_file``
+# understands.  Kept in ONE place so the track page, album page, tag sync
+# and the metadata APIs all write identical frames.
+_COLUMN_TO_TAG_FIELD: dict[str, str] = {
+    "title": "title",
+    "artist": "artist",
+    "album": "album",
+    "album_artist": "album_artist",
+    "albumartist": "album_artist",
+    "genres": "genres",
+    "genre": "genres",
+    "year": "year",
+    "date": "year",
+    "composer": "composer",
+    "writer": "writer",
+    "arranger": "arranger",
+    "mixer": "mixer",
+    "producer": "producer",
+    "work": "work",
+    "track_number": "track_number",
+    "disc_number": "disc_number",
+    "comment": "comment",
+    "lyrics": "lyrics",
+    "mbid": "mbid",
+    "musicbrainz_trackid": "mbid",
+    "beets_mbid": "mbid",
+    "isrc": "isrc",
+    "bpm": "bpm",
+    "titlesort": "titlesort",
+    "albumsort": "albumsort",
+    "artistsort": "artistsort",
+    "composersort": "composersort",
+    "albumartistsort": "albumartistsort",
+    "lyricistsort": "lyricistsort",
+    "artistssort": "artistssort",
+    "albumartistssort": "albumartistssort",
+    "artists": "artists",
+    "albumartists": "albumartists",
+    "conductor": "conductor",
+    "performer": "performer",
+    "director": "director",
+    "djmixer": "djmixer",
+    "engineer": "engineer",
+    "remixer": "remixer",
+    "lyricist": "lyricist",
+    "albumversion": "albumversion",
+    "recordlabel": "recordlabel",
+    "copyright": "copyright",
+    "releasedate": "releasedate",
+    "releasetype": "releasetype",
+    "releasestatus": "releasestatus",
+    "releasecountry": "releasecountry",
+    "media": "media",
+    "barcode": "barcode",
+    "catalognumber": "catalognumber",
+    "asin": "asin",
+    "originalyear": "originalyear",
+    "originaldate": "originaldate",
+    "tracktotal": "tracktotal",
+    "disctotal": "disctotal",
+    "script": "script",
+    "discsubtitle": "discsubtitle",
+    "subtitle": "subtitle",
+    "grouping": "grouping",
+    "movement": "movement",
+    "movementname": "movementname",
+    "movementtotal": "movementtotal",
+    "key": "key",
+    "language": "language",
+    "license": "license",
+    "website": "website",
+    "encodedby": "encodedby",
+    "encodersettings": "encodersettings",
+    "explicitstatus": "explicitstatus",
+    "musicbrainz_albumid": "musicbrainz_albumid",
+    "musicbrainz_album_mbid": "musicbrainz_albumid",
+    "musicbrainz_releaseid": "musicbrainz_albumid",
+    "musicbrainz_artistid": "musicbrainz_artistid",
+    "musicbrainz_artist_id": "musicbrainz_artistid",
+    "musicbrainz_albumartistid": "musicbrainz_albumartistid",
+    "musicbrainz_releasegroupid": "musicbrainz_releasegroupid",
+    "musicbrainz_releasetrackid": "musicbrainz_releasetrackid",
+    "musicbrainz_workid": "musicbrainz_workid",
+    "musicbrainz_albumtype": "musicbrainz_albumtype",
+    "musicbrainz_albumstatus": "musicbrainz_albumstatus",
+    "replaygain_track_gain": "replaygain_track_gain",
+    "replaygain_track_peak": "replaygain_track_peak",
+    "replaygain_album_gain": "replaygain_album_gain",
+    "replaygain_album_peak": "replaygain_album_peak",
+    "r128_track_gain": "r128_track_gain",
+    "r128_album_gain": "r128_album_gain",
+}
+
+
+def build_tag_updates(payload: dict[str, Any]) -> dict[str, Any]:
+    """Map a DB-column payload to tag-writer field names.
+
+    ``payload`` uses the tracks-table column names (e.g. ``album_artist``,
+    ``musicbrainz_albumid``); the writers expect their own field names
+    (``album_artist``, ``musicbrainz_albumid``, …).  Only non-empty values
+    are included (empty values would tell the writer to DELETE the frame,
+    which is the right behaviour when a field is explicitly cleared).
+    """
+    tags: dict[str, Any] = {}
+    for column_name, tag_name in _COLUMN_TO_TAG_FIELD.items():
+        value = payload.get(column_name)
+        if value is not None and str(value).strip() != "":
+            tags[tag_name] = value
+    return tags
 
 
 def sync_track_tags_to_file(track_id: str) -> bool:

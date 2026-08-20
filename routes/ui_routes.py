@@ -1308,7 +1308,10 @@ async def album_detail(album_path: str):
     if request.method == "POST":
         form = await request.form
         from db.repositories.tracks import insert_or_update_track
-        from services.metadata.tag_file_service import update_file_tags
+        from services.metadata.tag_file_service import (
+            resolve_music_file_path,
+            update_file_tags,
+        )
 
         new_title = (form.get("album_title") or "").strip()
         new_artist = (form.get("album_artist") or "").strip()
@@ -1414,9 +1417,11 @@ async def album_detail(album_path: str):
                 if genres_list:
                     from db.repositories.metadata import update_track_genres
                     update_track_genres(track_id=track_id, genres_str=genres_str)
-                    # Write to audio file
-                    file_path = track.get("file_path")
-                    if file_path and os.path.exists(file_path):
+                    # Write to audio file — resolve through the shared helper
+                    # so the file write targets the REAL file even when the
+                    # stored path is relative to the music root.
+                    file_path = resolve_music_file_path(track.get("file_path"))
+                    if file_path:
                         try:
                             update_file_tags(file_path, {"genres": genres_list})
                         except Exception as tag_err:
@@ -1428,6 +1433,26 @@ async def album_detail(album_path: str):
                     updated_count += 1
                 except Exception as db_err:
                     logger.debug("[album_detail] DB update failed for %s: %s", track_id, db_err)
+
+            # ── File sync for the rest of the edited fields ─────────────
+            # Album edits (title / artist / year / MBIDs / release info)
+            # must ALSO reach the audio files — the DB is not the only
+            # consumer.  Every field that changed and maps to a tag frame
+            # is written to the resolved file path.  Genres were handled
+            # above (they write to the file's genre field); the remaining
+            # payload fields go through the shared column→tag mapper so
+            # the album page writes exactly the frames the track page
+            # would (album_artist → TPE2/albumartist, year → TDRC/date,
+            # musicbrainz_albumid → TXXX:MUSICBRAINZ ALBUM ID, …).
+            _resolved_file = resolve_music_file_path(track.get("file_path"))
+            if _resolved_file:
+                try:
+                    from services.metadata.tag_file_service import build_tag_updates
+                    _file_tags = build_tag_updates(payload)
+                    if _file_tags:
+                        update_file_tags(_resolved_file, _file_tags)
+                except Exception as tag_err:
+                    logger.debug("[album_detail] File tag write failed for %s: %s", track_id, tag_err)
 
             # Album type corrected away from live: undo the live/acoustic
             # tagging (suffix, flags, injected genre) the album stage may
@@ -2041,96 +2066,12 @@ async def track_detail(track_id: str):
         return None
 
     def build_tags_to_write(update_values: dict[str, Any]) -> dict[str, Any]:
-        tag_map = {
-            "title": "title",
-            "artist": "artist",
-            "album": "album",
-            "album_artist": "album_artist",
-            "genres": "genre",
-            "year": "year",
-            "composer": "composer",
-            "writer": "writer",
-            "arranger": "arranger",
-            "mixer": "mixer",
-            "producer": "producer",
-            "work": "work",
-            "track_number": "track_number",
-            "disc_number": "disc_number",
-            "comment": "comment",
-            "mbid": "mbid",
-            "isrc": "isrc",
-            "bpm": "bpm",
-            "titlesort": "titlesort",
-            "albumsort": "albumsort",
-            "artistsort": "artistsort",
-            "composersort": "composersort",
-            "albumartistsort": "albumartistsort",
-            "lyricistsort": "lyricistsort",
-            "artistssort": "artistssort",
-            "albumartistssort": "albumartistssort",
-            "artists": "artists",
-            "albumartists": "albumartists",
-            "conductor": "conductor",
-            "performer": "performer",
-            "director": "director",
-            "djmixer": "djmixer",
-            "engineer": "engineer",
-            "remixer": "remixer",
-            "lyricist": "lyricist",
-            "albumversion": "albumversion",
-            "recordlabel": "recordlabel",
-            "copyright": "copyright",
-            "releasedate": "releasedate",
-            "releasetype": "releasetype",
-            "releasestatus": "releasestatus",
-            "releasecountry": "releasecountry",
-            "media": "media",
-            "barcode": "barcode",
-            "catalognumber": "catalognumber",
-            "asin": "asin",
-            "originalyear": "originalyear",
-            "originaldate": "originaldate",
-            "tracktotal": "tracktotal",
-            "disctotal": "disctotal",
-            "script": "script",
-            "discsubtitle": "discsubtitle",
-            "lyrics": "lyrics",
-            "subtitle": "subtitle",
-            "grouping": "grouping",
-            "movement": "movement",
-            "movementname": "movementname",
-            "movementtotal": "movementtotal",
-            "key": "key",
-            "language": "language",
-            "license": "license",
-            "website": "website",
-            "encodedby": "encodedby",
-            "encodersettings": "encodersettings",
-            "explicitstatus": "explicitstatus",
-            "musicbrainz_albumid": "musicbrainz_albumid",
-            "musicbrainz_artistid": "musicbrainz_artistid",
-            "musicbrainz_albumartistid": "musicbrainz_albumartistid",
-            "musicbrainz_releasegroupid": "musicbrainz_releasegroupid",
-            "musicbrainz_releasetrackid": "musicbrainz_releasetrackid",
-            "musicbrainz_workid": "musicbrainz_workid",
-            "musicbrainz_trackid": "musicbrainz_trackid",
-            "replaygain_track_gain": "replaygain_track_gain",
-            "replaygain_track_peak": "replaygain_track_peak",
-            "replaygain_album_gain": "replaygain_album_gain",
-            "replaygain_album_peak": "replaygain_album_peak",
-            "r128_track_gain": "r128_track_gain",
-            "r128_album_gain": "r128_album_gain",
-        }
-
-        tags: dict[str, Any] = {}
-
-        for column_name, tag_name in tag_map.items():
-            value = update_values.get(column_name)
-
-            if value not in (None, ""):
-                tags[tag_name] = value
-
-        return tags
+        # Delegate to the shared column→tag mapper in tag_file_service so
+        # the track page and the album page write IDENTICAL frames (a local
+        # duplicate previously drifted: it mapped genres→genre only and
+        # missed the FLAC/MBID aliases the shared mapper covers).
+        from services.metadata.tag_file_service import build_tag_updates
+        return build_tag_updates(update_values)
 
     try:
         with db_session() as db:
