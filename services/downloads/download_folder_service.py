@@ -196,11 +196,75 @@ def _derive_folder_group(folder_name: str, files: list[dict]) -> dict:
     }
 
 
+def _is_torrents_root(name: str) -> bool:
+    """True when *name* is the torrents root folder (any casing).
+
+    qBittorrent / deluge / transmission all create a ``torrents`` (or
+    ``Torrents`` / ``TORRENTS``) folder under the downloads root.  The old
+    case-sensitive ``entry == "torrents"`` skip let ``Torrents`` through as
+    ONE folder whose ``_get_files_in_folder`` recursion (depth 3) merged
+    every album subfolder into a single Matched Folder — matching the whole
+    ``/Torrents`` directory instead of each album.
+    """
+    return str(name or "").strip().lower() == "torrents"
+
+
+def _iter_matched_folder_candidates(downloads_dir: str, archive_dir: str) -> list[tuple[str, str]]:
+    """Yield ``(folder_abs, display_name)`` for the Matched Folders list.
+
+    One entry per top-level folder under ``downloads_dir`` — EXCEPT the
+    torrents root, which is flattened into its album subfolders so each
+    album under ``/torrents/<Album>`` gets its own Match / Confirm actions
+    instead of being merged into the whole torrents directory.
+    """
+    candidates: list[tuple[str, str]] = []
+    try:
+        entries = sorted(os.listdir(downloads_dir))
+    except Exception as exc:
+        logger.debug("[FOLDER_CANDIDATES] listdir failed for %s: %s", downloads_dir, exc)
+        return candidates
+    for entry in entries:
+        full = os.path.join(downloads_dir, entry)
+        if not os.path.isdir(full):
+            continue
+        # Never surface the FLAC conversion archive or hidden/system dirs.
+        if entry.startswith(".") or entry.startswith("__"):
+            continue
+        if os.path.normpath(full) == os.path.normpath(archive_dir):
+            continue
+        if _is_torrents_root(entry):
+            # Flatten: one Matched Folder per album subfolder under the
+            # torrents root (skip the root itself, hidden dirs, the archive).
+            try:
+                sub_entries = sorted(os.listdir(full))
+            except Exception as exc:
+                logger.debug("[FOLDER_CANDIDATES] torrents listdir failed for %s: %s", full, exc)
+                sub_entries = []
+            for sub in sub_entries:
+                sub_full = os.path.join(full, sub)
+                if not os.path.isdir(sub_full):
+                    continue
+                if sub.startswith(".") or sub.startswith("__"):
+                    continue
+                if os.path.normpath(sub_full) == os.path.normpath(archive_dir):
+                    continue
+                candidates.append((sub_full, sub))
+            continue
+        candidates.append((full, entry))
+    return candidates
+
+
 def get_unmatched_folders() -> dict:
     """List folders under the downloads directory that are NOT tracked as
     MusicBrainz releases (the monitor page's "Matched Folders in Downloads"
     section). A folder whose audio files have all been imported to the
     library is marked ``matched`` — it is safe to delete.
+
+    The torrents root (any casing) is flattened into its album subfolders —
+    each album gets its own entry so matching one album never merges every
+    torrent into a single folder (the old ``entry == "torrents"`` skip also
+    let ``Torrents``/``TORRENTS`` through as ONE folder containing every
+    album's files).
     """
     try:
         downloads_dir = resolve_downloads_dir()
@@ -213,16 +277,7 @@ def get_unmatched_folders() -> dict:
         imported = _imported_source_paths()
 
         folders = []
-        for entry in sorted(os.listdir(downloads_dir)):
-            full = os.path.join(downloads_dir, entry)
-            if not os.path.isdir(full):
-                continue
-            # Never surface the torrent root, the FLAC conversion archive or
-            # hidden/system dirs.
-            if entry == "torrents" or entry.startswith(".") or entry.startswith("__"):
-                continue
-            if os.path.normpath(full) == archive_dir:
-                continue
+        for full, entry in _iter_matched_folder_candidates(downloads_dir, archive_dir):
             if os.path.normpath(full) in tracked:
                 continue
 
@@ -501,14 +556,7 @@ def auto_delete_imported_folders() -> int:
         archive_dir = resolve_original_archive_dir()
         tracked = _tracked_monitoring_folders()
         imported = _imported_source_paths()
-        for entry in sorted(os.listdir(downloads_dir)):
-            full = os.path.join(downloads_dir, entry)
-            if not os.path.isdir(full):
-                continue
-            if entry == "torrents" or entry.startswith(".") or entry.startswith("__"):
-                continue
-            if os.path.normpath(full) == archive_dir:
-                continue
+        for full, _entry in _iter_matched_folder_candidates(downloads_dir, archive_dir):
             if os.path.normpath(full) in tracked:
                 continue
             files = _get_files_in_folder(full)
