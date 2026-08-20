@@ -501,8 +501,15 @@ var _pageData = window._pageData || {};
         for (let idx = 0; idx < releases.length; idx++) {
             const r = releases[idx];
             const isBest = bestRelease && r.id === bestRelease.id;
-            const fmt = escapeHtml(r.formats.join(' + ') || 'Unknown format');
-            const discs = r.disc_count > 1 ? ` · ${r.disc_count} discs` : '';
+            // Tolerate both the normalised shape (formats list) and raw MB
+            // shapes where formats may be missing / a media array.
+            let fmtRaw = r.formats;
+            if (!Array.isArray(fmtRaw)) {
+                const media = Array.isArray(r.media) ? r.media : [];
+                fmtRaw = media.map(m => m.format || '').filter(Boolean);
+            }
+            const fmt = escapeHtml((fmtRaw && fmtRaw.length ? fmtRaw.join(' + ') : '') || 'Unknown format');
+            const discs = (r.disc_count || 0) > 1 ? ` · ${r.disc_count} discs` : '';
             const country = r.country ? ` · ${escapeHtml(r.country)}` : '';
             const disambiguation = r.disambiguation ? ` (${escapeHtml(r.disambiguation)})` : '';
             const safeTitle = escapeHtml(r.title);
@@ -515,7 +522,7 @@ var _pageData = window._pageData || {};
                         <div>
                             <strong>${safeTitle}${disambiguation}</strong>${bestBadge}
                             <div class="text-muted small">
-                                ${escapeHtml(r.date || '?')}${country} · ${fmt} · ${r.track_count} tracks${discs}
+                                ${escapeHtml(r.date || '?')}${country} · ${fmt} · ${r.track_count != null ? r.track_count + ' tracks' : '?'}${discs}
                                 ${r.status ? ' · <span class="badge bg-light text-dark border">' + escapeHtml(r.status) + '</span>' : ''}
                             </div>
                         </div>

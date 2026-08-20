@@ -1338,14 +1338,45 @@ def get_release_group_releases(rg_mbid: str, include_track_counts: bool = False)
             release via the releases browse endpoint (one extra API call).
 
     Returns:
-        Dict with ``success`` and ``releases`` list.  Each release dict will
-        include a ``track_count`` key when *include_track_counts* is True.
+        Dict with ``success`` and ``releases`` list.  Each release dict is
+        NORMALISED to the album-page release-picker contract (same shape as
+        ``get_musicbrainz_best_release``): ``id``, ``title``, ``date``,
+        ``country``, ``status``, ``disambiguation``, ``track_count``,
+        ``disc_count``, ``formats`` (list) and ``cover_art_url``.  The raw
+        MusicBrainz dicts carry ``media`` arrays, NOT a flat ``formats``
+        list — the picker's ``r.formats.join(' + ')`` throws on the raw
+        shape, which is exactly the "modal opens but no releases load"
+        regression.
     """
     try:
         data = get_shared_mb_client().get_release_group(rg_mbid, inc="releases")
         if not data:
             return {"success": False, "error": "No release-group data returned"}
-        releases = data.get("releases", [])
+        raw_releases = data.get("releases", []) or []
+
+        releases: list[dict[str, Any]] = []
+        for r in raw_releases:
+            media = r.get("media") or []
+            total_tracks = sum(int(m.get("track-count", 0) or 0) for m in media)
+            formats = list({
+                str(m.get("format") or "").strip()
+                for m in media if m.get("format")
+            })
+            releases.append({
+                "id": r.get("id", ""),
+                "title": r.get("title", ""),
+                "date": r.get("date", ""),
+                "country": r.get("country", ""),
+                "status": r.get("status", ""),
+                "disambiguation": r.get("disambiguation", ""),
+                "track_count": total_tracks,
+                "disc_count": len(media),
+                "formats": [f for f in formats if f],
+                "cover_art_url": (
+                    f"https://coverartarchive.org/release/{r.get('id')}/front-250"
+                    if r.get("id") else ""
+                ),
+            })
 
         if include_track_counts and releases:
             _enrich_releases_with_track_counts(releases)
@@ -1862,8 +1893,12 @@ def get_musicbrainz_best_release(artist: str, album: str, rg_mbid: str) -> dict:
 
         # Browse all releases in the group WITH media so track counts,
         # disc counts and formats are available without extra calls.
+        # NOTE: ``recordings`` is intentionally NOT requested — the release
+        # BROWSE endpoint rejects some inc combinations and the release
+        # detail (with recordings) is fetched lazily by the picker's
+        # "Tracks" button instead.
         releases_raw = client.browse_releases_for_group(
-            rg_mbid, inc="media+labels+recordings", limit=50,
+            rg_mbid, inc="media+labels", limit=50,
         )
         releases: list[dict[str, Any]] = []
         for r in releases_raw or []:
