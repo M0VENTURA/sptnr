@@ -780,11 +780,21 @@ def _assign_stars(
             rules = _rules.get(era)
             catalog_cutoff = album_model.get("catalog_cutoff")
             qualifies_catalog = catalog_cutoff is not None and score >= float(catalog_cutoff)
+            # For single-artist compilations (Greatest Hits / Best-Of) the
+            # album-top-N rank must use the ARTIST's catalogue reference, NOT
+            # the compilation's own tracklist.  A curated hits album is an
+            # album of the artist's best tracks — ranking them against each
+            # other (``_album_rank`` on ``album_scores``) lets only the top-3
+            # of the compilation qualify for 5★, suppressing every other
+            # genuine hit.  Ranking against the artist's real catalogue gives
+            # each track its true standing (a #1 hit stays #1 regardless of
+            # how many other hits share the compilation).
+            _rank_ref = ref_scores if is_compilation else album_scores
             qualifies_album = (
                 not popularity_only
                 and organic
                 and rules is not None
-                and _album_rank(score, album_scores) <= int(rules["album_top_n"])
+                and _album_rank(score, _rank_ref) <= int(rules["album_top_n"])
             )
             if qualifies_catalog or qualifies_album:
                 track["_era_5star"] = True
@@ -2518,7 +2528,14 @@ def post_album_star_ratings(
             # biggest hit and must never be demoted by its album's slot cap
             # (Battle Beast: Eden was the catalog #1 but a late-processed
             # album's slot gating demoted it while earlier albums kept 5★).
-            if album_model.get("has_benchmark"):
+            # SINGLE-ARTIST COMPILATIONS skip the cap entirely: a Greatest
+            # Hits / Best-Of album is a curated collection of the artist's
+            # genuine hits — capping it at the era's 4 slots would demote real
+            # #1s just because they share a hits tracklist (the whole premise
+            # of the compilation).  True Various-Artists albums keep the cap
+            # (every track is a different artist's single, so the usual era
+            # budget applies).
+            if album_model.get("has_benchmark") and not is_compilation:
                 _rules, _, _ = _live_album_scaling()
                 max_slots = int(
                     album_model.get("max_5star_slots")
