@@ -187,9 +187,16 @@ def cleanup_copied_sources() -> dict:
                     deleted_paths.append(file_path)
 
                 if not deleted and found_filename and os.path.isdir(downloads_root):
+                    # A remote Soulseek found_filename may carry Windows
+                    # backslash separators — compare against the LAST path
+                    # segment (forward-slash normalised) so a file on disk
+                    # matches regardless of the peer's separator style.
+                    found_base = os.path.basename(
+                        str(found_filename).replace("\\", "/")
+                    )
                     for root, _dirs, files in os.walk(downloads_root):
-                        if found_filename in files:
-                            candidate = os.path.join(root, found_filename)
+                        if found_base and found_base in files:
+                            candidate = os.path.join(root, found_base)
                             if _delete_if_exists(candidate):
                                 deleted = True
                                 deleted_paths.append(candidate)

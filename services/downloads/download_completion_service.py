@@ -155,11 +155,17 @@ def _wait_for_transfer_file(found_filename: str, local_file_path: str) -> Option
 
     monitored = _monitored_downloads_dir()
     candidates = []
-    base = os.path.basename(found_filename or "")
+    # Soulseek peers on Windows share paths with backslash separators
+    # (``nicotine\\Voice of Baceprot - ....flac``).  On Linux ``\\`` is NOT a
+    # path separator, so ``os.path.basename`` would return the WHOLE string
+    # and the file would never be found.  Normalise backslashes to forward
+    # slashes FIRST so the basename (and any join) targets the real file.
+    _found = str(found_filename or "").replace("\\", "/").strip()
+    base = os.path.basename(_found)
     if monitored and monitored != "?" and base:
         candidates.append(os.path.join(monitored, base))
     if local_file_path:
-        candidates.append(local_file_path)
+        candidates.append(str(local_file_path).replace("\\", "/"))
 
     if not candidates:
         return None
@@ -1141,8 +1147,13 @@ def check_completed_downloads() -> dict[str, Any]:
         if slskd is not None:
             try:
                 for transfer in slskd.get_completed_transfers():
-                    local = transfer.get("localFilePath") or ""
-                    remote = transfer.get("filename") or ""
+                    # slskd's localFilePath may carry Windows backslash
+                    # separators when the peer's share uses them; on Linux
+                    # ``\\`` is not a path separator, so ``os.path.isfile``
+                    # would reject the literal string.  Normalise before any
+                    # filesystem check.
+                    local = str(transfer.get("localFilePath") or "").replace("\\", "/").strip()
+                    remote = str(transfer.get("filename") or "").replace("\\", "/").strip()
                     if local and os.path.isfile(local):
                         remote_norm = _normalize_transfer_key(remote)
                         if remote_norm:
@@ -1276,7 +1287,12 @@ def check_completed_downloads() -> dict[str, Any]:
                 match_source = ""
                 abs_path: str | None = None
 
-                found_fn = (item.get("found_filename") or "").strip()
+                # Normalise any Windows backslash separators from the stored
+                # remote filename (Soulseek peers on Windows share paths like
+                # ``nicotine\\Voice of Baceprot - ....flac``; ``\\`` is NOT a
+                # path separator on Linux, so filesystem calls on the literal
+                # string would fail and the queue cycle would deadlock).
+                found_fn = (item.get("found_filename") or "").replace("\\", "/").strip()
 
                 # 1. Exact match via slskd localFilePath (most reliable).
                 if found_fn:
@@ -1286,6 +1302,10 @@ def check_completed_downloads() -> dict[str, Any]:
                             slskd_completed.get(found_norm)
                             or slskd_completed.get(os.path.basename(found_norm))
                         )
+                    # localFilePath came from slskd and may still hold
+                    # backslashes — normalise before the filesystem check.
+                    if abs_path:
+                        abs_path = str(abs_path).replace("\\", "/")
                     if abs_path and os.path.isfile(abs_path):
                         # A file another queue item already claimed (imported,
                         # matched, or still downloading) must not be re-matched.

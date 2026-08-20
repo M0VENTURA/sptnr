@@ -422,6 +422,9 @@ def queue_delete(queue_id: int, delete_download_file: bool = False) -> Dict[str,
                     item.get("file_path") or item.get("music_file_path")
                     or item.get("matched_file_path") or item.get("found_filename") or ""
                 )
+                # Normalise Windows backslash separators (remote Soulseek
+                # filenames) so the file can be found on Linux.
+                file_path = str(file_path or "").replace("\\", "/")
                 if file_path and os.path.isfile(file_path):
                     try:
                         os.remove(file_path)

@@ -1050,15 +1050,22 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
 
         # ✅ success → downloading (final completion is confirmed by the
         # downloads watcher when the file actually lands on disk).
+        # Normalise Windows backslash separators to forward slashes so a
+        # remote filename like ``nicotine\\Voice of Baceprot - ....flac`` is
+        # stored as a path Linux understands (backslash is NOT a separator on
+        # POSIX — ``os.path.basename``/``os.path.isfile`` would treat the
+        # whole string as one filename and the completion service could never
+        # locate the file, deadlocking the queue cycle).
+        _stored_filename = str(chosen.get("filename") or "").replace("\\", "/").strip()
         update_queue_item(
             queue_id,
-            found_filename=chosen["filename"],
+            found_filename=_stored_filename,
             status="downloading",
         )
         _fallback_note = " (low-quality fallback)" if used_low_quality_fallback else ""
         log_unified(
             f"[QUEUE] {expected_artist} - {expected_title} → downloading from {chosen.get('username')} "
-            f"({chosen.get('filename') or ''}){_fallback_note}"
+            f"({_stored_filename}){_fallback_note}"
         )
         _log_search_event(
             search_type="automatic",

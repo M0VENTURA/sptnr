@@ -256,6 +256,11 @@ def _convert_flac_and_handle_original(source_path, dest_path, settings) -> bool:
     either deleted or archived under downloads/<original_subfolder> per
     ``downloads.conversion.original_handling``.  Returns True on success.
     """
+    # A source path that still carries Windows backslashes (from a remote
+    # Soulseek filename) is not resolvable on Linux — ffmpeg would fail, or
+    # succeed on a sibling path while the archive move of the literal string
+    # hits "No such file or directory".  Normalise up front.
+    source_path = str(source_path).replace("\\", "/")
     bitrate_kbps = int(settings.get("mp3_bitrate_kbps", 320) or 320)
     cmd = [
         "ffmpeg", "-y", "-i", source_path,
@@ -340,6 +345,11 @@ def move_track_to_library(track, release_metadata, music_root):
 
     if not file_path:
         return {"success": False, "error": "Missing file_path"}
+
+    # Normalise Windows backslashes from a remote Soulseek filename so
+    # ``os.path.splitext`` / ``shutil.move`` / ffmpeg all operate on a path
+    # Linux understands.
+    file_path = str(file_path).replace("\\", "/")
 
     conversion_settings = _read_download_conversion_settings()
     source_ext = os.path.splitext(file_path)[1].lower()
