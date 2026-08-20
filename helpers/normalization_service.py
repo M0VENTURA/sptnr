@@ -105,6 +105,19 @@ def normalize_isrc(value) -> str:
     if value is None:
         return ""
     import re as _re
+
+    # A raw list (Navidrome/OpenSubsonic ``tags`` map, MusicBrainz ``isrcs``
+    # array) must be unpacked FIRST — ``str(["A/B"])`` would render the
+    # literal ``"['A/B']"``, which no 12-char regex can match, and the
+    # bracketed string would leak downstream into the ISRC lookups
+    # (``resolve_isrc_recording`` / ListenBrainz by-recording) as a junk key.
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            code = normalize_isrc(item)
+            if code:
+                return code
+        return ""
+
     raw = str(value)
     cleaned = _re.sub(r"[{}]", " ", raw)
     for code in _re.split(r"[/,;|\s]+", cleaned):

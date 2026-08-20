@@ -463,12 +463,17 @@ function buildConfigObject() {
       {},
       (window.pageConfig && window.pageConfig.genres) || {},
       {
+        min_weight: parseFloat(getValue('genre_min_weight', '0.25')) ?? 0.25,
+        junk_filter: getChecked('genre_junk_filter', true),
         weights: {
           musicbrainz: parseFloat(getValue('genre_weight_musicbrainz', '0.40')) || 0.40,
           discogs: parseFloat(getValue('genre_weight_discogs', '0.25')) || 0.25,
           audiodb: parseFloat(getValue('genre_weight_audiodb', '0.20')) || 0.20,
           essentia: parseFloat(getValue('genre_weight_essentia', '0.20')) || 0.20,
-          lastfm: parseFloat(getValue('genre_weight_lastfm', '0.10')) || 0.10
+          lastfm: parseFloat(getValue('genre_weight_lastfm', '0.10')) || 0.10,
+          listenbrainz: parseFloat(getValue('genre_weight_listenbrainz', '0.15')) || 0.15,
+          navidrome: parseFloat(getValue('genre_weight_navidrome', '0.30')) || 0.30,
+          manual: parseFloat(getValue('genre_weight_manual', '0.30')) || 0.30
         },
         synonyms: (() => {
           const synonyms = {};

@@ -1906,6 +1906,43 @@
           <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="genre_weight_lastfm" placeholder="0.10" value="{{ config.get('genres', {}).get('weights', {}).get('lastfm', 0.10) }}">
           <small class="form-text text-muted">User-tag based. Default: <strong>0.10</strong></small>
         </div>
+        <div class="col-6 col-md-2">
+          <label class="form-label form-label-sm">ListenBrainz</label>
+          <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="genre_weight_listenbrainz" placeholder="0.15" value="{{ config.get('genres', {}).get('weights', {}).get('listenbrainz', 0.15) }}">
+          <small class="form-text text-muted">MB-tagged community data. Default: <strong>0.15</strong></small>
+        </div>
+        <div class="col-6 col-md-2">
+          <label class="form-label form-label-sm">Navidrome</label>
+          <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="genre_weight_navidrome" placeholder="0.30" value="{{ config.get('genres', {}).get('weights', {}).get('navidrome', 0.30) }}">
+          <small class="form-text text-muted">Local library tags, authoritative. Default: <strong>0.30</strong></small>
+        </div>
+        <div class="col-6 col-md-2">
+          <label class="form-label form-label-sm">Manual</label>
+          <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="genre_weight_manual" placeholder="0.30" value="{{ config.get('genres', {}).get('weights', {}).get('manual', 0.30) }}">
+          <small class="form-text text-muted">Explicit user edits. Default: <strong>0.30</strong></small>
+        </div>
+      </div>
+      <div class="row g-3 mb-4">
+        <div class="col-6 col-md-3">
+          <label class="form-label form-label-sm" for="genre_min_weight">Consensus Threshold</label>
+          <input type="number" step="0.05" min="0" max="1" class="form-control form-control-sm" id="genre_min_weight" placeholder="0.25" value="{{ config.get('genres', {}).get('min_weight', 0.25) }}">
+          <small class="form-text text-muted">
+            Minimum combined weight a genre must reach to be kept. A lone Last.fm tag (0.10) is
+            discarded unless a second source backs it; a lone Discogs genre (0.25) still passes.
+            Set 0 to disable. Default: <strong>0.25</strong>
+          </small>
+        </div>
+        <div class="col-6 col-md-3">
+          <label class="form-label form-label-sm">Junk-Tag Filter</label>
+          <div class="form-check form-switch mt-2">
+            <input class="form-check-input" type="checkbox" id="genre_junk_filter" {% if config.get('genres', {}).get('junk_filter', True) %}checked{% endif %}>
+            <label class="form-check-label" for="genre_junk_filter">Filter years / moods / noise</label>
+          </div>
+          <small class="form-text text-muted">
+            Blocks crowdsourced non-genres ("2014", "beautiful", "seen live") so they can never
+            become a literal <code>2014 - Top Tracks.m3u</code> playlist. Default: <strong>on</strong>
+          </small>
+        </div>
       </div>
       <h6 class="mb-3">Genre Synonyms</h6>
       <p class="text-muted small mb-2">Map variant genre names to canonical forms (e.g. "hip hop" → "hip-hop"). One mapping per line as <code>variant: canonical</code>.</p>

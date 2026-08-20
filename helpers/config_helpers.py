@@ -697,6 +697,9 @@ def get_genre_weights() -> dict[str, float]:
         - discogs: 0.25 (25% weight)
         - audiodb: 0.20 (20% weight)
         - essentia: 0.20 (20% weight - audio analysis)
+        - listenbrainz: 0.15 (15% weight - MB-tagged, community)
+        - navidrome: 0.30 (30% weight - local library tags, authoritative)
+        - manual: 0.30 (30% weight - explicit user edits)
         - lastfm: 0.10 (10% weight)
         - spotify: 0.05 (5% weight)
     """
@@ -708,6 +711,9 @@ def get_genre_weights() -> dict[str, float]:
         "discogs": 0.25,
         "audiodb": 0.20,
         "essentia": 0.20,
+        "listenbrainz": 0.15,
+        "navidrome": 0.30,
+        "manual": 0.30,
         "lastfm": 0.10,
         "spotify": 0.05,
     }

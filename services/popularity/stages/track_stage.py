@@ -168,6 +168,67 @@ def _duration_below_floor(track: dict[str, Any]) -> bool:
     return dur < 30.0
 
 
+def _album_top_genres(
+    album_tracks: list[dict[str, Any]] | None,
+    *,
+    max_genres: int = 3,
+) -> list[str]:
+    """Aggregate the album's top genres from its sibling track rows.
+
+    Tracks share their album's genre identity: a sparse track (few/no tags
+    of its own) inherits the album's top genres so every track carries a
+    full genre identity instead of an empty or one-tag ``genres`` column.
+    Each sibling's stored per-source genre columns are collected into one
+    ``source_map`` and run through the same consensus aggregation as the
+    per-track path (junk filter + split-vote stacking + min-weight gate).
+
+    Returns the top *max_genres* genre names (empty list when no sibling
+    carries any genre data).
+    """
+    if not album_tracks:
+        return []
+    from services.enrichment.genre_aggregation_service import aggregate_genres
+
+    album_source_map: dict[str, list[str]] = {}
+    _source_cols = [
+        ("musicbrainz", "musicbrainz_genres"),
+        ("discogs", "discogs_genres"),
+        ("lastfm", "lastfm_tags"),
+        ("listenbrainz", "listenbrainz_genres"),
+        ("spotify", "spotify_genres"),
+        ("essentia", "essentia_genres"),
+        ("navidrome", "navidrome_genres"),
+    ]
+    for _at in album_tracks:
+        if not isinstance(_at, dict):
+            continue
+        for _src, _col in _source_cols:
+            raw = _at.get(_col)
+            if not raw:
+                continue
+            if isinstance(raw, str):
+                try:
+                    _vals = json.loads(raw)
+                except Exception:
+                    _vals = [g.strip() for g in raw.split(",") if g.strip()]
+            else:
+                _vals = raw
+            if not isinstance(_vals, list):
+                continue
+            for _g in _vals:
+                if isinstance(_g, dict):
+                    _g = _g.get("name") or ""
+                _name = str(_g or "").strip()
+                if _name:
+                    album_source_map.setdefault(_src, []).append(_name)
+    if not album_source_map:
+        return []
+    try:
+        return aggregate_genres(album_source_map, max_genres=max_genres)
+    except Exception:
+        return []
+
+
 def _build_effective_track(
     track: dict[str, Any],
     update_payload: dict[str, Any],
@@ -1123,6 +1184,15 @@ def process_track(
             # Last.fm / ListenBrainz lookups and persisted from MusicBrainz
             # batch resolution when the file tags don't carry one.
             isrc = _as_str(effective_track.get("isrc") or "").strip()
+            # A raw list tag (Navidrome ``tags`` map / MB ``isrcs`` array)
+            # would str()-render as "['NLA.../NLA...']" — normalise it to the
+            # bare 12-char code so the ISRC pool arms receive a usable key
+            # instead of a bracketed junk string.
+            if isrc.startswith("[") and isrc.endswith("]"):
+                from helpers.normalization_service import normalize_isrc
+                isrc = normalize_isrc(isrc)
+                if isrc:
+                    update_payload["isrc"] = isrc
             if not isrc:
                 # The album-level MusicBrainz batch (run once per album by the
                 # scan runner) resolves each fresh track to its recording —
@@ -2329,6 +2399,37 @@ def process_track(
                         f"[TRACK_STAGE] Top genres for \"{track_title}\" ({track_artist}): "
                         f"{', '.join(aggregated)}"
                     )
+                else:
+                    # No single source passed the consensus threshold — the
+                    # album's aggregate genres are the fallback (tracks share
+                    # their album's genre identity; see requirement: a track
+                    # with fewer than 3 genres inherits the album's top ones).
+                    _album_genres = _album_top_genres(album_tracks or [], max_genres=3)
+                    if _album_genres:
+                        update_payload["genres"] = ", ".join(_album_genres)
+                        log_unified(
+                            f"[TRACK_STAGE] Top genres for \"{track_title}\" ({track_artist}): "
+                            f"{', '.join(_album_genres)} (album fallback)"
+                        )
+                # Fill sparse tracks: when the track aggregated fewer than
+                # ``genres.max_genres`` genres, top up from the album's top
+                # genres so every track carries a full genre identity.
+                _cur_genres = [
+                    g.strip()
+                    for g in str(update_payload.get("genres") or "").split(",")
+                    if g.strip()
+                ]
+                if len(_cur_genres) < 3:
+                    _album_top = _album_top_genres(album_tracks or [], max_genres=3)
+                    for _g in _album_top:
+                        if _g not in _cur_genres and len(_cur_genres) < 3:
+                            _cur_genres.append(_g)
+                    if _cur_genres and _cur_genres != [
+                        g.strip()
+                        for g in str(update_payload.get("genres") or "").split(",")
+                        if g.strip()
+                    ]:
+                        update_payload["genres"] = ", ".join(_cur_genres)
 
                 # Legacy parity: inject special genre tags (Christmas, Cover,
                 # Live, Acoustic, Remix, ...) detected from the title/album —

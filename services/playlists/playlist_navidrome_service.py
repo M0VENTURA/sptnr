@@ -42,12 +42,17 @@ def load_playlist(base_url, user, password, playlist_id):
 
 
 def create_navidrome_playlist(base_url, user, password, name, tracks):
-    """Create a playlist via Navidrome Subsonic API."""
+    """Create a playlist via Navidrome Subsonic API (form-encoded POST).
+
+    Uses the client's ``create_playlist`` (POST body), NOT
+    ``_get_subsonic_response`` with ``params=`` — that GET path passed the
+    ``songId`` list through httpx's query serialiser and produced the
+    ``sequence item 1: expected a bytes-like object, tuple found`` TypeError
+    for large playlists.  The POST body path has no URL-length limit and
+    flattens the list into repeated ``songId=`` form fields.
+    """
     client = NavidromeClient(base_url, user, password)
-    return client._get_subsonic_response(
-        "createPlaylist",
-        params={"name": name, "songId": tracks},
-    )
+    return client.create_playlist(name, tracks)
 
 
 def sync_playlist_by_name(

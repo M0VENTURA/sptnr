@@ -93,6 +93,18 @@ def resolve_isrc_recording(
     isrc = str(isrc or "").strip()
     if not isrc:
         return None
+    # A bracketed tag-list string ("['NLA321400382/NLA321400448']") is a
+    # parse artifact, not a key — never send it to the API (it would 404 /
+    # poison the lookups and force the slow album-tracklist fallback).
+    if isrc.startswith("[") and isrc.endswith("]"):
+        from helpers.normalization_service import normalize_isrc
+        isrc = normalize_isrc(isrc)
+        # ``normalize_isrc`` falls back to the raw uppercased string when no
+        # 12-char code survives — that fallback is still not a usable key,
+        # so require the ISRC shape before proceeding.
+        import re as _re
+        if not _re.fullmatch(r"[A-Z]{2}[0-9A-Z]{3}[0-9]{7}", isrc):
+            return None
     try:
         if mb_client is None:
             from api_clients.musicbrainz_http import MusicBrainzHttpClient
