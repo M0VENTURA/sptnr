@@ -1,10 +1,11 @@
 """Tests for artist-page missing-release art + expandable tracklists.
 
 Two fixes pinned here:
-1. ``artist_scan_service`` now requests ``inc=cover-art-archive`` when
-   browsing release-groups so ``_release_cover_art_url`` can build a real
-   Cover Art Archive URL (previously the field was always absent and every
-   missing release showed a placeholder).
+1. ``artist_scan_service`` browses release-groups WITHOUT a bogus ``inc``
+   (``inc=cover-art-archive`` returned HTTP 400 on the browse endpoint).
+   The release-group entity includes the ``cover-art-archive`` block by
+   default, so ``_release_cover_art_url`` builds real Cover Art Archive
+   URLs without requesting anything extra.
 2. ``routes/artist_routes`` exposes
    ``GET /api/artist/missing-release-tracks?release_id=<release-group MBID>``
    which browses the group's releases, fetches the first release's
@@ -17,9 +18,11 @@ from __future__ import annotations
 
 
 class TestCoverArtArchiveInc:
-    def test_browse_request_includes_cover_art_archive(self, monkeypatch):
-        """browse_artist_release_groups must be called with
-        inc=cover-art-archive so the cover-art-archive block is present."""
+    def test_browse_request_has_no_inc(self, monkeypatch):
+        """browse_artist_release_groups must be called WITHOUT an inc —
+        ``inc=cover-art-archive`` returned 400 Bad Request on the browse
+        endpoint; the cover-art-archive block ships with every release-group
+        entity by default."""
         from services.metadata import artist_scan_service as svc
 
         captured = {}
@@ -29,14 +32,14 @@ class TestCoverArtArchiveInc:
                 captured["inc"] = inc
                 captured["limit"] = limit
                 captured["offset"] = offset
-                return {"release_groups": [{"id": "rg-1"}]}
+                return {"release_groups": [{"id": "rg-1", "cover-art-archive": {"artwork": True, "count": 1}}]}
 
         monkeypatch.setattr(svc, "MusicBrainzHttpClient", lambda: _FakeClient())
         page = svc._fetch_musicbrainz_release_groups("artist-mbid", limit=50, offset=25)
-        assert captured["inc"] == "cover-art-archive"
+        assert captured["inc"] == ""  # no inc — browse rejects cover-art-archive
         assert captured["limit"] == 50
         assert captured["offset"] == 25
-        assert page == [{"id": "rg-1"}]
+        assert page == [{"id": "rg-1", "cover-art-archive": {"artwork": True, "count": 1}}]
 
     def test_cover_url_built_when_artwork_present(self):
         from services.metadata.artist_scan_service import _release_cover_art_url

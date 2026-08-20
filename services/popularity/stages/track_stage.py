@@ -196,7 +196,6 @@ def _album_top_genres(
         ("lastfm", "lastfm_tags"),
         ("listenbrainz", "listenbrainz_genres"),
         ("spotify", "spotify_genres"),
-        ("essentia", "essentia_genres"),
         ("navidrome", "navidrome_genres"),
     ]
     for _at in album_tracks:
@@ -235,6 +234,57 @@ def _album_top_genres(
         return []
     try:
         return aggregate_genres(album_source_map, max_genres=max_genres)
+    except Exception:
+        return []
+
+
+def _artist_dominant_genres(
+    artist: str,
+    *,
+    max_genres: int = 3,
+) -> list[str]:
+    """Return the artist's dominant genres from their existing library rows.
+
+    Artist-level safety net (blueprint Phase 4): when a track has no
+    consensus genres AND its album has no usable genre data, inherit the
+    primary dominant genre(s) of the artist's catalog so no track is ever
+    orphaned / un-playlistable.  Aggregates every stored per-source genre
+    column of the artist's tracks through the same consensus model, so a
+    lone stray tag on one row cannot dominate.
+
+    Returns the top *max_genres* genre names (empty when the artist has no
+    genre data at all).
+    """
+    if not artist:
+        return []
+    try:
+        from db.engine import db_session as _db_session
+        from sqlalchemy import text as _text
+
+        rows: list[dict[str, Any]] = []
+        with _db_session() as session:
+            result = session.execute(
+                _text("""
+                    SELECT musicbrainz_genres, discogs_genres, lastfm_tags,
+                           listenbrainz_genres, spotify_genres, navidrome_genres
+                    FROM tracks
+                    WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)
+                      AND (
+                        COALESCE(musicbrainz_genres, '') <> ''
+                        OR COALESCE(discogs_genres, '') <> ''
+                        OR COALESCE(lastfm_tags, '') <> ''
+                        OR COALESCE(listenbrainz_genres, '') <> ''
+                        OR COALESCE(spotify_genres, '') <> ''
+                        OR COALESCE(navidrome_genres, '') <> ''
+                      )
+                    LIMIT 500
+                """),
+                {"artist": artist},
+            )
+            rows = [dict(r._mapping) for r in result.fetchall() or []]
+        if not rows:
+            return []
+        return _album_top_genres(rows, max_genres=max_genres)
     except Exception:
         return []
 
@@ -2371,7 +2421,6 @@ def process_track(
                 ("lastfm_tags", "lastfm"),
                 ("listenbrainz_genres", "listenbrainz"),
                 ("spotify_genres", "spotify"),
-                ("essentia_genres", "essentia"),
             ]:
                 raw = effective_track.get(key) or track.get(key) or ""
                 if not raw:
@@ -2381,18 +2430,6 @@ def process_track(
                     genres = json.loads(raw) if isinstance(raw, str) else raw
                 except Exception:
                     genres = [g.strip() for g in str(raw).split(",") if g.strip()]
-                if source_name == "essentia":
-                    # Essentia writes "Parent---Child" style genres (e.g.
-                    # "Rock---Heavy Metal; Rock---Punk") — keep the child part
-                    # of each entry so specific genres win, top 3 only.
-                    parsed: list[str] = []
-                    for g in genres:
-                        g = str(g).strip()
-                        if "---" in g:
-                            g = g.split("---", 1)[-1].strip()
-                        if g and g not in parsed:
-                            parsed.append(g)
-                    genres = parsed[:3]
                 if genres:
                     source_map[source_name] = genres
 
@@ -2415,15 +2452,33 @@ def process_track(
                     # their album's genre identity; see requirement: a track
                     # with fewer than 3 genres inherits the album's top ones).
                     _album_genres = _album_top_genres(album_tracks or [], max_genres=3)
+                    _fallback_label = "album fallback"
+                    if not _album_genres:
+                        # Artist-level safety net (blueprint Phase 4): the
+                        # album has no usable genre data either — inherit the
+                        # artist's dominant catalog genres.
+                        _album_genres = _artist_dominant_genres(
+                            _as_str(
+                                track.get("album_artist")
+                                or album_context.get("album_artist")
+                                or album_context.get("artist")
+                                or track_artist
+                            ),
+                            max_genres=3,
+                        )
+                        _fallback_label = "artist fallback"
                     if _album_genres:
                         update_payload["genres"] = ", ".join(_album_genres)
                         log_unified(
                             f"[TRACK_STAGE] Top genres for \"{track_title}\" ({track_artist}): "
-                            f"{', '.join(_album_genres)} (album fallback)"
+                            f"{', '.join(_album_genres)} ({_fallback_label})"
                         )
                 # Fill sparse tracks: when the track aggregated fewer than
                 # ``genres.max_genres`` genres, top up from the album's top
-                # genres so every track carries a full genre identity.
+                # genres so every track carries a full genre identity.  If
+                # the album has no usable genre data either, fall back to the
+                # artist's dominant catalog genres (blueprint Phase 4) so no
+                # track is ever orphaned / un-playlistable.
                 _cur_genres = [
                     g.strip()
                     for g in str(update_payload.get("genres") or "").split(",")
@@ -2431,7 +2486,21 @@ def process_track(
                 ]
                 if len(_cur_genres) < 3:
                     _album_top = _album_top_genres(album_tracks or [], max_genres=3)
-                    for _g in _album_top:
+                    _fallback_sources = _album_top
+                    _fallback_label = "album fallback"
+                    if not _fallback_sources:
+                        _artist_top = _artist_dominant_genres(
+                            _as_str(
+                                track.get("album_artist")
+                                or album_context.get("album_artist")
+                                or album_context.get("artist")
+                                or track_artist
+                            ),
+                            max_genres=3,
+                        )
+                        _fallback_sources = _artist_top
+                        _fallback_label = "artist fallback"
+                    for _g in _fallback_sources:
                         if _g not in _cur_genres and len(_cur_genres) < 3:
                             _cur_genres.append(_g)
                     if _cur_genres and _cur_genres != [
@@ -2440,6 +2509,10 @@ def process_track(
                         if g.strip()
                     ]:
                         update_payload["genres"] = ", ".join(_cur_genres)
+                        log_unified(
+                            f"[TRACK_STAGE] Top genres for \"{track_title}\" ({track_artist}): "
+                            f"{', '.join(_cur_genres)} ({_fallback_label})"
+                        )
 
                 # Legacy parity: inject special genre tags (Christmas, Cover,
                 # Live, Acoustic, Remix, ...) detected from the title/album —

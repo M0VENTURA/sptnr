@@ -76,3 +76,69 @@ class TestAlbumTopGenres:
         ]
         result = self._helper()(album_tracks, max_genres=3)
         assert result == ["progressive metal"]
+
+    def test_essentia_genres_do_not_vote(self, monkeypatch):
+        """Essentia is a mood provider — its text tags must NEVER vote in
+        genre consensus (blueprint Phase 1: isolate Essentia)."""
+        from helpers import config_helpers
+        monkeypatch.setattr(config_helpers, "get_config", lambda: {"genres": {"min_weight": 0.0}})
+
+        album_tracks = [
+            {
+                "title": "A",
+                "essentia_genres": '["Nu Metal", "Korn", "Rock---Heavy Metal"]',
+            },
+        ]
+        result = self._helper()(album_tracks, max_genres=3)
+        assert result == []  # essentia_genres alone yields no genres
+
+    def test_admin_siblings_filtered(self, monkeypatch):
+        from helpers import config_helpers
+        monkeypatch.setattr(config_helpers, "get_config", lambda: {"genres": {"min_weight": 0.0}})
+
+        album_tracks = [
+            {"title": "A", "musicbrainz_genres": '["cover", "live", "nu metal"]'},
+        ]
+        result = self._helper()(album_tracks, max_genres=3)
+        assert "nu metal" in result
+        assert "cover" not in result
+        assert "live" not in result
+
+
+class TestArtistDominantGenres:
+    def _helper(self):
+        from services.popularity.stages.track_stage import _artist_dominant_genres
+        return _artist_dominant_genres
+
+    def test_aggregates_artist_catalog(self, monkeypatch):
+        """Artist-level safety net: inherit the artist's dominant genres."""
+        from helpers import config_helpers
+        monkeypatch.setattr(config_helpers, "get_config", lambda: {"genres": {"min_weight": 0.0}})
+
+        from services.popularity.stages import track_stage as ts
+        import db.engine as db_engine
+
+        class _Result:
+            def fetchall(self):
+                return [
+                    {"musicbrainz_genres": '["nu metal"]', "discogs_genres": '["NuMetal"]',
+                     "lastfm_tags": '["nu-metal"]', "listenbrainz_genres": None,
+                     "spotify_genres": None, "navidrome_genres": None},
+                    {"musicbrainz_genres": '["nu metal"]', "discogs_genres": None,
+                     "lastfm_tags": None, "listenbrainz_genres": None,
+                     "spotify_genres": None, "navidrome_genres": None},
+                ]
+
+        class _Session:
+            def execute(self, sql, params=None):
+                return _Result()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        monkeypatch.setattr(db_engine, "db_session", lambda: _Session())
+        result = ts._artist_dominant_genres("Korn")
+        assert "nu metal" in result

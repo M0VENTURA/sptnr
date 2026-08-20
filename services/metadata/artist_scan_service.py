@@ -42,13 +42,14 @@ def _fetch_musicbrainz_release_groups(artist_mbid: str, limit: int = 100, offset
     from api_clients.musicbrainz_http import MusicBrainzHttpClient
 
     client = MusicBrainzHttpClient()
-    # ``inc=cover-art-archive`` makes MusicBrainz include each release-group's
-    # ``cover-art-archive`` block (artwork present + count).  Without it the
-    # field is absent and ``_release_cover_art_url`` always returns "" — the
-    # artist page's missing-release rows showed the placeholder instead of
-    # real cover art.
+    # NOTE: no ``inc`` here — the release-group BROWSE endpoint returns 400
+    # for ``inc=cover-art-archive`` (that inc is only valid on lookups of a
+    # specific release-group, not browse).  The good news: every release-group
+    # entity ALREADY includes the ``cover-art-archive`` block by default, so
+    # ``_release_cover_art_url`` can build real Cover Art Archive URLs without
+    # requesting anything extra.
     page = client.browse_artist_release_groups(
-        artist_mbid, inc="cover-art-archive", limit=limit, offset=offset,
+        artist_mbid, limit=limit, offset=offset,
     )
     return page.get("release_groups", []) or []
 

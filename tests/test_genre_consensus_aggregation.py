@@ -82,6 +82,45 @@ class TestJunkGenreFilter:
 
 
 # ---------------------------------------------------------------------------
+# Administrative-tag filter (cover/live/remix/demo/soundtrack)
+# ---------------------------------------------------------------------------
+
+class TestAdminGenreFilter:
+    def test_admin_labels_are_filtered(self):
+        assert gas.is_admin_genre("cover")
+        assert gas.is_admin_genre("live")
+        assert gas.is_admin_genre("remix")
+        assert gas.is_admin_genre("demo")
+        assert gas.is_admin_genre("soundtrack")
+        assert gas.is_admin_genre("tribute")
+        assert gas.is_admin_genre("karaoke")
+
+    def test_real_genres_not_admin(self):
+        assert not gas.is_admin_genre("nu metal")
+        assert not gas.is_admin_genre("alternative rock")
+        assert not gas.is_admin_genre("post-hardcore")
+        assert not gas.is_admin_genre("metalcore")
+
+    def test_parenthetical_admin_literals_stripped(self):
+        assert gas.is_admin_genre("(cover)")
+        assert gas.is_admin_genre("Nu Metal (album fallback)")
+        assert gas.is_admin_genre("(remix)")
+        assert gas.is_admin_genre("metal (live)")
+
+    def test_admin_tags_never_reach_vote(self, cfg):
+        cfg(min_weight=0.0)
+        # Even with the threshold disabled, cover/live/remix never surface.
+        result = gas.aggregate_genres({
+            "lastfm": ["cover", "live", "nu metal", "remix"],
+            "musicbrainz": ["nu metal"],
+        }, max_genres=5)
+        assert "cover" not in result
+        assert "live" not in result
+        assert "remix" not in result
+        assert "nu metal" in result
+
+
+# ---------------------------------------------------------------------------
 # Split-vote stacking
 # ---------------------------------------------------------------------------
 

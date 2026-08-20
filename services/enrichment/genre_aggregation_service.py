@@ -94,6 +94,62 @@ def normalize_genre(genre):
     return GENRE_SYNONYMS.get(value, value)
 
 
+# Administrative / non-genre markers that must never vote as genres.  These
+# are descriptive editorial labels, not genre identities:
+#   cover/tribute      — a performance of someone else's song
+#   live/unplugged     — a recording context
+#   remix/demo/mashup  — a version type
+#   soundtrack/soundtrack music — a medium, not a genre
+_ADMIN_GENRE_WORDS: frozenset[str] = frozenset({
+    "cover", "covers", "tribute", "tributes", "tribute band",
+    "live", "unplugged", "live album", "live recordings",
+    "remix", "remixes", "remixed", "rework", "reworked", "mashup", "mashups",
+    "demo", "demos", "mixtape", "mixtapes",
+    "soundtrack", "soundtracks", "score", "scores", "original soundtrack",
+    "karaoke", "instrumental", "instrumentals",
+    "bootleg", "bootlegs", "unofficial", "promo", "promos", "sampler",
+})
+
+
+def _strip_admin_genre_markers(value: str) -> str:
+    """Remove administrative markers and parenthetical annotations from a tag.
+
+    Drops ``(album fallback)``-style literals, parenthetical qualifiers and
+    descriptor suffixes ("Remastered", "(Bonus Track)") so a raw crowdsourced
+    tag cannot smuggle an admin label into the vote as a genre.  Returns the
+    cleaned string (empty when nothing meaningful remains).
+    """
+    if not value:
+        return ""
+    import re as _re
+    text = value
+    # Parenthetical literals: "(album fallback)", "(cover)", "(remix)", …
+    text = _re.sub(r"\([^)]*\)", "", text)
+    # Suffix markers after a comma/slash/hyphen ("Nu Metal - Remastered").
+    text = _re.sub(r"[-–—/\\]+\s*(remaster|remastered|bonus track|bonus|edit|radio edit|album version|single version|reissue|reissue|remastered version)\s*$", "", text, flags=_re.IGNORECASE)
+    return text.strip()
+
+
+def is_admin_genre(genre) -> bool:
+    """True when a tag is an administrative label (cover/live/remix/demo/…).
+
+    These are stripped BEFORE the vote so they can never surface as genres
+    (the old behaviour let Last.fm's "cover" / "live" tags create literal
+    ``Cover - Top Tracks.m3u`` / ``Live - Top Tracks.m3u`` playlists).
+    """
+    if not genre:
+        return True
+    value = str(genre).strip().lower()
+    if not value:
+        return True
+    value = _strip_admin_genre_markers(value)
+    if not value:
+        return True
+    if value in _ADMIN_GENRE_WORDS:
+        return True
+    return False
+
+
 # Junk-genre blacklist.
 #
 # Last.fm top-tags are raw crowdsourced labels: users tag songs with release
@@ -280,7 +336,7 @@ def aggregate_genres(source_map, max_genres: int = 5, context_title: str = "", c
     for source, genres in (source_map or {}).items():
         weight = _source_weight(source)
         for g in genres:
-            if is_junk_genre(g):
+            if is_junk_genre(g) or is_admin_genre(g):
                 continue
             key = normalize_genre_for_vote(g)
             if not key:
@@ -322,7 +378,7 @@ def get_top_genres_with_navidrome(sources, nav_genres, title="", album=""):
     for source, genres in (sources or {}).items():
         weight = _source_weight(source)
         for genre in genres:
-            if is_junk_genre(genre):
+            if is_junk_genre(genre) or is_admin_genre(genre):
                 continue
             key = normalize_genre_for_vote(genre)
             if not key:
@@ -346,7 +402,11 @@ def get_top_genres_with_navidrome(sources, nav_genres, title="", album=""):
     online_top = clean_conflicting_genres(
         [_resolve_display_name(k, spellings) for k in qualified]
     )[:3]
-    nav_cleaned = sorted({normalize_genre(g).capitalize() for g in nav_genres if g and not is_junk_genre(g)})
+    nav_cleaned = sorted({
+        normalize_genre(g).capitalize()
+        for g in nav_genres
+        if g and not is_junk_genre(g) and not is_admin_genre(g)
+    })
     return online_top, nav_cleaned
 
 
@@ -506,7 +566,7 @@ def update_get_top_genres_with_navidrome(sources: dict, nav_genres: list, title:
     for source, genres in (sources or {}).items():
         weight = _source_weight(source)
         for genre in genres:
-            if is_junk_genre(genre):
+            if is_junk_genre(genre) or is_admin_genre(genre):
                 continue
             key = normalize_genre_for_vote(genre)
             if not key:
@@ -516,7 +576,7 @@ def update_get_top_genres_with_navidrome(sources: dict, nav_genres: list, title:
 
     # Navidrome genres are authoritative local tags — they always vote.
     for genre in nav_genres or []:
-        if is_junk_genre(genre):
+        if is_junk_genre(genre) or is_admin_genre(genre):
             continue
         key = normalize_genre_for_vote(genre)
         if key:

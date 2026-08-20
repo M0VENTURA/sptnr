@@ -889,7 +889,7 @@ def run_essentia_mood_scan(
                 updates["mood_source"] = "essentia"
                 updates["mood_confidence"] = 0.5
 
-            if genre_str:
+            if genre_str and tag_genres:
                 child_genres = _extract_child_genres(genre_str)
                 existing_genres = _read_existing_tcon_genres(file_path)
                 merged_genres = _merge_genres(existing_genres, child_genres)
@@ -902,6 +902,12 @@ def run_essentia_mood_scan(
                         existing_list = []
                     all_genres = list(dict.fromkeys(existing_list + child_genres))
                     updates["essentia_genres"] = json.dumps(all_genres)
+                    # NOTE: the consensus-owned ``genres`` column is NOT
+                    # written here — Essentia is a MOOD/AUDIO provider, and
+                    # genre assignment flows through the consensus aggregator
+                    # (track_stage) so Essentia's text tags can never dictate
+                    # a track's official genres (the "Korn / Nu Metal under
+                    # Essentia Moods" contamination).
                     updates["genres"] = "; ".join(merged_genres[:3])
 
                     # Sync merged genres to file tags
