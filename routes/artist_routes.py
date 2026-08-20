@@ -306,6 +306,69 @@ def api_artist_missing_releases():
     return jsonify(data), code
 
 
+@artist_bp.route("/api/artist/missing-release-tracks")
+def api_artist_missing_release_tracks():
+    """Fetch the MusicBrainz tracklist for a missing release.
+
+    The stored ``release_id`` is a release-GROUP MBID (the artist-page
+    browse returns release-groups).  To get a tracklist: browse the group's
+    releases, pick the first, and fetch its recordings.  This powers the
+    expandable tracklist on the artist page's missing-release rows (they
+    previously had no way to show a track list because the release is not in
+    the library and the ``musicbrainz_releases`` cache only holds releases
+    being downloaded).
+    """
+    release_id = str(request.args.get("release_id", "") or "").strip()
+    if not release_id:
+        return jsonify({"error": "release_id required"}), 400
+    try:
+        from api_clients.musicbrainz_http import MusicBrainzHttpClient
+        client = MusicBrainzHttpClient()
+        releases = client.browse_releases_for_group(release_id, inc="media") or []
+        if not releases:
+            return jsonify({"error": "No release found for this release group"}), 404
+        release = releases[0]
+        release_mbid = str(release.get("id") or "")
+        if not release_mbid:
+            return jsonify({"error": "Release has no MusicBrainz ID"}), 404
+        detail = client.get_release(
+            release_mbid, inc="recordings+artist-credits+media", timeout=15.0,
+        )
+        media = detail.get("media") or []
+        tracks: list[dict] = []
+        disc_number = 1
+        for medium in media:
+            if medium.get("disc") is not None:
+                disc_number = int(medium.get("disc") or 1)
+            for track in medium.get("tracks") or []:
+                recording = track.get("recording") or {}
+                tracks.append({
+                    "position": track.get("number") or track.get("position") or "",
+                    "title": track.get("title") or recording.get("title") or "",
+                    "length": track.get("length") or recording.get("length") or 0,
+                    "disc_number": disc_number,
+                })
+        if not tracks:
+            # Fall back to the recording list when media/tracks are absent.
+            for rec in detail.get("recordings") or []:
+                tracks.append({
+                    "position": "",
+                    "title": rec.get("title") or "",
+                    "length": rec.get("length") or 0,
+                    "disc_number": 1,
+                })
+        return jsonify({
+            "release_id": release_id,
+            "release_mbid": release_mbid,
+            "title": detail.get("title") or release.get("title") or "",
+            "date": detail.get("date") or release.get("date") or "",
+            "tracks": tracks,
+        })
+    except Exception as exc:
+        logger.debug("[MISSING_RELEASES] Tracklist fetch failed for %s: %s", release_id, exc)
+        return jsonify({"error": str(exc)}), 500
+
+
 @artist_bp.route("/api/artist/import-release", methods=["POST"])
 async def api_import_release():
     payload = (await request.get_json()) or {}

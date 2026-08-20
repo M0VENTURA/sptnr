@@ -11,16 +11,31 @@
       <button type="button" class="accordion-chevron-btn flex-shrink-0 p-0 border-0 bg-transparent"
               data-bs-toggle="collapse" data-bs-target="#collapse-{{ album_id }}"
               aria-expanded="false" aria-controls="collapse-{{ album_id }}"
-              title="Expand / collapse tracklist">
+              title="Expand / collapse tracklist"
+              {% if is_missing and album.get('release_id') %}
+              data-missing-release-id="{{ album.get('release_id') }}"
+              data-missing-artist="{{ artist_name }}"
+              data-missing-title="{{ (album.get('title') or '')|e }}"
+              data-missing-target="#collapse-{{ album_id }}"
+              {% endif %}>
         <i class="bi bi-chevron-right album-chevron-icon"></i>
       </button>
       <div class="d-flex align-items-center gap-3 w-100 flex-wrap" style="min-width:0;">
         <!-- Album Art -->
         <div class="album-art-wrapper flex-shrink-0" style="width: 48px; height: 48px;">
           {% if is_missing %}
-            <img src="{{ album.get('cover_art_url', '') }}" 
+            {% set missing_art = album.get('cover_art_url', '') %}
+            {% if missing_art %}
+            <img src="{{ missing_art }}" 
                  alt="{{ album.get('title') }}" 
-                 style="width: 48px; height: 48px; object-fit: cover; border-radius: 4px; background: var(--tertiary-bg);">
+                 style="width: 48px; height: 48px; object-fit: cover; border-radius: 4px; background: var(--tertiary-bg);"
+                 loading="lazy"
+                 onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+            {% else %}
+            <div class="album-art-placeholder" style="display:flex; width:48px; height:48px; background:var(--tertiary-bg); border-radius:4px; align-items:center; justify-content:center; color:var(--text-secondary); font-size:1.2rem;">
+              <i class="bi bi-music-note"></i>
+            </div>
+            {% endif %}
           {% else %}
             <img src="/api/album/{{ artist_name|path_segment }}/{{ (album.get('album') or album.get('title') or '')|path_segment }}/art?s=48"
                  alt="{{ album.get('album') or album.get('title') }}"

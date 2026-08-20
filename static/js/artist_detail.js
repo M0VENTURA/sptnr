@@ -754,42 +754,65 @@ function checkMissingReleases(artistName, silent = false, background = false) {
         const artUrl = item.cover_art_url || fallbackArt;
         const safeArtist = safeForDomId(artistName);
         const safeAlbum = safeForDomId(item.title);
+        const collapseId = `collapse-${safeArtist}_${safeAlbum}_${Date.now()}`;
+        const headingId = `heading-${safeArtist}_${safeAlbum}_${Date.now()}`;
 
         const artistEnc = encodeURIComponent(JSON.stringify(artistName || "")).replace(/'/g, '%27');
         const titleEnc = encodeURIComponent(JSON.stringify(item.title || "")).replace(/'/g, '%27');
         const releaseIdEnc = encodeURIComponent(JSON.stringify(item.id || "")).replace(/'/g, '%27');
+        // Plain title/artist for the tracklist fetch (avoid double-encoding).
+        const releaseIdPlain = String(item.id || '').trim();
 
-        // Simple row matching the v2 category-row markup (no accordion chevron).
+        // Proper accordion item matching the server-rendered album rows: a
+        // chevron button + collapse body that lazy-loads the MusicBrainz
+        // tracklist on first expansion (previously the injected rows were
+        // flat with NO expandable tracklist).
         const row = document.createElement('div');
-        row.className = 'album-row mb-1 border-0 rounded p-2 d-flex align-items-center justify-content-between gap-2 opacity-75';
-        row.style.backgroundColor = 'var(--secondary-bg)';
-        row.style.border = '1px solid var(--border-color)';
+        row.className = 'accordion-item album-row border-0 rounded mb-1 opacity-75';
+        row.style.border = '1px dashed rgba(245,158,11,0.4)';
         row.setAttribute('data-year', year === '????' ? '0' : year);
         row.setAttribute('data-status', 'missing');
         row.setAttribute('data-source', 'live-missing');
         row.setAttribute('data-album', item.title || '');
 
         row.innerHTML = `
-          <div class="d-flex align-items-center gap-3 min-w-0">
-            <img src="${artUrl}" alt="${escapeHtml(item.title)}"
-                 class="rounded flex-shrink-0"
-                 style="width: 48px; height: 48px; object-fit: cover; background-color: #2a2a2a;"
-                 onerror="this.src='${fallbackArt}'">
-            <div class="min-w-0">
-              <div class="fw-bold text-truncate small text-secondary">${escapeHtml(item.title)}</div>
-              <div class="extra-small text-muted d-flex align-items-center gap-2">
-                <span>${year}</span>
-                <span class="badge bg-warning text-dark extra-small" title="Release exists on MusicBrainz but is not in your library">Missing</span>
+          <h2 class="accordion-header" id="${headingId}">
+            <div class="accordion-header-row d-flex align-items-center gap-2 w-100 flex-wrap py-1 px-2">
+              <button type="button" class="accordion-chevron-btn flex-shrink-0 p-0 border-0 bg-transparent"
+                      data-bs-toggle="collapse" data-bs-target="#${collapseId}"
+                      aria-expanded="false" aria-controls="${collapseId}"
+                      title="Expand / collapse tracklist"
+                      onclick="if(!this.getAttribute('data-loaded')){loadMissingReleaseTracklist('${releaseIdEnc}', '${artistEnc}', '${titleEnc}', this, '${collapseId}');}">
+                <i class="bi bi-chevron-right album-chevron-icon"></i>
+              </button>
+              <img src="${artUrl}" alt="${escapeHtml(item.title)}"
+                   class="rounded flex-shrink-0"
+                   style="width: 48px; height: 48px; object-fit: cover; background-color: #2a2a2a;"
+                   onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+              <div class="album-art-placeholder" style="display:none; width:48px; height:48px; background:var(--tertiary-bg); border-radius:4px; align-items:center; justify-content:center; color:var(--text-secondary); font-size:1.2rem;">
+                <i class="bi bi-music-note"></i>
+              </div>
+              <div class="flex-grow-1 min-w-0">
+                <span class="fw-semibold small">${escapeHtml(item.title)}</span>
+                <span class="badge ms-2" style="background-color: rgba(245,158,11,0.12); color: #f59e0b; border: 1px dashed rgba(245,158,11,0.4);" title="Release exists on MusicBrainz but is not in your library">🟡 Missing</span>
+              </div>
+              <span class="text-muted small flex-shrink-0">${year}</span>
+              <div class="btn-group btn-group-sm flex-shrink-0" onclick="event.stopPropagation();">
+                <button type="button" class="btn btn-outline-success btn-sm" onclick="importReleaseFromEncoded('${artistEnc}', '${releaseIdEnc}', '${titleEnc}')" title="Import this release">
+                  <i class="bi bi-download"></i> <span class="d-none d-sm-inline ms-1">Import</span>
+                </button>
+                <button type="button" class="btn btn-outline-secondary btn-sm" onclick="searchMusicBrainzReleaseFromEncoded(event, '${artistEnc}', '${titleEnc}')" title="Search MusicBrainz">
+                  <i class="bi bi-search"></i>
+                </button>
               </div>
             </div>
-          </div>
-          <div class="btn-group btn-group-sm flex-shrink-0">
-            <button type="button" class="btn btn-outline-success btn-sm" onclick="importReleaseFromEncoded('${artistEnc}', '${releaseIdEnc}', '${titleEnc}')" title="Import this release">
-              <i class="bi bi-download"></i> <span class="d-none d-sm-inline ms-1">Import</span>
-            </button>
-            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="searchMusicBrainzReleaseFromEncoded(event, '${artistEnc}', '${titleEnc}')" title="Search MusicBrainz">
-              <i class="bi bi-search"></i>
-            </button>
+          </h2>
+          <div id="${collapseId}" class="accordion-collapse collapse" aria-labelledby="${headingId}" data-bs-parent="#${container.id}">
+            <div class="accordion-body py-2 px-3 text-muted small">
+              <div class="text-center py-2">
+                <span class="spinner-border spinner-border-sm me-2"></span>Loading tracklist…
+              </div>
+            </div>
           </div>
         `;
 
@@ -840,6 +863,57 @@ function checkMissingReleases(artistName, silent = false, background = false) {
         triggerBtn.disabled = false;
         triggerBtn.innerHTML = originalBtnHtml;
       }
+    });
+}
+
+// Load the MusicBrainz tracklist for a missing release into its accordion
+// body (lazy: only fetched when the row is first expanded).  The release is
+// not in the library and not in the downloads cache, so the tracklist comes
+// straight from MusicBrainz via /api/artist/missing-release-tracks.
+function loadMissingReleaseTracklist(releaseIdEnc, artistEnc, titleEnc, chevronBtn, collapseId) {
+  const releaseId = decodeInlineArtistArg(releaseIdEnc, '');
+  const collapseEl = document.getElementById(collapseId);
+  const bodyEl = collapseEl ? collapseEl.querySelector('.accordion-body') : null;
+  if (!collapseEl || !bodyEl) return;
+  if (chevronBtn) chevronBtn.setAttribute('data-loaded', 'true');
+
+  fetch('/api/artist/missing-release-tracks?release_id=' + encodeURIComponent(releaseId))
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) {
+        bodyEl.innerHTML = `<div class="alert alert-warning mb-0 py-1"><i class="bi bi-exclamation-triangle"></i> ${escapeHtml(data.error)}</div>`;
+        return;
+      }
+      const tracks = Array.isArray(data.tracks) ? data.tracks : [];
+      if (tracks.length === 0) {
+        bodyEl.innerHTML = '<div class="text-center py-2 text-muted"><i class="bi bi-info-circle me-1"></i>No track details available.</div>';
+        return;
+      }
+      let rows = tracks.map(t => {
+        let dur = '—';
+        const len = Number(t.length || 0);
+        if (len > 0) {
+          const secs = len >= 1000 ? Math.round(len / 1000) : Math.round(len);
+          dur = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+        }
+        return `<tr>
+          <td class="text-center text-muted">${escapeHtml(String(t.position || ''))}</td>
+          <td>${escapeHtml(t.title || '')}</td>
+          <td class="text-center">${dur}</td>
+        </tr>`;
+      }).join('');
+      bodyEl.innerHTML = `
+        <div class="table-responsive">
+          <table class="table table-sm table-dark table-striped mb-0">
+            <thead>
+              <tr><th style="width: 40px;">#</th><th>Track</th><th style="width: 80px;" class="text-center">Duration</th></tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>`;
+    })
+    .catch(err => {
+      if (bodyEl) bodyEl.innerHTML = `<div class="alert alert-danger mb-0 py-1">${escapeHtml(err.message || 'Could not load tracklist')}</div>`;
     });
 }
 
@@ -3037,6 +3111,23 @@ function initArtistSingleExpansion() {
     if (!toggleBtn) return;
     const targetId = toggleBtn.getAttribute('data-bs-target');
     if (!targetId) return;
+
+    // Lazy-load the tracklist for a server-rendered MISSING release when it
+    // is first expanded (the row carries no tracks — the release is not in
+    // the library — so fetch them from MusicBrainz on demand).  The
+    // JS-injected rows already wire this via loadMissingReleaseTracklist.
+    if (!toggleBtn.getAttribute('data-loaded')) {
+      toggleBtn.setAttribute('data-loaded', 'true');
+      const releaseId = toggleBtn.getAttribute('data-missing-release-id');
+      if (releaseId) {
+        const artistEnc = encodeURIComponent(JSON.stringify(toggleBtn.getAttribute('data-missing-artist') || '')).replace(/'/g, '%27');
+        const titleEnc = encodeURIComponent(JSON.stringify(toggleBtn.getAttribute('data-missing-title') || '')).replace(/'/g, '%27');
+        const releaseIdEnc = encodeURIComponent(JSON.stringify(releaseId)).replace(/'/g, '%27');
+        const collapseId = String(targetId || '').replace(/^#/, '');
+        loadMissingReleaseTracklist(releaseIdEnc, artistEnc, titleEnc, toggleBtn, collapseId);
+      }
+    }
+
     // Only act when we're about to expand (aria-expanded flips after the click).
     setTimeout(() => {
       const opened = document.querySelector('.album-row .accordion-collapse.show');
