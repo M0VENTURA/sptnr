@@ -150,6 +150,15 @@ def _wait_for_transfer_file(found_filename: str, local_file_path: str) -> Option
     Checks the monitored downloads directory (basename match) plus the
     slskd-reported ``localFilePath``.  Returns the path that appeared, or
     None when the file never landed.
+
+    The FLAC conversion ARCHIVE is also checked: when a downloaded FLAC was
+    converted to MP3 and imported, the original is moved to
+    ``downloads/<original_subfolder>/`` (default ``Original``) — the slskd
+    ``localFilePath`` still points at the ORIGINAL download path, which no
+    longer exists.  Without the archive check the completion service would
+    declare the transfer "succeeded but local file not found", mark the item
+    failed, and the retry scheduler would RE-DOWNLOAD an album that was
+    already imported (the reported duplicate-download loop).
     """
     import time as _time
 
@@ -166,6 +175,23 @@ def _wait_for_transfer_file(found_filename: str, local_file_path: str) -> Option
         candidates.append(os.path.join(monitored, base))
     if local_file_path:
         candidates.append(str(local_file_path).replace("\\", "/"))
+    # The conversion archive holds the original after a FLAC→MP3 import.
+    # The archive PRESERVES the relative path (``Original/Artist/Album/
+    # file.flac``), so a flat ``join(archive_root, base)`` misses it — walk
+    # the archive once for the basename.
+    try:
+        from services.infrastructure.filesystem_service import (
+            _original_archive_subfolder_name,
+            resolve_original_archive_dir,
+        )
+        _archive_root = resolve_original_archive_dir()
+        if _archive_root and os.path.isdir(_archive_root) and base:
+            for _aroot, _adirs, _afiles in os.walk(_archive_root):
+                if base in _afiles:
+                    candidates.append(os.path.join(_aroot, base))
+                    break
+    except Exception:
+        pass
 
     if not candidates:
         return None
@@ -1174,12 +1200,19 @@ def check_completed_downloads() -> dict[str, Any]:
                 # Never match archived conversion originals (downloads/
                 # <original_subfolder>) against queue items — those files were
                 # already imported and would re-trigger the whole pipeline.
-                from services.infrastructure.filesystem_service import resolve_original_archive_dir
+                # Prune by the archive subfolder NAME at ANY depth (a nested
+                # ``<album>/Original/`` folder must also be excluded).
+                from services.infrastructure.filesystem_service import (
+                    _original_archive_subfolder_name,
+                    resolve_original_archive_dir,
+                )
                 _archive_dir = resolve_original_archive_dir()
+                _archive_name = _original_archive_subfolder_name()
                 for root, dirs, files in os.walk(downloads_dir):
                     dirs[:] = [
                         d for d in dirs
-                        if os.path.normpath(os.path.join(root, d)) != _archive_dir
+                        if d != _archive_name
+                        and os.path.normpath(os.path.join(root, d)) != _archive_dir
                     ]
                     for filename in sorted(files):
                         ext = os.path.splitext(filename)[1].lower()

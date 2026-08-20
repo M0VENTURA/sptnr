@@ -77,14 +77,19 @@ def discover_audio_files() -> list[DiscoveredFile]:
 
     # The FLAC conversion archive (downloads/<original_subfolder>) must never
     # be re-discovered: its files were already imported (converted), and
-    # re-queueing them would download the album AGAIN as duplicates.
+    # re-queueing them would download the album AGAIN as duplicates.  Prune
+    # by the archive subfolder NAME at ANY depth (not just the top-level
+    # path) so a nested ``<album>/Original/`` folder is also excluded.
     archive_dir = resolve_original_archive_dir()
+    from services.infrastructure.filesystem_service import _original_archive_subfolder_name
+    _archive_name = _original_archive_subfolder_name()
 
     discovered: list[DiscoveredFile] = []
     for root, dirs, files in os.walk(downloads_dir):
         dirs[:] = [
             d for d in dirs
-            if os.path.normpath(os.path.join(root, d)) != archive_dir
+            if d != _archive_name
+            and os.path.normpath(os.path.join(root, d)) != archive_dir
         ]
         for filename in sorted(files):
             _, ext = os.path.splitext(filename)

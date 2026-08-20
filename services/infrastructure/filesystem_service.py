@@ -256,6 +256,12 @@ def _get_files_in_folder(folder_path: str, max_depth: int = 3, max_files: int = 
     levels (bounded, the monitor page polls this every few seconds) and
     returns up to ``max_files`` entries; ``name`` carries the path
     relative to the folder root so the UI can show where each file lives.
+
+    The FLAC conversion archive (``downloads/<original_subfolder>``, default
+    ``Original``) is pruned at ANY depth — an archived FLAC inside a tracked
+    folder must never surface as a folder item (it was already imported and
+    re-surfacing it makes the monitor / prune logic think the folder still
+    holds pending audio).
     """
     files = []
 
@@ -265,11 +271,19 @@ def _get_files_in_folder(folder_path: str, max_depth: int = 3, max_files: int = 
         if not folder.exists():
             return []
 
+        archive_name = _original_archive_subfolder_name()
+
         root_depth = len(folder.parts)
         for root, dirs, names in os.walk(folder):
             depth = len(Path(root).parts) - root_depth
             if depth >= max_depth:
                 dirs[:] = []  # do not descend further
+            # Never descend into the conversion archive at any level.
+            dirs[:] = [
+                d for d in dirs
+                if d != archive_name
+                and os.path.normpath(os.path.join(root, d)) != archive_dir_path()
+            ]
             for name in names:
                 full = Path(root) / name
                 try:
@@ -294,6 +308,32 @@ def _get_files_in_folder(folder_path: str, max_depth: int = 3, max_files: int = 
     except Exception as e:
         logger.error("[FOLDER] Failed to list files: %s", e, exc_info=True)
         return []
+
+
+def _original_archive_subfolder_name() -> str:
+    """The configured conversion archive subfolder name (default ``Original``)."""
+    try:
+        config = get_config() or {}
+        conversion_cfg = (config.get("downloads") or {}).get("conversion") or {}
+        name = str(conversion_cfg.get("original_subfolder", "Original") or "Original").strip()
+        return name or "Original"
+    except Exception:
+        return "Original"
+
+
+def archive_dir_path() -> str:
+    """Absolute path of the FLAC conversion archive folder (any resolution).
+
+    Kept in the infrastructure layer so every walker (completion, discovery,
+    folder listing) prunes the SAME directory the conversion pipeline writes
+    to — a resolver mismatch is exactly how archived originals end up
+    re-discovered and re-queued.
+    """
+    try:
+        return resolve_original_archive_dir()
+    except Exception:
+        root = resolve_downloads_dir(prefer_music_subfolder=False)
+        return os.path.normpath(os.path.join(root, "Original"))
 
 def resolve_music_dir(config: dict | None = None) -> str:
     """
