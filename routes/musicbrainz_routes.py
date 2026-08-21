@@ -362,6 +362,13 @@ async def api_musicbrainz_search():
     # exists in the library — the library-dedupe step below is skipped so the
     # user can pick the owned release and associate the folder with it.
     include_owned = bool(payload.get("include_owned", False))
+    # Concrete-release enrichment (browse each group's releases — N extra
+    # throttled MB API calls) is EXPENSIVE.  The universal search fires on
+    # every keystroke and only needs the group rows; the album-page lookup
+    # and folder-match flows need the concrete list for the release picker.
+    # Default to OFF for free-text / discovery searches; the targeted flows
+    # opt in explicitly.
+    with_releases = bool(payload.get("with_releases", False))
 
     def _esc(value: str) -> str:
         return value.replace('"', "")
@@ -529,6 +536,8 @@ async def api_musicbrainz_search():
         return rg
 
     def _enrich_release_group_with_releases(rg: dict[str, Any], source: str) -> dict[str, Any]:
+        if not with_releases:
+            return _enrich_release_group(rg, source)
         return _attach_concrete_releases(_enrich_release_group(rg, source))
 
     try:

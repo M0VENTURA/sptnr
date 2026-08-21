@@ -81,10 +81,12 @@ def fake_mb(monkeypatch):
 
 async def test_search_results_include_concrete_releases(client, fake_mb):
     """A release-group search result carries its concrete releases so the
-    frontend can prompt which edition the user wants."""
+    frontend can prompt which edition the user wants (opt-in via
+    with_releases)."""
     resp = await client.post("/api/musicbrainz/search", json={
         "artist": "Fleshgod Apocalypse",
         "album": "Parallels",
+        "with_releases": True,
     })
     data = await resp.get_json()
     assert resp.status_code == 200
@@ -108,6 +110,21 @@ async def test_search_results_include_concrete_releases(client, fake_mb):
     assert [r["date"] for r in releases] == ["2013-05-27", "2013-11-01"]
 
 
+async def test_search_default_skips_concrete_releases(client, fake_mb):
+    """The universal search (no with_releases) must NOT browse every group's
+    releases — that is the expensive N-API-calls path that made search slow.
+    The groups come back without a releases key."""
+    resp = await client.post("/api/musicbrainz/search", json={
+        "artist": "Fleshgod Apocalypse",
+        "album": "Parallels",
+    })
+    data = await resp.get_json()
+    assert resp.status_code == 200
+    group = next((r for r in data["releases"] if r.get("id") == RGID), None)
+    assert group is not None
+    assert "releases" not in group or not group["releases"]
+
+
 async def test_single_release_group_still_enriched(client, fake_mb, monkeypatch):
     """Even a group with a single concrete release is enriched (the frontend
     can apply it directly)."""
@@ -127,6 +144,7 @@ async def test_single_release_group_still_enriched(client, fake_mb, monkeypatch)
     resp = await client.post("/api/musicbrainz/search", json={
         "artist": "Fleshgod Apocalypse",
         "album": "Parallels",
+        "with_releases": True,
     })
     data = await resp.get_json()
     group = next((r for r in data["releases"] if r.get("id") == RGID), None)

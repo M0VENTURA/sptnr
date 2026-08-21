@@ -622,6 +622,9 @@ function openFolderMbSearch(folderPath, isChange, detectedArtist, detectedAlbum)
   // Folder-match searches must include releases already in the library — the
   // shared search endpoint otherwise strips owned albums from the results.
   window._mbSearchIncludeOwned = true;
+  // Folder-match also needs each group's CONCRETE releases so the picker has
+  // the exact editions (the generic universal search skips this browse).
+  window._mbSearchWithReleases = true;
   if (typeof window.populateMusicBrainzSearch === 'function') {
     window.populateMusicBrainzSearch(artist, album, '', '');
   }

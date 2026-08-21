@@ -141,6 +141,10 @@ var _pageData = window._pageData || {};
         // — otherwise every match is filtered out and the modal shows
         // "No results found".
         window._mbSearchIncludeOwned = true;
+        // The album lookup needs each group's CONCRETE releases for the
+        // release picker — request them (the generic universal search skips
+        // this expensive browse per group).
+        window._mbSearchWithReleases = true;
         if (typeof window.populateMusicBrainzSearch === 'function') {
             window.populateMusicBrainzSearch(artist, album, '', '');
         }

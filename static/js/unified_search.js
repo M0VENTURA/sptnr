@@ -39,6 +39,12 @@
   var _counts = { all: 0, library: 0, mb: 0 };  // live scope-pill counts
   var _lastQuery = null;    // query + scope of the last completed render
   var _lastScope = null;    // (used to restore state instantly on reopen)
+  // Local / MusicBrainz split rendering: the local result renders first
+  // (fast), MB results merge in when the slow call lands.  These hold the
+  // last completed values so the second render doesn't refetch.
+  var _mbDone = false;      // has the MusicBrainz call completed?
+  var _mbResults = [];      // last MusicBrainz releases
+  var localResult = { artists: [], albums: [], compilations: [], live_albums: [], eps: [], singles: [], tracks: [] };
 
   function getModalEl() { return document.getElementById('unifiedSearchModal'); }
   function getInputEl() { return document.getElementById('unifiedSearchInput'); }
@@ -455,7 +461,13 @@
 
     html += renderReleaseSections(buildBuckets(local, mbReleases), opts.withQueue);
 
-    if (opts.allMbButton && mbReleases.length) {
+    // MusicBrainz results are still loading — show a lightweight inline
+    // notice in place of the (missing) "All MusicBrainz results" button so
+    // the user knows more is coming instead of assuming the search is done.
+    if (opts.allMbButton && opts.mbPending) {
+      html += '<div class="text-center my-2 text-muted small">' +
+        '<span class="spinner-border spinner-border-sm me-1" role="status"></span> Loading MusicBrainz results…</div>';
+    } else if (opts.allMbButton && mbReleases.length) {
       html += '<div class="text-center my-2">' +
         '<button type="button" class="btn btn-sm btn-outline-info" onclick="openUnifiedSearch(\'mb\')">' +
         '<i class="bi bi-search"></i> All MusicBrainz results</button></div>';
@@ -543,52 +555,76 @@
       mbPromise = fetchMb(query, MB_LIMIT_MB_TAB, mbOpts);
     }
 
-    Promise.all([localPromise, mbPromise])
-      .then(function (results) {
-        if (seq !== _runSeq) return;
-        var local = results[0];
-        var mbReleases = results[1];
+    // Local results render FIRST (they come from the fast indexed DB query);
+    // MusicBrainz results merge in when they arrive.  Waiting for BOTH via
+    // Promise.all made every keystroke block on the slow MB call (the search
+    // modal showed a spinner until MusicBrainz finished), which is the
+    // "search is slow" symptom.
+    var renderLocal = function (local) {
+      if (seq !== _runSeq) return;
+      if (getTypeFilter()) local = filterLocalByType(local, getTypeFilter());
+      _counts.library = countLibrary(local);
+      _counts.all = _counts.library + (_counts.mb || 0);
+      updateScopeCounts();
 
-        // The Type filter applies to local results too: artists/tracks are
-        // suppressed and only matching album buckets are kept, so the scope
-        // pill counts reflect the filtered subset.
-        local = filterLocalByType(local, getTypeFilter());
+      // MusicBrainz scope: the tab is MB-only — the local data is just for
+      // the owned-badge in the MB tab, which renders when MB loads.
+      if (_scope === SCOPE_MB) return;
 
-        _counts.library = countLibrary(local);
-        if (_scope !== SCOPE_LIBRARY) _counts.mb = mbReleases.length;
+      var displayQuery = localQuery || query;
+      var releaseCount = ['albums', 'compilations', 'live_albums', 'eps', 'singles'].reduce(function (n, k) {
+        return n + ((local[k] || []).length);
+      }, 0);
+      var counts = [
+        (local.artists || []).length + ' artist' + ((local.artists || []).length === 1 ? '' : 's'),
+        releaseCount + ' album' + (releaseCount === 1 ? '' : 's'),
+        (local.tracks || []).length + ' track' + ((local.tracks || []).length === 1 ? '' : 's')
+      ];
+      if (_scope === SCOPE_ALL) counts.push((_counts.mb || 0) + ' musicbrainz');
+      if (getMetaEl()) getMetaEl().textContent = counts.join(' · ');
+      var warnHtml = local.error
+        ? '<div class="alert alert-warning py-2 small mb-2"><i class="bi bi-exclamation-triangle-fill"></i> Library search failed (' + esc(local.error) + ') — showing MusicBrainz only.</div>'
+        : '';
+      var mbReleases = _mbResults || [];
+      resultsEl.innerHTML = warnHtml + renderBucketedResults(local, mbReleases, displayQuery, {
+        withQueue: true,
+        allMbButton: _scope === SCOPE_ALL,
+        mbPending: _scope === SCOPE_ALL && !_mbDone
+      });
+      markRendered(query);
+    };
+
+    // Kick off the MusicBrainz fetch (slow) and render its results as soon
+    // as they land, without blocking the local render above.
+    _mbDone = false;
+    _mbResults = [];
+    mbPromise.then(function (mbReleases) {
+      if (seq !== _runSeq) return;
+      _mbResults = mbReleases || [];
+      _mbDone = true;
+      _counts.mb = mbReleases.length;
+      if (_scope !== SCOPE_LIBRARY) {
         _counts.all = _counts.library + _counts.mb;
         updateScopeCounts();
-
-        // Empty-state messages should quote the query that actually ran
-        // (the filter-derived one when the main bar was empty).
-        var displayQuery = localQuery || query;
-
-        if (_scope === SCOPE_MB) {
-          if (getMetaEl()) getMetaEl().textContent = mbReleases.length + ' musicbrainz result' + (mbReleases.length === 1 ? '' : 's');
-          resultsEl.innerHTML = renderMbTab(local, mbReleases, displayQuery);
-          markRendered(query);
-          return;
-        }
-
-        var releaseCount = ['albums', 'compilations', 'live_albums', 'eps', 'singles'].reduce(function (n, k) {
-          return n + ((local[k] || []).length);
-        }, 0);
-        var counts = [
-          (local.artists || []).length + ' artist' + ((local.artists || []).length === 1 ? '' : 's'),
-          releaseCount + ' album' + (releaseCount === 1 ? '' : 's'),
-          (local.tracks || []).length + ' track' + ((local.tracks || []).length === 1 ? '' : 's')
-        ];
-        if (_scope === SCOPE_ALL) counts.push(mbReleases.length + ' musicbrainz');
-        if (getMetaEl()) getMetaEl().textContent = counts.join(' · ');
-        var warnHtml = local.error
-          ? '<div class="alert alert-warning py-2 small mb-2"><i class="bi bi-exclamation-triangle-fill"></i> Library search failed (' + esc(local.error) + ') — showing MusicBrainz only.</div>'
-          : '';
-        resultsEl.innerHTML = warnHtml + renderBucketedResults(local, mbReleases, displayQuery, {
-          withQueue: true,
-          allMbButton: _scope === SCOPE_ALL
-        });
+      }
+      if (_scope === SCOPE_MB) {
+        if (getMetaEl()) getMetaEl().textContent = mbReleases.length + ' musicbrainz result' + (mbReleases.length === 1 ? '' : 's');
+        resultsEl.innerHTML = renderMbTab(localResult, mbReleases, localQuery || query);
         markRendered(query);
-      });
+        return;
+      }
+      // Library scope is local-only — the MB call there was just for the
+      // scope-pill count; don't re-render the local list.
+      if (_scope === SCOPE_LIBRARY) return;
+      // Re-render with the merged MB results (local data is already cached).
+      renderLocal(localResult);
+    });
+
+    localPromise.then(function (local) {
+      if (seq !== _runSeq) return;
+      localResult = local;
+      renderLocal(local);
+    });
   }
 
   function scheduleSearch() {

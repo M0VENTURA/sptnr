@@ -267,6 +267,13 @@ window.performMbSearch = async function() {
       payload.include_owned = true;
       window._mbSearchIncludeOwned = false;
     }
+    // Album-page lookup / folder-match flows need each group's CONCRETE
+    // releases for the release picker (expensive browse per group); generic
+    // discovery search (universal search modal) skips it for speed.
+    if (window._mbSearchWithReleases === true) {
+      payload.with_releases = true;
+      window._mbSearchWithReleases = false;
+    }
 
     var resp = await fetch('/api/musicbrainz/search', {
       method: 'POST',
