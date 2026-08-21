@@ -1355,6 +1355,7 @@ async def album_detail(album_path: str):
 
         updated_count = 0
         reverted_live_count = 0
+        file_sync_failures = 0
 
         for track in tracks:
             track_id = track.get("id")
@@ -1457,14 +1458,23 @@ async def album_detail(album_path: str):
             # would (album_artist → TPE2/albumartist, year → TDRC/date,
             # musicbrainz_albumid → TXXX:MUSICBRAINZ ALBUM ID, …).
             _resolved_file = resolve_music_file_path(track.get("file_path"))
+            _file_write_ok = False
             if _resolved_file:
                 try:
                     from services.metadata.tag_file_service import build_tag_updates
                     _file_tags = build_tag_updates(payload)
                     if _file_tags:
-                        update_file_tags(_resolved_file, _file_tags)
+                        _file_write_ok = bool(update_file_tags(_resolved_file, _file_tags))
                 except Exception as tag_err:
                     logger.debug("[album_detail] File tag write failed for %s: %s", track_id, tag_err)
+            if not _file_write_ok:
+                # The DB row updated but the audio file did not — surface it
+                # so the user knows the change won't appear in Navidrome.
+                file_sync_failures += 1
+                logger.warning(
+                    "[album_detail] File tag write SKIPPED for track %s (path=%r) — DB updated only",
+                    track_id, _resolved_file,
+                )
 
             # Album type corrected away from live: undo the live/acoustic
             # tagging (suffix, flags, injected genre) the album stage may
@@ -1484,12 +1494,19 @@ async def album_detail(album_path: str):
 
         if updated_count > 0:
             await flash(f"Album metadata saved — {updated_count} track(s) updated.", "success")
+        if file_sync_failures > 0:
+            await flash(
+                f"⚠️ {file_sync_failures} track(s) updated in the database but NOT in the audio "
+                "files (could not write tags — check the music folder is writable and the "
+                "paths resolve). Run a Navidrome scan after fixing.",
+                "warning",
+            )
         if reverted_live_count > 0:
             await flash(
                 f"Removed \"(Live)\"/\"(Acoustic)\" suffixes from {reverted_live_count} track(s).",
                 "info",
             )
-        if updated_count == 0 and reverted_live_count == 0:
+        if updated_count == 0 and reverted_live_count == 0 and file_sync_failures == 0:
             await flash("No changes were made.", "info")
 
         # Redirect to the new album name if changed

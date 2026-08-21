@@ -541,6 +541,12 @@ def _resolve_music_file_path(path_value: str | None) -> str | None:
     path.  Try the stored value first, then each configured music root joined
     with the relative path.  Returns the first path that exists on disk, or
     None.
+
+    The music-root candidates include the CONFIG-driven root
+    (``resolve_music_dir`` — ``music.root`` / ``music_root`` /
+    ``navidrome.music_folder`` from config.yaml) in ADDITION to the legacy
+    env vars, so a deployment whose library lives outside ``/music`` still
+    resolves and tag writes actually land on the real file.
     """
     if not path_value:
         return None
@@ -549,13 +555,25 @@ def _resolve_music_file_path(path_value: str | None) -> str | None:
         return None
 
     candidates = [raw]
+    roots: list[str] = []
+    # Config-driven root first (authoritative — the app reads the library
+    # root from config, not just env).
+    try:
+        from services.infrastructure.filesystem_service import resolve_music_dir
+        cfg_root = resolve_music_dir()
+        if cfg_root:
+            roots.append(cfg_root)
+    except Exception:
+        pass
+    # Legacy env-var roots.
+    for env_key in ("MUSIC_FOLDER", "MUSIC_ROOT", "MUSIC_DIR"):
+        env_val = os.environ.get(env_key)
+        if env_val:
+            roots.append(str(env_val).strip())
+    roots.append("/music")
+
     if not os.path.isabs(raw):
-        for root in [
-            os.environ.get("MUSIC_FOLDER"),
-            os.environ.get("MUSIC_ROOT"),
-            os.environ.get("MUSIC_DIR"),
-            "/music",
-        ]:
+        for root in roots:
             if root:
                 candidates.append(os.path.join(str(root).strip(), raw))
 

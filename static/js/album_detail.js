@@ -60,6 +60,10 @@ var _pageData = window._pageData || {};
             const year = (group.first_release_date || '').toString().split('-')[0] || '';
             const albumType = _buildAlbumType(group.primary_type, group.secondary_types);
             const cover = group.cover_art_url || '';
+            // The search results now carry the PRIMARY credit as ``artist`` —
+            // that is the album artist (a collab's joined "A & B" string would
+            // split the album on Navidrome).
+            const albumArtist = selected.artist || group.artist || '';
 
             // The shared search results now carry the group's concrete
             // releases (``group.releases``, normalised to the picker
@@ -82,7 +86,8 @@ var _pageData = window._pageData || {};
                     '',
                     cover,
                     '',
-                    rgMbid
+                    rgMbid,
+                    albumArtist
                 );
             } else if (rgMbid && concreteReleases.length === 1 && typeof populateAlbumFields === 'function') {
                 // Exactly one concrete release — unambiguous, no prompt.
@@ -95,7 +100,8 @@ var _pageData = window._pageData || {};
                     '',
                     single.cover_art_url || cover,
                     '',
-                    rgMbid
+                    rgMbid,
+                    albumArtist
                 );
             } else if (rgMbid && typeof openReleasePickerModal === 'function') {
                 // Multiple concrete releases — always prompt.  Preload the
@@ -111,7 +117,8 @@ var _pageData = window._pageData || {};
                     albumType,
                     concreteReleases.length > 1 ? concreteReleases : null,
                     null,
-                    cover
+                    cover,
+                    albumArtist
                 );
             } else {
                 populateAlbumFields(
@@ -122,7 +129,8 @@ var _pageData = window._pageData || {};
                     '',
                     cover,
                     '',
-                    rgMbid
+                    rgMbid,
+                    albumArtist
                 );
             }
         };
@@ -471,9 +479,9 @@ var _pageData = window._pageData || {};
     }
 
     // ── Release Picker Modal ────────────────────────────────────────────────
-    let _releasePickerCache = null; // { rgMbid, title, year, albumType, releases, bestRelease }
+    let _releasePickerCache = null; // { rgMbid, title, year, albumType, releases, bestRelease, coverArtUrl, albumArtist }
 
-    async function openReleasePickerModal(rgMbid, title, year, albumType, preloadedReleases = null, preloadedBest = null, coverArtUrl = '') {
+    async function openReleasePickerModal(rgMbid, title, year, albumType, preloadedReleases = null, preloadedBest = null, coverArtUrl = '', albumArtist = '') {
         const statusEl = document.getElementById('releasePickerStatus');
         const errorEl = document.getElementById('releasePickerError');
         const resultsEl = document.getElementById('releasePickerResults');
@@ -511,7 +519,7 @@ var _pageData = window._pageData || {};
             }
         }
 
-        _releasePickerCache = { rgMbid, title, year, albumType, releases, bestRelease, coverArtUrl };
+        _releasePickerCache = { rgMbid, title, year, albumType, releases, bestRelease, coverArtUrl, albumArtist };
         statusEl.style.display = 'none';
         _renderReleasePickerResults(releases, year, albumType, bestRelease);
     }
@@ -552,7 +560,7 @@ var _pageData = window._pageData || {};
                             <button class="btn btn-sm btn-outline-info" onclick="toggleReleaseTracks('${safeId}', ${idx})" id="btn-toggle-tracks-${safeId}">
                                 <i class="bi bi-music-note-list"></i> Tracks
                             </button>
-                            <button class="btn btn-sm btn-primary" onclick="populateAlbumFields('${escapeJsString(r.title)}', '${escapeHtml(r.date ? r.date.slice(0,4) : year)}', '${escapeHtml(albumType)}', '${safeId}', '', '${escapeJsString(r.cover_art_url || '')}', '', '${escapeJsString(_releasePickerCache.rgMbid || '')}')">
+                            <button class="btn btn-sm btn-primary" onclick="populateAlbumFields('${escapeJsString(r.title)}', '${escapeHtml(r.date ? r.date.slice(0,4) : year)}', '${escapeHtml(albumType)}', '${safeId}', '', '${escapeJsString(r.cover_art_url || '')}', '', '${escapeJsString(_releasePickerCache.rgMbid || '')}', '${escapeJsString(_releasePickerCache.albumArtist || '')}')">
                                 <i class="bi bi-check-circle"></i> Select
                             </button>
                         </div>
@@ -1240,7 +1248,7 @@ var _pageData = window._pageData || {};
     }
     
     // Album metadata form population function
-    function populateAlbumFields(title, year, albumType, mbid, discogsId, coverArtUrl, genres, releaseGroupMbid) {
+    function populateAlbumFields(title, year, albumType, mbid, discogsId, coverArtUrl, genres, releaseGroupMbid, albumArtist) {
         // Close any open lookup modals (the shared MB modal lives in base.html;
         // the legacy albumLookupModal include was removed when lookups moved to
         // the shared component — guard in case a stale build still has it).
@@ -1255,6 +1263,14 @@ var _pageData = window._pageData || {};
         // Populate form fields
         if (title) {
             document.getElementById('album_title').value = title;
+        }
+        if (albumArtist) {
+            // Album artist = the release's PRIMARY credit.  The form field is
+            // what the Save handler reads (form.album_artist) and writes to
+            // the DB + file tags — without this the release-picker selection
+            // leaves the old artist in place.
+            const albumArtistEl = document.getElementById('album_artist');
+            if (albumArtistEl) albumArtistEl.value = albumArtist;
         }
         if (year) {
             document.getElementById('release_year').value = year;
