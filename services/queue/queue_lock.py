@@ -63,6 +63,16 @@ def _pg_advisory_lock(
     session is acquired, locked and kept alive until release — never returned
     to the pool mid-lock (a pooled connection would otherwise keep the lock
     while being reused by unrelated code).
+
+    CRITICAL: the session is COMMITTED after acquiring (and after releasing)
+    so the transaction is never left idle-in-transaction.  PostgreSQL advisory
+    locks (``pg_try_advisory_lock``) are SESSION-scoped, not transaction-
+    scoped — committing the SELECT does NOT release the lock, but it DOES stop
+    ``idle_in_transaction_session_timeout`` (default 60 s) from killing the
+    connection mid-batch.  The queue batch can run for minutes (Soulseek
+    searches, MusicBrainz calls, filesystem moves); without the commit the
+    server logs "unexpected EOF on client connection with an open transaction"
+    and the lock (and any work under it) is lost.
     """
     from db.engine import get_session_factory
 
@@ -77,6 +87,13 @@ def _pg_advisory_lock(
             )
             if bool(result.scalar()):
                 acquired = True
+                # Session-scoped lock survives the commit; ending the
+                # transaction here keeps the session out of the idle-in-
+                # transaction danger zone for the whole critical section.
+                try:
+                    session.commit()
+                except Exception:
+                    session.rollback()
                 break
         except Exception as exc:
             logger.debug("[QUEUE_LOCK] advisory lock error: %s", exc)
@@ -100,6 +117,11 @@ def _pg_advisory_lock(
                     text("SELECT pg_advisory_unlock(hashtext(:key))"),
                     {"key": key},
                 )
+                # Commit the unlock too — same idle-in-transaction reasoning.
+                try:
+                    session.commit()
+                except Exception:
+                    session.rollback()
             except Exception as exc:
                 logger.debug("[QUEUE_LOCK] advisory unlock error: %s", exc)
             try:

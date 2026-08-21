@@ -167,6 +167,13 @@ def get_engine() -> Engine:
         kwargs["max_overflow"] = int(os.environ.get("DB_POOL_OVERFLOW", "20"))
         kwargs["pool_timeout"] = int(os.environ.get("DB_POOL_TIMEOUT", "30"))
         kwargs["pool_pre_ping"] = True  # verify connections before use
+        # Recycle pooled connections before the 60s
+        # ``idle_in_transaction_session_timeout`` (db/utils.py) can kill a
+        # pooled connection that sat idle inside an open transaction — a
+        # killed connection makes Postgres log "unexpected EOF on client
+        # connection with an open transaction" and fails the next checkout
+        # (which pool_pre_ping then masks).  Default 50s, overridable.
+        kwargs["pool_recycle"] = int(os.environ.get("DB_POOL_RECYCLE_SECONDS", "50"))
 
     _ENGINE = create_engine(url, **kwargs)
 
@@ -222,6 +229,7 @@ def get_async_engine() -> Any:
         kwargs["max_overflow"] = int(os.environ.get("DB_POOL_OVERFLOW", "20"))
         kwargs["pool_timeout"] = int(os.environ.get("DB_POOL_TIMEOUT", "30"))
         kwargs["pool_pre_ping"] = True
+        kwargs["pool_recycle"] = int(os.environ.get("DB_POOL_RECYCLE_SECONDS", "50"))
 
     _ASYNC_ENGINE = create_async_engine(url, **kwargs)
     logger.info("Async (asyncpg) SQLAlchemy engine created")
