@@ -135,6 +135,26 @@ def build_artist_credit_string(artist_credit):
     return result.strip()
 
 
+def primary_album_artist(artist_credit):
+    """Return the PRIMARY album artist from a MusicBrainz artist-credit.
+
+    A release's ``artist-credit`` can credit MULTIPLE artists joined by
+    phrases ("Weezer", " & ", "Rivers Cuomo").  For the ALBUM ARTIST tag that
+    string must be the FIRST credit's name only — writing the joined string
+    ("Weezer & Rivers Cuomo") makes Navidrome split the album because it
+    treats it as two album artists.  The full multi-artist credit belongs on
+    the TRACK ARTIST (per-track), never the album artist.
+    """
+    if isinstance(artist_credit, list) and artist_credit:
+        first = artist_credit[0]
+        if isinstance(first, dict):
+            return str(first.get("name") or "").strip()
+        return str(first or "").strip()
+    if isinstance(artist_credit, str):
+        return artist_credit.strip()
+    return ""
+
+
 def calculate_match_score(mb_title, mb_artist_credit, local_album, local_artist) -> float:
     title_sim = _similarity(normalize_string(local_album), normalize_string(mb_title))
 
@@ -1036,9 +1056,13 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> Dict[str, Any] | None
             "release_mbid": data.get("id"),
         }
 
-        # ✅ album artist
+        # ✅ album artist — the PRIMARY credit only.  A collab release credits
+        # multiple artists ("Weezer & Rivers Cuomo"); the full joined string
+        # must never become ALBUMARTIST (Navidrome splits the album into two
+        # artists).  The joined credit stays on the per-track artist.
         if data.get("artist-credit"):
-            release_info["artist"] = build_artist_credit_string(data["artist-credit"])
+            release_info["artist"] = primary_album_artist(data["artist-credit"])
+            release_info["artist_credit"] = build_artist_credit_string(data["artist-credit"])
 
         # ✅ extract tracks
         for disc_index, media in enumerate(data.get("media", []), start=1):
@@ -1051,6 +1075,14 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> Dict[str, Any] | None
                     "title": track.get("title") or recording.get("title"),
                     "recording_mbid": recording.get("id"),
                     "duration": track.get("length"),
+                    # Per-track artist: the recording's OWN artist-credit
+                    # (full multi-artist string for collab tracks).  Falls
+                    # back to the release's joined credit.
+                    "artist": (
+                        build_artist_credit_string(recording.get("artist-credit"))
+                        if recording.get("artist-credit")
+                        else release_info.get("artist_credit") or release_info.get("artist")
+                    ),
                 })
 
         # ✅ cover art (best effort) — CAA also requires a UA header
@@ -1156,7 +1188,12 @@ def fetch_release_metadata(release_id: str):
         }
 
         if data.get("artist-credit"):
-            release_info["artist"] = build_artist_credit_string(data["artist-credit"])
+            # Primary credit only for the album artist — the joined
+            # multi-artist string ("Weezer & Rivers Cuomo") would make
+            # Navidrome split the album.  The full joined credit is kept on
+            # ``artist_credit`` so per-track artists can carry it.
+            release_info["artist"] = primary_album_artist(data["artist-credit"])
+            release_info["artist_credit"] = build_artist_credit_string(data["artist-credit"])
 
         for disc_index, media in enumerate(data.get("media", []), start=1):
             for track in media.get("tracks", []):
@@ -1168,6 +1205,15 @@ def fetch_release_metadata(release_id: str):
                     "title": track.get("title") or recording.get("title"),
                     "recording_mbid": recording.get("id"),
                     "duration": track.get("length"),
+                    # Per-track artist: the recording's OWN artist-credit
+                    # (full multi-artist string when the recording credits
+                    # several artists).  Falls back to the release's joined
+                    # credit so collabs stay attributed on the track.
+                    "artist": (
+                        build_artist_credit_string(recording.get("artist-credit"))
+                        if recording.get("artist-credit")
+                        else release_info.get("artist_credit") or release_info.get("artist")
+                    ),
                 })
 
         return release_info
@@ -1218,7 +1264,9 @@ def _lookup_existing_mbid(existing_mbid: str, artist: str, album: str) -> dict |
     try:
         rel_data = client.get_release(existing_mbid, inc="artist-credits+release-groups")
         if rel_data:
-            rel_artist = build_artist_credit_string(rel_data.get("artist-credit") or []) or artist
+            # Primary credit only — the joined multi-artist string would split
+            # the album on Navidrome if applied as album artist.
+            rel_artist = primary_album_artist(rel_data.get("artist-credit") or []) or artist
             rg = rel_data.get("release-group") or {}
             rg_id = rg.get("id", "")
             primary_type = rg.get("primary-type", "Album")

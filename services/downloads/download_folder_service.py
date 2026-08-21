@@ -804,10 +804,12 @@ def associate_folder_to_release(folder_path: str, mb_id: str) -> dict:
             return {"success": False, "error": "MusicBrainz could not resolve that release/release-group"}
 
         artist_credit = release_data.get("artist-credit") or []
-        album_artist = " ".join(
-            str(part.get("name") or part if isinstance(part, dict) else part)
-            for part in artist_credit
-        ).strip() or "Unknown Artist"
+        # Album artist = the PRIMARY credit only.  A collab release credits
+        # multiple artists ("Weezer & Rivers Cuomo"); the joined string must
+        # never become ALBUMARTIST or Navidrome splits the album.  The full
+        # joined credit stays on the per-track artist.
+        from services.enrichment.musicbrainz_service import primary_album_artist
+        album_artist = primary_album_artist(artist_credit) or "Unknown Artist"
         album = (release_data.get("title") or "").strip() or "Unknown Album"
         year_raw = (release_data.get("date") or "")[:4]
         try:
@@ -888,10 +890,12 @@ def match_folder_to_release(folder_path: str, mb_id: str) -> dict:
             return {"success": False, "error": "MusicBrainz could not resolve that release/release-group"}
 
         artist_credit = release_data.get("artist-credit") or []
-        album_artist = " ".join(
-            str(part.get("name") or part if isinstance(part, dict) else part)
-            for part in artist_credit
-        ).strip() or "Unknown Artist"
+        # Album artist = the PRIMARY credit only (a collab release's joined
+        # "A & B" string would split the album on Navidrome).
+        from services.enrichment.musicbrainz_service import primary_album_artist, build_artist_credit_string
+        album_artist = primary_album_artist(artist_credit) or "Unknown Artist"
+        # Full joined credit, used as the fallback per-track artist.
+        release_credit = build_artist_credit_string(artist_credit) if artist_credit else album_artist
         album = (release_data.get("title") or "").strip() or "Unknown Album"
         year = (release_data.get("date") or "")[:4]
 
@@ -924,7 +928,9 @@ def match_folder_to_release(folder_path: str, mb_id: str) -> dict:
                 track_meta = {}
 
             title = str(track_meta.get("title") or "").strip()
-            track_artist = str(track_meta.get("artist") or "").strip() or album_artist
+            # Track artist falls back to the FULL joined release credit (not
+            # the primary album artist) so collab tracks keep all artists.
+            track_artist = str(track_meta.get("artist") or "").strip() or release_credit
             number = track_meta.get("track_number")
 
             # Match the file to the MB tracklist when possible so numbering

@@ -437,20 +437,20 @@ async def api_musicbrainz_search():
         primary_type = rg.get("primary-type") or rg.get("type") or "Other"
         secondary_types = rg.get("secondary-types") or rg.get("secondary_type") or []
         artist_credit = rg.get("artist-credit") or []
+        # Primary artist = the FIRST credit name only.  A collab release
+        # credits multiple artists ("Weezer & Rivers Cuomo"); the joined
+        # string must never become the album artist (Navidrome splits the
+        # album).  The full joined credit is kept in ``artist_credit`` for
+        # per-track use.
         artist_name = ""
         if artist_credit and isinstance(artist_credit, list):
-            parts = []
-            for ac in artist_credit:
-                if isinstance(ac, dict):
-                    name = ac.get("name", "") or (ac.get("artist", {}) or {}).get("name", "")
-                    join_phrase = ac.get("joinphrase", "")
-                    if name:
-                        parts.append(name)
-                    if join_phrase:
-                        parts.append(join_phrase)
-                elif isinstance(ac, str):
-                    parts.append(ac)
-            artist_name = "".join(parts)
+            first = artist_credit[0]
+            if isinstance(first, dict):
+                artist_name = str(
+                    first.get("name") or (first.get("artist", {}) or {}).get("name", "") or ""
+                )
+            elif isinstance(first, str):
+                artist_name = first
 
         raw_date = rg.get("first-release-date")
         first_release_date = str(raw_date) if raw_date else ""
