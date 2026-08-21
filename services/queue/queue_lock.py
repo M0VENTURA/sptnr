@@ -57,75 +57,93 @@ def _pg_advisory_lock(
     max_attempts: int,
     interval: float,
 ) -> Iterator[bool]:
-    """Hold a PostgreSQL advisory lock on a dedicated connection.
+    """Hold a PostgreSQL advisory lock on a DEDICATED raw connection.
 
-    The lock session must stay open for the whole critical section, so the
-    session is acquired, locked and kept alive until release — never returned
-    to the pool mid-lock (a pooled connection would otherwise keep the lock
-    while being reused by unrelated code).
+    The lock connection must stay open for the whole critical section, so it
+    is acquired, locked and kept alive until release — never a pooled
+    SQLAlchemy session, which can be returned to the pool / recycled between
+    the lock and unlock calls (that is what logged "you don't own a lock of
+    type ExclusiveLock": the unlock ran on a different pooled connection than
+    the lock).
 
-    CRITICAL: the session is COMMITTED after acquiring (and after releasing)
-    so the transaction is never left idle-in-transaction.  PostgreSQL advisory
-    locks (``pg_try_advisory_lock``) are SESSION-scoped, not transaction-
-    scoped — committing the SELECT does NOT release the lock, but it DOES stop
-    ``idle_in_transaction_session_timeout`` (default 60 s) from killing the
-    connection mid-batch.  The queue batch can run for minutes (Soulseek
-    searches, MusicBrainz calls, filesystem moves); without the commit the
-    server logs "unexpected EOF on client connection with an open transaction"
-    and the lock (and any work under it) is lost.
+    A raw ``psycopg2`` connection from ``db.utils.get_db_connection`` is used
+    instead:
+    - it is NOT pooled, so lock and unlock always hit the SAME connection;
+    - the session-scoped advisory lock survives a ``commit()``, so we commit
+      after acquiring to avoid ``idle_in_transaction_session_timeout``
+      (default 60 s) killing the connection mid-batch (the earlier
+      "unexpected EOF on client connection with an open transaction" log);
+    - a killed worker releases the lock automatically (connection close).
     """
-    from db.engine import get_session_factory
+    from db.utils import get_db_connection
 
-    session = None
+    conn = None
+    cursor = None
     acquired = False
     for _ in range(max(1, max_attempts)):
         try:
-            session = get_session_factory()()
-            result = session.execute(
-                text("SELECT pg_try_advisory_lock(hashtext(:key))"),
-                {"key": key},
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT pg_try_advisory_lock(hashtext(%s)) AS acquired",
+                (key,),
             )
-            if bool(result.scalar()):
+            row = cursor.fetchone()
+            # RealDictCursor rows are dict-like (row["acquired"]); plain
+            # cursors return a tuple (row[0]).  Tolerate both.
+            if row is not None:
+                if hasattr(row, "get"):
+                    acquired_flag = bool(row.get("acquired") or row.get("pg_try_advisory_lock"))
+                else:
+                    acquired_flag = bool(row[0])
+            else:
+                acquired_flag = False
+            if acquired_flag:
                 acquired = True
                 # Session-scoped lock survives the commit; ending the
-                # transaction here keeps the session out of the idle-in-
+                # transaction keeps the connection out of the idle-in-
                 # transaction danger zone for the whole critical section.
                 try:
-                    session.commit()
+                    conn.commit()
                 except Exception:
-                    session.rollback()
+                    conn.rollback()
                 break
         except Exception as exc:
             logger.debug("[QUEUE_LOCK] advisory lock error: %s", exc)
-            if session is not None:
+            if conn is not None:
                 try:
-                    session.close()
+                    conn.close()
                 except Exception:
                     pass
-                session = None
+                conn = None
+                cursor = None
             break
-        session.close()
-        session = None
+        conn.close()
+        conn = None
+        cursor = None
         time.sleep(interval)
 
     try:
         yield acquired
     finally:
-        if acquired and session is not None:
+        if acquired and conn is not None:
             try:
-                session.execute(
-                    text("SELECT pg_advisory_unlock(hashtext(:key))"),
-                    {"key": key},
+                if cursor is None:
+                    cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT pg_advisory_unlock(hashtext(%s))",
+                    (key,),
                 )
+                cursor.fetchone()
                 # Commit the unlock too — same idle-in-transaction reasoning.
                 try:
-                    session.commit()
+                    conn.commit()
                 except Exception:
-                    session.rollback()
+                    conn.rollback()
             except Exception as exc:
                 logger.debug("[QUEUE_LOCK] advisory unlock error: %s", exc)
             try:
-                session.close()
+                conn.close()
             except Exception:
                 pass
 

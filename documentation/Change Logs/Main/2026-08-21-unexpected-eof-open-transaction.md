@@ -31,15 +31,30 @@ survive `COMMIT` and are only released by `pg_advisory_unlock` or session
 close.  The fix is therefore to COMMIT after acquiring (and after unlocking)
 so the session is never idle-in-transaction while holding the lock.
 
+## Second regression: "you don't own a lock of type ExclusiveLock"
+
+The first attempt at the commit fix used a POOLED SQLAlchemy session.  After
+the commit, the pool could recycle / re-checkout the connection, so the
+`pg_advisory_unlock` ran on a DIFFERENT connection than the one that took the
+lock — Postgres logged `you don't own a lock of type ExclusiveLock` and the
+lock leaked.
+
+`_pg_advisory_lock` now uses a DEDICATED raw psycopg2 connection
+(`db.utils.get_db_connection`), which is not pooled: lock and unlock always
+hit the SAME connection, the session-scoped lock survives the post-acquire
+commit, and a killed worker releases the lock on connection close.
+
 ## Fix
 
 `services/queue/queue_lock.py`:
 
-- `_pg_advisory_lock` now calls `session.commit()` immediately after
-  `pg_try_advisory_lock` returns true (rollback on commit failure).  The
-  session-scoped lock is unaffected; the transaction ends, so
-  `idle_in_transaction_session_timeout` never kills the connection mid-batch.
-- The same commit-on-exit is applied after `pg_advisory_unlock`.
+- `_pg_advisory_lock` now opens a raw, non-pooled connection, runs
+  `pg_try_advisory_lock` through a cursor, COMMITS immediately after
+  acquiring (so `idle_in_transaction_session_timeout` never kills the
+  connection mid-batch), and runs `pg_advisory_unlock` + COMMIT on the SAME
+  connection before closing.
+- Tolerates both `RealDictCursor` rows (`row["acquired"]`) and plain tuples
+  (`row[0]`).
 
 `db/engine.py`:
 
@@ -58,6 +73,7 @@ so the session is never idle-in-transaction while holding the lock.
 
 ## Tests
 
-`tests/test_queue_lock_transaction.py` covers: the lock session is committed
-after acquiring the advisory lock (and after unlocking) while still holding
-the session-scoped lock, and a busy lock skips both commit and unlock.
+`tests/test_queue_lock_transaction.py` covers: the lock connection is
+committed after acquiring the advisory lock (and after unlocking) while still
+holding the session-scoped lock, and a busy lock skips both commit and
+unlock.
