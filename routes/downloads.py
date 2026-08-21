@@ -180,6 +180,15 @@ async def api_move_folder_track(folder_path):
     return jsonify(await asyncio.to_thread(move_folder_track_to_library, folder_path, file_name))
 
 
+@downloads_bp.route("/api/downloads/folder-matches/refresh", methods=["POST"])
+async def api_refresh_folder_matches():
+    """Re-sync stored folder → release associations with the current torrent
+    flattening: any association pointing at the torrent root is moved down to
+    each album subfolder directly under it."""
+    from services.downloads.download_folder_service import refresh_folder_matches
+    return jsonify(await asyncio.to_thread(refresh_folder_matches))
+
+
 @downloads_bp.route("/api/downloads/folder-status")
 def api_get_folder_status():
     """Return folder status summary (stub for now)."""

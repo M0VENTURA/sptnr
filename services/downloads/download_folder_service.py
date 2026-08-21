@@ -254,6 +254,81 @@ def _iter_matched_folder_candidates(downloads_dir: str, archive_dir: str) -> lis
     return candidates
 
 
+def _iter_torrent_album_candidates(downloads_dir: str, archive_dir: str) -> list[tuple[str, str]]:
+    """Yield ``(album_abs, album_name)`` for every album directly under the
+    torrents root (any casing).  Used to propagate a torrent-root match down
+    to its album subfolders — see ``_resolve_folder_match``.
+    """
+    try:
+        entries = sorted(os.listdir(downloads_dir))
+    except Exception as exc:
+        logger.debug("[FOLDER_CANDIDATES] torrent-root listdir failed for %s: %s", downloads_dir, exc)
+        return []
+    albums: list[tuple[str, str]] = []
+    for entry in entries:
+        if not _is_torrents_root(entry):
+            continue
+        root = os.path.join(downloads_dir, entry)
+        try:
+            sub_entries = sorted(os.listdir(root))
+        except Exception as exc:
+            logger.debug("[FOLDER_CANDIDATES] torrents listdir failed for %s: %s", root, exc)
+            sub_entries = []
+        for sub in sub_entries:
+            sub_full = os.path.join(root, sub)
+            if not os.path.isdir(sub_full):
+                continue
+            if sub.startswith(".") or sub.startswith("__"):
+                continue
+            if os.path.normpath(sub_full) == os.path.normpath(archive_dir):
+                continue
+            albums.append((sub_full, sub))
+    return albums
+
+
+def _resolve_folder_match(
+    folder_abs: str,
+    *,
+    match_rows: dict[str, dict] | None = None,
+) -> dict | None:
+    """Resolve the stored folder → release association for a Matched-Folders
+    entry, honouring torrent-root flattening.
+
+    A torrent-root association (``/downloads/Torrents``) applies to EVERY
+    album subfolder under it — the flattening fix turned the root into one
+    entry per album, but associations recorded before that fix still point
+    at the root.  When a subfolder has no association of its own we fall
+    back to the root's, so already-matched torrent albums surface the
+    two-state ``[Change Match] [Confirm Match]`` actions again instead of
+    looking unmatched.
+    """
+    if match_rows is None:
+        try:
+            from db.repositories.folder_match_repository import get_all_folder_matches
+            match_rows = {
+                os.path.normpath(m.get("folder_path") or ""): m
+                for m in get_all_folder_matches()
+            }
+        except Exception as exc:
+            logger.debug("[FOLDER_MATCH] match lookup failed: %s", exc)
+            return None
+
+    stored = match_rows.get(os.path.normpath(folder_abs))
+    if stored:
+        return stored
+
+    # Torrent-root association: re-apply to each album subfolder under it.
+    try:
+        parent = os.path.dirname(os.path.normpath(folder_abs))
+        if _is_torrents_root(os.path.basename(parent)):
+            stored = match_rows.get(os.path.normpath(parent))
+            if stored:
+                return stored
+    except Exception:
+        pass
+    return None
+
+
 def get_unmatched_folders() -> dict:
     """List folders under the downloads directory that are NOT tracked as
     MusicBrainz releases (the monitor page's "Matched Folders in Downloads"
@@ -264,7 +339,9 @@ def get_unmatched_folders() -> dict:
     each album gets its own entry so matching one album never merges every
     torrent into a single folder (the old ``entry == "torrents"`` skip also
     let ``Torrents``/``TORRENTS`` through as ONE folder containing every
-    album's files).
+    album's files).  Associations stored against the root itself are
+    inherited by its album subfolders (``_resolve_folder_match``), so
+    torrents matched before the flattening fix still show as matched.
     """
     try:
         downloads_dir = resolve_downloads_dir()
@@ -275,6 +352,16 @@ def get_unmatched_folders() -> dict:
 
         tracked = _tracked_monitoring_folders()
         imported = _imported_source_paths()
+
+        try:
+            from db.repositories.folder_match_repository import get_all_folder_matches
+            match_rows = {
+                os.path.normpath(m.get("folder_path") or ""): m
+                for m in get_all_folder_matches()
+            }
+        except Exception as exc:
+            logger.debug("[UNMATCHED_FOLDERS] folder-match load skipped: %s", exc)
+            match_rows = {}
 
         folders = []
         for full, entry in _iter_matched_folder_candidates(downloads_dir, archive_dir):
@@ -302,6 +389,10 @@ def get_unmatched_folders() -> dict:
                 for f in audio
             ) if audio else False
             group = _derive_folder_group(entry, files)
+            stored = _resolve_folder_match(
+                full,
+                match_rows=match_rows,
+            )
             folders.append({
                 "type": "unmatched",
                 "name": full,
@@ -310,9 +401,9 @@ def get_unmatched_folders() -> dict:
                 "audio_count": len(audio),
                 "file_count": len(files),
                 "total_size": sum(f.get("size", 0) for f in files),
-                "status": "matched" if matched else "unmatched",
-                "match": None,
-                "release_mbid": None,
+                "status": "matched" if (matched or stored) else "unmatched",
+                "match": stored,
+                "release_mbid": (stored or {}).get("release_mbid"),
                 "artist": group["artist"],
                 "album": group["album"],
                 "group_key": group["group_key"],
@@ -329,25 +420,73 @@ def get_unmatched_folders() -> dict:
             )
         )
 
-        # Merge stored folder → release associations so the Matched Folders
-        # UI can render the two-state flow: folders with an association show
-        # ``[Change Match] [Confirm Match]`` instead of ``[Match]``.
-        try:
-            from db.repositories.folder_match_repository import get_all_folder_matches
-            match_rows = {os.path.normpath(m.get("folder_path") or ""): m for m in get_all_folder_matches()}
-            for folder in folders:
-                stored = match_rows.get(os.path.normpath(str(folder.get("name") or "")))
-                if stored:
-                    folder["match"] = stored
-                    folder["release_mbid"] = stored.get("release_mbid")
-                    folder["status"] = "matched"
-        except Exception as exc:
-            logger.debug("[UNMATCHED_FOLDERS] folder-match merge skipped: %s", exc)
-
         return {"success": True, "count": len(folders), "folders": folders}
     except Exception as exc:
         logger.error("[UNMATCHED_FOLDERS] Error: %s", exc, exc_info=True)
         return {"success": False, "error": str(exc), "folders": []}
+
+
+def refresh_folder_matches() -> dict:
+    """Re-sync stored folder → release associations with the current torrent
+    flattening, so subfolders under a torrent root that were matched when the
+    root was a single entry are re-associated to the correct album subfolder.
+
+    For every association whose path is a torrent root, remove the root-level
+    row and write one per album subfolder directly under it (skipping hidden
+    dirs / the conversion archive).  Returns
+    ``{"success": True, "updated": N, "details": [...]}``.
+    """
+    try:
+        from db.repositories.folder_match_repository import (
+            get_all_folder_matches,
+            upsert_folder_match,
+            delete_folder_match,
+        )
+        downloads_dir = resolve_downloads_dir()
+        archive_dir = resolve_original_archive_dir()
+
+        matches = get_all_folder_matches()
+        details: list[dict] = []
+        updated = 0
+        for m in matches:
+            folder_path = os.path.normpath(str(m.get("folder_path") or ""))
+            if not os.path.basename(folder_path) or not _is_torrents_root(os.path.basename(folder_path)):
+                continue
+            if not os.path.isdir(folder_path):
+                continue
+
+            albums = _iter_torrent_album_candidates(downloads_dir, archive_dir)
+            if not albums:
+                continue
+
+            release_mbid = m.get("release_mbid") or ""
+            for album_abs, _album_name in albums:
+                upsert_folder_match(
+                    folder_path=album_abs,
+                    release_mbid=release_mbid,
+                    release_title=m.get("release_title"),
+                    artist=m.get("artist"),
+                    release_year=m.get("release_year"),
+                    status="matched",
+                )
+                updated += 1
+                details.append({
+                    "from": folder_path,
+                    "to": album_abs,
+                    "release_mbid": release_mbid,
+                })
+            # The root-level association is superseded by the per-album rows.
+            delete_folder_match(folder_path)
+
+        logger.info(
+            "[FOLDER_MATCH] Refresh: re-associated %d torrent-root match(es) to %d album subfolder(s)",
+            len([d for d in details]),
+            updated,
+        )
+        return {"success": True, "updated": updated, "details": details}
+    except Exception as exc:
+        logger.error("[FOLDER_MATCH] Refresh error: %s", exc, exc_info=True)
+        return {"success": False, "error": str(exc), "updated": 0, "details": []}
 
 
 def delete_download_folder(folder_path: str) -> dict:

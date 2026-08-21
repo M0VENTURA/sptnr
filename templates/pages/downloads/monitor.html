@@ -62,6 +62,7 @@
             <!-- Scan Downloads was removed: automatic discovery (worker
                  cleanup hook, every 5 min) covers it. -->
             <button class="btn btn-sm btn-primary" onclick="processAlbums(event)"><i class="bi bi-collection"></i> Process Albums</button>
+            <button class="btn btn-sm btn-outline-secondary" onclick="refreshFolderMatches(this)" title="Re-sync folder matches so torrent albums matched before the torrents-root flattening are re-associated to the correct album subfolder"><i class="bi bi-arrow-repeat"></i> Refresh Matches</button>
             <span id="discoveryMessage" class="text-muted small"></span>
           </div>
           <div id="discoveryResults" class="alert alert-info py-2 small" style="display:none;"></div>

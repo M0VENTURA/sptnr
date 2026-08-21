@@ -1074,6 +1074,44 @@ async function discoverFiles(clickEvent) {
   }
 }
 
+// Re-sync stored folder → release associations with the current torrent
+// flattening.  Folders matched while the torrents root was a single entry
+// keep pointing at the root; this moves each association down to the album
+// subfolders so they render with [Change Match] [Confirm Match] again.
+async function refreshFolderMatches(btn) {
+  if (!btn) return;
+  btn.disabled = true;
+  var origHtml = btn.innerHTML;
+  btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Refreshing...';
+  try {
+    var data = await fetchJsonOrThrow('/api/downloads/folder-matches/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (data && data.success) {
+      showToastMsg(
+        data.updated
+          ? 'Re-associated ' + data.updated + ' album folder(s) from ' + (data.details || []).length + ' torrent-root match(es).'
+          : 'No torrent-root matches to re-associate — everything is already up to date.',
+        false
+      );
+    } else {
+      showToastMsg((data && data.error) || 'Refresh Matches failed', true);
+    }
+  } catch (error) {
+    console.error('Error refreshing folder matches:', error);
+    showToastMsg('Refresh Matches failed: ' + error.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = origHtml;
+    // Re-render the Matched Folders section so the updated associations show.
+    var fg = window.loadFolderGroups || function () {};
+    await fg({ forceRender: true, keepVisibleOnEmpty: true });
+    var um = window.renderUnmatchedFolders || function () {};
+    await um();
+  }
+}
+
 async function processAlbums(clickEvent) {
   try {
     var button = clickEvent?.currentTarget;
