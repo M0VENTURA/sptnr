@@ -470,6 +470,67 @@ async def api_musicbrainz_search():
             "source": source,
         }
 
+    def _attach_concrete_releases(rg: dict[str, Any]) -> dict[str, Any]:
+        """Enrich a release-group result with its concrete releases.
+
+        The MusicBrainz release-group search returns ONE row per group, but a
+        group (e.g. a deluxe reissue with multiple editions / formats /
+        countries) has MANY concrete releases.  Browsing the group's releases
+        lets the album-page flow ask "which specific release do you mean?"
+        instead of silently auto-applying a guessed one.
+
+        Each concrete release is normalised to the album-page release-picker
+        contract (``id``, ``title``, ``date``, ``country``, ``status``,
+        ``disambiguation``, ``track_count``, ``disc_count``, ``formats``,
+        ``cover_art_url``).  Best-effort: on any failure the group is
+        returned unchanged (no ``releases`` key).
+        """
+        rgid = str(rg.get("id") or "")
+        if not rgid:
+            return rg
+        try:
+            raw_releases = client.browse_releases_for_group(
+                rgid, inc="media+labels", limit=50,
+            )
+            releases: list[dict[str, Any]] = []
+            seen: set[str] = set()
+            for r in raw_releases or []:
+                rid = str(r.get("id") or "")
+                if not rid or rid in seen:
+                    continue
+                seen.add(rid)
+                media = r.get("media") or []
+                total_tracks = sum(int(m.get("track-count", 0) or 0) for m in media)
+                formats = sorted({
+                    str(m.get("format") or "").strip()
+                    for m in media if m.get("format")
+                })
+                releases.append({
+                    "id": rid,
+                    "title": r.get("title", "") or rg.get("title", ""),
+                    "date": r.get("date", ""),
+                    "country": r.get("country", ""),
+                    "status": r.get("status", ""),
+                    "disambiguation": r.get("disambiguation", ""),
+                    "track_count": total_tracks,
+                    "disc_count": len(media),
+                    "formats": [f for f in formats if f],
+                    "cover_art_url": (
+                        f"https://coverartarchive.org/release/{rid}/front-250"
+                    ),
+                })
+            # Sort chronologically (blank dates last) for a stable picker.
+            releases.sort(key=lambda x: (x.get("date") == "", x.get("date") or ""))
+            if releases:
+                rg = dict(rg)
+                rg["releases"] = releases
+        except Exception as exc:
+            logger.debug("[MB_SEARCH] Concrete-release enrich skipped for %s: %s", rgid, exc)
+        return rg
+
+    def _enrich_release_group_with_releases(rg: dict[str, Any], source: str) -> dict[str, Any]:
+        return _attach_concrete_releases(_enrich_release_group(rg, source))
+
     try:
         client = _get_mb_client()
 
@@ -587,7 +648,7 @@ async def api_musicbrainz_search():
                 if result_id in seen_ids:
                     continue
                 seen_ids.add(result_id)
-                releases.append(_enrich_release_group(rg, "musicbrainz"))
+                releases.append(_enrich_release_group_with_releases(rg, "musicbrainz"))
                 if len(releases) >= 40:
                     break
         else:
@@ -697,7 +758,7 @@ async def api_musicbrainz_search():
                 if result_id in seen_ids:
                     continue
                 seen_ids.add(result_id)
-                releases.append(_enrich_release_group(rg, "musicbrainz"))
+                releases.append(_enrich_release_group_with_releases(rg, "musicbrainz"))
 
         # ── 2b. Unified type post-filter (defence in depth) ─────────────
         # The Lucene ``primarytype:`` / ``secondarytype:`` terms narrow the

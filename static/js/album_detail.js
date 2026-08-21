@@ -61,16 +61,19 @@ var _pageData = window._pageData || {};
             const albumType = _buildAlbumType(group.primary_type, group.secondary_types);
             const cover = group.cover_art_url || '';
 
-            // When the user picked a RELEASE-GROUP (the common case — the
-            // search returns groups, and the group's auto-picked "best"
-            // release is often the wrong edition/format/country), ask them
-            // which specific release they want via the Release Picker.  It
-            // lists every concrete release of the group (date, country,
-            // format, track count) so the correct version is applied instead
-            // of silently guessing.  Only a genuinely specific release
-            // selection (an explicit release id from the group's release
-            // list) is applied directly.
+            // The shared search results now carry the group's concrete
+            // releases (``group.releases``, normalised to the picker
+            // contract).  Whenever MORE THAN ONE concrete release exists, ask
+            // the user which one they want via the Release Picker — the
+            // auto-picked "best" release is frequently the wrong edition /
+            // format / country.  A group with exactly one concrete release is
+            // unambiguous and applied directly; if the count is unknown
+            // (backend couldn't attach the list) fall back to fetching the
+            // picker's release list.
+            const concreteReleases = Array.isArray(group.releases) ? group.releases : [];
             if (releaseMbid) {
+                // The user explicitly picked a concrete release from the
+                // search card's "Choose Release" list — apply it directly.
                 populateAlbumFields(
                     selected.title || group.title || album,
                     year,
@@ -81,13 +84,32 @@ var _pageData = window._pageData || {};
                     '',
                     rgMbid
                 );
+            } else if (rgMbid && concreteReleases.length === 1 && typeof populateAlbumFields === 'function') {
+                // Exactly one concrete release — unambiguous, no prompt.
+                const single = concreteReleases[0];
+                populateAlbumFields(
+                    single.title || selected.title || group.title || album,
+                    String(single.date || '').slice(0, 4) || year,
+                    albumType,
+                    single.id,
+                    '',
+                    single.cover_art_url || cover,
+                    '',
+                    rgMbid
+                );
             } else if (rgMbid && typeof openReleasePickerModal === 'function') {
+                // Multiple concrete releases — always prompt.  Preload the
+                // releases fetched with the search result so the picker opens
+                // instantly (no second API call); the best release is not
+                // known here, so no "Best Match" badge is shown.  When the
+                // backend didn't attach a list (0 known), fall back to the
+                // picker's own fetch.
                 openReleasePickerModal(
                     rgMbid,
                     selected.title || group.title || album,
                     year,
                     albumType,
-                    null,
+                    concreteReleases.length > 1 ? concreteReleases : null,
                     null,
                     cover
                 );
