@@ -448,7 +448,13 @@ async def dashboard():
                         MAX(updated_at) AS added_at,
                         COUNT(*) AS track_count,
                         MAX(COALESCE(NULLIF(musicbrainz_albumtype, ''),
-                                     NULLIF(spotify_album_type, ''))) AS album_type
+                                     NULLIF(spotify_album_type, ''))) AS album_type,
+                        -- Leading 4-digit year for the album link (self-titled
+                        -- albums disambiguate by year).
+                        MAX(COALESCE(
+                            NULLIF(SUBSTRING(COALESCE(year, '') FROM '^[0-9]{4}'), ''),
+                            NULLIF(CAST(release_year AS TEXT), '')
+                        )) AS album_year
                     FROM tracks
                     WHERE updated_at >= CURRENT_TIMESTAMP - INTERVAL '14 days'
                       AND album IS NOT NULL AND TRIM(album) <> ''
@@ -742,17 +748,32 @@ async def artist_detail(name: str):
 
     albums_by_key: dict[str, dict[str, Any]] = {}
 
+    def _leading_year(track: dict[str, Any]) -> int | None:
+        """Leading 4-digit year of a track (tolerates '1994-05-10' / 'TBA')."""
+        raw = str(track.get("year") or "").strip()
+        if raw[:4].isdigit():
+            return int(raw[:4])
+        try:
+            rv = int(track.get("release_year") or 0) or None
+            return rv
+        except (TypeError, ValueError):
+            return None
+
     for track in tracks:
         album_name = str(track.get("album") or "").strip()
         if not album_name:
             continue
 
-        album_key = album_name.lower().strip()
+        # Self-titled albums (Weezer 1994 / 2001 / 2008 are all "Weezer")
+        # merge unless the YEAR is part of the key — group by name + year so
+        # each release gets its own row and its own album page.
+        track_year = _leading_year(track)
+        album_key = f"{album_name.lower().strip()}::{track_year or ''}"
 
         if album_key not in albums_by_key:
             albums_by_key[album_key] = {
                 "album": album_name,
-                "album_year": safe_int(track.get("year")),
+                "album_year": track_year,
                 "track_count": 0,
                 "avg_stars": None,
                 "total_duration": 0,
@@ -775,7 +796,7 @@ async def artist_detail(name: str):
         if duration:
             album_entry["total_duration"] += duration
 
-        year = safe_int(track.get("year"))
+        year = _leading_year(track)
         if year and not album_entry.get("album_year"):
             album_entry["album_year"] = year
 
@@ -785,9 +806,13 @@ async def artist_detail(name: str):
             album_entry["last_updated"] = updated
 
     for album_key, album_entry in albums_by_key.items():
+        # album_key is "<name>::<year>"; the name portion matches the album.
+        key_name = album_key.rsplit("::", 1)[0]
+        key_year = album_entry.get("album_year")
         album_tracks = [
             track for track in tracks
-            if str(track.get("album") or "").strip().lower() == album_key
+            if str(track.get("album") or "").strip().lower() == key_name
+            and (key_year is None or _leading_year(track) == key_year)
         ]
 
         stars = [
@@ -1039,13 +1064,16 @@ async def artist_detail(name: str):
         if not album_name:
             continue
 
-        key = f"{album_artist.lower()}::{album_name.lower()}"
+        # Same name+year keying as the main discography so self-titled
+        # albums (three "Weezer" albums) don't merge here either.
+        appears_year = _leading_year(track)
+        key = f"{album_artist.lower()}::{album_name.lower()}::{appears_year or ''}"
 
         if key not in appears_by_key:
             appears_by_key[key] = {
                 "album": album_name,
                 "album_artist": album_artist,
-                "album_year": safe_int(track.get("year")),
+                "album_year": appears_year,
                 "track_count": 0,
                 "avg_stars": None,
                 "is_missing": False,
@@ -1054,17 +1082,19 @@ async def artist_detail(name: str):
         entry = appears_by_key[key]
         entry["track_count"] += 1
 
-        year = safe_int(track.get("year"))
+        year = _leading_year(track)
         if year and not entry.get("album_year"):
             entry["album_year"] = year
 
     for key, entry in appears_by_key.items():
-        album_artist_key, album_key = key.split("::", 1)
+        album_artist_key, album_key, year_key = key.split("::", 2)
+        entry_year = entry.get("album_year")
 
         matching_tracks = [
             track for track in appears_tracks
             if str(track.get("album") or "").strip().lower() == album_key
             and str(track.get("album_artist") or track.get("artist") or "").strip().lower() == album_artist_key
+            and (entry_year is None or _leading_year(track) == entry_year)
         ]
 
         stars = [
@@ -1274,12 +1304,33 @@ async def album_detail(album_path: str):
     # the album.  Each part is still percent-encoded once at this point
     # (double-encoded links survive the server decode) — unquote restores
     # the raw names.
+    #
+    # A THIRD, optional segment is the release YEAR, which disambiguates
+    # self-titled albums (Weezer's 1994 / 2001 / 2008 "Weezer" all share the
+    # same artist+name).  When present, the track query filters to tracks
+    # whose year matches.
     raw_path = str(album_path or "")
-    artist, sep, album = raw_path.rpartition("/")
-    if not sep:
-        artist, album = raw_path, ""
+    parts = [p for p in raw_path.split("/") if p != ""]
+    if len(parts) >= 3:
+        artist = "/".join(parts[:-2])
+        album = parts[-2]
+        year_seg = parts[-1]
+    else:
+        artist, sep, album = raw_path.rpartition("/")
+        if not sep:
+            artist, album = raw_path, ""
+        year_seg = ""
     artist_name = unquote(artist or "").strip()
     album_name = unquote(album or "").strip()
+    album_year_seg = unquote(year_seg or "").strip()
+    # Tolerate a trailing "year" that isn't a real year (fall back to no
+    # year filter rather than a broken page).
+    try:
+        album_year_filter = int(album_year_seg) if album_year_seg.isdigit() else None
+    except (TypeError, ValueError):
+        album_year_filter = None
+    if album_year_filter is not None and not (1900 <= album_year_filter <= 2100):
+        album_year_filter = None
     cfg = get_config()
 
     # Fetch tracks early — both GET and POST need them
@@ -1299,6 +1350,26 @@ async def album_detail(album_path: str):
             {"artist": artist_name, "album": album_name},
         )
         tracks = [dict(r._mapping) for r in result.fetchall()]
+
+    # Optional year disambiguator: keep only tracks whose leading 4-digit
+    # year matches.  Applies to the rest of the page (tracks list, stats,
+    # genres) — the DB rows for the OTHER "Weezer" albums are excluded so a
+    # self-titled album page shows ONE album, not three merged.
+    if album_year_filter is not None and tracks:
+        def _track_year(t: dict[str, Any]) -> int | None:
+            raw = str(t.get("year") or "").strip()
+            if raw[:4].isdigit():
+                return int(raw[:4])
+            try:
+                rv = int(t.get("release_year") or 0) or None
+                return rv
+            except (TypeError, ValueError):
+                return None
+        year_tracks = [t for t in tracks if _track_year(t) == album_year_filter]
+        if year_tracks:
+            tracks = year_tracks
+        # If no track matched the year, keep ALL tracks (a stale/unknown
+        # year shouldn't produce an empty page).
 
     # Normalize numeric fields so Jinja's round() filters never see
     # None/string values (fixes "type 'Undefined' doesn't define __round__"
@@ -1509,10 +1580,13 @@ async def album_detail(album_path: str):
         if updated_count == 0 and reverted_live_count == 0 and file_sync_failures == 0:
             await flash("No changes were made.", "info")
 
-        # Redirect to the new album name if changed
+        # Redirect to the new album name if changed (preserve the year
+        # disambiguator when present so the redirect stays on the SAME
+        # self-titled album).
         redirect_artist = new_artist or artist_name
         redirect_album = new_title or album_name
-        return redirect(url_for("ui.album_detail", album_path=f"{redirect_artist}/{redirect_album}"))
+        redirect_year = f"/{album_year_filter}" if album_year_filter is not None else ""
+        return redirect(url_for("ui.album_detail", album_path=f"{redirect_artist}/{redirect_album}{redirect_year}"))
 
     first_track = tracks[0] if tracks else {}
 

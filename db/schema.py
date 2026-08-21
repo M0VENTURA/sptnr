@@ -366,6 +366,24 @@ INDEXES_TO_ENSURE: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_tracks_artist_norm ON tracks (LOWER(COALESCE(NULLIF(album_artist, ''), artist)))",
     "CREATE INDEX IF NOT EXISTS idx_tracks_album_norm ON tracks (LOWER(COALESCE(album, '')))",
     "CREATE INDEX IF NOT EXISTS idx_tracks_album_artist_trim ON tracks (LOWER(TRIM(COALESCE(NULLIF(album_artist, ''), artist))))",
+    # pg_trgm GIN indexes make the universal search's contains patterns
+    # (``LOWER(col) LIKE '%query%'``) use an index instead of a full table
+    # scan.  The universal search fires on every keystroke (50 ms debounce),
+    # and without these the whole tracks table is scanned three times per
+    # query — the recent slowdown.  The extension + indexes are best-effort:
+    # CREATE EXTENSION may need superuser, so each statement is tolerated by
+    # the bootstrap's _ensure_index (which ignores "already exists") and the
+    # missing-extension case is caught by the index DDL failing and being
+    # logged, never failing the whole bootstrap.
+    #
+    # Expressions EXACTLY mirror the /api/search WHERE clauses so Postgres
+    # can use them (an index on lower(artist) is useless for
+    # LOWER(COALESCE(artist, '')) LIKE ...).
+    "CREATE EXTENSION IF NOT EXISTS pg_trgm",
+    "CREATE INDEX IF NOT EXISTS idx_tracks_title_trgm ON tracks USING gin (lower(coalesce(title, '')) gin_trgm_ops)",
+    "CREATE INDEX IF NOT EXISTS idx_tracks_artist_trgm ON tracks USING gin (lower(coalesce(artist, '')) gin_trgm_ops)",
+    "CREATE INDEX IF NOT EXISTS idx_tracks_album_artist_trgm ON tracks USING gin (lower(coalesce(album_artist, '')) gin_trgm_ops)",
+    "CREATE INDEX IF NOT EXISTS idx_tracks_album_trgm ON tracks USING gin (lower(coalesce(album, '')) gin_trgm_ops)",
     "CREATE INDEX IF NOT EXISTS idx_album_art_artist_album ON album_art (LOWER(artist_name), LOWER(album_name))",
     "CREATE INDEX IF NOT EXISTS idx_mb_releases_status ON musicbrainz_releases(status)",
     "CREATE INDEX IF NOT EXISTS idx_mb_releases_created ON musicbrainz_releases(created_at DESC)",

@@ -328,7 +328,8 @@
         trackLine = '<span class="us-row-sub d-block">' + it.track_count + ' track' + (it.track_count === 1 ? '' : 's') + (it.duration_total ? ' - ' + fmtDuration(it.duration_total) : '') + '</span>';
       }
       if (it.local) {
-        var href = '/album/' + encodeURIComponent(it.artist) + '/' + encodeURIComponent(it.title);
+        var yearPath = it.year ? '/' + it.year : '';
+        var href = '/album/' + encodeURIComponent(it.artist) + '/' + encodeURIComponent(it.title) + yearPath;
         // Local album art endpoint (same pattern as the album page hero).
         var localArt = '/api/album/' + encodeURIComponent(it.artist) + '/' + encodeURIComponent(it.title) + '/art';
         html += '<a class="us-row" href="' + href + '">' +
@@ -343,7 +344,8 @@
       } else if (it.owned) {
         // MusicBrainz release that is ALREADY in the collection: no queue
         // button — selecting it goes to the album page in the library.
-        var ownedHref = '/album/' + encodeURIComponent(it.artist) + '/' + encodeURIComponent(it.title);
+        var yearPath = it.year ? '/' + it.year : '';
+        var ownedHref = '/album/' + encodeURIComponent(it.artist) + '/' + encodeURIComponent(it.title) + yearPath;
         var ownedArt = '/api/album/' + encodeURIComponent(it.artist) + '/' + encodeURIComponent(it.title) + '/art';
         html += '<a class="us-row" href="' + ownedHref + '">' +
           thumbWithBadge(thumbHtml(ownedArt, 'rounded border border-secondary', it.title),

@@ -94,7 +94,7 @@
                 </div>
                 <div class="overflow-hidden flex-grow-1 min-w-0">
                     <h1 class="h5 fw-bold mb-0 album-hero-title text-truncate pe-4">
-                        {{ album_name }}
+                        {{ album_name }}{% if album_data and album_data.album_year %} <span class="text-muted fw-normal" style="font-size:0.85rem;">({{ album_data.album_year }})</span>{% endif %}
                     </h1>
                     <div class="small text-muted mb-1 album-hero-sub">
                         by <a href="{{ url_for('ui.artist_detail', name=artist_name) }}" class="text-success text-decoration-none fw-semibold">{{ artist_name }}</a>

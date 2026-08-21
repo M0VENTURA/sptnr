@@ -51,9 +51,22 @@ def _ensure_columns(cursor: Any, table_name: str, columns: dict[str, str]) -> No
                 logging.warning("Could not add %s.%s: %s", table_name, col_name, e)
 
 def _ensure_index(cursor: Any, ddl: str) -> None:
-    try: cursor.execute(text(ddl))
+    try:
+        cursor.execute(text(ddl))
     except Exception as e:
-        if "already exists" not in str(e).lower() and "duplicate" not in str(e).lower(): raise
+        msg = str(e).lower()
+        # Tolerate "already exists" / duplicate-key (concurrent bootstrap).
+        if "already exists" in msg or "duplicate" in msg:
+            return
+        # pg_trgm GIN indexes are best-effort: the extension may not be
+        # installed (CREATE EXTENSION needs superuser) — a missing extension
+        # must never fail the whole schema bootstrap.
+        if "pg_trgm" in ddl.lower() and (
+            "extension" in msg or "does not exist" in msg or "operator class" in msg
+        ):
+            logging.warning("Skipped pg_trgm index (%s): %s", ddl.split("ON")[0].strip(), e)
+            return
+        raise
 
 def _try_advisory_lock(conn_or_session: Any, key: int | str, attempts: int = 10) -> bool:
     for _ in range(max(1, attempts)):
