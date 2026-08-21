@@ -426,19 +426,33 @@ async def api_album_musicbrainz_best_release():
 
 @album_bp.route("/musicbrainz/release/tracks", methods=["POST"])
 async def api_album_musicbrainz_release_tracks():
-    """Fetch the track list for a specific MusicBrainz release."""
+    """Fetch the track list for a specific MusicBrainz release.
+
+    Legacy contract (album_detail.js ``toggleReleaseTracks``): each track
+    carries ``track_number`` / ``position``, ``disc_number``, ``title``,
+    ``duration`` (ms) and ``recording_mbid`` so the release-picker can render
+    the ACTUAL track numbers — the sequential-list-index bug made releases
+    with gaps / multi-disc editions show wrong numbers.
+    """
     data = (await request.get_json(force=True, silent=True)) or {}
     release_mbid = (data.get("release_mbid") or "").strip()
     
     if not release_mbid:
         return jsonify({"success": False, "error": "release_mbid is required"}), 400
         
-    result = get_musicbrainz_release_tracks(release_mbid)
-    if isinstance(result, tuple):
-        result, status_code = result
+    tracks = get_musicbrainz_release_tracks(release_mbid)
+    if isinstance(tracks, tuple):
+        tracks, status_code = tracks
     else:
         status_code = 200
-    return jsonify(result), status_code
+    if not isinstance(tracks, dict):
+        # Legacy callers expect a {success, tracks} envelope, not a bare list.
+        return jsonify({
+            "success": True,
+            "release_mbid": release_mbid,
+            "tracks": tracks or [],
+        }), status_code
+    return jsonify(tracks), status_code
 
 
 # ---------------------------------------------------------------------------

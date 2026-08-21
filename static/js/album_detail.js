@@ -597,12 +597,28 @@ var _pageData = window._pageData || {};
                 return;
             }
 
-            let html = '<div class="small ps-3"><ol class="mb-0">';
+            let html = '<div class="small ps-3"><ul class="list-unstyled mb-0" style="max-height:220px;overflow-y:auto;">';
+            const hasDiscs = (data.tracks || []).some(t => parseInt(t.disc_number || t.disc || 0, 10) > 1);
             for (const t of data.tracks) {
-                const dur = t.duration_ms ? ` (${Math.round(t.duration_ms / 1000)}s)` : '';
-                html += `<li>${escapeHtml(t.title)}${dur}</li>`;
+                // Actual MusicBrainz track/disc positions (never trust the
+                // sequential <ol> index — multi-disc releases and releases
+                // with gaps would render the wrong numbers).
+                const disc = parseInt(t.disc_number || t.disc || 0, 10);
+                const num = t.track_number != null ? t.track_number : (t.position != null ? t.position : '');
+                const durMs = parseInt(t.duration_ms || t.duration || 0, 10);
+                const dur = durMs ? ` <span class="text-muted">(${Math.round(durMs / 1000)}s)</span>` : '';
+                let numLabel = '';
+                if (num !== '') {
+                    numLabel = hasDiscs ? `${disc || 1}-${num}` : `${num}.`;
+                } else if (disc > 1) {
+                    numLabel = `Disc ${disc}: `;
+                }
+                html += '<li class="d-flex gap-2 py-1">' +
+                    '<span class="text-muted" style="min-width:3rem;flex-shrink:0;">' + escapeHtml(String(numLabel)) + '</span>' +
+                    '<span>' + escapeHtml(t.title) + '</span>' + dur +
+                    '</li>';
             }
-            html += '</ol></div>';
+            html += '</ul></div>';
             container.innerHTML = html;
         } catch (e) {
             btn.innerHTML = '<i class="bi bi-music-note-list"></i> Tracks';
