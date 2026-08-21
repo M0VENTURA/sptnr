@@ -341,13 +341,19 @@ async def api_album_musicbrainz_lookup():
 
 @album_bp.route("/musicbrainz/release-group/releases", methods=["POST"])
 async def api_release_group_releases():
-    """Fetch all specific releases in a MusicBrainz release group."""
+    """Fetch all specific releases in a MusicBrainz release group.
+
+    Includes per-release track counts (browse the group's releases with
+    media) so the release-picker can show how many tracks each edition has —
+    the release-group endpoint alone returns releases WITHOUT media
+    track-counts, so every release would otherwise show "0 tracks".
+    """
     data = (await request.get_json(force=True, silent=True)) or {}
     rg_mbid = (data.get("release_group_mbid") or "").strip()
     if not rg_mbid:
         return jsonify({"error": "release_group_mbid is required"}), 400
         
-    result, status_code = _pop_status(get_release_group_releases(rg_mbid))
+    result, status_code = _pop_status(get_release_group_releases(rg_mbid, include_track_counts=True))
     return jsonify(result), status_code
 
 

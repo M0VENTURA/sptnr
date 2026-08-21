@@ -1427,27 +1427,30 @@ def get_release_group_releases(rg_mbid: str, include_track_counts: bool = False)
             })
 
         if include_track_counts and releases:
-            _enrich_releases_with_track_counts(releases)
+            _enrich_releases_with_track_counts(releases, rg_mbid=rg_mbid)
 
         return {"success": True, "releases": releases}
     except Exception as exc:
         return {"success": False, "error": str(exc)}
 
 
-def _enrich_releases_with_track_counts(releases: list[dict]) -> None:
+def _enrich_releases_with_track_counts(releases: list[dict], rg_mbid: str | None = None) -> None:
     """Mutate releases in-place, adding ``track_count`` from MusicBrainz.
 
-    Uses the browse endpoint to fetch all releases for the first release's
-    release-group with media info, then maps back by release MBID.
+    Uses the browse endpoint to fetch all releases for the release-group with
+    media info, then maps back by release MBID.  ``rg_mbid`` is passed
+    directly (the flattened releases from ``get_release_group_releases`` do
+    NOT carry the nested ``release-group`` object, so deriving it from
+    ``releases[0]`` always failed and no counts were ever attached).
     """
     if not releases:
         return
-    # Get the release-group MBID from the first release's release-group
-    # (all releases in the list share the same release-group).
-    rg_mbid = None
-    first_rg = releases[0].get("release-group")
-    if isinstance(first_rg, dict):
-        rg_mbid = first_rg.get("id")
+    # Fall back to deriving the group from the first release's nested
+    # release-group (the raw MB shape / best-release path).
+    if not rg_mbid:
+        first_rg = releases[0].get("release-group")
+        if isinstance(first_rg, dict):
+            rg_mbid = first_rg.get("id")
     if not rg_mbid:
         return
 

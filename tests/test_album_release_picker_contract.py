@@ -56,6 +56,53 @@ class TestReleaseGroupReleasesNormalization:
         assert rel["track_count"] == 12
         assert rel["cover_art_url"].startswith("https://coverartarchive.org/release/rel-1/")
 
+    def test_include_track_counts_browses_group(self, monkeypatch):
+        """With include_track_counts=True the browse endpoint supplies real
+        track counts even when the release-group payload has no media (the
+        real-world MB shape).  Regression: _enrich_releases_with_track_counts
+        derived the group from releases[0].get('release-group') which the
+        flattened releases never carry, so no counts were ever attached."""
+        from services.enrichment import musicbrainz_service as mbs
+
+        class _FakeClient:
+            def get_release_group(self, rg_mbid, inc="", timeout=10.0):
+                # Real MB shape: releases WITHOUT media / track counts.
+                return {
+                    "releases": [
+                        {"id": "rel-1", "title": "The Album", "country": "AU"},
+                        {"id": "rel-2", "title": "The Album (Deluxe)", "country": "CA"},
+                    ],
+                }
+
+            def browse_releases_for_group(self, rg_mbid, inc="media", limit=100):
+                return [
+                    {"id": "rel-1", "media": [{"format": "CD", "track-count": 10}]},
+                    {"id": "rel-2", "media": [{"format": "CD", "track-count": 13}]},
+                ]
+
+        monkeypatch.setattr(mbs, "get_shared_mb_client", lambda: _FakeClient())
+        result = mbs.get_release_group_releases("rg-abc", include_track_counts=True)
+        assert result["success"] is True
+        by_id = {r["id"]: r for r in result["releases"]}
+        assert by_id["rel-1"]["track_count"] == 10
+        assert by_id["rel-2"]["track_count"] == 13
+
+    def test_track_counts_zero_without_include_flag(self, monkeypatch):
+        """Without include_track_counts the flattened releases keep their
+        (zero) media-derived counts — the endpoint does not double-fetch."""
+        from services.enrichment import musicbrainz_service as mbs
+
+        class _FakeClient:
+            def get_release_group(self, rg_mbid, inc="", timeout=10.0):
+                return {"releases": [{"id": "rel-1", "title": "The Album"}]}
+
+            def browse_releases_for_group(self, rg_mbid, inc="media", limit=100):
+                return [{"id": "rel-1", "media": [{"format": "CD", "track-count": 10}]}]
+
+        monkeypatch.setattr(mbs, "get_shared_mb_client", lambda: _FakeClient())
+        result = mbs.get_release_group_releases("rg-abc")
+        assert result["releases"][0]["track_count"] == 0
+
     def test_no_media_yields_empty_formats(self, monkeypatch):
         from services.enrichment import musicbrainz_service as mbs
 

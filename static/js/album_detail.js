@@ -545,6 +545,10 @@ var _pageData = window._pageData || {};
             const safeTitle = escapeHtml(r.title);
             const safeId = escapeHtml(r.id);
             const bestBadge = isBest ? '<span class="badge bg-success ms-2">Best Match</span>' : '';
+            // A real track count (> 0) is shown; 0 / missing means the count
+            // is unknown (not "zero tracks") — the release-group endpoint
+            // doesn't always carry media track counts.
+            const trackCount = Number(r.track_count) > 0 ? r.track_count + ' tracks' : '';
 
             html += `
                 <div class="list-group-item">
@@ -552,7 +556,7 @@ var _pageData = window._pageData || {};
                         <div>
                             <strong>${safeTitle}${disambiguation}</strong>${bestBadge}
                             <div class="text-muted small">
-                                ${escapeHtml(r.date || '?')}${country} · ${fmt} · ${r.track_count != null ? r.track_count + ' tracks' : '?'}${discs}
+                                ${escapeHtml(r.date || '?')}${country} · ${fmt}${trackCount ? ' · ' + trackCount : ''}${discs}
                                 ${r.status ? ' · <span class="badge bg-light text-dark border">' + escapeHtml(r.status) + '</span>' : ''}
                             </div>
                         </div>
