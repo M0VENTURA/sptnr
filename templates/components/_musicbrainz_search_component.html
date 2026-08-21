@@ -366,12 +366,18 @@ window.performMbSearch = async function() {
           r.releases.forEach(function(rel) {
             var relYear = (rel.date || rel.release_date || '').split('-')[0] || '?';
             var relCountry = rel.country || '';
+            // Concrete releases carry track_count from the search route's
+            // browse enrichment (media track-counts).  Show it so the user
+            // can tell a 10-track original from a 13-track deluxe at a
+            // glance; hide it when the count is unknown (0).
+            var relTracks = Number(rel.track_count) > 0 ? rel.track_count + ' tracks' : '';
+            var relFmt = rel.format || (Array.isArray(rel.formats) ? rel.formats.join(' + ') : '');
             html += '<button class="list-group-item list-group-item-action py-1 px-2 small" onclick="selectMbRelease(\'' + dataKey + '\', \'' + escHtml(rel.id) + '\', \'' + escHtml(rel.title || r.title) + '\')">';
             html += '<div class="d-flex justify-content-between"><span><strong>' + escHtml(rel.title || r.title) + '</strong> (' + relYear + ')</span>';
             if (relCountry) html += '<span class="text-muted ms-2">' + escHtml(relCountry) + '</span>';
             html += '</div>';
-            if (rel.label) html += '<div class="text-muted small">' + escHtml(rel.label) + '</div>';
-            if (rel.format) html += '<div class="text-muted small">' + escHtml(rel.format) + '</div>';
+            var relMetaBits = [relTracks, relFmt, rel.label].filter(Boolean);
+            if (relMetaBits.length) html += '<div class="text-muted small">' + escHtml(relMetaBits.join(' · ')) + '</div>';
             html += '</button>';
           });
           html += '</div></div>';
