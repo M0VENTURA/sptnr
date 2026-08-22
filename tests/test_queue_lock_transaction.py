@@ -71,7 +71,7 @@ def test_advisory_lock_commits_after_acquire(monkeypatch):
     from services.queue import queue_lock as ql
 
     conn = _FakeConnection(True)
-    monkeypatch.setattr("db.utils.get_db_connection", lambda: conn)
+    monkeypatch.setattr("db.utils.get_db_connection_raw", lambda **kw: conn)
     monkeypatch.setattr(ql, "_using_postgres", lambda: True)
 
     with ql.queue_cycle_lock(key="test-key", max_attempts=1, attempt_interval=0) as acquired:
@@ -93,7 +93,7 @@ def test_advisory_lock_not_acquired_skips_commit(monkeypatch):
     from services.queue import queue_lock as ql
 
     conn = _FakeConnection(False)
-    monkeypatch.setattr("db.utils.get_db_connection", lambda: conn)
+    monkeypatch.setattr("db.utils.get_db_connection_raw", lambda **kw: conn)
     monkeypatch.setattr(ql, "_using_postgres", lambda: True)
 
     with ql.queue_cycle_lock(key="test-key", max_attempts=1, attempt_interval=0) as acquired:

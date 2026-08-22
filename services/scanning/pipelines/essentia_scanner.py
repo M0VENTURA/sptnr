@@ -37,7 +37,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from db.utils import get_db_connection, _is_postgres_connection
+from db.utils import get_db_connection_raw
 from helpers.logging_config import log_unified
 from services.metadata.tag_file_service import (
     sync_track_tags_to_file,
@@ -617,9 +617,10 @@ def run_essentia_mood_scan(
         base_cmd += ["--model-dir", os.path.expanduser(models_dir)]
 
     # ------------------------------------------------------------------
-    # Query tracks from DB
-    # ------------------------------------------------------------------
-    conn = get_db_connection()
+    # Query tracks from DB — raw cursor is intentional here (DDL + a
+    # long-running scan that commits per row); the deprecation warning is
+    # suppressed via get_db_connection_raw.
+    conn = get_db_connection_raw(reason="essentia_scan")
     cursor = conn.cursor()
     placeholder = "%s"
 

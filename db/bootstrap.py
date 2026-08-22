@@ -12,7 +12,7 @@ from sqlalchemy import text
 from db.engine import db_session, run_migrations_on_startup
 from db.schema import COLUMN_REGISTRY, INDEXES_TO_ENSURE, TABLES_TO_ENSURE
 from db.schema_helpers import get_postgres_column_types, get_table_columns, table_exists
-from db.utils import get_db_connection, is_transient_pg_startup_error
+from db.utils import is_transient_pg_startup_error
 
 logger = structlog.get_logger(__name__)
 
@@ -314,8 +314,9 @@ def _run_deferred_startup_migrations() -> None:
         time.sleep(poll_interval_seconds)
         elapsed += poll_interval_seconds
         try:
-            conn = get_db_connection()
-            conn.close()
+            from db.engine import db_session
+            with db_session():
+                pass
             break
         except Exception:
             continue
