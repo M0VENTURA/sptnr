@@ -7,19 +7,6 @@ Features:
     - Signal-based graceful shutdown (SIGTERM/SIGINT).
     - Periodic processing cycles via ``queue_orchestrator.process_cycle``.
     - Error recovery and automatic restart logic.
-
-Architecture:
-    Designed to run as a standalone process (not a thread), typically
-    managed by systemd or Docker. Uses signal handlers for clean
-    shutdown without data loss.
-
-    The worker uses ``queue_signal.wait_for_item(timeout=interval)``
-    which blocks until either a new download is queued (instant wake-up)
-    or the timeout expires (periodic safety-net poll).
-
-    Call Chain:
-        queue_worker \u2192 queue_orchestrator.process_cycle()
-            \u2192 queue_processing_service
 """
 
 from __future__ import annotations
@@ -30,15 +17,14 @@ import sys
 import time
 from typing import Any
 
-# ✅ Use orchestrator directly (best runtime entrypoint)
-from services.queue.queue_orchestrator import process_cycle
-from helpers.config_helpers import get_queue_worker_config
+import structlog
 
-logger = logging.getLogger(__name__)
+from helpers.config_helpers import get_queue_worker_config
+from services.queue.queue_orchestrator import process_cycle
+
+logger = structlog.get_logger(__name__)
 
 _SHOULD_STOP = False
-
-# Load worker configuration
 _worker_cfg = get_queue_worker_config()
 
 
@@ -46,21 +32,18 @@ _worker_cfg = get_queue_worker_config()
 # SIGNAL HANDLING
 # =============================================================================
 
-def _handle_signal(signum: int, frame: Any):
+def _handle_signal(signum: int, frame: Any) -> None:
     global _SHOULD_STOP
     _SHOULD_STOP = True
-    logger.info("Queue worker received stop signal: %s", signum)
+    logger.info("Queue worker received stop signal", signal=signum)
 
 
 # =============================================================================
 # LOGGING SETUP
 # =============================================================================
 
-def _configure_logging():
-    """
-    Ensure logs appear in systemd journal.
-    Falls back safely if your logging_config isn't available.
-    """
+def _configure_logging() -> None:
+    """Ensure logs appear correctly in stdout/system journal."""
     try:
         from helpers.logging_config import setup_logging
         setup_logging("QueueWorker")
@@ -75,25 +58,21 @@ def _configure_logging():
 # WORKER LOOP
 # =============================================================================
 
-
 def run(interval: int | None = None, batch_size: int | None = None) -> None:
-    # Resolve defaults from config
-    effective_interval: int = _worker_cfg["interval_seconds"] if interval is None else interval
-    effective_batch: int = _worker_cfg["batch_size"] if batch_size is None else batch_size
+    effective_interval: int = _worker_cfg.get("interval_seconds", 30) if interval is None else interval
+    effective_batch: int = _worker_cfg.get("batch_size", 50) if batch_size is None else batch_size
+    
     logger.info(
-        "Popularr Queue Worker started (interval=%ss batch_size=%s)",
-        effective_interval,
-        effective_batch,
+        "Popularr Queue Worker started",
+        interval_seconds=effective_interval,
+        batch_size=effective_batch,
     )
 
-    # Startup recovery: items left in 'searching'/'processing' were abandoned
-    # by a previous worker instance (crash/restart) — requeue them so they
-    # are picked up again instead of staying stuck forever.
     try:
         from services.queue.queue_cleanup_service import reset_abandoned_items
         reset_abandoned_items()
     except Exception as exc:
-        logger.warning("Worker startup recovery failed: %s", exc)
+        logger.warning("Worker startup recovery failed", error=str(exc))
 
     loop_count = 0
 
@@ -112,43 +91,38 @@ def run(interval: int | None = None, batch_size: int | None = None) -> None:
 
             if status >= 500:
                 logger.error(
-                    "Queue cycle failed (loop=%s duration=%ss): %s",
-                    loop_count,
-                    duration,
-                    payload,
+                    "Queue cycle failed",
+                    loop=loop_count,
+                    duration_seconds=duration,
+                    response=payload,
                 )
             elif status >= 400:
                 logger.warning(
-                    "Queue cycle warning (loop=%s duration=%ss): %s",
-                    loop_count,
-                    duration,
-                    payload,
+                    "Queue cycle warning",
+                    loop=loop_count,
+                    duration_seconds=duration,
+                    response=payload,
                 )
             else:
                 logger.debug(
-                    "Queue cycle success (loop=%s duration=%ss): processed=%s success=%s failed=%s skipped=%s",
-                    loop_count,
-                    duration,
-                    payload.get("processed"),
-                    payload.get("succeeded"),
-                    payload.get("failed"),
-                    payload.get("skipped"),
+                    "Queue cycle success",
+                    loop=loop_count,
+                    duration_seconds=duration,
+                    processed=payload.get("processed"),
+                    succeeded=payload.get("succeeded"),
+                    failed=payload.get("failed"),
+                    skipped=payload.get("skipped"),
                 )
 
         except Exception:
             logger.exception("Queue worker cycle crashed")
 
-        # ── Event-driven wait ──────────────────────────────────────────
-        # Instead of sleeping for `interval` seconds, block on a
-        # threading.Event that is signalled the instant a new download
-        # is queued via the WebUI/API.  Falls back to periodic polling
-        # after `interval` seconds as a safety net.
         from services.queue.queue_signal import wait_for_item
         woke = wait_for_item(timeout=float(effective_interval))
         if woke:
-            logger.debug("[QUEUE_WORKER] Woke up — new item signalled")
+            logger.debug("Queue worker woke up early — new item signalled")
 
-    logger.info("[QUEUE_WORKER] Queue worker stopped cleanly after %s cycles", loop_count)
+    logger.info("Queue worker stopped cleanly", total_cycles=loop_count)
 
 
 # =============================================================================
