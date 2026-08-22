@@ -2,11 +2,6 @@
 
 The split version keeps low-level HTTP in ``api_clients.discogs_http`` and
 moves enrichment/business rules to ``services.enrichment.discogs_service``.
-
-Existing imports of ``api_clients.discogs.DiscogsClient`` can keep working
-while new code should prefer:
-- ``api_clients.discogs_http.DiscogsHttpClient`` for raw HTTP
-- ``services.enrichment.discogs_service.DiscogsService`` for app behaviour
 """
 
 from __future__ import annotations
@@ -24,14 +19,9 @@ from services.enrichment.discogs_service import (
 
 
 class DiscogsClient:
-    """Backward-compatible Discogs client facade.
+    """Backward-compatible Discogs client facade."""
 
-    This facade exposes the commonly used historical methods, but delegates
-    low-level HTTP to ``DiscogsHttpClient`` and business rules to
-    ``DiscogsService``.
-    """
-
-    def __init__(self, token: str, http_session=None, enabled: bool = True):
+    def __init__(self, token: str, http_session: Any = None, enabled: bool = True):
         self.token = token or ""
         self.enabled = enabled
         self.http = DiscogsHttpClient(token=token, http_session=http_session, enabled=enabled)
@@ -78,7 +68,6 @@ _discogs_client: DiscogsClient | None = None
 
 
 def _get_discogs_client(token: str, enabled: bool = True) -> DiscogsClient:
-    """Return process-local Discogs facade for compatibility wrappers."""
     global _discogs_client
     if _discogs_client is None or _discogs_client.token != token:
         _discogs_client = DiscogsClient(token, enabled=enabled)
