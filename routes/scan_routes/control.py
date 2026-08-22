@@ -4,6 +4,9 @@ General scan start/stop/status routes.
 
 from __future__ import annotations
 
+from typing import Any
+
+import structlog
 from quart import flash, jsonify, redirect, request, url_for
 
 from routes.scan_routes import scans_bp
@@ -15,17 +18,17 @@ from services.scanning.runtime_state import (
     clear_runtime,
     set_runtime,
 )
-
 from services.scanning.scan_state import (
     get_scan_progress_path,
     read_progress_file,
     request_scan_stop,
 )
-
 from services.scanning.pipeline import start_library_scan
 from services.scanning.pipelines.artist_pipeline import run_artist_pipeline
 from services.scanning.pipelines.popularity_pipeline import run_popularity_mode
 from services.scanning.pipelines.navidrome_pipeline import run_navidrome_import_scan
+
+logger = structlog.get_logger(__name__)
 
 
 # -------------------------------------------------------------------------
@@ -33,11 +36,13 @@ from services.scanning.pipelines.navidrome_pipeline import run_navidrome_import_
 # -------------------------------------------------------------------------
 
 @scans_bp.route("/scan/start", methods=["POST"])
-async def scan_start():
+async def scan_start() -> Any:
     form = await request.form
     scan_type = form.get("scan_type", "full")
     artist = (form.get("artist") or "").strip()
     force = form_bool(form.get("force"))
+
+    logger.info("Scan start requested", scan_type=scan_type, artist=artist, force=force)
 
     # -------------------------------------------------
     # Artist-only scan
@@ -57,6 +62,7 @@ async def scan_start():
     # -------------------------------------------------
     with scan_lock:
         if is_runtime_running("library"):
+            logger.warning("Scan rejected: library scan already running")
             await flash("A scan is already running", "warning")
             return redirect(url_for("ui.dashboard"))
 
@@ -69,7 +75,7 @@ async def scan_start():
                 await flash("A scan is already running", "warning")
                 return redirect(url_for("ui.dashboard"))
 
-            def _full_scan_worker():
+            def _full_scan_worker() -> None:
                 try:
                     start_library_scan(
                         artist_filter=None,
@@ -103,6 +109,7 @@ async def scan_start():
         await flash(f"{scan_type} scan started", "success")
         return redirect(url_for("ui.dashboard"))
 
+    logger.error("Unknown scan type requested", scan_type=scan_type)
     await flash(f"Unknown scan type: {scan_type}", "danger")
     return redirect(url_for("ui.dashboard"))
 
@@ -112,11 +119,11 @@ async def scan_start():
 # -------------------------------------------------------------------------
 
 @scans_bp.route("/scan/stop", methods=["POST"])
-async def scan_stop():
+async def scan_stop() -> Any:
     path = get_scan_progress_path("library_scan")
-
     request_scan_stop(path)
-
+    
+    logger.info("Stop requested for library scan")
     await flash("Stop requested for library scan", "info")
     return redirect(url_for("ui.dashboard"))
 
@@ -126,18 +133,20 @@ async def scan_stop():
 # -------------------------------------------------------------------------
 
 @scans_bp.route("/scan/stop-popularity", methods=["POST"])
-async def scan_stop_popularity():
+async def scan_stop_popularity() -> Any:
     request_scan_stop(get_scan_progress_path("popularity_scan"))
     request_scan_stop(get_scan_progress_path("singles_scan"))
 
+    logger.info("Stop requested for popularity/singles scans")
     await flash("Popularity scan stop requested", "info")
     return redirect(url_for("ui.dashboard"))
 
 
 @scans_bp.route("/scan/stop-singles", methods=["POST"])
-async def scan_stop_singles():
+async def scan_stop_singles() -> Any:
     request_scan_stop(get_scan_progress_path("singles_scan"))
 
+    logger.info("Stop requested for singles detection scan")
     await flash("Single detection scan stop requested", "info")
     return redirect(url_for("ui.dashboard"))
 
@@ -147,8 +156,8 @@ async def scan_stop_singles():
 # -------------------------------------------------------------------------
 
 @scans_bp.route("/scan/stop-all", methods=["POST"])
-async def scan_stop_all():
-    for scan_type in [
+async def scan_stop_all() -> Any:
+    scan_types = [
         "full_scan",
         "navidrome_scan",
         "popularity_scan",
@@ -159,12 +168,14 @@ async def scan_stop_all():
         "mp3_import",
         "library_scan",
         "metadata_lookup_scan",
-    ]:
+    ]
+    
+    for scan_type in scan_types:
         request_scan_stop(get_scan_progress_path(scan_type))
-
         # Clear runtime tracking (safe cleanup)
         clear_runtime(scan_type.replace("_scan", ""))
 
+    logger.info("Stop requested for all scans", scan_types_affected=len(scan_types))
     await flash("Stop requested for all scans", "success")
     return redirect(url_for("ui.dashboard"))
 
@@ -174,9 +185,8 @@ async def scan_stop_all():
 # -------------------------------------------------------------------------
 
 @scans_bp.route("/scan/status")
-def scan_status():
+def scan_status() -> Any:
     running = is_runtime_running("library")
-
     return jsonify({"running": running})
 
 
@@ -185,10 +195,10 @@ def scan_status():
 # -------------------------------------------------------------------------
 
 @scans_bp.route("/scan/clear-stuck", methods=["POST"])
-async def scan_clear_stuck():
+async def scan_clear_stuck() -> Any:
     cleared = 0
 
-    for scan_type in [
+    scan_types = [
         "navidrome_scan",
         "popularity_scan",
         "singles_scan",
@@ -196,7 +206,9 @@ async def scan_clear_stuck():
         "combined_scan",
         "missing_releases_scan",
         "mp3_import",
-    ]:
+    ]
+
+    for scan_type in scan_types:
         path = get_scan_progress_path(scan_type)
         state = read_progress_file(path)
 
@@ -204,10 +216,10 @@ async def scan_clear_stuck():
             request_scan_stop(path)
             cleared += 1
 
-    await flash(
-        f"✅ Cleared {cleared} stuck scan(s)"
-        if cleared else "No stuck scans found",
-        "success" if cleared else "info",
-    )
+    if cleared:
+        logger.info("Cleared stuck scans", cleared_count=cleared)
+        await flash(f"✅ Cleared {cleared} stuck scan(s)", "success")
+    else:
+        await flash("No stuck scans found", "info")
 
     return redirect(url_for("ui.dashboard"))
