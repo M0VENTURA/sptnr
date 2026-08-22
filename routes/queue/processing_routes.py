@@ -4,121 +4,136 @@ Queue processing routes.
 
 from __future__ import annotations
 
-from quart import Blueprint, request
-from routes.utils import json_response as _json_response
+import asyncio
+import json
+import os
+import re
+import shutil
+import threading
+import time
+from typing import Any
 
+import structlog
+from quart import Blueprint, Response, request
+from sqlalchemy import text
+
+from db.engine import db_session
+from routes.utils import json_response as _json_response
 from services.downloads.download_processing_service import (
     queue_add,
     queue_add_batch,
+    queue_cancel,
     queue_clear,
     queue_delete,
+    queue_force_start,
+    queue_imported,
     queue_purge_all,
     queue_requeue,
     queue_requeue_all_unmatched,
     queue_retry_all_failed,
     queue_status,
     queue_update,
-    queue_imported,
-    queue_cancel,
-    queue_force_start,
 )
-from db.utils import row_get
+from services.downloads.download_matching_service import get_release_tracks
 
+try:
+    from rapidfuzz import fuzz as _ratio_fuzz
+    def _fuzzy_ratio(a: str, b: str) -> float:
+        return _ratio_fuzz.token_set_ratio(a or "", b or "") / 100.0
+except ImportError:
+    from difflib import SequenceMatcher as _SequenceMatcher
+    def _fuzzy_ratio(a: str, b: str) -> float:
+        return _SequenceMatcher(None, a or "", b or "").ratio()
+
+logger = structlog.get_logger(__name__)
 queue_processing_bp = Blueprint("queue_processing", __name__)
 
 
+def _norm_text(value: Any) -> str:
+    """Helper to normalize text for fuzzy matching."""
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", str(value or "").lower())).strip()
+
+
 @queue_processing_bp.route("/api/queue/add", methods=["POST"])
-async def api_queue_add():
+async def api_queue_add() -> Any:
     payload = (await request.get_json(silent=True)) or {}
     return _json_response(queue_add(payload))
 
 
 @queue_processing_bp.route("/api/queue/add-batch", methods=["POST"])
-async def api_queue_add_batch():
+async def api_queue_add_batch() -> Any:
     payload = (await request.get_json(silent=True)) or {}
     return _json_response(queue_add_batch(payload))
 
 
 @queue_processing_bp.route("/api/queue/status", methods=["GET"])
-def api_queue_status():
+def api_queue_status() -> Any:
     return _json_response(queue_status(request.args))
 
 
 @queue_processing_bp.route("/api/queue/imported", methods=["GET"])
-def api_queue_imported():
+def api_queue_imported() -> Any:
     return _json_response(queue_imported(request.args))
 
 
 @queue_processing_bp.route("/api/queue/<int:queue_id>/update", methods=["POST"])
-async def api_queue_update(queue_id: int):
+async def api_queue_update(queue_id: int) -> Any:
     payload = (await request.get_json(silent=True)) or {}
     return _json_response(queue_update(queue_id, payload))
 
 
 @queue_processing_bp.route("/api/queue/<int:queue_id>/send", methods=["POST"])
-def api_queue_send_to_download(queue_id: int):
+def api_queue_send_to_download(queue_id: int) -> Any:
     return _json_response(queue_requeue(queue_id))
 
 
 @queue_processing_bp.route("/api/queue/<int:queue_id>/requeue", methods=["POST"])
-def api_queue_requeue_item(queue_id: int):
+def api_queue_requeue_item(queue_id: int) -> Any:
     return _json_response(queue_requeue(queue_id))
 
 
 @queue_processing_bp.route("/api/queue/<int:queue_id>/force-start", methods=["POST"])
-def api_queue_force_start(queue_id: int):
+def api_queue_force_start(queue_id: int) -> Any:
     return _json_response(queue_force_start(queue_id))
 
 
 @queue_processing_bp.route("/api/queue/<int:queue_id>/cancel", methods=["POST"])
-def api_queue_cancel_item(queue_id: int):
+def api_queue_cancel_item(queue_id: int) -> Any:
     return _json_response(queue_cancel(queue_id))
 
 
 @queue_processing_bp.route("/api/queue/<int:queue_id>/delete", methods=["DELETE"])
-def api_queue_delete(queue_id: int):
+def api_queue_delete(queue_id: int) -> Any:
     delete_download_file = request.args.get("delete_download_file", "0").lower() in {"1", "true", "yes"}
     return _json_response(queue_delete(queue_id, delete_download_file=delete_download_file))
 
 
 @queue_processing_bp.route("/api/queue/clear", methods=["POST", "DELETE"])
-async def api_queue_clear():
+async def api_queue_clear() -> Any:
     payload = (await request.get_json(silent=True)) or {}
     return _json_response(queue_clear(payload))
 
 
 @queue_processing_bp.route("/api/queue/purge-all", methods=["POST", "DELETE"])
-def api_queue_purge_all():
+def api_queue_purge_all() -> Any:
     return _json_response(queue_purge_all())
 
 
 @queue_processing_bp.route("/api/queue/requeue-all-unmatched", methods=["POST"])
-def api_queue_requeue_all_unmatched():
+def api_queue_requeue_all_unmatched() -> Any:
     return _json_response(queue_requeue_all_unmatched())
 
 
 @queue_processing_bp.route("/api/queue/retry-all-failed", methods=["POST"])
-def api_queue_retry_all_failed():
+def api_queue_retry_all_failed() -> Any:
     return _json_response(queue_retry_all_failed())
 
 
 # ── SSE: real-time queue progress stream ──────────────────────────────────
 
-import asyncio
-import json
-import time
-
 @queue_processing_bp.route("/api/queue/stream", methods=["GET"])
-async def api_queue_stream():
-    """Server-Sent Events endpoint for live queue status updates.
-
-    Frontend connects via:
-        const es = new EventSource("/api/queue/stream");
-        es.onmessage = (e) => { const data = JSON.parse(e.data); ... };
-
-    Events are emitted every ~2 seconds with current queue counts.
-    Connection closes automatically when the client disconnects.
-    """
+async def api_queue_stream() -> Any:
+    """Server-Sent Events endpoint for live queue status updates."""
     async def event_generator():
         last_payload = None
         while True:
@@ -127,7 +142,6 @@ async def api_queue_stream():
                 counts = get_queue_status_counts()
                 payload = json.dumps(counts)
 
-                # Only send if data changed (reduces bandwidth)
                 if payload != last_payload:
                     yield f"data: {payload}\n\n"
                     last_payload = payload
@@ -136,7 +150,6 @@ async def api_queue_stream():
 
             await asyncio.sleep(2)
 
-    from quart import Response
     return Response(
         event_generator(),
         content_type="text/event-stream",
@@ -153,33 +166,21 @@ async def api_queue_stream():
 # -----------------------------------------------------------------------------
 
 @queue_processing_bp.route("/api/queue/<int:queue_id>/copy-from-local", methods=["POST"])
-def api_queue_copy_from_local(queue_id: int):
-    """Copy a file from its existing /music location to /downloads so it can be
-    re-tagged and moved to the correct album folder."""
-    import logging as _logging
-    import os
-    import threading as _threading
-    import shutil as _shutil
-
+def api_queue_copy_from_local(queue_id: int) -> Any:
+    """Copy a file from its existing /music location to /downloads."""
     try:
-        from sqlalchemy import text as _text
-        from db.engine import db_session as _db_session
-        import os
-        import threading as _threading
-        import shutil as _shutil
-
-        with _db_session() as session:
+        with db_session() as session:
             row = session.execute(
-                _text("SELECT * FROM download_queue WHERE id = :qid"),
+                text("SELECT * FROM download_queue WHERE id = :qid"),
                 {"qid": queue_id},
-            ).mappings().first()
+            ).fetchone()
 
         if not row:
             return _json_response({"error": "Queue item not found"}), 404
 
-        item = dict(row)
-
-        source_path = (item.get("source_music_path") or "").strip() if isinstance(item, dict) else ""
+        item = dict(row._mapping)
+        source_path = (item.get("source_music_path") or "").strip()
+        
         if not source_path:
             return _json_response({"success": False, "error": "No source music path stored"}), 400
         if not os.path.isfile(source_path):
@@ -193,25 +194,19 @@ def api_queue_copy_from_local(queue_id: int):
             base, ext = os.path.splitext(dest_filename)
             dest_path = os.path.join(downloads_dir, f"{base}_local_copy{ext}")
 
-        def _background_copy():
+        def _background_copy() -> None:
             try:
-                _shutil.copy2(source_path, dest_path)
-                _logging.getLogger(__name__).info(
-                    "[COPY_FROM_LOCAL] Queue %s: copied '%s' -> '%s'", queue_id, source_path, dest_path
-                )
-                from services.downloads.download_processing_service import queue_update as _qu
-                _qu(queue_id, status="matched", file_path=dest_path)
+                shutil.copy2(source_path, dest_path)
+                logger.info("File copied locally", queue_id=queue_id, source=source_path, dest=dest_path)
+                queue_update(queue_id, status="matched", file_path=dest_path)
             except Exception as bg_err:
-                _logging.getLogger(__name__).error(
-                    "[COPY_FROM_LOCAL] Background copy failed for queue %s: %s", queue_id, bg_err
-                )
+                logger.error("Background copy failed", queue_id=queue_id, error=str(bg_err))
                 try:
-                    from services.downloads.download_processing_service import queue_update as _qu2
-                    _qu2(queue_id, status="failed", failure_reason=str(bg_err)[:200])
+                    queue_update(queue_id, status="failed", failure_reason=str(bg_err)[:200])
                 except Exception:
                     pass
 
-        _threading.Thread(target=_background_copy, daemon=True, name=f"copy-from-local-{queue_id}").start()
+        threading.Thread(target=_background_copy, daemon=True, name=f"copy-from-local-{queue_id}").start()
 
         return _json_response({
             "success": True,
@@ -220,7 +215,7 @@ def api_queue_copy_from_local(queue_id: int):
         })
 
     except Exception as exc:
-        _logging.getLogger(__name__).error("[COPY_FROM_LOCAL] Error for queue %s: %s", queue_id, exc)
+        logger.error("Copy from local failed", queue_id=queue_id, error=str(exc))
         return _json_response({"success": False, "error": str(exc)}), 500
 
 
@@ -229,15 +224,8 @@ def api_queue_copy_from_local(queue_id: int):
 # -----------------------------------------------------------------------------
 
 @queue_processing_bp.route("/api/queue/migrate-existing", methods=["POST"])
-async def api_queue_migrate_existing():
-    """Backfill legacy queue rows into current grouped/source conventions.
-
-    Note: this endpoint requires the migration service module at
-    ``services.queue.migration_service`` to be implemented.  If the module
-    does not exist yet the endpoint returns a clear error message so the
-    frontend can display it to the user.
-    """
-    import logging as _logging
+async def api_queue_migrate_existing() -> Any:
+    """Backfill legacy queue rows into current grouped/source conventions."""
     try:
         from services.queue.migration_service import migrate_existing_queue_items_to_grouped_setup as _migrate
     except ImportError:
@@ -256,11 +244,12 @@ async def api_queue_migrate_existing():
                     return _json_response({"error": "limit must be a positive integer"}), 400
             except (TypeError, ValueError):
                 return _json_response({"error": "limit must be an integer"}), 400
+                
         result = _migrate(limit=limit)
         status_code = 200 if result.get("success") else 500
         return _json_response((result, status_code))
     except Exception as exc:
-        _logging.getLogger(__name__).error("Error migrating existing queue rows: %s", exc, exc_info=True)
+        logger.error("Error migrating existing queue rows", error=str(exc), exc_info=True)
         return _json_response({"success": False, "error": str(exc)}), 500
 
 
@@ -269,9 +258,8 @@ async def api_queue_migrate_existing():
 # -----------------------------------------------------------------------------
 
 @queue_processing_bp.route("/api/queue/update-album-mbid", methods=["POST"])
-async def api_queue_update_album_mbid():
+async def api_queue_update_album_mbid() -> Any:
     """Update all queue items for an album with a new MusicBrainz release ID."""
-    import logging as _logging
     try:
         data = (await request.get_json(silent=True)) or {}
         old_artist = (data.get("old_artist") or "").strip()
@@ -283,13 +271,11 @@ async def api_queue_update_album_mbid():
         if not all([old_artist, old_album, new_mbid]):
             return _json_response({"error": "Missing required fields (old_artist, old_album, new_mbid)"}), 400
 
-        from sqlalchemy import text as _text
-        from db.engine import db_session as _db_session
         mbid_import_group = f"mbid_{new_mbid}"
 
-        with _db_session() as session:
+        with db_session() as session:
             result = session.execute(
-                _text("""
+                text("""
                     UPDATE download_queue
                     SET release_mbid = :new_mbid, release_id = :new_mbid, release_source = 'musicbrainz',
                         album = :new_album, album_artist = :new_artist, import_group = :mbid_import_group,
@@ -308,9 +294,8 @@ async def api_queue_update_album_mbid():
             )
             updated_count = result.rowcount or 0
 
-            # Merge queue rows already under this MBID into the same import_group
             result2 = session.execute(
-                _text("""
+                text("""
                     UPDATE download_queue
                     SET import_group = :mbid_import_group, release_source = 'musicbrainz',
                         album_artist = COALESCE(NULLIF(album_artist, ''), :new_artist),
@@ -330,7 +315,7 @@ async def api_queue_update_album_mbid():
         })
 
     except Exception as exc:
-        _logging.getLogger(__name__).error("Error updating album MBID: %s", exc, exc_info=True)
+        logger.error("Error updating album MBID", error=str(exc), exc_info=True)
         return _json_response({"success": False, "error": str(exc)}), 500
 
 
@@ -339,11 +324,8 @@ async def api_queue_update_album_mbid():
 # -----------------------------------------------------------------------------
 
 @queue_processing_bp.route("/api/queue/missing-tracks", methods=["GET"])
-def api_queue_missing_tracks():
+def api_queue_missing_tracks() -> Any:
     """Return MusicBrainz release tracks not currently present in queue rows."""
-    import logging as _logging
-    import re as _re
-
     try:
         release_mbid = (request.args.get("release_mbid") or "").strip()
         queue_ids_raw = (request.args.get("queue_ids") or "").strip()
@@ -365,10 +347,7 @@ def api_queue_missing_tracks():
                     continue
             queue_ids = list(dict.fromkeys(queue_ids))
 
-        # Fetch release tracks from download matching service.  ``get_release_tracks``
-        # returns a LIST of track dicts (not a {tracks: [...]} envelope).
-        from services.downloads.download_matching_service import get_release_tracks as _rel_tracks
-        release_tracks = _rel_tracks(release_id=release_mbid, source="musicbrainz") or []
+        release_tracks = get_release_tracks(release_id=release_mbid, source="musicbrainz") or []
 
         if not release_tracks:
             return _json_response({
@@ -376,14 +355,11 @@ def api_queue_missing_tracks():
                 "total_release_tracks": 0, "missing_tracks": [],
             })
 
-        from sqlalchemy import text as _text
-        from db.engine import db_session as _db_session
-
-        with _db_session() as session:
+        with db_session() as session:
             if queue_ids:
                 ids_placeholders = ", ".join(f":qid{i}" for i in range(len(queue_ids)))
                 queue_rows = session.execute(
-                    _text(f"""
+                    text(f"""
                         SELECT id, title, track_number, disc_number, recording_mbid
                         FROM download_queue
                         WHERE id IN ({ids_placeholders})
@@ -393,7 +369,7 @@ def api_queue_missing_tracks():
                 ).fetchall() or []
             else:
                 queue_rows = session.execute(
-                    _text("""
+                    text("""
                         SELECT id, title, track_number, disc_number, recording_mbid
                         FROM download_queue
                         WHERE COALESCE(NULLIF(release_mbid, ''), NULLIF(release_id, '')) = :release_mbid
@@ -402,29 +378,29 @@ def api_queue_missing_tracks():
                     {"release_mbid": release_mbid},
                 ).fetchall() or []
 
-        def _norm_text(value):
-            return _re.sub(r"\s+", " ", _re.sub(r"[^a-z0-9]+", " ", str(value or "").lower())).strip()
-
         existing_recording_mbids = set()
         existing_track_keys = set()
 
         for row in queue_rows:
-            recording_mbid = (row_get(row, "recording_mbid", 4) or "").strip()
+            mapping = row._mapping
+            recording_mbid = (str(mapping.get("recording_mbid") or "")).strip()
             if recording_mbid:
                 existing_recording_mbids.add(recording_mbid.lower())
-            disc = (row_get(row, "disc_number", 3) or "").strip()
-            track = (row_get(row, "track_number", 2) or "").strip()
-            title = _norm_text(row_get(row, "title", 1))
+                
+            disc = str(mapping.get("disc_number") or "").strip()
+            track = str(mapping.get("track_number") or "").strip()
+            title = _norm_text(mapping.get("title"))
             key = f"{disc}:{track}:{title}" if (disc or track or title) else ""
+            
             if key:
                 existing_track_keys.add(key)
 
         missing_tracks = []
-        for track in release_tracks:
-            recording_mbid = (track.get("recording_mbid") or "").strip()
-            disc_number = track.get("disc_number")
-            track_number = track.get("track_number")
-            title = (track.get("title") or "").strip()
+        for track_dict in release_tracks:
+            recording_mbid = (track_dict.get("recording_mbid") or "").strip()
+            disc_number = track_dict.get("disc_number")
+            track_number = track_dict.get("track_number")
+            title = (track_dict.get("title") or "").strip()
 
             disc = str(disc_number or "").strip()
             track_str = str(track_number or "").strip()
@@ -440,8 +416,8 @@ def api_queue_missing_tracks():
                 "disc_number": disc_number,
                 "track_number": track_number,
                 "title": title,
-                "artist": track.get("artist") or release_tracks[0].get("artist") or "",
-                "duration": track.get("duration") or 0,
+                "artist": track_dict.get("artist") or release_tracks[0].get("artist") or "",
+                "duration": track_dict.get("duration") or 0,
                 "recording_mbid": recording_mbid,
             })
 
@@ -455,7 +431,7 @@ def api_queue_missing_tracks():
         })
 
     except Exception as exc:
-        _logging.getLogger(__name__).error("Error fetching missing tracks: %s", exc)
+        logger.error("Error fetching missing tracks", error=str(exc))
         return _json_response({"success": False, "error": str(exc)}), 500
 
 
@@ -464,19 +440,8 @@ def api_queue_missing_tracks():
 # -----------------------------------------------------------------------------
 
 @queue_processing_bp.route("/api/queue/import-missing-tracks", methods=["POST"])
-async def api_queue_import_missing_tracks():
+async def api_queue_import_missing_tracks() -> Any:
     """Match selected missing MusicBrainz release tracks to existing queue rows."""
-    import logging as _logging
-    import re as _re
-    try:  # C-speed fuzzy matching — see the ratio helper below
-        from rapidfuzz import fuzz as _ratio_fuzz
-        def _fuzzy_ratio(a: str, b: str) -> float:
-            return _ratio_fuzz.token_set_ratio(a or "", b or "") / 100.0
-    except ImportError:  # pragma: no cover — stdlib fallback keeps matching working
-        from difflib import SequenceMatcher as _SequenceMatcher
-        def _fuzzy_ratio(a: str, b: str) -> float:
-            return _SequenceMatcher(None, a or "", b or "").ratio()
-
     try:
         payload = (await request.get_json(silent=True)) or {}
         release_mbid = (payload.get("release_mbid") or "").strip()
@@ -491,38 +456,34 @@ async def api_queue_import_missing_tracks():
         selected_keys = list(dict.fromkeys(str(k).strip() for k in selected_keys if str(k).strip()))
         queue_ids = list(dict.fromkeys(int(v) for v in queue_ids_raw if str(v).strip().isdigit()))
 
-        from services.downloads.download_matching_service import get_release_tracks as _rel_tracks
-        release_tracks = _rel_tracks(release_id=release_mbid, source="musicbrainz") or []
+        release_tracks = get_release_tracks(release_id=release_mbid, source="musicbrainz") or []
         if not release_tracks:
             return _json_response({"success": False, "error": "No MusicBrainz track metadata available"}), 400
 
-        from sqlalchemy import text as _text
-        from db.engine import db_session as _db_session
-
-        with _db_session() as session:
-            # Get context from the first queue ID
+        with db_session() as session:
             ref_artist = ref_album = ref_import_group = ""
             if queue_ids:
                 ids_ph = ", ".join(f":qid{i}" for i in range(len(queue_ids)))
                 ref = session.execute(
-                    _text(f"""
+                    text(f"""
                         SELECT artist, album, album_artist, import_group
                         FROM download_queue WHERE id IN ({ids_ph}) ORDER BY id LIMIT 1
                     """),
                     {f"qid{i}": qid for i, qid in enumerate(queue_ids)},
                 ).fetchone()
+                
                 if ref:
-                    ref_artist = row_get(ref, "artist", 0) or ""
-                    ref_album = row_get(ref, "album", 1) or ""
-                    ref_import_group = row_get(ref, "import_group", 3) or ""
+                    mapping = ref._mapping
+                    ref_artist = str(mapping.get("artist") or "")
+                    ref_album = str(mapping.get("album") or "")
+                    ref_import_group = str(mapping.get("import_group") or "")
 
             release_title = ref_album
             release_artist = release_tracks[0].get("artist") or ""
             import_group = ref_import_group or f"mbid_{release_mbid}"
 
-            # Fetch candidate queue rows
             candidate_rows = session.execute(
-                _text("""
+                text("""
                     SELECT id, title, track_number, disc_number, recording_mbid
                     FROM download_queue
                     WHERE (LOWER(COALESCE(NULLIF(album, ''), '')) = LOWER(:release_title)
@@ -533,95 +494,93 @@ async def api_queue_import_missing_tracks():
                 {"release_title": release_title, "import_group": import_group, "release_mbid": release_mbid},
             ).fetchall() or []
 
-        available = {}
-        for row in candidate_rows:
-            row_id = row_get(row, "id", 0)
-            if row_id:
-                title_norm = _re.sub(r"\s+", " ", _re.sub(r"[^a-z0-9]+", " ", str(row_get(row, "title", 1) or "").lower())).strip()
-                available[row_id] = {
-                    "id": row_id,
-                    "title_norm": title_norm,
-                    "track_number": str(row_get(row, "track_number", 2) or "").strip(),
-                    "disc_number": str(row_get(row, "disc_number", 3) or "").strip(),
-                    "recording_mbid": str(row_get(row, "recording_mbid", 4) or "").strip(),
-                }
+            available = {}
+            for row in candidate_rows:
+                mapping = row._mapping
+                row_id = mapping.get("id")
+                if row_id:
+                    title_norm = _norm_text(mapping.get("title"))
+                    available[row_id] = {
+                        "id": row_id,
+                        "title_norm": title_norm,
+                        "track_number": str(mapping.get("track_number") or "").strip(),
+                        "disc_number": str(mapping.get("disc_number") or "").strip(),
+                        "recording_mbid": str(mapping.get("recording_mbid") or "").strip(),
+                    }
 
-        def _norm_text(value):
-            return _re.sub(r"\s+", " ", _re.sub(r"[^a-z0-9]+", " ", str(value or "").lower())).strip()
+            matched_count = no_match_count = failed_count = 0
+            matched_items = []
+            no_match_items = []
+            failed_items = []
 
-        matched_count = no_match_count = failed_count = 0
-        matched_items = []
-        no_match_items = []
-        failed_items = []
+            for track_dict in release_tracks:
+                title = (track_dict.get("title") or "").strip()
+                if not title:
+                    continue
+                recording_mbid = (track_dict.get("recording_mbid") or "").strip()
+                disc_number = track_dict.get("disc_number")
+                track_number = track_dict.get("track_number")
+                key = (recording_mbid or f"{disc_number or ''}:{track_number or ''}:{_norm_text(title)}")
+                
+                if key not in selected_keys:
+                    continue
 
-        for track in release_tracks:
-            title = (track.get("title") or "").strip()
-            if not title:
-                continue
-            recording_mbid = (track.get("recording_mbid") or "").strip()
-            disc_number = track.get("disc_number")
-            track_number = track.get("track_number")
-            key = (recording_mbid or
-                   f"{disc_number or ''}:{track_number or ''}:{_norm_text(title)}")
-            if key not in selected_keys:
-                continue
+                title_norm = _norm_text(title)
+                best_id = None
+                best_score = -1.0
 
-            title_norm = _norm_text(title)
-            best_id = None
-            best_score = -1.0
+                for row_id, cand in available.items():
+                    score = 0.0
+                    if recording_mbid and cand["recording_mbid"] == recording_mbid:
+                        score = 1.0
+                    elif title_norm and cand["title_norm"]:
+                        score = _fuzzy_ratio(title_norm, cand["title_norm"])
+                        if track_number and cand["track_number"] and str(track_number).strip() == cand["track_number"]:
+                            score = min(1.0, score + 0.15)
+                    if score > best_score:
+                        best_score = score
+                        best_id = row_id
 
-            for row_id, cand in available.items():
-                score = 0.0
-                if recording_mbid and cand["recording_mbid"] == recording_mbid:
-                    score = 1.0
-                elif title_norm and cand["title_norm"]:
-                    score = _fuzzy_ratio(title_norm, cand["title_norm"])
-                    if track_number and cand["track_number"] and str(track_number).strip() == cand["track_number"]:
-                        score = min(1.0, score + 0.15)
-                if score > best_score:
-                    best_score = score
-                    best_id = row_id
+                if best_id is None or best_score < 0.6:
+                    no_match_count += 1
+                    no_match_items.append({"title": title})
+                    continue
 
-            if best_id is None or best_score < 0.6:
-                no_match_count += 1
-                no_match_items.append({"title": title})
-                continue
-
-            try:
-                updates = {
-                    "release_mbid": release_mbid,
-                    "release_id": release_mbid,
-                    "release_source": "musicbrainz",
-                    "import_group": import_group,
-                    "album_artist": release_artist or None,
-                    "album": release_title or None,
-                }
-                if recording_mbid:
-                    updates["recording_mbid"] = recording_mbid
-                if title:
-                    updates["title"] = title
-                if track_number:
-                    updates["track_number"] = str(track_number)
-                if disc_number:
-                    updates["disc_number"] = str(disc_number)
-
-                set_clause = ", ".join(f"{col} = :{col}" for col in updates)
-                session.execute(
-                    _text(f"UPDATE download_queue SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE id = :item_id"),
-                    {**{col: updates[col] for col in updates}, "item_id": best_id},
-                )
-                session.commit()
-                del available[best_id]
-                matched_count += 1
-                matched_items.append({"queue_id": best_id, "title": title, "match_score": round(best_score, 3)})
-            except Exception as upd_err:
-                _logging.getLogger(__name__).warning("Failed to update queue row %s: %s", best_id, upd_err)
                 try:
-                    session.rollback()
-                except Exception:
-                    pass
-                failed_count += 1
-                failed_items.append({"title": title})
+                    updates = {
+                        "release_mbid": release_mbid,
+                        "release_id": release_mbid,
+                        "release_source": "musicbrainz",
+                        "import_group": import_group,
+                        "album_artist": release_artist or None,
+                        "album": release_title or None,
+                    }
+                    if recording_mbid:
+                        updates["recording_mbid"] = recording_mbid
+                    if title:
+                        updates["title"] = title
+                    if track_number:
+                        updates["track_number"] = str(track_number)
+                    if disc_number:
+                        updates["disc_number"] = str(disc_number)
+
+                    set_clause = ", ".join(f"{col} = :{col}" for col in updates)
+                    session.execute(
+                        text(f"UPDATE download_queue SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE id = :item_id"),
+                        {**updates, "item_id": best_id},
+                    )
+                    session.commit()
+                    del available[best_id]
+                    matched_count += 1
+                    matched_items.append({"queue_id": best_id, "title": title, "match_score": round(best_score, 3)})
+                except Exception as upd_err:
+                    logger.warning("Failed to update queue row", row_id=best_id, error=str(upd_err))
+                    try:
+                        session.rollback()
+                    except Exception:
+                        pass
+                    failed_count += 1
+                    failed_items.append({"title": title})
 
         return _json_response({
             "success": True,
@@ -635,5 +594,5 @@ async def api_queue_import_missing_tracks():
         })
 
     except Exception as exc:
-        _logging.getLogger(__name__).error("Error matching missing tracks: %s", exc)
+        logger.error("Error matching missing tracks", error=str(exc))
         return _json_response({"success": False, "error": str(exc)}), 500
