@@ -63,10 +63,16 @@ class TestAtomicTagWrites:
             def __delitem__(self, field):
                 self._tags.pop(field, None)
 
+            def delall(self, frame_id):
+                self._tags.pop(frame_id, None)
+
+            def add(self, frame):
+                pass
+
             def add_tags(self):
                 pass
 
-            def save(self, **kw):
+            def save(self, *args, **kw):
                 written["path"] = self._path
 
         monkeypatch.setattr(tfs, "MP3", _FakeAudio)
