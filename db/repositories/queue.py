@@ -7,11 +7,12 @@ Repository helpers for queue database operations.
 
 from __future__ import annotations
 
-import logging
 import json
 import os
-from typing import Any, Dict, List, Optional
 from datetime import datetime
+from typing import Any
+
+import structlog
 from sqlalchemy import text
 
 from db.engine import db_session
@@ -21,38 +22,24 @@ from helpers.config_helpers import get_config
 from services.downloads.download_scan_service import resolve_downloads_dir
 from helpers.normalization_service import normalize_match_text
 
-from services.queue.queue_constraints import (
-    COMPLETED_QUEUE_STATUSES,
-)
+from services.queue.queue_constraints import COMPLETED_QUEUE_STATUSES
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
-# Columns callers are allowed to write via ``update_queue_item()``. Whitelisted
-# so API payloads can never inject arbitrary column names into the SET clause.
 UPDATE_ALLOWED_COLUMNS = frozenset({
-    # Core identity / metadata
     "artist", "title", "album", "album_artist", "source", "priority",
     "track_number", "disc_number", "year", "duration",
-    # MusicBrainz linkage
     "release_id", "release_source", "release_mbid", "recording_mbid",
     "release_year", "cover_art_url",
-    # Grouping
     "import_group", "import_type",
-    # File / path tracking
     "file_path", "matched_file_path", "music_file_path", "found_filename",
     "progress", "speed",
-    # Soulseek transfer linkage
     "slskd_username", "slskd_transfer_id", "is_manual_download",
-    # Retry / backoff
     "retry_count", "max_retries", "retry_delay_minutes", "next_retry_at",
     "failure_reason",
-    # Scheduling
     "release_date",
-    # State
     "status",
-    # Library linkage (manual match)
     "collection_track_id", "in_collection",
-    # Copy tracking (legacy)
     "copied_individually", "copied_individually_at",
 })
 
@@ -61,16 +48,13 @@ UPDATE_ALLOWED_COLUMNS = frozenset({
 # CORE GETTERS
 # =============================================================================
 
-def _row_to_dict(
-    row,
-    cursor,
-) -> dict[str, Any]:
+def _row_to_dict(row: Any, cursor: Any) -> dict[str, Any]:
     if hasattr(row, "keys"):
         return dict(row)
     return dict(zip([c[0] for c in cursor.description], row))
 
 
-def get_queue_item(queue_id: int) -> Optional[Dict[str, Any]]:
+def get_queue_item(queue_id: int) -> dict[str, Any] | None:
     try:
         with db_session() as session:
             result = session.execute(
@@ -80,11 +64,11 @@ def get_queue_item(queue_id: int) -> Optional[Dict[str, Any]]:
             row = result.fetchone()
             return dict(row._mapping) if row else None
     except Exception as e:
-        logger.error(f"Failed to fetch queue item {queue_id}: {e}")
+        logger.error("Failed to fetch queue item", queue_id=queue_id, error=str(e))
         return None
 
 
-def get_completed_group_queue_items(import_group: str) -> List[Dict[str, Any]]:
+def get_completed_group_queue_items(import_group: str) -> list[dict[str, Any]]:
     try:
         with db_session() as session:
             result = session.execute(
@@ -99,7 +83,7 @@ def get_completed_group_queue_items(import_group: str) -> List[Dict[str, Any]]:
             rows = result.fetchall()
             return [dict(r._mapping) for r in rows]
     except Exception as exc:
-        logger.error(f"[get_completed_group_queue_items] {exc}")
+        logger.error("Failed to get completed group items", import_group=import_group, error=str(exc))
         return []
 
 
@@ -113,11 +97,11 @@ def item_has_status(queue_id: int, expected_status: str) -> bool:
             row = result.fetchone()
             return str(row[0]).lower() == str(expected_status).lower() if row else False
     except Exception as e:
-        logger.error(f"Failed to check status for queue item {queue_id}: {e}")
+        logger.error("Failed to check status for queue item", queue_id=queue_id, error=str(e))
         return False
 
 
-def get_queue_file_path(queue_id: int) -> Optional[str]:
+def get_queue_file_path(queue_id: int) -> str | None:
     try:
         with db_session() as session:
             result = session.execute(
@@ -127,7 +111,7 @@ def get_queue_file_path(queue_id: int) -> Optional[str]:
             row = result.fetchone()
             return row[0] if row else None
     except Exception as e:
-        logger.error(f"[get_queue_file_path] {e}")
+        logger.error("Failed to get queue file path", queue_id=queue_id, error=str(e))
         return None
 
 
@@ -141,33 +125,12 @@ def insert_queue_item(
     album: str | None = None,
     source: str = "soulseek",
     priority: int = 5,
-    **kwargs,
+    **kwargs: Any,
 ) -> dict[str, Any]:
-    """Insert a new item into the download queue.
-
-    Performs duplicate detection before inserting: if an active item with the
-    same artist + title + source already exists, returns that item with
-    ``already_queued=True`` instead of creating a duplicate.
-
-    Args:
-        artist: Artist name.
-        title: Track title.
-        album: Optional album name.
-        source: Download source (default ``"soulseek"``).
-        priority: Queue priority (1-10, default 5).
-        **kwargs: Additional fields (track_number, disc_number, album_artist,
-                  year, release_id, release_mbid, recording_mbid, duration, etc.).
-
-    Returns:
-        The inserted row as a dict, or the existing row with ``already_queued`` set.
-    """
-    # Ghost-row guard: rows without artist AND title are invisible to users
-    # (they render as "Unknown - Unknown") and are never searchable — reject
-    # them at the shared insert path.
+    """Insert a new item into the download queue."""
     if not (artist or "").strip() and not (title or "").strip():
         return {"success": False, "error": "Artist and title are required"}
 
-    # ── Duplicate detection ────────────────────────────────────────────────
     with db_session() as session:
         existing = session.execute(
             text("""
@@ -186,22 +149,15 @@ def insert_queue_item(
             row = dict(existing._mapping)
             row["already_queued"] = True
             logger.info(
-                "Duplicate skipped: %s - %s already in queue (ID %s)",
-                artist, title, row.get("id"),
+                "Duplicate skipped: already in queue",
+                artist=artist, title=title, queue_id=row.get("id"),
             )
             return row
 
-        # ── Insert ──
-        # Status comes from the caller (``status`` kwarg) so passive local-disk
-        # rows (``source='discovered'`` / ``'local'``) are stored as
-        # ``'unmatched'`` — they must NEVER enter the active queue.  Before
-        # this fix the INSERT hardcoded ``'queued'``, so a file that arrived
-        # via another system (torrent/manual drop) was picked up by the queue
-        # processor, re-searched on Soulseek, downloaded again and moved into
-        # /music even though it was never matched to a queue item.
         _status = str(kwargs.get("status") or "queued")
         if str(kwargs.get("source") or "soulseek").lower() in ("local", "discovered"):
             _status = "unmatched"
+            
         result = session.execute(
             text("""
                 INSERT INTO download_queue
@@ -238,15 +194,13 @@ def insert_queue_item(
     return get_queue_item(new_id) or {}
 
 
-def update_queue_item(queue_id: int, **kwargs) -> Optional[Dict[str, Any]]:
+def update_queue_item(queue_id: int, **kwargs: Any) -> dict[str, Any] | None:
     if not kwargs:
         return get_queue_item(queue_id)
 
-    # Whitelist columns so API payloads can't inject arbitrary column names
-    # into the SET clause (see UPDATE_ALLOWED_COLUMNS above).
     updates = {k: v for k, v in kwargs.items() if k in UPDATE_ALLOWED_COLUMNS}
     if not updates:
-        logger.warning("[update_queue_item] no whitelisted columns for queue %s", queue_id)
+        logger.warning("No whitelisted columns for queue update", queue_id=queue_id)
         return get_queue_item(queue_id)
 
     set_clauses = []
@@ -256,9 +210,6 @@ def update_queue_item(queue_id: int, **kwargs) -> Optional[Dict[str, Any]]:
         set_clauses.append(f"{key} = :{key}")
         params[key] = json.dumps(value) if isinstance(value, (dict, list)) else value
 
-    # ``copied_individually`` is BOOLEAN in the schema but legacy completion
-    # flows pass 1/0 (int) — coerce centrally so the UPDATE never trips
-    # psycopg2 DatatypeMismatch.
     if "copied_individually" in params:
         params["copied_individually"] = bool(params["copied_individually"])
 
@@ -277,21 +228,12 @@ def update_queue_item(queue_id: int, **kwargs) -> Optional[Dict[str, Any]]:
             row = result.fetchone()
             return dict(row._mapping) if row else None
     except Exception as e:
-        logger.error(f"[update_queue_item] {e}")
+        logger.error("Update queue item failed", queue_id=queue_id, error=str(e))
         return None
 
 
-def claim_queue_item(
-    queue_id: int,
-    status: str = "searching",
-) -> Optional[Dict[str, Any]]:
-    """Atomically claim a queued item for processing.
-
-    The guarded UPDATE only wins if the item is still ``queued`` (or a due
-    ``backed_off``/``pending_release`` scheduled item) and past any retry
-    backoff, so concurrent workers can never double-claim an item.
-    Used by the orchestrator's ``_claim_item`` chain (``process_next_batch``).
-    """
+def claim_queue_item(queue_id: int, status: str = "searching") -> dict[str, Any] | None:
+    """Atomically claim a queued item for processing."""
     try:
         with db_session() as session:
             result = session.execute(
@@ -309,7 +251,7 @@ def claim_queue_item(
             row = result.fetchone()
             return dict(row._mapping) if row else None
     except Exception as e:
-        logger.error(f"[claim_queue_item] {e}")
+        logger.error("Failed to claim queue item", queue_id=queue_id, error=str(e))
         return None
 
 
@@ -322,16 +264,12 @@ def delete_queue_item(queue_id: int) -> bool:
             )
             return result.rowcount > 0
     except Exception as e:
-        logger.error(f"[delete_queue_item] {e}")
+        logger.error("Failed to delete queue item", queue_id=queue_id, error=str(e))
         return False
 
 
-def get_queue_item_by_path(path: str) -> Optional[Dict[str, Any]]:
-    """Find the most recently updated queue item owning ``path``.
-
-    Matches any of the path columns (``file_path``, ``found_filename``,
-    ``music_file_path``).  Used by the ``process-one`` endpoint.
-    """
+def get_queue_item_by_path(path: str) -> dict[str, Any] | None:
+    """Find the most recently updated queue item owning ``path``."""
     try:
         with db_session() as session:
             result = session.execute(
@@ -348,7 +286,7 @@ def get_queue_item_by_path(path: str) -> Optional[Dict[str, Any]]:
             row = result.fetchone()
             return dict(row._mapping) if row else None
     except Exception as e:
-        logger.error(f"[get_queue_item_by_path] {e}")
+        logger.error("Failed to get queue item by path", path=path, error=str(e))
         return None
 
 
@@ -356,7 +294,7 @@ def get_queue_item_by_path(path: str) -> Optional[Dict[str, Any]]:
 # GROUP / MATCHING HELPERS
 # =============================================================================
 
-def get_items_by_group(group_id: str) -> List[Dict[str, Any]]:
+def get_items_by_group(group_id: str) -> list[dict[str, Any]]:
     try:
         with db_session() as session:
             result = session.execute(
@@ -365,18 +303,18 @@ def get_items_by_group(group_id: str) -> List[Dict[str, Any]]:
             )
             return [dict(r._mapping) for r in result.fetchall()]
     except Exception as e:
-        logger.error(f"[get_items_by_group] {e}")
+        logger.error("Failed to get items by group", group_id=group_id, error=str(e))
         return []
 
 
-def apply_release_mbid(queue_ids: list, mbid: str, artist: str, album: str) -> int:
+def apply_release_mbid(queue_ids: list[int], mbid: str, artist: str, album: str) -> int:
     if not queue_ids:
         return 0
 
     try:
         with db_session() as session:
             placeholders = ",".join([f":id_{i}" for i in range(len(queue_ids))])
-            params = {"mbid": mbid, "artist": artist, "album": album}
+            params: dict[str, Any] = {"mbid": mbid, "artist": artist, "album": album}
             params.update({f"id_{i}": qid for i, qid in enumerate(queue_ids)})
             result = session.execute(
                 text(f"""
@@ -390,7 +328,7 @@ def apply_release_mbid(queue_ids: list, mbid: str, artist: str, album: str) -> i
             )
             return result.rowcount
     except Exception as e:
-        logger.error(f"[apply_release_mbid] {e}")
+        logger.error("Failed to apply release mbid", error=str(e))
         return 0
 
 
@@ -398,8 +336,7 @@ def apply_release_mbid(queue_ids: list, mbid: str, artist: str, album: str) -> i
 # STATUS / PROCESSING
 # =============================================================================
 
-
-def get_queue_status_counts() -> Dict[str, int]:
+def get_queue_status_counts() -> dict[str, int]:
     try:
         with db_session() as session:
             result = session.execute(
@@ -407,34 +344,17 @@ def get_queue_status_counts() -> Dict[str, int]:
             )
             return {str(r[0]): int(r[1]) for r in result.fetchall()}
     except Exception as e:
-        logger.error(f"[get_queue_status_counts] {e}")
+        logger.error("Failed to get queue status counts", error=str(e))
         return {}
 
 
-def get_active_queue(limit: int = 200) -> List[Dict[str, Any]]:
-    """Get non-terminal queue items (active statuses + failed + pending retry).
-
-    Active statuses come from the canonical ``ACTIVE_QUEUE_STATUSES`` set so
-    the list always matches the status counts.  Failed items are included
-    because the queue page splits them out of the active list client-side
-    (mirrors the legacy API payload).  ``PENDING_RETRY_STATUSES`` (backed_off
-    / pending_release) are included so items waiting to return to the queue
-    stay visible while their retry window passes.
-
-    Strict queue vs. local-disk boundary: rows whose ``source`` is
-    ``local``/``discovered`` represent ambient disk folders picked up by the
-    watcher/discovery flow — they are PASSIVE (the Matched Folders section)
-    and are always excluded here, regardless of status, so local disk folders
-    never bleed into the active search/download queue.
-    """
+def get_active_queue(limit: int = 200) -> list[dict[str, Any]]:
+    """Get non-terminal queue items (active statuses + failed + pending retry)."""
     from services.queue.queue_constraints import (
         ACTIVE_QUEUE_STATUSES,
         FAILED_STATUSES,
         PENDING_RETRY_STATUSES,
     )
-    # Inline the statuses rather than binding a list parameter — psycopg2
-    # cannot adapt a Python list for ``ANY(:statuses)`` and the resulting
-    # exception was silently swallowed, returning an empty list.
     status_sql = ", ".join(
         f"'{s}'" for s in sorted(ACTIVE_QUEUE_STATUSES | FAILED_STATUSES | PENDING_RETRY_STATUSES)
     )
@@ -448,11 +368,6 @@ def get_active_queue(limit: int = 200) -> List[Dict[str, Any]]:
                     WHERE status IN ({status_sql})
                       AND LOWER(COALESCE(source, '')) NOT IN ('local', 'discovered')
                     ORDER BY created_at ASC,
-                             -- Album tracks are queued in one batch (same
-                             -- created_at) — keep them in track-number order
-                             -- so the queue list under an album folder shows
-                             -- the album's tracks in order instead of the
-                             -- arbitrary insert sequence.
                              {track_num_expr},
                              id ASC
                     LIMIT :limit
@@ -461,11 +376,11 @@ def get_active_queue(limit: int = 200) -> List[Dict[str, Any]]:
             )
             return [dict(r._mapping) for r in result.fetchall()]
     except Exception as e:
-        logger.error(f"[get_active_queue] {e}")
+        logger.error("Failed to get active queue", error=str(e))
         return []
 
 
-def get_processing_snapshot() -> Dict[str, int]:
+def get_processing_snapshot() -> dict[str, int]:
     counts = get_queue_status_counts()
     return {
         "queued": counts.get("queued", 0),
@@ -475,7 +390,7 @@ def get_processing_snapshot() -> Dict[str, int]:
     }
 
 
-def get_ready_for_processing(limit: int = 100) -> List[Dict]:
+def get_ready_for_processing(limit: int = 100) -> list[dict[str, Any]]:
     try:
         with db_session() as session:
             result = session.execute(
@@ -487,10 +402,6 @@ def get_ready_for_processing(limit: int = 100) -> List[Dict]:
                            OR (status IN ('backed_off', 'pending_release')
                                AND next_retry_at <= CURRENT_TIMESTAMP))
                       AND (next_retry_at IS NULL OR next_retry_at <= CURRENT_TIMESTAMP)
-                      -- Strict queue vs. local-disk boundary: rows whose
-                      -- source is local/discovered are PASSIVE disk states
-                      -- (the Matched Folders section) and must never be
-                      -- auto-searched/downloaded by the queue processor.
                       AND LOWER(COALESCE(source, '')) NOT IN ('local', 'discovered')
                     ORDER BY priority DESC, created_at ASC
                     LIMIT :limit
@@ -499,27 +410,13 @@ def get_ready_for_processing(limit: int = 100) -> List[Dict]:
             )
             return [dict(r._mapping) for r in result.fetchall()]
     except Exception as e:
-        logger.error(f"[get_ready_for_processing] {e}")
+        logger.error("Failed to get items ready for processing", error=str(e))
         return []
 
 
-def requeue_due_failed_items(limit: int = 50) -> List[Dict[str, Any]]:
-    """Requeue legacy ``failed`` rows whose retry window has arrived.
-
-    New failures never land in ``failed`` — ``mark_failed`` returns them to
-    ``queued`` with a future ``next_retry_at`` so the worker picks them up
-    automatically.  This function is a safety net that sweeps any pre-change
-    ``failed`` rows back into the queue so nothing is ever left stuck in a
-    terminal ``failed`` state.
-
-    Eligible items: ``status = 'failed'`` with (``next_retry_at`` unset or
-    due).  Each requeued item gets ``retry_count + 1`` and
-    ``next_retry_at = now + retry_delay_minutes`` so repeated failures back
-    off (legacy retry-scheduler parity).  The configured
-    ``queue.retry_delay_minutes`` (default 30) governs how long an item sits
-    pending between attempts.
-    """
-    requeued: List[Dict[str, Any]] = []
+def requeue_due_failed_items(limit: int = 50) -> list[dict[str, Any]]:
+    """Requeue legacy ``failed`` rows whose retry window has arrived."""
+    requeued: list[dict[str, Any]] = []
     try:
         with db_session() as session:
             result = session.execute(
@@ -555,12 +452,11 @@ def requeue_due_failed_items(limit: int = 50) -> List[Dict[str, Any]]:
                 requeued.append(row)
         return requeued
     except Exception as exc:
-        logger.error("[requeue_due_failed_items] %s", exc)
+        logger.error("Failed to requeue due failed items", error=str(exc))
         return []
 
 
-def get_failed_queue(limit: int = 100) -> List[Dict[str, Any]]:
-    """Return failed items, newest first, for API / requeue endpoints."""
+def get_failed_queue(limit: int = 100) -> list[dict[str, Any]]:
     try:
         with db_session() as session:
             result = session.execute(
@@ -575,21 +471,11 @@ def get_failed_queue(limit: int = 100) -> List[Dict[str, Any]]:
             )
             return [dict(r._mapping) for r in result.fetchall()]
     except Exception as exc:
-        logger.error("[get_failed_queue] %s", exc)
+        logger.error("Failed to get failed queue", error=str(exc))
         return []
 
 
-def requeue_queue_item(queue_id: int) -> Optional[Dict[str, Any]]:
-    """Manually requeue a failed/removed/cancelled item, resetting retry state.
-
-    Clears ``next_retry_at`` and ``retry_count`` so the item is picked up
-    immediately by the next worker cycle (unlike a plain status bump, which
-    would leave the backoff window in place).
-
-    Items that already have a local ``file_path`` are NOT requeued for
-    Soulseek — they return to ``unmatched`` so they only go through the
-    matching/alignment flow, never a P2P re-download.
-    """
+def requeue_queue_item(queue_id: int) -> dict[str, Any] | None:
     try:
         with db_session() as session:
             result = session.execute(
@@ -612,26 +498,15 @@ def requeue_queue_item(queue_id: int) -> Optional[Dict[str, Any]]:
             row = result.fetchone()
             return dict(row._mapping) if row else None
     except Exception as exc:
-        logger.error("[requeue_queue_item] %s", exc)
+        logger.error("Failed to requeue queue item", queue_id=queue_id, error=str(exc))
         return None
+
     
-    # =============================================================================
+# =============================================================================
 # COMPLETED / POST-DOWNLOAD QUEUE
 # =============================================================================
 
-def get_completed_queue(limit: int = 50) -> List[Dict[str, Any]]:
-    """
-    Get completed downloads (and unmatched items) ready for post-processing.
-
-    Includes:
-    - completed
-    - unmatched
-    - possible_duplicate
-    - moving
-    """
-    # Inline the statuses — psycopg2 cannot adapt a Python list for
-    # ``ANY(:statuses)``; the exception was silently swallowed and the
-    # completed list always rendered empty.
+def get_completed_queue(limit: int = 50) -> list[dict[str, Any]]:
     status_sql = ", ".join(f"'{s}'" for s in sorted(COMPLETED_QUEUE_STATUSES))
     try:
         with db_session() as session:
@@ -645,20 +520,17 @@ def get_completed_queue(limit: int = 50) -> List[Dict[str, Any]]:
                 """),
                 {"limit": limit},
             )
-
             return [dict(r._mapping) for r in result.fetchall()]
-
     except Exception as e:
-        logger.error(f"[get_completed_queue] {e}")
+        logger.error("Failed to get completed queue", error=str(e))
         return []
+
 
 # =============================================================================
 # GROUP QUERIES
 # =============================================================================
 
-    
-# queue.py
-def get_completed_by_group(group_id: str) -> List[Dict[str, Any]]:
+def get_completed_by_group(group_id: str) -> list[dict[str, Any]]:
     try:
         with db_session() as session:
             result = session.execute(
@@ -671,11 +543,9 @@ def get_completed_by_group(group_id: str) -> List[Dict[str, Any]]:
                 """),
                 {"group": group_id},
             )
-
             return [dict(r._mapping) for r in result.fetchall()]
-
     except Exception as e:
-        logger.error(f"[get_completed_by_group] {e}")
+        logger.error("Failed to get completed items by group", group_id=group_id, error=str(e))
         return []
 
 
@@ -688,12 +558,7 @@ def schedule_queue_retry(
     status: str,
     next_retry_at: str,
     reason: str = "",
-) -> Optional[Dict[str, Any]]:
-    """Park an item until a future retry time (backed_off / pending_release).
-
-    Sets the scheduled status + ``next_retry_at`` and bumps ``retry_count``
-    so the worker only picks it up once the timestamp is due.
-    """
+) -> dict[str, Any] | None:
     try:
         with db_session() as session:
             session.execute(
@@ -710,12 +575,11 @@ def schedule_queue_retry(
             )
         return {"success": True, "id": queue_id, "status": status}
     except Exception as exc:
-        logger.error("[schedule_queue_retry] %s", exc)
+        logger.error("Failed to schedule queue retry", queue_id=queue_id, error=str(exc))
         return None
 
 
 def _queue_retry_defaults() -> tuple[int, int]:
-    """Return ``(failure_retry_delay_minutes, max_retries)`` from ``queue.*`` config."""
     try:
         from helpers.config_helpers import get_config
         q = (get_config() or {}).get("queue") or {}
@@ -726,26 +590,7 @@ def _queue_retry_defaults() -> tuple[int, int]:
         return 30, 5
 
 
-def mark_failed(queue_id: int, reason: str) -> Optional[Dict[str, Any]]:
-    """Record a failed processing attempt and schedule the automatic retry.
-
-    A failure NEVER parks the item in a terminal ``failed`` state: it
-    returns to ``queued`` with ``next_retry_at`` set to now + retry delay,
-    so the worker automatically picks it up again once the retry window
-    passes (the queue page shows a "Retrying …" note while it waits).
-    ``retry_count`` is bumped each time and ``failure_reason`` records why,
-    so ``queue.failure_retry_delay_minutes`` / ``retry_delay_minutes``
-    govern the backoff cadence.
-
-    Items the processor already rescheduled are left alone: the search
-    pipeline parks search-misses in ``backed_off`` / ``pending_release``
-    with a 4h/12h/24h (or release-day) ``next_retry_at`` before it returns,
-    and the orchestrator calls ``mark_failed`` on every non-2xx result.
-    Overwriting that would revert the item to ``queued`` with the short
-    generic delay (default 30 min) — pre-release items and 24h-backed-off
-    misses would be re-dispatched within the hour instead of waiting out
-    their scheduled backoff (and ``retry_count`` would double-bump).
-    """
+def mark_failed(queue_id: int, reason: str) -> dict[str, Any] | None:
     delay = _queue_retry_defaults()[0]
     try:
         with db_session() as session:
@@ -770,10 +615,11 @@ def mark_failed(queue_id: int, reason: str) -> Optional[Dict[str, Any]]:
             )
         return {"success": True, "id": queue_id}
     except Exception as exc:
-        logger.error("[mark_failed] %s", exc)
+        logger.error("Failed to mark queue item failed", queue_id=queue_id, error=str(exc))
         return None
 
-def mark_imported(queue_id: int, target_path: str) -> Optional[Dict[str, Any]]:
+
+def mark_imported(queue_id: int, target_path: str) -> dict[str, Any] | None:
     return update_queue_item(
         queue_id,
         status="imported",
@@ -783,12 +629,11 @@ def mark_imported(queue_id: int, target_path: str) -> Optional[Dict[str, Any]]:
     )
 
 
-def mark_processing(queue_id: int):
+def mark_processing(queue_id: int) -> dict[str, Any] | None:
     return update_queue_item(queue_id, status="processing")
 
 
-
-def mark_completed(queue_id: int):
+def mark_completed(queue_id: int) -> dict[str, Any] | None:
     return update_queue_item(queue_id, status="completed")
 
 # =============================================================================
@@ -798,12 +643,8 @@ def mark_completed(queue_id: int):
 def get_queue_match_targets(
     artist: str,
     album: str,
-    selected_queue_id: Optional[int] = None,
-) -> List[Dict[str, Any]]:
-    """
-    Return queue items that can be used as manual rematch targets.
-    """
-
+    selected_queue_id: int | None = None,
+) -> list[dict[str, Any]]:
     active_statuses = (
         'queued', 'searching', 'downloading',
         'matched', 'completed',
@@ -811,12 +652,10 @@ def get_queue_match_targets(
         'discovered', 'pending_match',
         'possible_duplicate', 'duplicate'
     )
-
     try:
         with db_session() as session:
-
             status_placeholders = ", ".join([f":status_{i}" for i in range(len(active_statuses))])
-            params = {f"status_{i}": s for i, s in enumerate(active_statuses)}
+            params: dict[str, Any] = {f"status_{i}": s for i, s in enumerate(active_statuses)}
             params["artist"] = artist
             params["album"] = album
             params["selected_queue_id"] = selected_queue_id
@@ -824,15 +663,7 @@ def get_queue_match_targets(
             result = session.execute(
                 text(f"""
                 SELECT
-                    id,
-                    artist,
-                    title,
-                    album,
-                    status,
-                    track_number,
-                    release_mbid,
-                    found_filename,
-                    created_at
+                    id, artist, title, album, status, track_number, release_mbid, found_filename, created_at
                 FROM download_queue
                 WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)
                   AND LOWER(COALESCE(NULLIF(album, ''), '')) = LOWER(:album)
@@ -864,15 +695,12 @@ def get_queue_match_targets(
                 }
                 for r in result.fetchall() or []
             ]
-
     except Exception as e:
-        logger.error(f"[get_queue_match_targets] {e}")
+        logger.error("Failed to get queue match targets", error=str(e))
         return []
 
-def get_album_queue_tracks(
-    artist: str,
-    album: str,
-) -> list[dict[str, Any]]:
+
+def get_album_queue_tracks(artist: str, album: str) -> list[dict[str, Any]]:
     try:
         with db_session() as session:
             result = session.execute(
@@ -890,24 +718,23 @@ def get_album_queue_tracks(
             )
             return [dict(r._mapping) for r in result.fetchall()]
     except Exception as e:
-        logger.error(f"[get_album_queue_tracks] {e}")
+        logger.error("Failed to get album queue tracks", error=str(e))
         return []
-
-
 
 
 # =============================================================================
 # BACKWARD-COMPATIBLE REDIRECTS
-# (functions moved to db.repositories.queue_admin)
 # =============================================================================
+
 from db.repositories.queue_admin import (
     clear_queue, purge_all, get_imported, cleanup,
     cleanup_copied_sources, cleanup_orphaned,
     count_pending_by_release, verify_and_prune,
-    apply_release_mbid,
+    apply_release_mbid as admin_apply_release_mbid,
     find_existing_discovered_file, find_duplicate_queue_item,
     insert_discovered_file, delete_duplicate_queue_entries,
     mark_in_collection, get_active_queue_signatures,
     get_queue_items_by_folder, slskd_eligibility_diagnostics,
     delete_folder, remove_group, reset_moving,
 )
+
