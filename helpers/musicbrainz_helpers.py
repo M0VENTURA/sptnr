@@ -3,29 +3,26 @@
 Provides:
 - ``normalize_single_mbid`` – Extract one valid MBID from a multi-MBID string.
 - ``get_mbid_from_metadata`` – Find first non-empty MBID across multiple dict keys.
-
-These are pure string-processing functions with no HTTP or DB dependencies.
 """
 
+from __future__ import annotations
+
 import re
+from typing import Any
+
+import structlog
+
+from services.enrichment.musicbrainz_service import get_shared_mb_client
+
+logger = structlog.get_logger(__name__)
 
 _MUSICBRAINZ_UUID_RE = re.compile(
     r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE
 )
 
+
 def normalize_single_mbid(value: str) -> str:
-    """Extract a single MusicBrainz UUID from a string that may contain multiple MBIDs.
-
-    Some taggers write multiple artist MBIDs for collaboration tracks (e.g.
-    "mbid1;mbid2" or "mbid1,mbid2").  This function finds the first valid UUID
-    and returns it, ignoring the rest.
-
-    Args:
-        value: Raw MBID string, possibly containing multiple values.
-
-    Returns:
-        A single valid MusicBrainz UUID, or an empty string if none found.
-    """
+    """Extract a single MusicBrainz UUID from a string that may contain multiple MBIDs."""
     if not value or not isinstance(value, str):
         return ""
     for part in re.split(r'[;|,\s/]+', value.strip()):
@@ -35,45 +32,20 @@ def normalize_single_mbid(value: str) -> str:
     return ""
 
 
-def get_mbid_from_metadata(metadata: dict, *keys: str) -> str:
-    """Return the first non-empty string found in *metadata* under any of *keys*.
-
-    Convenience helper for extracting a MusicBrainz ID from a metadata dict
-    where the key may vary between callers or data sources.
-
-    Args:
-        metadata: Dict of track/release metadata.
-        *keys: One or more possible key names to try (e.g. ``"release_mbid"`",
-               ``"musicbrainz_albumid"``).
-
-    Returns:
-        The first non-empty value found, or empty string.
-    """
+def get_mbid_from_metadata(metadata: dict[str, Any], *keys: str) -> str:
+    """Return the first non-empty string found in *metadata* under any of *keys*."""
     for key in keys:
-        val = (metadata.get(key) or "").strip()
+        val = str(metadata.get(key) or "").strip()
         if val:
             return val
     return ""
 
 
 def fetch_writer_credits(title: str, artist: str) -> dict[str, list[str]]:
-    """Fetch composer/writer/lyricist credits from MusicBrainz for a track.
-
-    Uses the low-level HTTP client to search for the recording and extract
-    artist-credit relationships.  Returns empty dict gracefully when the
-    lookup fails or the data is unavailable.
-
-    Args:
-        title: Track title.
-        artist: Track artist.
-
-    Returns:
-        Dict with keys ``composers``, ``writers``, ``lyricists`` (each a list).
-    """
+    """Fetch composer/writer/lyricist credits from MusicBrainz for a track."""
     try:
-        from api_clients.musicbrainz_http import MusicBrainzHttpClient
-
-        mb = MusicBrainzHttpClient()
+        # ✅ Use shared MusicBrainz client singleton
+        mb = get_shared_mb_client()
         recordings = mb.search_recordings(f'artist:"{artist}" recording:"{title}"', limit=5)
         if not recordings:
             return {}
@@ -83,7 +55,6 @@ def fetch_writer_credits(title: str, artist: str) -> dict[str, list[str]]:
         if not rec_id:
             return {}
 
-        # Fetch full recording details with relationships
         data = mb.get_recording(rec_id, inc="artists work-level-rels work-rels artist-rels")
 
         composers: list[str] = []
@@ -91,7 +62,6 @@ def fetch_writer_credits(title: str, artist: str) -> dict[str, list[str]]:
         lyricists: list[str] = []
 
         for rel in data.get("relations", []):
-            rel_type = (rel.get("type") or "").lower()
             target_type = (rel.get("target-type") or "").lower()
             if target_type != "work":
                 continue
@@ -111,13 +81,11 @@ def fetch_writer_credits(title: str, artist: str) -> dict[str, list[str]]:
 
         return {"composers": composers, "writers": writers, "lyricists": lyricists}
     except Exception as exc:
-        import logging
-        logging.getLogger(__name__).debug(
-            "Could not fetch writer credits for '%s' by '%s': %s", title, artist, exc)
+        logger.debug("Could not fetch writer credits", title=title, artist=artist, error=str(exc))
         return {}
 
 
-def _coerce_position_to_int(value, default):
+def _coerce_position_to_int(value: Any, default: int) -> int:
     """Convert MusicBrainz position strings (e.g. 'A1', '1/12') into an integer."""
     raw = str(value or '').strip()
     if not raw:
@@ -129,7 +97,8 @@ def _coerce_position_to_int(value, default):
         return int(match.group(0))
     return default
 
-def _build_artist_credit_string(artist_credit):
+
+def _build_artist_credit_string(artist_credit: list[Any]) -> str:
     """Build a display string from a MusicBrainz artist-credit array."""
     result = ''
     for credit in artist_credit:
@@ -142,13 +111,10 @@ def _build_artist_credit_string(artist_credit):
 
 
 # =============================================================================
-# ✅ MusicBrainz JSON response helpers (migrated from legacy cover_detector.py)
+# MusicBrainz JSON response helpers
 # =============================================================================
 
-from typing import Dict, List, Optional, Set
-
-
-def artist_from_credit(artist_credit: List[Dict]) -> str:
+def artist_from_credit(artist_credit: list[dict[str, Any]]) -> str:
     """Extract the first artist name from a MusicBrainz artist-credit array."""
     for entry in artist_credit or []:
         if isinstance(entry, dict):
@@ -158,7 +124,7 @@ def artist_from_credit(artist_credit: List[Dict]) -> str:
     return ""
 
 
-def year_from_recording(rec: Dict) -> Optional[int]:
+def year_from_recording(rec: dict[str, Any]) -> int | None:
     """Extract the earliest release year from a MusicBrainz recording dict."""
     date_str = str(rec.get("first-release-date") or "").strip()
     if len(date_str) >= 4 and date_str[:4].isdigit():
@@ -177,9 +143,9 @@ def year_from_recording(rec: Dict) -> Optional[int]:
     return None
 
 
-def extract_work_ids(recording: Dict) -> Set[str]:
+def extract_work_ids(recording: dict[str, Any]) -> set[str]:
     """Extract all work IDs from a recording's work-relation-list."""
-    ids: Set[str] = set()
+    ids: set[str] = set()
     for rel in recording.get("work-relation-list", []) or []:
         if not isinstance(rel, dict):
             continue
@@ -189,9 +155,9 @@ def extract_work_ids(recording: Dict) -> Set[str]:
     return ids
 
 
-def extract_cover_work_ids(recording: Dict) -> Set[str]:
+def extract_cover_work_ids(recording: dict[str, Any]) -> set[str]:
     """Extract work IDs linked by MB 'performance (cover)' relations."""
-    ids: Set[str] = set()
+    ids: set[str] = set()
     for rel in recording.get("work-relation-list", []) or []:
         if not isinstance(rel, dict):
             continue
