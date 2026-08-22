@@ -3,20 +3,6 @@
 Provides filesystem-level audio file discovery and path resolution
 for the download pipeline. Responsible for locating downloaded audio
 files on disk and making them available for queue ingestion.
-
-Key Responsibilities:
-    - Path resolution: Resolves download directories from env/config.
-    - Filesystem discovery: Walks download directories for audio files.
-    - File metadata: Provides DiscoveredFile dataclass with path info.
-
-Architecture:
-    Pure filesystem operations - no database access. Results are passed
-    to queue services for ingestion and further processing.
-
-    Callers:
-        - services/downloads/download_queue_service.py (auto-discovery)
-        - services/downloads/__init__.py (package-level re-exports)
-        - routes/downloads.py (UI status endpoints)
 """
 
 from __future__ import annotations
@@ -24,7 +10,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 import structlog
 from sqlalchemy import text
@@ -185,18 +171,18 @@ def _duplicate_cleanup_config(key: str, default: bool = True) -> bool:
         return default
 
 
-def _quality_filter_config() -> dict:
+def _quality_filter_config() -> dict[str, Any]:
     try:
         from helpers.config_helpers import get_config
         qf = (get_config() or {}).get("downloads", {}).get("quality_filter") or {}
     except Exception:
         qf = {}
-        
+
     priorities = []
     for p in qf.get("priorities") or []:
         if isinstance(p, dict) and str(p.get("format") or "").strip():
             priorities.append(p)
-            
+
     return {
         "enabled": bool(qf.get("enabled")),
         "reject_others": bool(qf.get("reject_others", True)),
@@ -232,17 +218,17 @@ def _matches_quality_filter(file_path: str) -> tuple[bool, str | None]:
             return True, None
         if bitrate is None or abs(bitrate - want) <= tolerance:
             return True, None
-            
+
     return False, f"{ext or 'unknown'} @ {bitrate or '?'}kbps doesn't match quality priorities"
 
 
-def _queue_has_active_match(meta: dict) -> bool:
+def _queue_has_active_match(meta: dict[str, Any]) -> bool:
     artist = str(meta.get("artist") or "").strip()
     title = str(meta.get("title") or "").strip()
-    
+
     if not artist or not title or artist.lower().startswith("unidentified"):
         return False
-        
+
     try:
         with db_session() as session:
             row = session.execute(
@@ -266,7 +252,7 @@ def enqueue_discovered_files(files: list[DiscoveredFile]) -> dict[str, int]:
     already_in_queue = 0
     quality_skipped = 0
     quality_filter = _quality_filter_config()
-    
+
     for f in files:
         existing = find_existing_discovered_file(
             file_path=f.full_path,
@@ -276,7 +262,7 @@ def enqueue_discovered_files(files: list[DiscoveredFile]) -> dict[str, int]:
         if existing:
             already_in_queue += 1
             continue
-            
+
         matches_qf, qf_reason = _matches_quality_filter(f.full_path)
         if not matches_qf:
             if quality_filter["reject_others"]:
@@ -284,7 +270,7 @@ def enqueue_discovered_files(files: list[DiscoveredFile]) -> dict[str, int]:
                 logger.info("Skipped file due to quality filter", file_path=f.full_path, reason=qf_reason)
                 continue
             logger.debug("Non-priority file kept", file_path=f.full_path, reason=qf_reason)
-            
+
         meta = _extract_discovered_metadata(f.full_path, f.filename)
         if _queue_has_active_match(meta):
             already_in_queue += 1
@@ -295,7 +281,7 @@ def enqueue_discovered_files(files: list[DiscoveredFile]) -> dict[str, int]:
                 except Exception as _exc:
                     logger.debug("Duplicate prune skipped", error=str(_exc))
             continue
-            
+
         insert_discovered_file(
             artist=str(meta["artist"] or "Unidentified Artist"),
             title=str(meta["title"] or f.filename),
@@ -310,11 +296,11 @@ def enqueue_discovered_files(files: list[DiscoveredFile]) -> dict[str, int]:
             import_group="default",
         )
         queued += 1
-        
+
     return {"queued": queued, "already_in_queue": already_in_queue, "quality_skipped": quality_skipped}
 
 
-def discover_files() -> dict[str, object]:
+def discover_files() -> dict[str, Any]:
     """Scan for audio files, add new ones to the download queue, return stats."""
     files = discover_audio_files()
     file_paths = [f.full_path for f in files]
@@ -331,7 +317,7 @@ def discover_files() -> dict[str, object]:
             downloads_root = resolve_downloads_dir(prefer_music_subfolder=False)
             music_root = os.environ.get("MUSIC_FOLDER", "/music")
             if downloads_root:
-                FileSystemManager(downloads_root, music_root).cleanup_empty_dirs(downloads_root)
+                FileSystemManager(downloads_root, music_root).cleanup_empty_dirs(Path(downloads_root))
         except Exception as _exc:
             logger.debug("Empty-folder prune skipped", error=str(_exc))
 
@@ -344,7 +330,9 @@ def discover_files() -> dict[str, object]:
                         text("SELECT COUNT(*) FROM tracks WHERE file_path = :path"),
                         {"path": f.full_path},
                     ).fetchone()
-                    count = int(row[0]) if row else 0
+                    
+                    mapping = getattr(row, "_mapping", None) if row else None
+                    count = int(mapping.get("", list(row)[0] if row else 0) if mapping else (row[0] if row else 0))
                     if count > 0:
                         already_in_library += 1
         except Exception as exc:
