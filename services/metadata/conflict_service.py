@@ -6,40 +6,22 @@ overwriting curated local metadata.  When an external provider (MusicBrainz,
 Last.fm, etc.) reports a value that differs from the local canonical value
 for a protected field, the conflict is recorded in the ``metadata_conflicts``
 shadow table instead of being applied automatically.
-
-Key Functions:
-    - ``detect_and_record_conflicts()`` — Compare incoming provider data
-      against local values and record any protected-field mismatches.
-    - ``fetch_pending_conflicts()`` — Return unresolved conflicts for the UI.
-    - ``resolve_conflict()`` — Apply a user's decision and mark resolved.
-    - ``resolve_conflicts_batch()`` — Bulk-resolve all conflicts for a track.
-    - ``get_conflict_stats()`` — Aggregate counts for the corrections page.
-
-Architecture:
-    The ``metadata_conflicts`` table is the single source of truth for
-    pending human review.  The corrections page queries it alongside the
-    existing album-level inconsistency data from ``correction_service.py``.
 """
 
 from __future__ import annotations
 
-import logging
-from datetime import datetime
 from typing import Any
 
+import structlog
 from sqlalchemy import text
 
 from db.engine import db_session
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 def _conflicts_table_available() -> bool:
-    """True when the ``metadata_conflicts`` table exists.
-
-    Older databases predate the table; the corrections page must render
-    (empty conflict sections) instead of 500ing on every query.
-    """
+    """True when the ``metadata_conflicts`` table exists."""
     try:
         from db.schema_helpers import table_exists
         with db_session() as session:
@@ -89,9 +71,6 @@ SAFE_FIELDS: frozenset[str] = frozenset({
     "file_path",
 })
 
-# The only fields a resolver may write to the tracks table.  Field names come
-# from user-supplied JSON keys (resolve-batch) — anything outside this set is
-# rejected to avoid arbitrary SQL column injection.
 RESOLVABLE_FIELDS: frozenset[str] = PROTECTED_FIELDS | SAFE_FIELDS
 
 
@@ -109,22 +88,7 @@ def detect_and_record_conflicts(
     album_name: str | None = None,
     track_title: str | None = None,
 ) -> dict[str, Any]:
-    """Compare incoming provider data against local values and record conflicts.
-
-    This is the central "gatekeeper" function.  Call it from any scan or
-    import pipeline *before* writing remote data to the canonical tracks table.
-
-    Args:
-        track_id: The canonical track ID.
-        provider: Source identifier (``"musicbrainz"``, ``"lastfm"``, etc.).
-        local_data: Current values from the ``tracks`` table.
-        remote_data: Incoming values from the external provider.
-        artist_name, album_name, track_title: Optional display context for the UI.
-
-    Returns:
-        Dict with keys ``conflicts_recorded`` (int), ``safe_updates`` (list),
-        and ``blocked_fields`` (list).
-    """
+    """Compare incoming provider data against local values and record conflicts."""
     conflicts: list[dict[str, Any]] = []
     safe_updates: list[str] = []
     blocked_fields: list[str] = []
@@ -135,16 +99,13 @@ def detect_and_record_conflicts(
 
         local_value = local_data.get(field)
 
-        # If values match, nothing to do
         if str(local_value or "") == str(remote_value or ""):
             continue
 
-        # If local is empty and remote has data, it's safe to fill in
         if not local_value or str(local_value).strip() == "":
             safe_updates.append(field)
             continue
 
-        # If field is protected, record a conflict
         if field in PROTECTED_FIELDS:
             conflicts.append({
                 "track_id": track_id,
@@ -158,7 +119,6 @@ def detect_and_record_conflicts(
             })
             blocked_fields.append(field)
         elif field not in SAFE_FIELDS:
-            # Unknown field — also protect by default
             conflicts.append({
                 "track_id": track_id,
                 "provider": provider,
@@ -171,7 +131,6 @@ def detect_and_record_conflicts(
             })
             blocked_fields.append(field)
         else:
-            # Safe field — allow auto-update
             safe_updates.append(field)
 
     recorded = 0
@@ -186,11 +145,7 @@ def detect_and_record_conflicts(
 
 
 def _insert_conflicts_batch(conflicts: list[dict[str, Any]]) -> int:
-    """Upsert conflicts into the shadow table.
-
-    Uses ``ON CONFLICT DO NOTHING`` so the first-recorded conflict is
-    preserved and repeat scans don't spam duplicate rows.
-    """
+    """Upsert conflicts into the shadow table."""
     if not conflicts:
         return 0
 
@@ -230,8 +185,8 @@ def _insert_conflicts_batch(conflicts: list[dict[str, Any]]) -> int:
                 count += 1
             except Exception as exc:
                 logger.warning(
-                    "Failed to record conflict for %s/%s: %s",
-                    c.get("track_id"), c.get("field_name"), exc,
+                    "Failed to record conflict",
+                    track_id=c.get("track_id"), field=c.get("field_name"), error=str(exc),
                 )
     return count
 
@@ -353,13 +308,8 @@ def resolve_conflict(
     accepted_value: str | None = None,
     resolved_by: str = "webui",
 ) -> dict[str, Any]:
-    """Mark a single conflict as resolved and optionally apply the accepted value.
-
-    If ``accepted_value`` is provided, the canonical ``tracks`` table is
-    updated within the same transaction (atomic commit).
-    """
+    """Mark a single conflict as resolved and optionally apply the accepted value."""
     with db_session() as session:
-        # Fetch the conflict row
         result = session.execute(
             text("SELECT * FROM metadata_conflicts WHERE id = :id"),
             {"id": conflict_id},
@@ -371,7 +321,6 @@ def resolve_conflict(
         conflict = dict(row._mapping)
 
         if accepted_value is not None:
-            # Apply the accepted value to the tracks table
             field = conflict["field_name"]
             if field not in RESOLVABLE_FIELDS:
                 return {"success": False, "error": f"Field '{field}' is not resolvable"}
@@ -380,7 +329,6 @@ def resolve_conflict(
                 {"value": accepted_value, "track_id": conflict["track_id"]},
             )
 
-        # Mark resolved
         session.execute(
             text("""
                 UPDATE metadata_conflicts
@@ -407,18 +355,7 @@ def resolve_conflicts_batch(
     *,
     resolved_by: str = "webui",
 ) -> dict[str, Any]:
-    """Resolve all pending conflicts for a track by applying user-chosen values.
-
-    All updates happen in a single database transaction.
-
-    Args:
-        track_id: The canonical track ID.
-        resolutions: Mapping of ``{field_name: accepted_value}``.
-        resolved_by: Source identifier for the audit trail.
-
-    Returns:
-        Dict with ``success``, ``resolved_count``, and ``updated_fields``.
-    """
+    """Resolve all pending conflicts for a track by applying user-chosen values."""
     updated_fields: list[str] = []
     resolved_count = 0
 
@@ -427,13 +364,11 @@ def resolve_conflicts_batch(
             if not field or field not in RESOLVABLE_FIELDS:
                 continue
 
-            # Update the canonical track
             session.execute(
                 text(f"UPDATE tracks SET {field} = :value WHERE id = :track_id"),
                 {"value": accepted_value, "track_id": track_id},
             )
 
-            # Mark matching conflicts as resolved
             result = session.execute(
                 text("""
                     UPDATE metadata_conflicts
