@@ -1,42 +1,34 @@
 """SQLAlchemy ORM models for Popularr.
 
-Auto-generated from the existing ``db/schema.py`` table and column definitions.
-Each class maps to a table managed by the application.
+Auto-generated and hand-tuned from the db/schema.py definitions.
+Upgraded to modern SQLAlchemy 2.0 type-hinted Mapped columns.
 
 Conventions:
-    - Table names are ``snake_case`` (matching the database).
-    - Column names are ``snake_case`` with ``Nullable`` types where the schema
-      does not specify ``NOT NULL``.
-    - ``relationship()`` declarations are added sparingly — most queries in the
-      codebase are explicit JOINs; we preserve that pattern.
-    - Legacy ``tracks`` columns with ``DEFAULT`` values are replicated via
-      ``server_default=text("...")`` or ``default=...`` on the ORM attribute.
+    - Mapped[Type] declarations are used over legacy Column() definitions.
+    - Optional types (e.g., Mapped[str | None]) translate automatically to nullable=True.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from sqlalchemy import (
     BigInteger,
-    Boolean,
-    Column,
     DateTime,
     Double,
     Float,
     ForeignKey,
     Integer,
-    JSON,
     LargeBinary,
     Sequence,
     String,
     Text,
-    text,
     func,
+    text,
 )
-from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP
-from sqlalchemy.orm import backref, relationship
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.engine import Base
 
@@ -48,14 +40,14 @@ from db.engine import Base
 class Artist(Base):
     __tablename__ = "artists"
 
-    id = Column(String, primary_key=True)
-    name = Column(String, nullable=False)
-    country = Column(String, nullable=True)
-    bio = Column(Text, nullable=True)
-    image_url = Column(String, nullable=True)
-    similar_artists_lastfm = Column(Text, nullable=True)
-    similar_artists_listenbrainz = Column(Text, nullable=True)
-    similar_artists_last_updated = Column(String, nullable=True)
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String)
+    country: Mapped[str | None] = mapped_column(String)
+    bio: Mapped[str | None] = mapped_column(Text)
+    image_url: Mapped[str | None] = mapped_column(String)
+    similar_artists_lastfm: Mapped[str | None] = mapped_column(Text)
+    similar_artists_listenbrainz: Mapped[str | None] = mapped_column(Text)
+    similar_artists_last_updated: Mapped[str | None] = mapped_column(String)
 
     def __repr__(self) -> str:
         return f"<Artist(id={self.id!r}, name={self.name!r})>"
@@ -68,11 +60,11 @@ class Artist(Base):
 class ArtistStat(Base):
     __tablename__ = "artist_stats"
 
-    artist_id = Column(String, primary_key=True)
-    artist_name = Column(String, nullable=False)
-    album_count = Column(Integer, nullable=True)
-    track_count = Column(Integer, nullable=True)
-    last_updated = Column(String, nullable=True)
+    artist_id: Mapped[str] = mapped_column(String, primary_key=True)
+    artist_name: Mapped[str] = mapped_column(String)
+    album_count: Mapped[int | None] = mapped_column(Integer)
+    track_count: Mapped[int | None] = mapped_column(Integer)
+    last_updated: Mapped[str | None] = mapped_column(String)
 
     def __repr__(self) -> str:
         return f"<ArtistStat(artist_id={self.artist_id!r})>"
@@ -85,122 +77,110 @@ class ArtistStat(Base):
 class Track(Base):
     __tablename__ = "tracks"
 
-    id = Column(String, primary_key=True)
+    id: Mapped[str] = mapped_column(String, primary_key=True)
 
-    # Core metadata
-    artist_id = Column(String, nullable=True)
-    artist = Column(String, nullable=True)
-    album_artist = Column(String, nullable=True)
-    album = Column(String, nullable=True)
-    title = Column(String, nullable=True)
+    # Base Identifiers & Metadata
+    artist_id: Mapped[str | None] = mapped_column(String)
+    artist: Mapped[str | None] = mapped_column(String)
+    album_artist: Mapped[str | None] = mapped_column(String)
+    album: Mapped[str | None] = mapped_column(String)
+    title: Mapped[str | None] = mapped_column(String)
+    duration: Mapped[float | None] = mapped_column(Double)
+    file_path: Mapped[str | None] = mapped_column(String)
+    track_number: Mapped[str | None] = mapped_column(String)
+    disc_number: Mapped[str | None] = mapped_column(String)
+    year: Mapped[str | None] = mapped_column(String)
+    release_year: Mapped[int | None] = mapped_column(Integer)
+    releasecountry: Mapped[str | None] = mapped_column(String)
 
-    # Genre / tags
-    genres = Column(Text, nullable=True)
-    genre = Column(String, nullable=True)
-    manual_genres = Column(Text, nullable=True)
-    navidrome_genres = Column(Text, nullable=True)
-    spotify_genres = Column(Text, nullable=True)
-    lastfm_tags = Column(Text, nullable=True)
-    listenbrainz_genres = Column(Text, nullable=True)
-    discogs_genres = Column(Text, nullable=True)
-    musicbrainz_genres = Column(Text, nullable=True)
-    essentia_genres = Column(Text, nullable=True)
-    tags_last_updated = Column(String, nullable=True)
+    # Flags & Modifiers
+    is_single: Mapped[bool | None] = mapped_column(server_default=text("FALSE"))
+    is_cover: Mapped[int | None] = mapped_column(BigInteger, server_default=text("0"))
+    is_cover_reason: Mapped[str | None] = mapped_column(String)
+    original_cover_artist: Mapped[str | None] = mapped_column(String)
+    cover_manual_override: Mapped[bool | None] = mapped_column(server_default=text("FALSE"))
+    cover_last_checked: Mapped[datetime | None] = mapped_column(DateTime)
+    is_live: Mapped[int | None] = mapped_column(BigInteger, server_default=text("0"))
+    is_acoustic: Mapped[int | None] = mapped_column(BigInteger, server_default=text("0"))
+    is_remix: Mapped[int | None] = mapped_column(BigInteger, server_default=text("0"))
+    album_context_live: Mapped[int | None] = mapped_column(BigInteger, server_default=text("0"))
+    alternate_take: Mapped[int | None] = mapped_column(BigInteger, server_default=text("0"))
+    is_compilation: Mapped[int | None] = mapped_column(BigInteger, server_default=text("0"))
+    base_track_id: Mapped[str | None] = mapped_column(String)
 
-    # File & tech metadata
-    file_path = Column(String, nullable=True)
-    duration = Column(Double, nullable=True)
-    track_number = Column(String, nullable=True)
-    disc_number = Column(String, nullable=True)
-    year = Column(String, nullable=True)
-    release_year = Column(Integer, nullable=True)
-    last_scanned = Column(String, nullable=True)
+    # Single Detection
+    single_confidence: Mapped[str | None] = mapped_column(Text)
+    single_confidence_score: Mapped[float | None] = mapped_column(Double)
+    single_status: Mapped[str | None] = mapped_column(Text)
+    single_sources: Mapped[str | None] = mapped_column(Text)
+    single_sources_used: Mapped[str | None] = mapped_column(Text)
+    single_detection_last_updated: Mapped[datetime | None] = mapped_column(DateTime)
+    single_manual_override: Mapped[bool | None] = mapped_column(server_default=text("FALSE"))
 
-    # Popularity scores
-    spotify_score = Column(Double, nullable=True)
-    lastfm_score = Column(Double, nullable=True)
-    listenbrainz_score = Column(Double, nullable=True)
-    age_score = Column(Double, nullable=True)
-    final_score = Column(Double, nullable=True)
+    # Genres & Classifications
+    genres: Mapped[str | None] = mapped_column(Text)
+    genre: Mapped[str | None] = mapped_column(String)
+    manual_genres: Mapped[str | None] = mapped_column(Text)
+    navidrome_genres: Mapped[str | None] = mapped_column(Text)
+    spotify_genres: Mapped[str | None] = mapped_column(Text)
+    lastfm_tags: Mapped[str | None] = mapped_column(Text)
+    listenbrainz_genres: Mapped[str | None] = mapped_column(Text)
+    discogs_genres: Mapped[str | None] = mapped_column(Text)
+    musicbrainz_genres: Mapped[str | None] = mapped_column(Text)
+    essentia_genres: Mapped[str | None] = mapped_column(Text)
+    tags_last_updated: Mapped[str | None] = mapped_column(String)
 
-    # Star rating
-    stars = Column(Integer, nullable=True)
-    star_rating = Column(Integer, nullable=True)
-    popularity = Column(Double, nullable=True)
+    # Mood & Audio Features
+    mood: Mapped[str | None] = mapped_column(String)
+    mood_confidence: Mapped[float | None] = mapped_column(Double)
+    mood_source: Mapped[str | None] = mapped_column(String)
+    mood_last_updated: Mapped[datetime | None] = mapped_column(DateTime)
+    danceability: Mapped[float | None] = mapped_column(Double)
+    bpm: Mapped[float | None] = mapped_column(Double)
+    essentia_last_updated: Mapped[datetime | None] = mapped_column(DateTime)
+    essentia_model_version: Mapped[str | None] = mapped_column(String)
+    essentia_scan_version: Mapped[str | None] = mapped_column(String)
 
-    # Single detection
-    is_single = Column(Boolean, server_default=text("FALSE"), nullable=True)
-    single_confidence = Column(Text, nullable=True)
-    single_confidence_score = Column(Double, nullable=True)
-    single_status = Column(Text, nullable=True)
-    single_sources = Column(Text, nullable=True)
-    single_sources_used = Column(Text, nullable=True)
-    single_detection_last_updated = Column(DateTime, nullable=True)
-    single_manual_override = Column(Boolean, server_default=text("FALSE"), nullable=True)
+    # Scoring, Popularity & Playcounts
+    stars: Mapped[int | None] = mapped_column(Integer)
+    star_rating: Mapped[int | None] = mapped_column(Integer)
+    popularity: Mapped[float | None] = mapped_column(Double)
+    final_score: Mapped[float | None] = mapped_column(Double)
+    age_score: Mapped[float | None] = mapped_column(Double)
+    spotify_score: Mapped[float | None] = mapped_column(Double)
+    lastfm_score: Mapped[float | None] = mapped_column(Double)
+    listenbrainz_score: Mapped[float | None] = mapped_column(Double)
+    popularity_marked: Mapped[bool | None] = mapped_column(server_default=text("FALSE"))
+    popularity_frozen: Mapped[bool | None] = mapped_column(server_default=text("FALSE"))
+    popularity_frozen_at: Mapped[datetime | None] = mapped_column(DateTime)
 
-    # Artist-wide top-10% popularity marking (top 10% of the artist's catalogue)
-    popularity_marked = Column(Boolean, server_default=text("FALSE"), nullable=True)
+    # External Provider IDs
+    mbid: Mapped[str | None] = mapped_column(String)
+    suggested_mbid: Mapped[str | None] = mapped_column(String)
+    recording_mbid: Mapped[str | None] = mapped_column(String)
+    musicbrainz_id: Mapped[str | None] = mapped_column(String)
+    musicbrainz_trackid: Mapped[str | None] = mapped_column(String)
+    musicbrainz_albumid: Mapped[str | None] = mapped_column(String)
+    musicbrainz_album_mbid: Mapped[str | None] = mapped_column(String)
+    musicbrainz_artistid: Mapped[str | None] = mapped_column(String)
+    musicbrainz_albumartistid: Mapped[str | None] = mapped_column(String)
+    musicbrainz_releasegroupid: Mapped[str | None] = mapped_column(String)
+    musicbrainz_releasetrackid: Mapped[str | None] = mapped_column(String)
+    musicbrainz_workid: Mapped[str | None] = mapped_column(String)
+    musicbrainz_albumstatus: Mapped[str | None] = mapped_column(String)
+    musicbrainz_albumtype: Mapped[str | None] = mapped_column(String)
+    discogs_artist_id: Mapped[str | None] = mapped_column(String)
 
-    # Popularity freeze
-    popularity_frozen = Column(Boolean, server_default=text("FALSE"), nullable=True)
-    popularity_frozen_at = Column(DateTime, nullable=True)
-
-    # MusicBrainz identifiers
-    mbid = Column(String, nullable=True)
-    suggested_mbid = Column(String, nullable=True)
-    musicbrainz_id = Column(String, nullable=True)
-    musicbrainz_trackid = Column(String, nullable=True)
-    musicbrainz_albumid = Column(String, nullable=True)
-    musicbrainz_album_mbid = Column(String, nullable=True)
-    musicbrainz_artistid = Column(String, nullable=True)
-    musicbrainz_albumartistid = Column(String, nullable=True)
-    musicbrainz_releasegroupid = Column(String, nullable=True)
-    musicbrainz_releasetrackid = Column(String, nullable=True)
-    musicbrainz_workid = Column(String, nullable=True)
-    musicbrainz_albumstatus = Column(String, nullable=True)
-    musicbrainz_albumtype = Column(String, nullable=True)
-
-    # Writer / ISRC / work
-    writer = Column(String, nullable=True)
-    isrc = Column(String, nullable=True)
-    work = Column(String, nullable=True)
-
-    # Pending MB updates
-    pending_mb_updates = Column(Text, nullable=True)
-    mb_ignored_fields = Column(Text, nullable=True)
-
-    # Cover detection
-    is_cover = Column(BigInteger, server_default=text("0"), nullable=True)
-    is_cover_reason = Column(String, nullable=True)
-    original_cover_artist = Column(String, nullable=True)
-    cover_manual_override = Column(Boolean, server_default=text("FALSE"), nullable=True)
-
-    # Mood / genre classification
-    is_live = Column(BigInteger, server_default=text("0"), nullable=True)
-    is_acoustic = Column(BigInteger, server_default=text("0"), nullable=True)
-    is_remix = Column(BigInteger, server_default=text("0"), nullable=True)
-    alternate_take = Column(BigInteger, server_default=text("0"), nullable=True)
-    base_track_id = Column(String, nullable=True)
-    is_compilation = Column(BigInteger, server_default=text("0"), nullable=True)
-    releasecountry = Column(String, nullable=True)
-    discogs_artist_id = Column(String, nullable=True)
-    recording_mbid = Column(String, nullable=True)
-    mood = Column(String, nullable=True)
-    mood_confidence = Column(Double, nullable=True)
-    mood_source = Column(String, nullable=True)
-    mood_last_updated = Column(DateTime, nullable=True)
-    danceability = Column(Double, nullable=True)
-
-    # Essentia
-    essentia_last_updated = Column(DateTime, nullable=True)
-    essentia_model_version = Column(String, nullable=True)
-    essentia_scan_version = Column(String, nullable=True)
-    bpm = Column(Double, nullable=True)
-
-    # Verification
-    verification_status = Column(String, nullable=True)
-    verification_checked_at = Column(DateTime, nullable=True)
-    verification_error = Column(String, nullable=True)
+    # System & Sync
+    writer: Mapped[str | None] = mapped_column(String)
+    isrc: Mapped[str | None] = mapped_column(String)
+    work: Mapped[str | None] = mapped_column(String)
+    pending_mb_updates: Mapped[str | None] = mapped_column(Text)
+    mb_ignored_fields: Mapped[str | None] = mapped_column(Text)
+    last_scanned: Mapped[str | None] = mapped_column(String)
+    verification_status: Mapped[str | None] = mapped_column(String)
+    verification_checked_at: Mapped[datetime | None] = mapped_column(DateTime)
+    verification_error: Mapped[str | None] = mapped_column(String)
 
     def __repr__(self) -> str:
         return f"<Track(id={self.id!r}, title={self.title!r}, artist={self.artist!r})>"
@@ -213,41 +193,40 @@ class Track(Base):
 class ScanHistory(Base):
     __tablename__ = "scan_history"
 
-    id = Column(BigInteger, Sequence("scan_history_id_seq"), primary_key=True)
-    scan_type = Column(String, nullable=True)
-    artist = Column(String, nullable=True)
-    album = Column(String, nullable=True)
-    status = Column(String, nullable=True)
-    message = Column(String, nullable=True)
-    started_at = Column(DateTime, server_default=text("CURRENT_TIMESTAMP"), nullable=True)
-    completed_at = Column(DateTime, nullable=True)
-    duration_seconds = Column(Double, nullable=True)
-    changed_albums = Column(Integer, nullable=True)
-    tracks_added = Column(Integer, nullable=True)
+    id: Mapped[int] = mapped_column(BigInteger, Sequence("scan_history_id_seq"), primary_key=True)
+    scan_type: Mapped[str | None] = mapped_column(String)
+    artist: Mapped[str | None] = mapped_column(String)
+    album: Mapped[str | None] = mapped_column(String)
+    status: Mapped[str | None] = mapped_column(String)
+    message: Mapped[str | None] = mapped_column(String)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    duration_seconds: Mapped[float | None] = mapped_column(Double)
+    changed_albums: Mapped[int | None] = mapped_column(Integer)
+    tracks_added: Mapped[int | None] = mapped_column(Integer)
 
     def __repr__(self) -> str:
         return f"<ScanHistory(id={self.id}, artist={self.artist!r}, status={self.status!r})>"
 
 
 # =============================================================================
-# scan_states (New Table for Cross-Process State Tracking)
+# scan_states 
 # =============================================================================
 
 class ScanState(Base):
     __tablename__ = "scan_states"
 
-    scan_type = Column(String, primary_key=True)
-    is_running = Column(Boolean, server_default=text("FALSE"), nullable=True)
-    status = Column(String, server_default=text("'idle'"), nullable=True)
-    stop_requested = Column(Boolean, server_default=text("FALSE"), nullable=True)
-    current_artist = Column(String, nullable=True)
-    last_scanned_artist = Column(String, nullable=True)
-    extra_data = Column(JSONB, server_default=text("'{}'::jsonb"), nullable=True)
-    updated_at = Column(
+    scan_type: Mapped[str] = mapped_column(String, primary_key=True)
+    is_running: Mapped[bool | None] = mapped_column(server_default=text("FALSE"))
+    status: Mapped[str | None] = mapped_column(String, server_default=text("'idle'"))
+    stop_requested: Mapped[bool | None] = mapped_column(server_default=text("FALSE"))
+    current_artist: Mapped[str | None] = mapped_column(String)
+    last_scanned_artist: Mapped[str | None] = mapped_column(String)
+    extra_data: Mapped[dict[str, Any] | None] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), 
         server_default=text("CURRENT_TIMESTAMP"), 
-        onupdate=func.now(),
-        nullable=True
+        onupdate=func.now()
     )
 
     def __repr__(self) -> str:
@@ -261,60 +240,60 @@ class ScanState(Base):
 class DownloadQueue(Base):
     __tablename__ = "download_queue"
 
-    id = Column(BigInteger, Sequence("download_queue_id_seq"), primary_key=True)
-    artist = Column(String, nullable=True)
-    title = Column(String, nullable=True)
-    album = Column(String, nullable=True)
-    status = Column(String, server_default=text("'queued'"), nullable=True)
-    source = Column(String, server_default=text("'soulseek'"), nullable=True)
-    priority = Column(Integer, server_default=text("5"), nullable=True)
-    created_at = Column(DateTime, server_default=text("CURRENT_TIMESTAMP"), nullable=True)
-    updated_at = Column(DateTime, server_default=text("CURRENT_TIMESTAMP"), nullable=True)
+    id: Mapped[int] = mapped_column(BigInteger, Sequence("download_queue_id_seq"), primary_key=True)
+    artist: Mapped[str | None] = mapped_column(String)
+    title: Mapped[str | None] = mapped_column(String)
+    album: Mapped[str | None] = mapped_column(String)
+    status: Mapped[str | None] = mapped_column(String, server_default=text("'queued'"))
+    source: Mapped[str | None] = mapped_column(String, server_default=text("'soulseek'"))
+    priority: Mapped[int | None] = mapped_column(Integer, server_default=text("5"))
+    created_at: Mapped[datetime | None] = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
 
     # Extended columns
-    album_artist = Column(String, nullable=True)
-    track_number = Column(String, nullable=True)
-    disc_number = Column(String, nullable=True)
-    year = Column(String, nullable=True)
-    release_year = Column(Integer, nullable=True)
-    release_id = Column(String, nullable=True)
-    release_source = Column(String, nullable=True)
-    release_mbid = Column(String, nullable=True)
-    recording_mbid = Column(String, nullable=True)
-    cover_art_url = Column(String, nullable=True)
-    duration = Column(Double, nullable=True)
-    found_filename = Column(String, nullable=True)
-    file_path = Column(String, nullable=True)
-    matched_file_path = Column(String, nullable=True)
-    music_file_path = Column(String, nullable=True)
-    failure_reason = Column(String, nullable=True)
-    retry_count = Column(Integer, server_default=text("0"), nullable=True)
-    max_retries = Column(Integer, server_default=text("5"), nullable=True)
-    retry_delay_minutes = Column(Integer, server_default=text("30"), nullable=True)
-    next_retry_at = Column(DateTime, nullable=True)
-    last_failure_time = Column(DateTime, nullable=True)
-    imported_at = Column(DateTime, nullable=True)
-    copied_individually = Column(Boolean, server_default=text("FALSE"), nullable=True)
-    copied_individually_at = Column(DateTime, nullable=True)
-    match_confidence = Column(Double, nullable=True)
-    match_method = Column(String, nullable=True)
-    metadata_data = Column("metadata", JSONB, server_default=text("'{}'::jsonb"), nullable=True)
-    metadata_id = Column(BigInteger, nullable=True)
-    release_metadata_id = Column(BigInteger, nullable=True)
-    collection_track_id = Column(String, nullable=True)
-    collection_matched_at = Column(String, nullable=True)
-    in_collection = Column(Integer, server_default=text("0"), nullable=True)
-    auto_delete_at = Column(DateTime, nullable=True)
-    queue_folder = Column(String, nullable=True)
-    is_manual_download = Column(Boolean, server_default=text("FALSE"), nullable=True)
-    slskd_username = Column(String, nullable=True)
-    slskd_transfer_id = Column(String, nullable=True)
-    slskd_state = Column(String, nullable=True)
-    slskd_queue_position = Column(Integer, nullable=True)
-    slskd_last_sync_at = Column(DateTime, nullable=True)
-    search_query = Column(String, nullable=True)
-    source_id = Column(String, nullable=True)
-    status_changed_at = Column(DateTime, server_default=text("CURRENT_TIMESTAMP"), nullable=True)
+    album_artist: Mapped[str | None] = mapped_column(String)
+    track_number: Mapped[str | None] = mapped_column(String)
+    disc_number: Mapped[str | None] = mapped_column(String)
+    year: Mapped[str | None] = mapped_column(String)
+    release_year: Mapped[int | None] = mapped_column(Integer)
+    release_id: Mapped[str | None] = mapped_column(String)
+    release_source: Mapped[str | None] = mapped_column(String)
+    release_mbid: Mapped[str | None] = mapped_column(String)
+    recording_mbid: Mapped[str | None] = mapped_column(String)
+    cover_art_url: Mapped[str | None] = mapped_column(String)
+    duration: Mapped[float | None] = mapped_column(Double)
+    found_filename: Mapped[str | None] = mapped_column(String)
+    file_path: Mapped[str | None] = mapped_column(String)
+    matched_file_path: Mapped[str | None] = mapped_column(String)
+    music_file_path: Mapped[str | None] = mapped_column(String)
+    failure_reason: Mapped[str | None] = mapped_column(String)
+    retry_count: Mapped[int | None] = mapped_column(Integer, server_default=text("0"))
+    max_retries: Mapped[int | None] = mapped_column(Integer, server_default=text("5"))
+    retry_delay_minutes: Mapped[int | None] = mapped_column(Integer, server_default=text("30"))
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_failure_time: Mapped[datetime | None] = mapped_column(DateTime)
+    imported_at: Mapped[datetime | None] = mapped_column(DateTime)
+    copied_individually: Mapped[bool | None] = mapped_column(server_default=text("FALSE"))
+    copied_individually_at: Mapped[datetime | None] = mapped_column(DateTime)
+    match_confidence: Mapped[float | None] = mapped_column(Double)
+    match_method: Mapped[str | None] = mapped_column(String)
+    metadata_data: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSONB, server_default=text("'{}'::jsonb"))
+    metadata_id: Mapped[int | None] = mapped_column(BigInteger)
+    release_metadata_id: Mapped[int | None] = mapped_column(BigInteger)
+    collection_track_id: Mapped[str | None] = mapped_column(String)
+    collection_matched_at: Mapped[str | None] = mapped_column(String)
+    in_collection: Mapped[int | None] = mapped_column(Integer, server_default=text("0"))
+    auto_delete_at: Mapped[datetime | None] = mapped_column(DateTime)
+    queue_folder: Mapped[str | None] = mapped_column(String)
+    is_manual_download: Mapped[bool | None] = mapped_column(server_default=text("FALSE"))
+    slskd_username: Mapped[str | None] = mapped_column(String)
+    slskd_transfer_id: Mapped[str | None] = mapped_column(String)
+    slskd_state: Mapped[str | None] = mapped_column(String)
+    slskd_queue_position: Mapped[int | None] = mapped_column(Integer)
+    slskd_last_sync_at: Mapped[datetime | None] = mapped_column(DateTime)
+    search_query: Mapped[str | None] = mapped_column(String)
+    source_id: Mapped[str | None] = mapped_column(String)
+    status_changed_at: Mapped[datetime | None] = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
 
     def __repr__(self) -> str:
         return f"<DownloadQueue(id={self.id}, title={self.title!r}, status={self.status!r})>"
@@ -327,16 +306,16 @@ class DownloadQueue(Base):
 class Bookmark(Base):
     __tablename__ = "bookmarks"
 
-    id = Column(BigInteger, Sequence("bookmarks_id_seq"), primary_key=True)
-    bookmark_type = Column(String, nullable=True)
-    type = Column(String, nullable=True)
-    entity_id = Column(String, nullable=True)
-    name = Column(String, nullable=True)
-    artist_name = Column(String, nullable=True)
-    album_name = Column(String, nullable=True)
-    title = Column(String, nullable=True)
-    notes = Column(String, nullable=True)
-    created_at = Column(DateTime, server_default=text("CURRENT_TIMESTAMP"), nullable=True)
+    id: Mapped[int] = mapped_column(BigInteger, Sequence("bookmarks_id_seq"), primary_key=True)
+    bookmark_type: Mapped[str | None] = mapped_column(String)
+    type: Mapped[str | None] = mapped_column(String)
+    entity_id: Mapped[str | None] = mapped_column(String)
+    name: Mapped[str | None] = mapped_column(String)
+    artist_name: Mapped[str | None] = mapped_column(String)
+    album_name: Mapped[str | None] = mapped_column(String)
+    title: Mapped[str | None] = mapped_column(String)
+    notes: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
 
     def __repr__(self) -> str:
         return f"<Bookmark(id={self.id}, name={self.name!r})>"
@@ -349,16 +328,16 @@ class Bookmark(Base):
 class GenreUpdate(Base):
     __tablename__ = "genre_updates"
 
-    id = Column(BigInteger, Sequence("genre_updates_id_seq"), primary_key=True)
-    artist_name = Column(String, nullable=True)
-    album_name = Column(String, nullable=True)
-    track_id = Column(String, nullable=True)
-    genres_before = Column(String, nullable=True)
-    genres_after = Column(String, nullable=True)
-    action_type = Column(String, nullable=True)
-    affected_track_count = Column(Integer, nullable=True)
-    change_summary = Column(String, nullable=True)
-    created_at = Column(DateTime, server_default=text("CURRENT_TIMESTAMP"), nullable=True)
+    id: Mapped[int] = mapped_column(BigInteger, Sequence("genre_updates_id_seq"), primary_key=True)
+    artist_name: Mapped[str | None] = mapped_column(String)
+    album_name: Mapped[str | None] = mapped_column(String)
+    track_id: Mapped[str | None] = mapped_column(String)
+    genres_before: Mapped[str | None] = mapped_column(String)
+    genres_after: Mapped[str | None] = mapped_column(String)
+    action_type: Mapped[str | None] = mapped_column(String)
+    affected_track_count: Mapped[int | None] = mapped_column(Integer)
+    change_summary: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
 
     def __repr__(self) -> str:
         return f"<GenreUpdate(id={self.id}, action={self.action_type!r})>"
@@ -371,19 +350,19 @@ class GenreUpdate(Base):
 class SlskdSearchLog(Base):
     __tablename__ = "slskd_search_logs"
 
-    id = Column(BigInteger, Sequence("slskd_search_logs_id_seq"), primary_key=True)
-    created_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=True)
-    search_type = Column(String, nullable=True)
-    query = Column(String, nullable=True)
-    queue_id = Column(Integer, nullable=True)
-    artist = Column(String, nullable=True)
-    title = Column(String, nullable=True)
-    album = Column(String, nullable=True)
-    result_count = Column(Integer, server_default=text("0"), nullable=True)
-    duration_seconds = Column(Float, nullable=True)
-    notes = Column(String, nullable=True)
-    selected_result = Column(JSONB, nullable=True)
-    results = Column(JSONB, nullable=True)
+    id: Mapped[int] = mapped_column(BigInteger, Sequence("slskd_search_logs_id_seq"), primary_key=True)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"))
+    search_type: Mapped[str | None] = mapped_column(String)
+    query: Mapped[str | None] = mapped_column(String)
+    queue_id: Mapped[int | None] = mapped_column(Integer)
+    artist: Mapped[str | None] = mapped_column(String)
+    title: Mapped[str | None] = mapped_column(String)
+    album: Mapped[str | None] = mapped_column(String)
+    result_count: Mapped[int | None] = mapped_column(Integer, server_default=text("0"))
+    duration_seconds: Mapped[float | None] = mapped_column(Float)
+    notes: Mapped[str | None] = mapped_column(String)
+    selected_result: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    results: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
     def __repr__(self) -> str:
         return f"<SlskdSearchLog(id={self.id}, query={self.query!r})>"
@@ -396,29 +375,28 @@ class SlskdSearchLog(Base):
 class MusicbrainzRelease(Base):
     __tablename__ = "musicbrainz_releases"
 
-    id = Column(BigInteger, Sequence("musicbrainz_releases_id_seq"), primary_key=True)
-    release_id = Column(String, nullable=False, unique=True)
-    release_title = Column(String, nullable=False)
-    artist = Column(String, nullable=False)
-    release_year = Column(Integer, nullable=True)
-    total_tracks = Column(Integer, nullable=True)
-    monitoring_folder_path = Column(String, nullable=True)
-    final_folder_path = Column(String, nullable=True)
-    status = Column(String, server_default=text("'active'"), nullable=True)
-    method = Column(String, nullable=True)
-    discovered_count = Column(Integer, server_default=text("0"), nullable=True)
-    organized_count = Column(Integer, server_default=text("0"), nullable=True)
-    finalized_count = Column(Integer, server_default=text("0"), nullable=True)
-    album_artist = Column(String, nullable=True)
-    genres = Column(String, nullable=True)
-    cover_art_url = Column(String, nullable=True)
-    release_source = Column(String, nullable=True)
-    created_at = Column(DateTime, server_default=text("CURRENT_TIMESTAMP"), nullable=True)
-    updated_at = Column(DateTime, server_default=text("CURRENT_TIMESTAMP"), nullable=True)
-    finalized_at = Column(DateTime, nullable=True)
+    id: Mapped[int] = mapped_column(BigInteger, Sequence("musicbrainz_releases_id_seq"), primary_key=True)
+    release_id: Mapped[str] = mapped_column(String, unique=True)
+    release_title: Mapped[str] = mapped_column(String)
+    artist: Mapped[str] = mapped_column(String)
+    release_year: Mapped[int | None] = mapped_column(Integer)
+    total_tracks: Mapped[int | None] = mapped_column(Integer)
+    monitoring_folder_path: Mapped[str | None] = mapped_column(String)
+    final_folder_path: Mapped[str | None] = mapped_column(String)
+    status: Mapped[str | None] = mapped_column(String, server_default=text("'active'"))
+    method: Mapped[str | None] = mapped_column(String)
+    discovered_count: Mapped[int | None] = mapped_column(Integer, server_default=text("0"))
+    organized_count: Mapped[int | None] = mapped_column(Integer, server_default=text("0"))
+    finalized_count: Mapped[int | None] = mapped_column(Integer, server_default=text("0"))
+    album_artist: Mapped[str | None] = mapped_column(String)
+    genres: Mapped[str | None] = mapped_column(String)
+    cover_art_url: Mapped[str | None] = mapped_column(String)
+    release_source: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime)
 
-    tracks = relationship(
-        "MusicbrainzReleaseTrack",
+    tracks: Mapped[list["MusicbrainzReleaseTrack"]] = relationship(
         back_populates="release",
         cascade="all, delete-orphan",
     )
@@ -434,27 +412,27 @@ class MusicbrainzRelease(Base):
 class MusicbrainzReleaseTrack(Base):
     __tablename__ = "musicbrainz_release_tracks"
 
-    id = Column(BigInteger, Sequence("musicbrainz_release_tracks_id_seq"), primary_key=True)
-    release_id = Column(String, ForeignKey("musicbrainz_releases.release_id"), nullable=False)
-    queue_id = Column(BigInteger, ForeignKey("download_queue.id"), nullable=True)
-    disc_number = Column(Integer, nullable=True)
-    track_number = Column(Integer, nullable=True)
-    track_title = Column(String, nullable=True)
-    track_artist = Column(String, nullable=True)
-    duration = Column(Integer, nullable=True)
-    isrc = Column(String, nullable=True)
-    recording_title = Column(String, nullable=True)
-    recording_mbid = Column(String, nullable=True)
-    composer = Column(String, nullable=True)
-    album_artist = Column(String, nullable=True)
-    year = Column(String, nullable=True)
-    status = Column(String, server_default=text("'queued'"), nullable=True)
-    found_filename = Column(String, nullable=True)
-    file_path = Column(String, nullable=True)
-    created_at = Column(DateTime, server_default=text("CURRENT_TIMESTAMP"), nullable=True)
-    updated_at = Column(DateTime, server_default=text("CURRENT_TIMESTAMP"), nullable=True)
+    id: Mapped[int] = mapped_column(BigInteger, Sequence("musicbrainz_release_tracks_id_seq"), primary_key=True)
+    release_id: Mapped[str] = mapped_column(String, ForeignKey("musicbrainz_releases.release_id"))
+    queue_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("download_queue.id"))
+    disc_number: Mapped[int | None] = mapped_column(Integer)
+    track_number: Mapped[int | None] = mapped_column(Integer)
+    track_title: Mapped[str | None] = mapped_column(String)
+    track_artist: Mapped[str | None] = mapped_column(String)
+    duration: Mapped[int | None] = mapped_column(Integer)
+    isrc: Mapped[str | None] = mapped_column(String)
+    recording_title: Mapped[str | None] = mapped_column(String)
+    recording_mbid: Mapped[str | None] = mapped_column(String)
+    composer: Mapped[str | None] = mapped_column(String)
+    album_artist: Mapped[str | None] = mapped_column(String)
+    year: Mapped[str | None] = mapped_column(String)
+    status: Mapped[str | None] = mapped_column(String, server_default=text("'queued'"))
+    found_filename: Mapped[str | None] = mapped_column(String)
+    file_path: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
 
-    release = relationship("MusicbrainzRelease", back_populates="tracks")
+    release: Mapped["MusicbrainzRelease"] = relationship(back_populates="tracks")
 
     def __repr__(self) -> str:
         return f"<MusicbrainzReleaseTrack(id={self.id}, title={self.track_title!r})>"
@@ -467,16 +445,16 @@ class MusicbrainzReleaseTrack(Base):
 class MissingRelease(Base):
     __tablename__ = "missing_releases"
 
-    id = Column(BigInteger, Sequence("missing_releases_id_seq"), primary_key=True)
-    artist = Column(String, nullable=False)
-    release_id = Column(String, nullable=False)
-    title = Column(String, nullable=True)
-    primary_type = Column(String, nullable=True)
-    first_release_date = Column(String, nullable=True)
-    cover_art_url = Column(String, nullable=True)
-    category = Column(String, nullable=True)
-    last_checked = Column(DateTime, server_default=text("CURRENT_TIMESTAMP"), nullable=True)
-    tracklist = Column(String, nullable=True)
+    id: Mapped[int] = mapped_column(BigInteger, Sequence("missing_releases_id_seq"), primary_key=True)
+    artist: Mapped[str] = mapped_column(String)
+    release_id: Mapped[str] = mapped_column(String)
+    title: Mapped[str | None] = mapped_column(String)
+    primary_type: Mapped[str | None] = mapped_column(String)
+    first_release_date: Mapped[str | None] = mapped_column(String)
+    cover_art_url: Mapped[str | None] = mapped_column(String)
+    category: Mapped[str | None] = mapped_column(String)
+    last_checked: Mapped[datetime | None] = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
+    tracklist: Mapped[str | None] = mapped_column(String)
 
     def __repr__(self) -> str:
         return f"<MissingRelease(id={self.id}, release_id={self.release_id!r})>"
@@ -489,19 +467,13 @@ class MissingRelease(Base):
 class AlbumArt(Base):
     __tablename__ = "album_art"
 
-    id = Column(BigInteger, Sequence("album_art_id_seq"), primary_key=True)
-    artist_name = Column(String, nullable=False)
-    album_name = Column(String, nullable=False)
-    image_data = Column(LargeBinary, nullable=True)
-    image_mime_type = Column(String, nullable=True)
-    source = Column(String, nullable=True)
-    downloaded_at = Column(DateTime, server_default=text("CURRENT_TIMESTAMP"), nullable=True)
-
-    __table_args__ = (
-        # Unique constraint matches schema: unique_artist_album
-        # SQLAlchemy handles this via ``UniqueConstraint`` if needed at the
-        # schema level; for now we rely on the database-side unique index.
-    )
+    id: Mapped[int] = mapped_column(BigInteger, Sequence("album_art_id_seq"), primary_key=True)
+    artist_name: Mapped[str] = mapped_column(String)
+    album_name: Mapped[str] = mapped_column(String)
+    image_data: Mapped[bytes | None] = mapped_column(LargeBinary)
+    image_mime_type: Mapped[str | None] = mapped_column(String)
+    source: Mapped[str | None] = mapped_column(String)
+    downloaded_at: Mapped[datetime | None] = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
 
     def __repr__(self) -> str:
         return f"<AlbumArt(id={self.id}, artist={self.artist_name!r}, album={self.album_name!r})>"
