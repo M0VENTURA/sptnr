@@ -1,32 +1,31 @@
 """Incremental Navidrome library sync service with WebUI-visible status."""
+
 from __future__ import annotations
-import logging
+
 import threading
 import time
-from typing import Dict, Any
+from typing import Any, Dict
+
+import structlog
+from sqlalchemy import text
 
 from api_clients.navidrome import NavidromeClient
-from db.repositories.navidrome import bulk_upsert_navidrome_tracks
-from sqlalchemy import text
 from db.engine import db_session
+from db.repositories.navidrome import bulk_upsert_navidrome_tracks
 from db.utils import row_get
 from helpers.config_helpers import get_scan_pipeline_config
 from services.scanning.navidrome_import import scan_artist_to_db
 from services.scanning.navidrome_service import build_delta_artist_index
 from services.scanning.scan_state import (
+    get_scan_checkpoint_path,
     load_scan_checkpoint,
     save_artist_scan_checkpoint,
-    get_scan_checkpoint_path,
 )
 
-# Initialize standard module logger
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
-# Load scanning pipeline config
 _scan_cfg = get_scan_pipeline_config()
 
-# Checkpoint key for this sync flow (persisted in scan_states so the marker
-# survives process restarts — the old in-memory marker was lost on reboot).
 _SYNC_CHECKPOINT = get_scan_checkpoint_path("library_sync")
 
 _library_sync_lock = threading.Lock()
@@ -34,17 +33,17 @@ _library_sync_state: dict[str, bool] = {"running": False, "pending": False}
 _last_processed_scan_marker: int | None = None
 _library_status_lock = threading.Lock()
 _library_status: dict[str, Any] = {
-    "running": False, 
-    "pending": False, 
-    "started_at": None, 
-    "finished_at": None, 
-    "last_run": None, 
-    "last_processed_scan_marker": None, 
-    "artists_total": 0, 
-    "artists_processed": 0, 
-    "artists_failed": 0, 
-    "tracks_attempted": 0, 
-    "message": "Idle"
+    "running": False,
+    "pending": False,
+    "started_at": None,
+    "finished_at": None,
+    "last_run": None,
+    "last_processed_scan_marker": None,
+    "artists_total": 0,
+    "artists_processed": 0,
+    "artists_failed": 0,
+    "tracks_attempted": 0,
+    "message": "Idle",
 }
 
 
@@ -62,17 +61,18 @@ def request_library_sync() -> dict[str, Any]:
                 _library_status["message"] = "Sync already running; queued follow-up"
             return {"coalesced": True, "running": True, "pending": True}
         _library_sync_state.update({"running": True, "pending": False})
+
     with _library_status_lock:
         _library_status.update({
-            "running": True, 
-            "pending": False, 
-            "started_at": time.time(), 
-            "finished_at": None, 
-            "message": "Starting library sync...", 
-            "artists_total": 0, 
-            "artists_processed": 0, 
-            "artists_failed": 0, 
-            "tracks_attempted": 0
+            "running": True,
+            "pending": False,
+            "started_at": time.time(),
+            "finished_at": None,
+            "message": "Starting library sync...",
+            "artists_total": 0,
+            "artists_processed": 0,
+            "artists_failed": 0,
+            "tracks_attempted": 0,
         })
     threading.Thread(target=_run_library_sync_worker, daemon=True, name="library-sync-worker").start()
     return {"started": True, "running": True}
@@ -81,29 +81,29 @@ def request_library_sync() -> dict[str, Any]:
 def _run_library_sync_worker() -> None:
     try:
         result = perform_library_sync()
-        # After Navidrome imports the Playlists folder, optionally flip every
-        # playlist to public (config: ``navidrome.auto_public_playlists``).
         try:
             from services.playlists.playlist_service import sync_playlists_public
             pl = sync_playlists_public()
             if pl.get("enabled"):
                 logger.info(
-                    "[LIBRARY_SYNC] Playlist visibility sync: %d checked, %d made public, %d failed",
-                    pl.get("checked", 0), pl.get("made_public", 0), pl.get("failed", 0),
+                    "Playlist visibility sync complete",
+                    checked=pl.get("checked", 0),
+                    made_public=pl.get("made_public", 0),
+                    failed=pl.get("failed", 0),
                 )
         except Exception as exc:
-            logger.debug("[LIBRARY_SYNC] Playlist public sync skipped: %s", exc)
+            logger.debug("Playlist public sync skipped", error=str(exc))
+
         with _library_status_lock:
             _library_status.update({
-                "message": result.get("reason") or "Completed", 
-                "last_run": time.time(), 
-                "artists_processed": result.get("artists_processed", _library_status.get("artists_processed", 0)), 
-                "artists_failed": result.get("artists_failed", _library_status.get("artists_failed", 0)), 
-                "tracks_attempted": result.get("tracks_attempted", _library_status.get("tracks_attempted", 0)), 
-                "last_processed_scan_marker": result.get("marker", _library_status.get("last_processed_scan_marker"))
+                "message": result.get("reason") or "Completed",
+                "last_run": time.time(),
+                "artists_processed": result.get("artists_processed", _library_status.get("artists_processed", 0)),
+                "artists_failed": result.get("artists_failed", _library_status.get("artists_failed", 0)),
+                "tracks_attempted": result.get("tracks_attempted", _library_status.get("tracks_attempted", 0)),
+                "last_processed_scan_marker": result.get("marker", _library_status.get("last_processed_scan_marker")),
             })
     except Exception as exc:
-        # Replaced manual logging with logger.exception() which includes stack traces automatically
         logger.exception("Unexpected error during library sync")
         with _library_status_lock:
             _library_status["message"] = "Failed"
@@ -112,10 +112,12 @@ def _run_library_sync_worker() -> None:
             _library_sync_state["running"] = False
             pending = bool(_library_sync_state["pending"])
             _library_sync_state["pending"] = False
+
         with _library_status_lock:
             _library_status["running"] = False
             _library_status["pending"] = False
             _library_status["finished_at"] = time.time()
+
         if pending:
             request_library_sync()
 
@@ -125,7 +127,7 @@ def get_navidrome_config() -> dict[str, str] | None:
         from helpers.config_helpers import get_navidrome_first_user
         return get_navidrome_first_user() or None
     except Exception as exc:
-        logger.debug("Could not load Navidrome config: %s", exc)
+        logger.debug("Could not load Navidrome config", error=str(exc))
         return None
 
 
@@ -135,19 +137,21 @@ def perform_library_sync() -> dict[str, Any]:
     cfg = get_navidrome_config()
     if not cfg:
         return {"success": False, "skipped": True, "reason": "missing_config"}
+
     client = NavidromeClient(base_url=cfg["base_url"], username=cfg["user"], password=cfg["pass"])
     scan_status = client.get_scan_status()
     if not scan_status.get("success"):
         return {"success": False, "skipped": True, "reason": "scan_status_failed"}
     if scan_status.get("scanning"):
         return {"success": False, "skipped": True, "reason": "navidrome_scanning"}
+
     marker = scan_status.get("count")
     last_scan_ts = scan_status.get("lastScan")
 
-    # Persisted marker (survives restarts) + in-memory fallback.
     checkpoint = load_scan_checkpoint(_SYNC_CHECKPOINT) or {}
     last_marker = checkpoint.get("scan_marker")
     last_scan_ts_stored = checkpoint.get("last_scan_ts")
+    
     marker_unchanged = (
         marker is not None
         and last_marker is not None
@@ -162,26 +166,24 @@ def perform_library_sync() -> dict[str, Any]:
     if marker_unchanged and scan_unchanged:
         return {"success": True, "skipped": True, "reason": "marker_already_processed", "marker": marker}
 
-    # Delta candidates: only artists whose albums/songs changed since the
-    # previous scan. Falls back to the full artist list when no delta can be
-    # determined (first run, or server ignoring the modified filter).
     since_ts = last_scan_ts_stored or last_scan_ts
     candidate_artists = get_candidate_artists(client, since_ts=since_ts)
     if not candidate_artists:
         return {"success": True, "skipped": True, "reason": "no_candidate_artists"}
+
     with _library_status_lock:
         _library_status.update({"artists_total": len(candidate_artists), "message": f"Starting sync for {len(candidate_artists)} artists"})
-    
-    # Simple, lazy-formatted INFO log
-    logger.info("Starting bulk diff-sync for %d artists", len(candidate_artists))
-    
-    batch_size = _scan_cfg["library_sync_batch_size"]
+
+    logger.info("Starting bulk diff-sync for artists", count=len(candidate_artists))
+
+    batch_size = _scan_cfg.get("library_sync_batch_size", 100)
     all_tracks_to_upsert: list[dict[str, Any]] = []
     seen_track_ids: set[str] = set()
     artists_processed = 0
     artists_failed = 0
     tracks_attempted = 0
     total = len(candidate_artists)
+
     for index, (artist_name, artist_id) in enumerate(candidate_artists.items(), start=1):
         if not artist_id:
             continue
@@ -192,6 +194,7 @@ def perform_library_sync() -> dict[str, Any]:
             artists_processed += 1
             with _library_status_lock:
                 _library_status["artists_processed"] = artists_processed
+
             for track in result.get("tracks", []) or []:
                 track_id = track.get("id") if isinstance(track, dict) else None
                 if track_id and track_id in seen_track_ids:
@@ -200,6 +203,7 @@ def perform_library_sync() -> dict[str, Any]:
                     seen_track_ids.add(str(track_id))
                 if isinstance(track, dict):
                     all_tracks_to_upsert.append(track)
+
             if len(all_tracks_to_upsert) >= batch_size:
                 tracks_attempted += run_bulk_commit(all_tracks_to_upsert)
                 all_tracks_to_upsert.clear()
@@ -209,12 +213,11 @@ def perform_library_sync() -> dict[str, Any]:
             artists_failed += 1
             with _library_status_lock:
                 _library_status["artists_failed"] = artists_failed
-            logger.error("Artist sync failed for '%s': %s", artist_name, exc)
-            
+            logger.error("Artist sync failed", artist=artist_name, error=str(exc))
+
     if all_tracks_to_upsert:
         tracks_attempted += run_bulk_commit(all_tracks_to_upsert)
 
-    # Persist marker + lastScan timestamp for the next run.
     _last_processed_scan_marker = marker
     marker_extra: dict[str, Any] = {}
     if marker is not None:
@@ -229,31 +232,37 @@ def perform_library_sync() -> dict[str, Any]:
                 extra=marker_extra,
             )
         except Exception as exc:
-            logger.debug("Could not persist library sync marker: %s", exc)
+            logger.debug("Could not persist library sync marker", error=str(exc))
 
     duration = time.time() - started_at
+    logger.info("Bulk sync complete", duration_seconds=round(duration, 2))
     
-    logger.info("Bulk sync complete in %.2fs", duration)
     return {
-        "success": True, 
-        "marker": marker, 
-        "artists_processed": artists_processed, 
-        "artists_failed": artists_failed, 
-        "tracks_attempted": tracks_attempted, 
-        "duration_seconds": duration
+        "success": True,
+        "marker": marker,
+        "artists_processed": artists_processed,
+        "artists_failed": artists_failed,
+        "tracks_attempted": tracks_attempted,
+        "duration_seconds": duration,
     }
 
 
 def sync_artist_with_diff(artist_name: str, artist_id: str) -> dict[str, Any]:
     result = scan_artist_to_db(artist_name, artist_id, verbose=False, force=False, diff_mode=True)
     if not isinstance(result, dict):
-        return {"skipped_mtime": False, "skipped_album_diff": False, "changed": bool(result is None), "changed_albums": 0, "tracks": []}
+        return {
+            "skipped_mtime": False,
+            "skipped_album_diff": False,
+            "changed": bool(result is None),
+            "changed_albums": 0,
+            "tracks": [],
+        }
     return {
-        "skipped_mtime": bool(result.get("skipped_mtime", False)), 
-        "skipped_album_diff": bool(result.get("skipped_album_diff", False)), 
-        "changed": bool(result.get("changed", False)), 
-        "changed_albums": int(result.get("changed_albums", 0) or 0), 
-        "tracks": result.get("tracks", []) or []
+        "skipped_mtime": bool(result.get("skipped_mtime", False)),
+        "skipped_album_diff": bool(result.get("skipped_album_diff", False)),
+        "changed": bool(result.get("changed", False)),
+        "changed_albums": int(result.get("changed_albums", 0) or 0),
+        "tracks": result.get("tracks", []) or [],
     }
 
 
@@ -264,17 +273,12 @@ def run_bulk_commit(tracks: list[dict[str, Any]]) -> int:
         bulk_upsert_navidrome_tracks(tracks=tracks)
         return len(tracks)
     except Exception as exc:
-        logger.error("Bulk commit failed: %s", exc)
+        logger.error("Bulk commit failed", error=str(exc))
         return 0
 
 
 def get_candidate_artists(client: NavidromeClient, since_ts: Any = None) -> dict[str, str]:
-    """Resolve the set of artists to diff-sync.
-
-    When ``since_ts`` is provided, only artists whose albums/songs changed
-    after that timestamp are returned (delta scan). Otherwise falls back to
-    the full DB→Navidrome artist resolution (first run / no delta anchor).
-    """
+    """Resolve the set of artists to diff-sync."""
     if since_ts is not None:
         try:
             delta_index = build_delta_artist_index(client, since_ts)
@@ -284,18 +288,10 @@ def get_candidate_artists(client: NavidromeClient, since_ts: Any = None) -> dict
                 if isinstance(info, dict) and info.get("id")
             }
             if delta_resolved:
-                logger.info(
-                    "Library sync: %s delta artists changed since %s",
-                    len(delta_resolved),
-                    since_ts,
-                )
+                logger.info("Library sync: delta artists changed", count=len(delta_resolved), since=since_ts)
                 return delta_resolved
-            logger.debug(
-                "Library sync: no delta artists since %s — falling back to full candidate list",
-                since_ts,
-            )
         except Exception as exc:
-            logger.debug("Library sync delta resolution failed (%s) — using full candidates", exc)
+            logger.debug("Library sync delta resolution failed", error=str(exc))
 
     db_artists: dict[str, str | None] = {}
     try:
@@ -315,13 +311,14 @@ def get_candidate_artists(client: NavidromeClient, since_ts: Any = None) -> dict
             if name:
                 db_artists[str(name)] = None
     except Exception as exc:
-        logger.debug("Could not query DB artists: %s", exc)
+        logger.debug("Could not query DB artists", error=str(exc))
+
     if db_artists:
         try:
             index = client.build_artist_index() or {}
             case_insensitive_index = {
-                str(name).lower(): info.get("id") 
-                for name, info in index.items() 
+                str(name).lower(): info.get("id")
+                for name, info in index.items()
                 if isinstance(info, dict) and info.get("id")
             }
             for name in list(db_artists.keys()):
@@ -331,7 +328,8 @@ def get_candidate_artists(client: NavidromeClient, since_ts: Any = None) -> dict
             if resolved:
                 return resolved
         except Exception as exc:
-            logger.debug("Failed to resolve DB artist IDs: %s", exc)
+            logger.debug("Failed to resolve DB artist IDs", error=str(exc))
+
     try:
         index = client.build_artist_index() or {}
         return {str(name): info["id"] for name, info in index.items() if isinstance(info, dict) and info.get("id")}
