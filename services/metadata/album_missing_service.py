@@ -5,15 +5,22 @@ Extracted from the old monolithic app.py.
 
 from __future__ import annotations
 
-import logging
 import unicodedata
 import re
 from typing import Any
 
+import structlog
 from sqlalchemy import text
-from db.engine import db_session
 
-logger = logging.getLogger(__name__)
+from db.engine import db_session
+from services.enrichment.musicbrainz_service import (
+    get_shared_mb_client,
+    fetch_musicbrainz_release_metadata,
+)
+from api_clients.musicbrainz_http import escape_lucene_special_chars
+from helpers.normalization_service import normalize_title_for_lucene_query
+
+logger = structlog.get_logger(__name__)
 
 
 _ALBUM_SCOPE_WHERE = (
@@ -22,13 +29,8 @@ _ALBUM_SCOPE_WHERE = (
 )
 
 
-def get_library_tracks(artist: str, album: str) -> list[dict]:
-    """Get all library tracks for a specific artist/album.
-
-    Uses the same case-insensitive artist/album matching as the album detail
-    page route, so the track list shown on the page and the rows returned here
-    always agree even when the URL casing differs from the stored names.
-    """
+def get_library_tracks(artist: str, album: str) -> list[dict[str, Any]]:
+    """Get all library tracks for a specific artist/album."""
     with db_session() as session:
         result = session.execute(
             text(
@@ -41,10 +43,9 @@ def get_library_tracks(artist: str, album: str) -> list[dict]:
         return [dict(r) for r in result.mappings().all()]
 
 
-def get_missing_tracks(artist: str, album: str) -> dict:
+def get_missing_tracks(artist: str, album: str) -> dict[str, Any]:
     """Check which tracks are in the MusicBrainz release but missing from the library."""
     with db_session() as session:
-        # Get MBID
         row = session.execute(
             text(
                 "SELECT musicbrainz_album_mbid FROM tracks "
@@ -55,8 +56,6 @@ def get_missing_tracks(artist: str, album: str) -> dict:
         ).fetchone()
         mb_mbid = row[0] if row else None
 
-        # Fetch library tracks (mbid is the recording MBID column — beets_mbid
-        # does not exist in the current schema).
         library_rows = session.execute(
             text(
                 "SELECT id, title, track_number, disc_number, mbid FROM tracks "
@@ -67,29 +66,22 @@ def get_missing_tracks(artist: str, album: str) -> dict:
         library_count = len(library_rows)
 
     if not mb_mbid:
-        # Fallback: search MB for a release
+        # ✅ Use shared MusicBrainz client singleton instead of raw instantiation
         try:
-            from api_clients.musicbrainz_http import (
-                MusicBrainzHttpClient,
-                escape_lucene_special_chars,
-            )
-            from helpers.normalization_service import normalize_title_for_lucene_query
             query = (
                 f'artist:"{escape_lucene_special_chars(artist)}" '
                 f'AND release:"{escape_lucene_special_chars(album)}"'
             )
-            releases = MusicBrainzHttpClient(enabled=True).search_releases(query, limit=5)
+            releases = get_shared_mb_client().search_releases(query, limit=5)
             if releases:
                 mb_mbid = releases[0].get("id")
         except Exception as exc:
-            logger.debug("MB release search fallback failed: %s", exc)
+            logger.debug("MB release search fallback failed", error=str(exc))
 
     if not mb_mbid:
         return {"missing_tracks": [], "missing_count": 0, "mb_total": 0, "library_count": library_count}
 
-    # Fetch MB release tracklist
     try:
-        from services.enrichment.musicbrainz_service import fetch_musicbrainz_release_metadata
         mb_release = fetch_musicbrainz_release_metadata(mb_mbid)
     except Exception:
         mb_release = None
@@ -100,11 +92,6 @@ def get_missing_tracks(artist: str, album: str) -> dict:
     mb_tracks = mb_release.get("tracks", [])
     mb_total = len(mb_tracks)
 
-    # Build library entries: a set of normalized titles (for title-based
-    # matching) AND a lookup by (disc, track_number) — position-first per the
-    # alignment rules: a local file occupying the same Disc # + Track # slot
-    # counts as present even when the title differs slightly (that discrepancy
-    # belongs in /corrections as WRONG_TRACK_NAME, not in "missing").
     lib_norm = set()
     lib_by_position: dict[tuple[int, str], str] = {}
     for r in library_rows:
@@ -126,7 +113,6 @@ def get_missing_tracks(artist: str, album: str) -> dict:
         norm = unicodedata.normalize("NFKD", mb_title).lower()
         norm = re.sub(r"[^a-z0-9]+", " ", norm).strip()
 
-        # Position-first: is the Disc # / Track # slot occupied locally?
         mb_disc = int(mt.get("disc_number") or 1)
         mb_num = str(mt.get("track_number") or "").strip()
         position_occupied = bool(mb_num and (mb_disc, mb_num) in lib_by_position)
@@ -143,7 +129,7 @@ def get_missing_tracks(artist: str, album: str) -> dict:
     return {"missing_tracks": missing, "missing_count": len(missing), "mb_total": mb_total, "library_count": library_count}
 
 
-def get_title_mismatches(artist: str, album: str) -> dict:
+def get_title_mismatches(artist: str, album: str) -> dict[str, Any]:
     """Compare library track titles against the full MusicBrainz release tracklist."""
     with db_session() as session:
         row = session.execute(
@@ -167,13 +153,11 @@ def get_title_mismatches(artist: str, album: str) -> dict:
     if not mb_mbid:
         return {"mismatches": [], "mismatch_count": 0, "library_count": len(library_rows)}
 
-    from services.enrichment.musicbrainz_service import fetch_musicbrainz_release_metadata
     mb_release = fetch_musicbrainz_release_metadata(mb_mbid)
     if not mb_release:
         return {"mismatches": [], "mismatch_count": 0, "library_count": len(library_rows)}
 
-    # Build lib lookup by (disc, track_number)
-    lib_by_tracknum: dict[tuple, dict] = {}
+    lib_by_tracknum: dict[tuple[Any, Any], dict[str, Any]] = {}
     for r in library_rows:
         if hasattr(r, "get"):
             tn = r.get("track_number")
