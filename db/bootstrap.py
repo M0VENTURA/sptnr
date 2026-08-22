@@ -217,6 +217,7 @@ def ensure_queue_source_column() -> bool:
     except Exception as e:
         logging.warning("Queue source column sync error: %s", e)
         return False
+
 def ensure_track_release_year_column() -> bool: return _ensure_subset("tracks", ["release_year"], TRACK_COLUMNS_TO_ENSURE)
 def ensure_musicbrainz_album_mbid_column() -> bool: return _ensure_subset("tracks", ["musicbrainz_album_mbid"], TRACK_COLUMNS_TO_ENSURE)
 def ensure_writer_column() -> bool: return _ensure_subset("tracks", ["writer"], TRACK_COLUMNS_TO_ENSURE)
@@ -282,6 +283,7 @@ def ensure_manual_genres_column() -> bool: return _ensure_subset("tracks", ["man
 def ensure_verification_columns() -> bool: return _ensure_subset("tracks", ("verification_status", "verification_checked_at", "verification_error"), TRACK_COLUMNS_TO_ENSURE)
 def ensure_pending_mb_updates_column() -> bool: return _ensure_subset("tracks", ["pending_mb_updates"], TRACK_COLUMNS_TO_ENSURE)
 def ensure_mb_ignored_fields_column() -> bool: return _ensure_subset("tracks", ["mb_ignored_fields"], TRACK_COLUMNS_TO_ENSURE)
+def ensure_album_context_columns() -> bool: return _ensure_subset("tracks", ["album_context_live"], TRACK_COLUMNS_TO_ENSURE)
 
 # =============================================================================
 # MAIN BOOTSTRAP & ENTRY
@@ -304,6 +306,7 @@ def ensure_full_schema() -> bool:
         ensure_upcoming_releases_schema()
         ensure_single_detection_columns()
         ensure_queue_source_column()
+        ensure_album_context_columns()
         # Essentia feature columns (danceability, essentia_* , bpm) — kept as an
         # explicit call so installs that skipped the COLUMN_REGISTRY loop still
         # get the columns the Essentia scanner writes.
@@ -426,4 +429,3 @@ if __name__ == "__main__":
         missing = result.get("missing", [])
         print(f"  ⚠ Missing tables (will be created on first use): {', '.join(missing)}")
     print("────────────────────────────────────────────────────────────")
-    print("")
