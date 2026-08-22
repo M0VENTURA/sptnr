@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import json
 import os
+import re
 from typing import Any
 
-from quart import Blueprint, jsonify, request, Response, send_file
-from sqlalchemy import text
 import structlog
+from quart import Blueprint, Response, jsonify, request, send_file
+from sqlalchemy import text
 
-from db.engine import async_db_session, db_session
+from api_clients.lrclib import fetch_lyrics
+from db.engine import db_session
 from helpers.config_helpers import get_config
 from services.enrichment.musicbrainz_service import get_shared_mb_client
+from services.infrastructure.filesystem_service import cleanup_empty_parents, is_path_under_directory
+from services.metadata.tag_file_service import sync_track_tags_to_file
 
 logger = structlog.get_logger(__name__)
 
@@ -64,7 +69,7 @@ def _get_track_column_types(session: Any) -> dict[str, str]:
             """)
         )
         return {
-            str(row[0]).lower(): str(row[1]).lower()
+            str(row._mapping["column_name"]).lower(): str(row._mapping["data_type"]).lower()
             for row in result.fetchall()
         }
     except Exception:
@@ -135,22 +140,27 @@ async def api_track_audio(track_id: str) -> Any:
         with db_session() as session:
             result = session.execute(text("SELECT file_path FROM tracks WHERE CAST(id AS TEXT) = :id"), {"id": track_id})
             row = result.fetchone()
-            if not row or not row[0]:
+            if not row or not row._mapping.get("file_path"):
                 return Response("", status=404)
-            file_path = row[0]
+            file_path = str(row._mapping.get("file_path"))
+            
         if "__queued_for_download__" in file_path:
             return Response("", status=404)
+            
         resolved = os.path.realpath(file_path)
         if not os.path.isfile(resolved):
             return Response("", status=404)
+            
         cfg = get_config()
         music_folder = os.path.realpath(
             cfg.get("navidrome", {}).get("music_folder", "")
             or os.environ.get("MUSIC_FOLDER", "")
             or os.environ.get("MUSIC_DIR", "/music")
         )
+        
         if not resolved.startswith(music_folder + os.sep) and resolved != music_folder:
             return Response("", status=403)
+            
         ext = os.path.splitext(resolved)[1].lower()
         mime_map = {
             ".mp3": "audio/mpeg", ".flac": "audio/flac", ".ogg": "audio/ogg",
@@ -172,7 +182,6 @@ def api_track_rename_file(track_id: str) -> Any:
     """Rename/move a single track's file using the configured naming format."""
     try:
         from services.downloads.download_organize_helpers import _build_target_path
-        from services.infrastructure.filesystem_service import is_path_under_directory
 
         with db_session() as session:
             result = session.execute(
@@ -186,14 +195,17 @@ def api_track_rename_file(track_id: str) -> Any:
             row = result.fetchone()
             if not row:
                 return jsonify({"success": False, "error": "Track not found"}), 404
-            src = str(row[0] or "").strip()
-            artist = str(row[1] or "").strip()
-            album_artist = str(row[2] or "").strip()
-            album = str(row[3] or "").strip()
-            title = str(row[4] or "").strip()
-            track_number = row[5]
-            disc_number = row[6]
-            year = row[7]
+                
+            mapping = row._mapping
+            src = str(mapping.get("file_path") or "").strip()
+            artist = str(mapping.get("artist") or "").strip()
+            album_artist = str(mapping.get("album_artist") or "").strip()
+            album = str(mapping.get("album") or "").strip()
+            title = str(mapping.get("title") or "").strip()
+            track_number = mapping.get("track_number")
+            disc_number = mapping.get("disc_number")
+            year = mapping.get("year")
+            
         cfg = get_config() or {}
         music_root = os.path.realpath(
             (cfg.get("music", {}) or {}).get("root")
@@ -233,7 +245,6 @@ def api_track_rename_file(track_id: str) -> Any:
         os.rename(src_resolved, dest)
 
         try:
-            from services.infrastructure.filesystem_service import cleanup_empty_parents
             if is_path_under_directory(src_resolved, music_root):
                 cleanup_empty_parents(src_resolved, music_root)
         except Exception:
@@ -268,7 +279,8 @@ def api_toggle_manual_single(track_id: str) -> Any:
             row = result.fetchone()
             if not row:
                 return jsonify({"error": "Track not found"}), 404
-            current = bool(row[0])
+                
+            current = bool(row._mapping.get("single_manual_override"))
             new_val = 0 if current else 1
             session.execute(text("UPDATE tracks SET single_manual_override = :val WHERE CAST(id AS TEXT) = :id"), {"val": new_val, "id": track_id})
             return jsonify({"success": True, "single_manual_override": bool(new_val)})
@@ -287,6 +299,7 @@ async def api_track_favourite_get() -> Any:
     track_id = request.args.get("track_id", "").strip()
     if not track_id:
         return jsonify({"error": "track_id required"}), 400
+        
     with db_session() as session:
         result = session.execute(
             text("SELECT 1 FROM bookmarks WHERE type = 'track_favourite' AND LOWER(name) = LOWER(:id) LIMIT 1"),
@@ -302,6 +315,7 @@ async def api_track_favourite_add() -> Any:
     track_id = str(data.get("track_id") or "").strip()
     if not track_id:
         return jsonify({"error": "track_id required"}), 400
+        
     with db_session() as session:
         session.execute(
             text("INSERT INTO bookmarks (type, name) VALUES ('track_favourite', :id) ON CONFLICT DO NOTHING"),
@@ -316,6 +330,7 @@ async def api_track_favourite_remove() -> Any:
     track_id = request.args.get("track_id", "").strip()
     if not track_id:
         return jsonify({"error": "track_id required"}), 400
+        
     with db_session() as session:
         session.execute(
             text("DELETE FROM bookmarks WHERE type = 'track_favourite' AND LOWER(name) = LOWER(:id)"),
@@ -336,6 +351,7 @@ async def api_track_update_metadata() -> Any:
         track_id = str(data.get("track_id") or "").strip()
         if not track_id:
             return jsonify({"error": "track_id required"}), 400
+            
         with db_session() as session:
             allowed_fields = {
                 "title", "artist", "album", "album_artist", "writer", "work",
@@ -360,10 +376,9 @@ async def api_track_update_metadata() -> Any:
                 if isinstance(_g_raw, list):
                     _g_parts = [str(g).strip() for g in _g_raw if str(g).strip()]
                 else:
-                    import re as _re
                     _g_parts = [
                         g.strip()
-                        for g in _re.split(r"[,;/\\]+", str(_g_raw))
+                        for g in re.split(r"[,;/\\]+", str(_g_raw))
                         if g.strip()
                     ]
                 updates["genres"] = ", ".join(_g_parts) if _g_parts else None
@@ -447,10 +462,10 @@ async def api_track_update_metadata() -> Any:
         file_synced = False
         if data.get("sync_to_file", True):
             try:
-                from services.metadata.tag_file_service import sync_track_tags_to_file
                 file_synced = bool(sync_track_tags_to_file(track_id))
             except Exception as sync_err:
                 logger.warning("File tag sync failed after DB update", track_id=track_id, error=str(sync_err))
+                
         return jsonify({
             "success": True,
             "updated": list(updates.keys()),
@@ -472,6 +487,7 @@ def track_genre_recommendations() -> Any:
     track_id = request.args.get("track_id", "").strip()
     if not track_id:
         return jsonify({"error": "track_id required"}), 400
+        
     try:
         with db_session() as session:
             result = session.execute(
@@ -481,14 +497,16 @@ def track_genre_recommendations() -> Any:
             row = result.fetchone()
             if not row:
                 return jsonify({"error": "Track not found"}), 404
+                
+            mapping = row._mapping
             genres = {}
             keys = ["spotify_genres", "lastfm_tags", "musicbrainz_genres", "discogs_genres"]
-            for idx, key in enumerate(keys):
-                val = row[idx]
+            
+            for key in keys:
+                val = mapping.get(key)
                 if val:
                     if isinstance(val, str):
                         try:
-                            import json
                             parsed = json.loads(val) if val.startswith("[") else [val]
                         except json.JSONDecodeError:
                             parsed = [g.strip() for g in val.replace("\\", ",").split(",") if g.strip()]
@@ -497,6 +515,7 @@ def track_genre_recommendations() -> Any:
                     else:
                         parsed = []
                     genres[key] = parsed if isinstance(parsed, list) else [str(parsed)]
+                    
         return jsonify({"success": True, "genres": genres})
     except Exception as exc:
         logger.error("Get genre recommendations failed", track_id=track_id, error=str(exc))
@@ -511,8 +530,6 @@ def track_genre_recommendations() -> Any:
 async def api_rescan_single_track(track_id: str) -> Any:
     """Force a fresh single detection scan for one track."""
     try:
-        import json as _json
-
         with db_session() as session:
             source = ""
             try:
@@ -526,11 +543,13 @@ async def api_rescan_single_track(track_id: str) -> Any:
                     text("SELECT single_sources FROM tracks WHERE CAST(id AS TEXT) = :id"),
                     {"id": track_id},
                 ).fetchone()
-                raw = str(row[0] or "") if row and row[0] else ""
+                
+                raw = str(row._mapping.get("single_sources") or "") if row else ""
                 remaining: list[Any] = []
+                
                 if raw.strip():
                     try:
-                        parsed = _json.loads(raw)
+                        parsed = json.loads(raw)
                         if isinstance(parsed, list):
                             remaining = [
                                 entry for entry in parsed
@@ -567,7 +586,7 @@ async def api_rescan_single_track(track_id: str) -> Any:
                         """),
                         {
                             "id": track_id,
-                            "sources_json": _json.dumps(remaining, default=str),
+                            "sources_json": json.dumps(remaining, default=str),
                         },
                     )
                 return jsonify({
@@ -597,6 +616,7 @@ async def api_track_apply_mb_release(track_id: str) -> Any:
         release_mbid = str(data.get("release_mbid") or "").strip()
         if not release_mbid:
             return jsonify({"error": "release_mbid required"}), 400
+            
         with db_session() as session:
             session.execute(
                 text("UPDATE tracks SET musicbrainz_album_mbid = :mbid WHERE CAST(id AS TEXT) = :id"),
@@ -616,8 +636,6 @@ async def api_track_apply_mb_release(track_id: str) -> Any:
 async def api_fetch_track_lyrics(track_id: str) -> Any:
     """Fetch plain + synced lyrics from LRCLIB and store them on the track."""
     try:
-        from api_clients.lrclib import fetch_lyrics
-
         with db_session() as session:
             row = session.execute(
                 text("SELECT * FROM tracks WHERE CAST(id AS TEXT) = :id"),
@@ -676,7 +694,9 @@ async def api_fetch_track_credits(track_id: str) -> Any:
             ).fetchone()
             if not row:
                 return jsonify({"error": "Track not found"}), 404
-            rec_mbid = str(row[0] or row[1] or "").strip()
+                
+            mapping = row._mapping
+            rec_mbid = str(mapping.get("recording_mbid") or mapping.get("musicbrainz_trackid") or "").strip()
 
         if not rec_mbid:
             return jsonify({
@@ -684,7 +704,6 @@ async def api_fetch_track_credits(track_id: str) -> Any:
                 "error": "Track has no MusicBrainz recording ID — run a MusicBrainz lookup first.",
             })
 
-        # ✅ Use shared MusicBrainz client singleton
         client = get_shared_mb_client()
         data = client.get_recording(rec_mbid, inc="artist-rels") or {}
         relations = data.get("relations") or []
@@ -721,10 +740,11 @@ def api_track_mb_releases(track_id: str) -> Any:
             row = result.fetchone()
             if not row:
                 return jsonify({"error": "Track not found"}), 404
-            artist = row[0]
-            title = row[1]
+                
+            mapping = row._mapping
+            artist = mapping.get("artist")
+            title = mapping.get("title")
             
-        # ✅ Use shared MusicBrainz client singleton
         client = get_shared_mb_client()
         recordings = client.search_recordings(
             f'artist:"{artist}" AND recording:"{title}"',
@@ -749,6 +769,7 @@ async def api_track_match_missing() -> Any:
         mb_title = str(data.get("mb_title") or "").strip()
         if not track_id or not mb_title:
             return jsonify({"error": "track_id and mb_title required"}), 400
+            
         with db_session() as session:
             session.execute(text("UPDATE tracks SET title = :title WHERE CAST(id AS TEXT) = :id"), {"title": mb_title, "id": track_id})
         return jsonify({"success": True, "updated_title": mb_title})
@@ -770,22 +791,25 @@ async def api_track_ignore_mb_field() -> Any:
         field = str(data.get("field") or "").strip()
         if not track_id or not field:
             return jsonify({"error": "track_id and field required"}), 400
+            
         with db_session() as session:
             result = session.execute(text("SELECT mb_ignored_fields FROM tracks WHERE CAST(id AS TEXT) = :id"), {"id": track_id})
             row = result.fetchone()
-            import json as _json
+            
             ignored = []
             if row:
-                raw = row[0]
+                raw = row._mapping.get("mb_ignored_fields")
                 if raw:
                     try:
-                        ignored = _json.loads(raw) if isinstance(raw, str) else list(raw) if isinstance(raw, (list, tuple)) else []
-                    except (TypeError, _json.JSONDecodeError):
+                        ignored = json.loads(raw) if isinstance(raw, str) else list(raw) if isinstance(raw, (list, tuple)) else []
+                    except (TypeError, json.JSONDecodeError):
                         ignored = []
+                        
             if field not in ignored:
                 ignored.append(field)
+                
             session.execute(text("UPDATE tracks SET mb_ignored_fields = :fields WHERE CAST(id AS TEXT) = :id"),
-                           {"fields": _json.dumps(ignored), "id": track_id})
+                           {"fields": json.dumps(ignored), "id": track_id})
         return jsonify({"success": True, "ignored_fields": ignored})
     except Exception as exc:
         logger.error("Ignore MB field failed", error=str(exc))
