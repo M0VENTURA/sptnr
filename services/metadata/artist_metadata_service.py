@@ -5,27 +5,32 @@ the existing correction/scan services. Functions are module-level so routes
 can ``import metadata_service as metadata``.
 """
 
-import logging
+from __future__ import annotations
+
+import threading
 import time
 from typing import Any
 
+import structlog
+from sqlalchemy import text
+
+from db.engine import db_session
 from services.enrichment.artist_bio_service import get_artist_biography
+from services.enrichment.musicbrainz_service import get_shared_mb_client
 
 try:
     from api_clients.audiodb import get_artist_fanart
 except Exception:  # pragma: no cover - import guard
     get_artist_fanart = None
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
-def cleanup_false_positive_missing(artist: str) -> tuple[dict, int]:
+def cleanup_false_positive_missing(artist: str) -> tuple[dict[str, Any], int]:
     """Remove false-positive missing releases for an artist."""
     if not artist:
         return {"success": False, "error": "artist required"}, 400
     try:
-        from sqlalchemy import text
-        from db.engine import db_session
         with db_session() as session:
             result = session.execute(
                 text(
@@ -37,17 +42,16 @@ def cleanup_false_positive_missing(artist: str) -> tuple[dict, int]:
             removed = result.rowcount or 0
         return {"success": True, "removed_count": removed, "artist": artist}, 200
     except Exception as exc:
+        logger.error("Cleanup false-positive missing failed", artist=artist, error=str(exc))
         return {"success": False, "error": str(exc)}, 500
 
 
-def get_artist_bio(artist: str) -> tuple[dict, int]:
+def get_artist_bio(artist: str) -> tuple[dict[str, Any], int]:
     """Get artist biography from DB cache or Wikidata fallback."""
     if not artist:
         return {"success": False, "error": "name required"}, 400
     bio = ""
     try:
-        from sqlalchemy import text
-        from db.engine import db_session
         with db_session() as session:
             row = session.execute(
                 text("SELECT bio FROM artists WHERE name = :artist"),
@@ -65,13 +69,11 @@ def get_artist_bio(artist: str) -> tuple[dict, int]:
     return {"success": True, "bio": bio, "source": "wikidata" if bio else "none"}, 200
 
 
-def get_singles_count(artist: str) -> tuple[dict, int]:
+def get_singles_count(artist: str) -> tuple[dict[str, Any], int]:
     """Get count of singles for an artist."""
     if not artist:
         return {"success": False, "error": "name required"}, 400
     try:
-        from sqlalchemy import text
-        from db.engine import db_session
         with db_session() as session:
             row = session.execute(
                 text(
@@ -84,16 +86,15 @@ def get_singles_count(artist: str) -> tuple[dict, int]:
         count = int(row[0]) if row else 0
         return {"success": True, "count": count}, 200
     except Exception as exc:
+        logger.error("Get singles count failed", artist=artist, error=str(exc))
         return {"success": False, "error": str(exc)}, 500
 
 
-def get_covered_by(artist: str) -> tuple[dict, int]:
+def get_covered_by(artist: str) -> tuple[dict[str, Any], int]:
     """Get covers of this artist's songs in the library."""
     if not artist:
         return {"success": False, "error": "artist required"}, 400
     try:
-        from sqlalchemy import text
-        from db.engine import db_session
         with db_session() as session:
             rows = session.execute(
                 text(
@@ -113,17 +114,16 @@ def get_covered_by(artist: str) -> tuple[dict, int]:
         ]
         return {"success": True, "covers": covers, "total": len(covers)}, 200
     except Exception as exc:
+        logger.error("Get covered by failed", artist=artist, error=str(exc))
         return {"success": False, "error": str(exc)}, 500
 
 
-def artist_favourite(request) -> tuple[dict, int]:
+def artist_favourite(request: Any) -> tuple[dict[str, Any], int]:
     """Check/add/remove artist favourite via bookmarks table."""
-    from quart import jsonify
     artist = (request.args.get("artist") or (request.json or {}).get("artist") or "").strip()
     if not artist:
         return {"success": False, "error": "artist required"}, 400
-    from sqlalchemy import text
-    from db.engine import db_session
+        
     with db_session() as session:
         if request.method == "GET":
             row = session.execute(
@@ -146,21 +146,16 @@ def artist_favourite(request) -> tuple[dict, int]:
         return {"success": False, "error": "Unsupported method"}, 405
 
 
-# In-process cache so concurrent <img> requests for the same artist don't all
-# hit AudioDB before the first one is persisted to the artist_images table.
+# Thread-safe in-process cache for artist images
 _artist_image_cache: dict[str, tuple[str, float]] = {}
+_CACHE_LOCK = threading.Lock()
 _ARTIST_IMAGE_CACHE_TTL_SECONDS = 6 * 3600
 _ARTIST_IMAGE_NEGATIVE_TTL_SECONDS = 30 * 60
 _ARTIST_IMAGE_CACHE_MAX_ENTRIES = 5000
 
 
-def get_artist_image(artist: str):
-    """Get artist image URL from database, with AudioDB fallback for artists
-    not in the collection (e.g. similar-artist cards).
-
-    Mirrors the legacy endpoint: check ``artists`` first, then the
-    ``artist_images`` cache, then fetch from AudioDB on demand and cache it.
-    """
+def get_artist_image(artist: str) -> tuple[dict[str, Any], int]:
+    """Get artist image URL from database, with AudioDB fallback."""
     if not artist:
         return {"success": False, "error": "name required"}, 400
 
@@ -171,25 +166,22 @@ def get_artist_image(artist: str):
     if not key:
         return {"success": False, "error": "name required"}, 400
 
-    cached = _artist_image_cache.get(key)
-    if cached:
-        img_url, fetched_at = cached
-        ttl = _ARTIST_IMAGE_CACHE_TTL_SECONDS if _is_valid_url(img_url) else _ARTIST_IMAGE_NEGATIVE_TTL_SECONDS
-        if (time.monotonic() - fetched_at) < ttl:
-            return ({"success": True, "image_url": img_url}, 200) if _is_valid_url(img_url) else (
-                {"success": False, "error": "No image", "image_url": ""}, 200
-            )
+    with _CACHE_LOCK:
+        cached = _artist_image_cache.get(key)
+        if cached:
+            img_url, fetched_at = cached
+            ttl = _ARTIST_IMAGE_CACHE_TTL_SECONDS if _is_valid_url(img_url) else _ARTIST_IMAGE_NEGATIVE_TTL_SECONDS
+            if (time.monotonic() - fetched_at) < ttl:
+                return ({"success": True, "image_url": img_url}, 200) if _is_valid_url(img_url) else (
+                    {"success": False, "error": "No image", "image_url": ""}, 200
+                )
 
     url = ""
     try:
-        from sqlalchemy import text as _text
-        from db.engine import db_session as _db_session
-        with _db_session() as session:
-            # 1) artists table (populated by popularity scans). Exact match first,
-            #    then fall back to case-insensitive so casing differences still hit.
+        with db_session() as session:
             try:
                 row = session.execute(
-                    _text(
+                    text(
                         "SELECT image_url FROM artists WHERE LOWER(name) = LOWER(:artist) "
                         "AND image_url IS NOT NULL AND image_url != '' "
                         "ORDER BY CASE WHEN name = :artist THEN 0 ELSE 1 END LIMIT 1"
@@ -201,13 +193,11 @@ def get_artist_image(artist: str):
             except Exception:
                 url = ""
 
-            # 2) artist_images cache (populated by on-demand AudioDB lookups for
-            #    artists not in the collection, e.g. similar artists).
             if not _is_valid_url(url):
                 url = ""
                 try:
                     img_row = session.execute(
-                        _text(
+                        text(
                             "SELECT image_url FROM artist_images WHERE LOWER(artist_name) = LOWER(:artist) "
                             "AND image_url IS NOT NULL AND image_url != '' LIMIT 1"
                         ),
@@ -218,7 +208,6 @@ def get_artist_image(artist: str):
                 except Exception:
                     url = ""
 
-            # 3) AudioDB on-demand fallback + cache (legacy parity).
             if not _is_valid_url(url) and get_artist_fanart is not None:
                 try:
                     img = get_artist_fanart(artist, enabled=True)
@@ -226,7 +215,7 @@ def get_artist_image(artist: str):
                         url = str(img).strip()
                         try:
                             session.execute(
-                                _text(
+                                text(
                                     "INSERT INTO artist_images (artist_name, image_url, updated_at) "
                                     "VALUES (:artist, :url, CURRENT_TIMESTAMP) "
                                     "ON CONFLICT (artist_name) DO UPDATE SET "
@@ -239,33 +228,35 @@ def get_artist_image(artist: str):
                     else:
                         url = ""
                 except Exception as exc:
-                    logger.debug("AudioDB artist image fallback failed for %s: %s", artist, exc)
+                    logger.debug("AudioDB artist image fallback failed", artist=artist, error=str(exc))
 
-        if _is_valid_url(url):
-            _artist_image_cache[key] = (url, time.monotonic())
-            return {"success": True, "image_url": url}, 200
-        _artist_image_cache[key] = ("", time.monotonic())
-        if len(_artist_image_cache) > _ARTIST_IMAGE_CACHE_MAX_ENTRIES:
-            _artist_image_cache.pop(next(iter(_artist_image_cache)), None)
+        with _CACHE_LOCK:
+            if _is_valid_url(url):
+                _artist_image_cache[key] = (url, time.monotonic())
+                return {"success": True, "image_url": url}, 200
+            
+            _artist_image_cache[key] = ("", time.monotonic())
+            if len(_artist_image_cache) > _ARTIST_IMAGE_CACHE_MAX_ENTRIES:
+                _artist_image_cache.pop(next(iter(_artist_image_cache)), None)
+                
         return {"success": False, "error": "No image", "image_url": ""}, 200
     except Exception as exc:
+        logger.error("Get artist image failed", artist=artist, error=str(exc))
         return {"success": False, "error": str(exc), "image_url": ""}, 200
 
 
-def search_images(artist: str, source: str) -> tuple[dict, int]:
+def search_images(artist: str, source: str) -> tuple[dict[str, Any], int]:
     """Search for artist images from external sources."""
     return {"success": False, "error": "Not yet implemented", "images": []}, 501
 
 
-def set_image(payload: dict) -> tuple[dict, int]:
+def set_image(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
     """Set custom artist image URL."""
     artist = (payload.get("artist") or "").strip()
     url = (payload.get("image_url") or "").strip()
     if not artist or not url:
         return {"success": False, "error": "artist and image_url required"}, 400
     try:
-        from sqlalchemy import text
-        from db.engine import db_session
         with db_session() as session:
             session.execute(
                 text(
@@ -276,11 +267,12 @@ def set_image(payload: dict) -> tuple[dict, int]:
             )
         return {"success": True}, 200
     except Exception as exc:
+        logger.error("Set image failed", artist=artist, error=str(exc))
         return {"success": False, "error": str(exc)}, 500
 
 
-def update_ids(payload: dict) -> tuple[dict, int]:
-    """Update artist ID columns (MusicBrainz, Last.fm, Discogs) on all of an artist's tracks."""
+def update_ids(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    """Update artist ID columns on all of an artist's tracks."""
     artist = str(payload.get("artist") or "").strip()
     if not artist:
         return {"success": False, "error": "Missing artist name"}, 400
@@ -305,8 +297,6 @@ def update_ids(payload: dict) -> tuple[dict, int]:
 
     bind_values["artist"] = artist
     try:
-        from sqlalchemy import text
-        from db.engine import db_session
         with db_session() as session:
             result = session.execute(
                 text(
@@ -327,11 +317,11 @@ def update_ids(payload: dict) -> tuple[dict, int]:
             },
         }, 200
     except Exception as exc:
-        logger.error("update_ids failed for %s: %s", artist, exc, exc_info=True)
+        logger.error("Update IDs failed", artist=artist, error=str(exc), exc_info=True)
         return {"success": False, "error": str(exc)}, 500
 
 
-def lookup_ids(payload: dict) -> tuple[dict, int]:
+def lookup_ids(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
     """Look up MusicBrainz/Discogs artist IDs and persist them for the artist."""
     artist = str(payload.get("artist") or "").strip()
     if not artist:
@@ -342,10 +332,9 @@ def lookup_ids(payload: dict) -> tuple[dict, int]:
     musicbrainz_id = ""
     discogs_id = ""
 
-    # MusicBrainz lookup (rate-limited client with the proper User-Agent).
+    # ✅ Use shared MusicBrainz client singleton
     try:
-        from api_clients.musicbrainz_http import MusicBrainzHttpClient, escape_lucene_special_chars
-        mb = MusicBrainzHttpClient()
+        mb = get_shared_mb_client()
         results = mb.search_artists(f'artist:"{escape_lucene_special_chars(artist)}"', limit=5)
         if results:
             best = max(
@@ -356,9 +345,8 @@ def lookup_ids(payload: dict) -> tuple[dict, int]:
             )
             musicbrainz_id = str(best.get("id") or "").strip()
     except Exception as exc:
-        logger.debug("MusicBrainz artist lookup failed for %s: %s", artist, exc)
+        logger.debug("MusicBrainz artist lookup failed", artist=artist, error=str(exc))
 
-    # Discogs lookup (only when a token is configured).
     try:
         from helpers.config_helpers import get_config
         from api_clients.discogs_http import DiscogsHttpClient
@@ -376,7 +364,7 @@ def lookup_ids(payload: dict) -> tuple[dict, int]:
                 )
                 discogs_id = str(best.get("id") or "").strip()
     except Exception as exc:
-        logger.debug("Discogs artist lookup failed for %s: %s", artist, exc)
+        logger.debug("Discogs artist lookup failed", artist=artist, error=str(exc))
 
     if not musicbrainz_id and not discogs_id:
         return {"success": False, "error": "No IDs found from external lookup"}, 404
@@ -394,8 +382,6 @@ def lookup_ids(payload: dict) -> tuple[dict, int]:
     bind_values["artist"] = artist
 
     try:
-        from sqlalchemy import text
-        from db.engine import db_session
         with db_session() as session:
             result = session.execute(
                 text(
@@ -413,24 +399,15 @@ def lookup_ids(payload: dict) -> tuple[dict, int]:
             "rows_updated": rows_updated,
         }, 200
     except Exception as exc:
-        logger.error("lookup_ids failed for %s: %s", artist, exc, exc_info=True)
+        logger.error("Lookup IDs failed", artist=artist, error=str(exc), exc_info=True)
         return {"success": False, "error": str(exc)}, 500
 
 
-def _catalogue_artist_names(conn, names: list[str]) -> set[str]:
-    """Return lowercased names of ``names`` that already exist in the catalogue.
-
-    An artist counts as "in the collection" if any track carries them as the
-    (album) artist. Only the provided names are queried so the lookup stays
-    cheap regardless of catalogue size.  ``conn`` is kept for backward
-    compatibility — the query runs on its own SQLAlchemy session.
-    """
+def _catalogue_artist_names(conn: Any, names: list[str]) -> set[str]:
     unique = sorted({n.strip() for n in names if n and n.strip()})
     if not unique:
         return set()
     try:
-        from sqlalchemy import text
-        from db.engine import db_session
         with db_session() as session:
             placeholders = ", ".join(f":n{i}" for i in range(len(unique)))
             rows = session.execute(
@@ -447,13 +424,12 @@ def _catalogue_artist_names(conn, names: list[str]) -> set[str]:
                 found.add(str(value).lower())
         return found
     except Exception as exc:
-        logger.debug("Failed to resolve catalogue artists for similar-artist lookup: %s", exc)
+        logger.debug("Failed to resolve catalogue artists", error=str(exc))
         return set()
 
 
-def _annotate_similar_artist(entries: list, in_collection: set[str]) -> list[dict]:
-    """Normalise cached similar-artist entries to dicts with ``in_collection``."""
-    result: list[dict] = []
+def _annotate_similar_artist(entries: list[Any], in_collection: set[str]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
     for entry in entries or []:
         if isinstance(entry, str):
             name = entry.strip()
@@ -472,18 +448,12 @@ def _annotate_similar_artist(entries: list, in_collection: set[str]) -> list[dic
     return result
 
 
-def get_similar_artists(artist: str, args) -> tuple[dict, int]:
-    """Get similar artists from DB cache (Last.fm / ListenBrainz).
-
-    Each recommended artist is annotated with ``in_collection`` so the frontend
-    can exclude artists the user already owns.
-    """
+def get_similar_artists(artist: str, args: Any) -> tuple[dict[str, Any], int]:
+    """Get similar artists from DB cache."""
     if not artist:
         return {"success": False, "error": "artist required"}, 400
-    sources = {"lastfm": [], "listenbrainz": []}
+    sources: dict[str, list[Any]] = {"lastfm": [], "listenbrainz": []}
     try:
-        from sqlalchemy import text
-        from db.engine import db_session
         with db_session() as session:
             row = session.execute(
                 text(
@@ -518,14 +488,13 @@ def get_similar_artists(artist: str, args) -> tuple[dict, int]:
             sources[source] = _annotate_similar_artist(sources[source], in_collection)
         return {"success": True, "similar_artists": sources}, 200
     except Exception as exc:
+        logger.error("Get similar artists failed", artist=artist, error=str(exc))
         return {"success": False, "error": str(exc)}, 500
 
 
-def get_compilations(artist: str) -> tuple[dict, int]:
+def get_compilations(artist: str) -> tuple[dict[str, Any], int]:
     """Get compilation appearances for an artist."""
     try:
-        from sqlalchemy import text
-        from db.engine import db_session
         with db_session() as session:
             rows = session.execute(
                 text(
@@ -545,14 +514,13 @@ def get_compilations(artist: str) -> tuple[dict, int]:
         ]
         return {"success": True, "compilations": compilations}, 200
     except Exception as exc:
+        logger.error("Get compilations failed", artist=artist, error=str(exc))
         return {"success": False, "error": str(exc)}, 500
 
 
-def get_main_tracks(artist: str) -> tuple[dict, int]:
+def get_main_tracks(artist: str) -> tuple[dict[str, Any], int]:
     """Get main tracks for an artist."""
     try:
-        from sqlalchemy import text
-        from db.engine import db_session
         with db_session() as session:
             rows = session.execute(
                 text(
@@ -572,21 +540,19 @@ def get_main_tracks(artist: str) -> tuple[dict, int]:
         ]
         return {"success": True, "tracks": tracks}, 200
     except Exception as exc:
+        logger.error("Get main tracks failed", artist=artist, error=str(exc))
         return {"success": False, "error": str(exc)}, 500
 
 
-def get_artist_members_cached(artist: str) -> list[dict]:
+def get_artist_members_cached(artist: str) -> list[dict[str, Any]]:
     """Fetch artist members from DB cache, or MusicBrainz API if stale/missing."""
     import json
     from datetime import datetime, timezone, timedelta
-    from api_clients.musicbrainz_http import MusicBrainzHttpClient
 
     try:
-        from sqlalchemy import text as _text
-        from db.engine import db_session as _db_session
-        with _db_session() as session:
+        with db_session() as session:
             row = session.execute(
-                _text("SELECT members, members_last_updated FROM artists WHERE name = :artist"),
+                text("SELECT members, members_last_updated FROM artists WHERE name = :artist"),
                 {"artist": artist},
             ).mappings().first()
         now = datetime.now(timezone.utc)
@@ -599,20 +565,17 @@ def get_artist_members_cached(artist: str) -> list[dict]:
                     updated = datetime.fromisoformat(updated_raw.replace("Z", "+00:00"))
                     if updated.tzinfo is None:
                         updated = updated.replace(tzinfo=timezone.utc)
-                    # Cache is valid for 7 days
                     if (now - updated) < timedelta(days=7):
                         return json.loads(members_raw)
                 except Exception:
                     pass
 
-        # Cache miss — fetch from MusicBrainz
-        # First resolve the artist MBID
-        mb = MusicBrainzHttpClient()
+        # ✅ Use shared MusicBrainz client singleton
+        mb = get_shared_mb_client()
         results = mb.search_artists(artist, limit=5)
         if not results:
             return []
 
-        # Prefer groups/orchestras
         preferred = next(
             (a for a in results if (a.get("type") or "").lower() in {"group", "orchestra", "choir"}),
             results[0],
@@ -624,10 +587,9 @@ def get_artist_members_cached(artist: str) -> list[dict]:
         members = mb.get_artist_members(artist_mbid)
         members_json = json.dumps(members)
 
-        # Cache in artists table
-        with _db_session() as session:
+        with db_session() as session:
             session.execute(
-                _text(
+                text(
                     "INSERT INTO artists (id, name, members, members_last_updated) "
                     "VALUES (:artist, :artist, :members_json, :now) "
                     "ON CONFLICT (name) DO UPDATE SET members = EXCLUDED.members, members_last_updated = EXCLUDED.members_last_updated"
@@ -635,15 +597,14 @@ def get_artist_members_cached(artist: str) -> list[dict]:
                 {"artist": artist, "members_json": members_json, "now": now.isoformat()},
             )
         return members
-    except Exception:
+    except Exception as exc:
+        logger.debug("Get artist members failed", artist=artist, error=str(exc))
         return []
 
 
-def get_stats(artist: str) -> tuple[dict, int]:
+def get_stats(artist: str) -> tuple[dict[str, Any], int]:
     """Get statistics for an artist."""
     try:
-        from sqlalchemy import text
-        from db.engine import db_session
         with db_session() as session:
             row = session.execute(
                 text(
@@ -663,10 +624,11 @@ def get_stats(artist: str) -> tuple[dict, int]:
         }
         return {"success": True, **stats}, 200
     except Exception as exc:
+        logger.error("Get stats failed", artist=artist, error=str(exc))
         return {"success": False, "error": str(exc)}, 500
 
 
-def apply_genres(payload: dict) -> tuple[dict, int]:
+def apply_genres(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
     """Apply genres to all tracks by an artist."""
     from services.metadata.tag_file_service import write_tags_to_file
     artist = (payload.get("artist") or "").strip()
@@ -674,11 +636,9 @@ def apply_genres(payload: dict) -> tuple[dict, int]:
     if not artist or not genres:
         return {"success": False, "error": "artist and genres required"}, 400
     try:
-        from sqlalchemy import text as _text
-        from db.engine import db_session as _db_session
-        with _db_session() as session:
+        with db_session() as session:
             rows = session.execute(
-                _text("SELECT id, file_path FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist"),
+                text("SELECT id, file_path FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist"),
                 {"artist": artist},
             ).mappings().all()
             genre_str = " \\ ".join(genres) if isinstance(genres, list) else str(genres)
@@ -687,7 +647,7 @@ def apply_genres(payload: dict) -> tuple[dict, int]:
                 track_id = r.get("id")
                 fp = r.get("file_path")
                 session.execute(
-                    _text("UPDATE tracks SET genres = :genre_str WHERE id = :track_id"),
+                    text("UPDATE tracks SET genres = :genre_str WHERE id = :track_id"),
                     {"genre_str": genre_str, "track_id": track_id},
                 )
                 updated += 1
@@ -698,20 +658,19 @@ def apply_genres(payload: dict) -> tuple[dict, int]:
                         pass
         return {"success": True, "updated": updated}, 200
     except Exception as exc:
+        logger.error("Apply genres failed", artist=artist, error=str(exc))
         return {"success": False, "error": str(exc)}, 500
 
 
-def genre_recommendations(artist: str) -> tuple[dict, int]:
+def genre_recommendations(artist: str) -> tuple[dict[str, Any], int]:
     """Get genre recommendations for an artist from MusicBrainz."""
     if not artist:
         return {"success": False, "error": "artist required"}, 400
     try:
-        from api_clients.musicbrainz_http import (
-            MusicBrainzHttpClient,
-            escape_lucene_special_chars,
-        )
-        # Shared client: canonical User-Agent + 1 req/s throttle + retry/backoff.
-        artists = MusicBrainzHttpClient(enabled=True).search_artists(
+        from api_clients.musicbrainz_http import escape_lucene_special_chars
+        # ✅ Use shared MusicBrainz client singleton
+        mb = get_shared_mb_client()
+        artists = mb.search_artists(
             f'artist:"{escape_lucene_special_chars(artist)}"',
             limit=1,
         )
@@ -721,9 +680,10 @@ def genre_recommendations(artist: str) -> tuple[dict, int]:
         genres = [{"name": t.get("name"), "count": t.get("count")} for t in tags]
         return {"success": True, "genres": genres}, 200
     except Exception as exc:
+        logger.error("Genre recommendations failed", artist=artist, error=str(exc))
         return {"success": False, "error": str(exc)}, 500
 
 
-def genre_management(payload: dict) -> tuple[dict, int]:
+def genre_management(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
     """Handle genre management save operations."""
     return {"success": False, "error": "Not yet implemented"}, 501

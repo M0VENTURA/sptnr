@@ -1,20 +1,23 @@
 """ListenBrainz API client.
 
 Handles ListenBrainz HTTP operations including popularity, metadata, and user interactions.
+Modernized with strict thread-safe throttling, Tenacity retries, and structured logging.
 """
 
 from __future__ import annotations
 
-import logging
-import math
 import os
+import threading
 import time
-from datetime import datetime
 from typing import Any
+
+import httpx
+import structlog
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from api_clients import session
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 try:
     from services.infrastructure.api_rate_limiter import get_rate_limiter
@@ -40,12 +43,65 @@ class ListenBrainzError(Exception):
     """Raised for ListenBrainz client errors."""
 
 
+# =============================================================================
+# STRICT RATE LIMITING & RETRIES
+# =============================================================================
+
+_THROTTLE_LOCK = threading.Lock()
+_LAST_LB_REQUEST_TIME = 0.0
+
+
+def _strict_throttle() -> None:
+    """Best-effort pacing on ListenBrainz's OWN rate budget.
+
+    ListenBrainz and MusicBrainz are separate services with independent
+    rate buckets, so LB requests must NOT consume the MusicBrainz 1 req/s
+    budget. A thread-locked turnstile prevents concurrent worker bursts.
+    """
+    global _LAST_LB_REQUEST_TIME
+    
+    if _rate_limiter:
+        try:
+            _rate_limiter.throttle_listenbrainz()
+            return
+        except Exception:
+            pass
+            
+    # Fallback thread-safe throttle (approx 1 req/sec)
+    with _THROTTLE_LOCK:
+        now = time.monotonic()
+        elapsed = now - _LAST_LB_REQUEST_TIME
+        if elapsed < 1.0:
+            time.sleep(1.0 - elapsed)
+        _LAST_LB_REQUEST_TIME = time.monotonic()
+
+
+def _is_retryable_lb_error(exc: BaseException) -> bool:
+    """Retry on transient network drops or temporary rate-limiting (429/503/504)."""
+    if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in {429, 502, 503, 504}
+    return False
+
+
+# =============================================================================
+# HTTP CLIENT
+# =============================================================================
+
 class ListenBrainzClient:
     """ListenBrainz public API wrapper."""
 
     DEFAULT_BASE_URL = "https://api.listenbrainz.org/1"
 
-    def __init__(self, http_session=None, enabled: bool = True, user_token: str = "", base_url: str = DEFAULT_BASE_URL, user_agent: str = ""):
+    def __init__(
+        self, 
+        http_session: Any = None, 
+        enabled: bool = True, 
+        user_token: str = "", 
+        base_url: str = DEFAULT_BASE_URL, 
+        user_agent: str = ""
+    ):
         self.session = http_session or session
         self.enabled = enabled
         self.user_token = user_token or ""
@@ -58,54 +114,74 @@ class ListenBrainzClient:
             headers["Authorization"] = f"Token {self.user_token}"
         return headers
 
-    def _throttle(self) -> None:
-        """Best-effort pacing on ListenBrainz's OWN rate budget.
-
-        ListenBrainz and MusicBrainz are separate services with independent
-        rate buckets, so LB requests must NOT consume the MusicBrainz 1 req/s
-        budget — this lets concurrent scans push MB metadata lookups and LB
-        popularity lookups at the same time.
-        """
-        if _rate_limiter:
-            try:
-                _rate_limiter.throttle_listenbrainz()
-                return
-            except Exception:
-                pass
-        time.sleep(1.0)
-
     def _get(self, path: str, *, params: dict[str, Any] | None = None, authenticated: bool = False, timeout: float = 15.0) -> Any:
         if not self.enabled:
             raise ListenBrainzError("ListenBrainz client is disabled")
-        self._throttle()
-        response = self.session.get(f"{self.base_url}{path}", params=params, headers=self._headers(authenticated), timeout=timeout)
-        response.raise_for_status()
-        return response.json()
+            
+        @retry(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=1.0, min=1.0, max=5.0),
+            retry=retry_if_exception(_is_retryable_lb_error),
+            reraise=True,
+        )
+        def _execute_get() -> Any:
+            _strict_throttle()
+            response = self.session.get(
+                f"{self.base_url}{path}", 
+                params=params, 
+                headers=self._headers(authenticated), 
+                timeout=timeout
+            )
+            response.raise_for_status()
+            return response.json()
+            
+        return _execute_get()
 
     def _post(self, path: str, *, payload: dict[str, Any], authenticated: bool = False, timeout: float = 15.0) -> Any:
         if not self.enabled:
             raise ListenBrainzError("ListenBrainz client is disabled")
-        self._throttle()
-        response = self.session.post(f"{self.base_url}{path}", json=payload, headers=self._headers(authenticated), timeout=timeout)
-        response.raise_for_status()
-        return response.json()
+            
+        @retry(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=1.0, min=1.0, max=5.0),
+            retry=retry_if_exception(_is_retryable_lb_error),
+            reraise=True,
+        )
+        def _execute_post() -> Any:
+            _strict_throttle()
+            response = self.session.post(
+                f"{self.base_url}{path}", 
+                json=payload, 
+                headers=self._headers(authenticated), 
+                timeout=timeout
+            )
+            response.raise_for_status()
+            return response.json()
+            
+        return _execute_post()
+
+    # ------------------------------------------------------------------
+    # Batch & Popularity Lookups
+    # ------------------------------------------------------------------
 
     def get_recording_popularity_batch(self, recording_mbids: list[str]) -> dict[str, dict[str, int | None]]:
         """Fetch global ListenBrainz popularity for up to 100 recording MBIDs."""
         mbids = [m for m in recording_mbids if m]
-        
         result: dict[str, dict[str, int | None]] = {}
 
         for mbid in mbids:
             result[mbid] = {
                 "total_listen_count": None,
                 "total_user_count": None,
-       }
+            }
+            
         if not self.enabled or not mbids:
             return result
+            
         if len(mbids) > 100:
             logger.warning("ListenBrainz popularity batch > 100 items; truncating to 100")
             mbids = mbids[:100]
+            
         try:
             data = self._post("/popularity/recording", payload={"recording_mbids": mbids}, timeout=20.0)
             if isinstance(data, list):
@@ -123,17 +199,17 @@ class ListenBrainzClient:
                             "total_user_count": data[mbid].get("total_user_count"),
                         }
         except Exception as exc:
-            logger.debug("Failed to fetch recording popularity batch: %s", exc)
+            logger.debug("Failed to fetch recording popularity batch", error=str(exc))
         return result
 
     def get_recording_popularity(self, recording_mbid: str) -> dict[str, int | None]:
-        """Fetch global popularity for a single recording MBID."""
         if not recording_mbid:
             return {"total_listen_count": None, "total_user_count": None}
-        return self.get_recording_popularity_batch([recording_mbid]).get(recording_mbid, {"total_listen_count": None, "total_user_count": None})
+        return self.get_recording_popularity_batch([recording_mbid]).get(
+            recording_mbid, {"total_listen_count": None, "total_user_count": None}
+        )
 
     def get_listen_count(self, mbid: str = "", artist: str = "", title: str = "") -> int:
-        """Backward-compatible global listen count helper."""
         if not self.enabled or not mbid:
             return 0
         try:
@@ -143,7 +219,6 @@ class ListenBrainzClient:
             return 0
 
     def get_recording_metadata_batch(self, recording_mbids: list[str], inc: str = "artist release tag") -> dict[str, dict[str, Any]]:
-        """Fetch recording metadata keyed by recording MBID."""
         mbids = [m for m in recording_mbids if m]
         if not self.enabled or not mbids:
             return {}
@@ -151,16 +226,10 @@ class ListenBrainzClient:
             data = self._get("/metadata/recording/", params={"recording_mbids": ",".join(mbids), "inc": inc}, timeout=20.0)
             return data if isinstance(data, dict) else {}
         except Exception as exc:
-            logger.debug("Failed to fetch recording metadata: %s", exc)
+            logger.debug("Failed to fetch recording metadata", error=str(exc))
             return {}
 
     def get_release_metadata_batch(self, release_mbids: list[str], inc: str = "artist release") -> dict[str, dict[str, Any]]:
-        """Fetch release metadata (incl. tracklists) keyed by release MBID.
-
-        The ``inc`` fields include the tracklist (``media`` → ``tracks`` with
-        ``title`` + ``recording_mbid``), used to match local tracks to
-        ListenBrainz recordings by title when no recording MBID is known.
-        """
         mbids = [m for m in release_mbids if m]
         if not self.enabled or not mbids:
             return {}
@@ -168,11 +237,10 @@ class ListenBrainzClient:
             data = self._get("/metadata/release/", params={"release_mbids": ",".join(mbids), "inc": inc}, timeout=20.0)
             return data if isinstance(data, dict) else {}
         except Exception as exc:
-            logger.debug("Failed to fetch release metadata: %s", exc)
+            logger.debug("Failed to fetch release metadata", error=str(exc))
             return {}
 
     def get_recording_tags(self, mbid: str) -> list[dict[str, Any]]:
-        """Get recording tags."""
         if not mbid:
             return []
         try:
@@ -180,22 +248,20 @@ class ListenBrainzClient:
             tags = entry.get("tag", {}).get("recording", []) if isinstance(entry, dict) else []
             return sorted(tags, key=lambda item: item.get("count", 0), reverse=True) if isinstance(tags, list) else []
         except Exception as exc:
-            logger.debug("Failed to fetch recording tags for %s: %s", mbid, exc)
+            logger.debug("Failed to fetch recording tags", mbid=mbid, error=str(exc))
             return []
 
     def get_top_recordings_for_artist(self, artist_mbid: str) -> list[dict[str, Any]]:
-        """Fetch top recordings for an artist."""
         if not self.enabled or not artist_mbid:
             return []
         try:
             data = self._get(f"/popularity/top-recordings-for-artist/{artist_mbid}", timeout=10.0)
             return data if isinstance(data, list) else []
         except Exception as exc:
-            logger.debug("Failed to fetch top recordings for artist %s: %s", artist_mbid, exc)
+            logger.debug("Failed to fetch top recordings for artist", artist_mbid=artist_mbid, error=str(exc))
             return []
 
     def get_user_listen_count(self, username: str) -> int:
-        """Get total listen count for a user."""
         if not self.enabled or not username:
             return 0
         try:
@@ -203,7 +269,7 @@ class ListenBrainzClient:
             count = data.get("payload", {}).get("count", 0) if isinstance(data, dict) else 0
             return int(count or 0)
         except Exception as exc:
-            logger.debug("Failed to fetch user listen count for %s: %s", username, exc)
+            logger.debug("Failed to fetch user listen count", username=username, error=str(exc))
             return 0
 
     # ------------------------------------------------------------------
@@ -211,10 +277,6 @@ class ListenBrainzClient:
     # ------------------------------------------------------------------
 
     def get_artist_popularity_batch(self, artist_mbids: list[str]) -> dict[str, dict[str, int | None]]:
-        """Fetch listen counts for up to 100 artist MBIDs.
-
-        POST /1/popularity/artist
-        """
         mbids = [m for m in artist_mbids if m]
         result: dict[str, dict[str, int | None]] = {m: {"total_listen_count": None, "total_user_count": None} for m in mbids}
         if not self.enabled or not mbids:
@@ -229,14 +291,10 @@ class ListenBrainzClient:
                     if mbid and mbid in result:
                         result[mbid] = {"total_listen_count": item.get("total_listen_count"), "total_user_count": item.get("total_user_count")}
         except Exception as exc:
-            logger.debug("Failed to fetch artist popularity batch: %s", exc)
+            logger.debug("Failed to fetch artist popularity batch", error=str(exc))
         return result
 
     def get_release_popularity_batch(self, release_mbids: list[str]) -> dict[str, dict[str, int | None]]:
-        """Fetch listen counts for up to 100 release MBIDs.
-
-        POST /1/popularity/release
-        """
         mbids = [m for m in release_mbids if m]
         result: dict[str, dict[str, int | None]] = {m: {"total_listen_count": None, "total_user_count": None} for m in mbids}
         if not self.enabled or not mbids:
@@ -251,14 +309,10 @@ class ListenBrainzClient:
                     if mbid and mbid in result:
                         result[mbid] = {"total_listen_count": item.get("total_listen_count"), "total_user_count": item.get("total_user_count")}
         except Exception as exc:
-            logger.debug("Failed to fetch release popularity batch: %s", exc)
+            logger.debug("Failed to fetch release popularity batch", error=str(exc))
         return result
 
     def get_release_group_popularity_batch(self, release_group_mbids: list[str]) -> dict[str, dict[str, int | None]]:
-        """Fetch listen counts for up to 100 release-group MBIDs.
-
-        POST /1/popularity/release-group
-        """
         mbids = [m for m in release_group_mbids if m]
         result: dict[str, dict[str, int | None]] = {m: {"total_listen_count": None, "total_user_count": None} for m in mbids}
         if not self.enabled or not mbids:
@@ -273,40 +327,30 @@ class ListenBrainzClient:
                     if mbid and mbid in result:
                         result[mbid] = {"total_listen_count": item.get("total_listen_count"), "total_user_count": item.get("total_user_count")}
         except Exception as exc:
-            logger.debug("Failed to fetch release-group popularity batch: %s", exc)
+            logger.debug("Failed to fetch release-group popularity batch", error=str(exc))
         return result
 
     def get_top_release_groups_for_artist(self, artist_mbid: str) -> list[dict[str, Any]]:
-        """Fetch top release groups by listen count for an artist.
-
-        GET /1/popularity/top-release-groups-for-artist/<mbid>
-        """
         if not self.enabled or not artist_mbid:
             return []
         try:
             data = self._get(f"/popularity/top-release-groups-for-artist/{artist_mbid}", timeout=10.0)
             return data if isinstance(data, list) else []
         except Exception as exc:
-            logger.debug("Failed to fetch top release groups for artist %s: %s", artist_mbid, exc)
+            logger.debug("Failed to fetch top release groups for artist", artist_mbid=artist_mbid, error=str(exc))
             return []
 
     def get_similar_artists(self, artist_mbid: str, limit: int = 10) -> list[dict[str, str]]:
-        """Fetch similar artists from the ListenBrainz labs API.
-
-        GET https://labs.api.listenbrainz.org/similar-artists/json?artist_mbids=<mbid>
-
-        Returns up to ``limit`` dicts with ``name`` and ``mbid`` keys.
-        """
         if not self.enabled or not artist_mbid:
             return []
         try:
-            self._throttle()
+            _strict_throttle()
             url = "https://labs.api.listenbrainz.org/similar-artists/json"
             response = self.session.get(
                 url,
                 params={"artist_mbids": artist_mbid},
                 headers=self._headers(authenticated=False),
-                timeout=(5, 10),
+                timeout=10.0,
             )
             response.raise_for_status()
             data = response.json()
@@ -319,18 +363,10 @@ class ListenBrainzClient:
                 ]
             return []
         except Exception as exc:
-            logger.debug("Failed to fetch similar artists for %s: %s", artist_mbid, exc)
+            logger.debug("Failed to fetch similar artists", artist_mbid=artist_mbid, error=str(exc))
             return []
 
-    # ------------------------------------------------------------------
-    # User listening history
-    # ------------------------------------------------------------------
-
     def get_user_listens(self, username: str, min_ts: int | None = None, max_ts: int | None = None, count: int = 25) -> dict[str, Any]:
-        """Fetch listening history for a user.
-
-        GET /1/user/<username>/listens
-        """
         if not self.enabled or not username:
             return {"payload": {"listens": []}}
         params: dict[str, Any] = {"count": max(1, min(count, 100))}
@@ -341,81 +377,52 @@ class ListenBrainzClient:
         try:
             return self._get(f"/user/{username}/listens", params=params, timeout=15.0)
         except Exception as exc:
-            logger.debug("Failed to fetch listens for %s: %s", username, exc)
+            logger.debug("Failed to fetch listens", username=username, error=str(exc))
             return {"payload": {"listens": []}}
 
 
 class ListenBrainzUserClient(ListenBrainzClient):
     """Authenticated ListenBrainz operations."""
 
-    def __init__(self, user_token: str, http_session=None, enabled: bool = True, user_agent: str = ""):
+    def __init__(self, user_token: str, http_session: Any = None, enabled: bool = True, user_agent: str = ""):
         super().__init__(http_session=http_session, enabled=enabled, user_token=user_token, user_agent=user_agent)
 
     def love_track(self, mbid: str) -> bool:
-        """Mark a recording as loved."""
         if not mbid or not self.user_token:
             return False
         try:
             self._post("/feedback/recording-feedback", payload={"recording_mbid": mbid, "score": 1}, authenticated=True)
             return True
         except Exception as exc:
-            logger.error("Failed to love track %s: %s", mbid, exc)
+            logger.error("Failed to love track", mbid=mbid, error=str(exc))
             return False
 
     def unlove_track(self, mbid: str) -> bool:
-        """Remove feedback from a recording."""
         if not mbid or not self.user_token:
             return False
         try:
             self._post("/feedback/recording-feedback", payload={"recording_mbid": mbid, "score": 0}, authenticated=True)
             return True
         except Exception as exc:
-            logger.error("Failed to remove feedback for %s: %s", mbid, exc)
+            logger.error("Failed to remove feedback", mbid=mbid, error=str(exc))
             return False
 
-    # ------------------------------------------------------------------
-    # Recording recommendations (collaborative filtering)
-    # ------------------------------------------------------------------
-
     def get_recommendations(self, count: int = 25, offset: int = 0) -> dict[str, Any]:
-        """Fetch recommended recordings for the authenticated user.
-
-        GET /1/cf/recommendation/user/<username>/recording
-
-        Args:
-            count: Number of recommendations to return.
-            offset: Pagination offset.
-
-        Returns:
-            Dict with ``payload`` containing recommended MBIDs and scores.
-        """
         if not self.user_token:
             return {"payload": {"mbids": []}}
         try:
-            # Username not needed in path when token identifies the user
-            data = self._get(f"/cf/recommendation/user/{self.user_token}/recording",
-                             params={"count": max(1, min(count, 100)), "offset": max(0, offset)},
-                             authenticated=True,
-                             timeout=30.0)
+            data = self._get(
+                f"/cf/recommendation/user/{self.user_token}/recording",
+                params={"count": max(1, min(count, 100)), "offset": max(0, offset)},
+                authenticated=True,
+                timeout=30.0
+            )
             return data if isinstance(data, dict) else {"payload": {"mbids": []}}
         except Exception as exc:
-            logger.debug("Failed to fetch recommendations: %s", exc)
+            logger.debug("Failed to fetch recommendations", error=str(exc))
             return {"payload": {"mbids": []}}
 
     def get_user_feedback(self, username: str, score: int | None = None, count: int = 25, offset: int = 0) -> dict[str, Any]:
-        """Get feedback (loves/hates) given by a user.
-
-        GET /1/feedback/user/<username>/get-feedback
-
-        Args:
-            username: ListenBrainz username.
-            score: Optional filter — 1 for loved, -1 for hated.
-            count: Number of items to return.
-            offset: Pagination offset.
-
-        Returns:
-            Dict with feedback items array.
-        """
         if not self.enabled or not username:
             return {"feedback": []}
         params: dict[str, Any] = {"count": max(1, min(count, 100)), "offset": max(0, offset)}
@@ -425,14 +432,15 @@ class ListenBrainzUserClient(ListenBrainzClient):
             data = self._get(f"/feedback/user/{username}/get-feedback", params=params, authenticated=True, timeout=15.0)
             return data if isinstance(data, dict) else {"feedback": []}
         except Exception as exc:
-            logger.debug("Failed to fetch user feedback for %s: %s", username, exc)
+            logger.debug("Failed to fetch user feedback", username=username, error=str(exc))
             return {"feedback": []}
 
 
+# =============================================================================
+# MODULE-LEVEL WRAPPERS
+# =============================================================================
+
 def score_by_age(playcount: int | float, release_str: str) -> tuple[float, int]:
-    """Apply age decay to a playcount-like metric.
-    
-    Delegates to the canonical implementation in services.popularity.popularity_math."""
     from services.popularity.popularity_math import score_by_age as _score_by_age
     return _score_by_age(playcount, release_str)
 
@@ -451,11 +459,6 @@ def get_recording_popularity_batch(recording_mbids: list[str], user_agent: str =
 
 
 def get_release_metadata_batch(release_mbids: list[str], inc: str = "artist release") -> dict[str, dict[str, Any]]:
-    """Fetch release metadata (incl. tracklists) keyed by release MBID.
-
-    Module-level wrapper for ``ListenBrainzClient.get_release_metadata_batch``
-    — the release-first path of the popularity scan (album-tracklist lookup).
-    """
     return ListenBrainzClient(enabled=True, user_agent=DEFAULT_USER_AGENT).get_release_metadata_batch(release_mbids, inc=inc)
 
 
@@ -472,13 +475,6 @@ def get_recording_tags(mbid: str, enabled: bool = True) -> list[dict[str, Any]]:
 
 
 def get_recording_tags_batch(recording_mbids: list[str]) -> dict[str, list[dict[str, Any]]]:
-    """Fetch tags for many recordings in ONE metadata call.
-
-    Returns ``{recording_mbid: [{"tag", "count"}, ...]}`` sorted by count —
-    the same per-recording shape ``get_recording_tags`` returns.  The scan
-    runner uses this to serve an album's genre collection from a single
-    request instead of one throttled call per track.
-    """
     mbids = [m for m in recording_mbids if m]
     if not mbids:
         return {}
@@ -497,5 +493,5 @@ def get_recording_tags_batch(recording_mbids: list[str]) -> dict[str, list[dict[
                 )
         return out
     except Exception as exc:
-        logger.debug("Failed to fetch recording tags batch: %s", exc)
+        logger.debug("Failed to fetch recording tags batch", error=str(exc))
         return {}

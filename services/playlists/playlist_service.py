@@ -101,16 +101,6 @@ def create_m3u_file(playlist_name: str, tracks: list[dict]) -> str | None:
         return None
 
 
-def list_nsp_playlists() -> list[dict]:
-    """Return all smart-playlist .nsp files found in the Playlists directory."""
-    playlists_dir = _playlists_dir()
-    if not os.path.isdir(playlists_dir):
-        return []
-
-    found = []
-    for file_name in sorted(os.listdir(playlists_dir)):
-        if not file_name.lower().endswith(".nsp"):
-            continue
 def _count_m3u_tracks(file_path: str) -> int:
     """Count ``#EXTINF`` entries in an M3U file without parsing the whole thing."""
     count = 0

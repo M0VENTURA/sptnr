@@ -1,10 +1,16 @@
 """Album and track classification helpers for scan/stat eligibility."""
 
 from __future__ import annotations
+
 import re
 from collections import defaultdict
+from typing import Any
+
+import structlog
 
 from helpers.normalization_service import normalize_title_for_lookup
+
+logger = structlog.get_logger(__name__)
 
 
 # --------------------------------------------------------------------
@@ -73,15 +79,8 @@ def normalize_primary_release_type(album_type: str) -> str:
     return value.strip()
 
 
-def classify_album_type(album_row: dict) -> str:
-    """Classify an album into the artist-page discography buckets.
-
-    Mirrors the artist page / MusicBrainz release-group classification:
-    ``compilation`` → 'compilation', ``live`` → 'live_album', ``remix`` →
-    'remix_album', ``ep`` → 'ep', ``single`` → 'single', default 'album'.
-    Uses the authoritative ``musicbrainz_albumtype`` column first, falling
-    back to ``spotify_album_type`` / ``album_type``, then title heuristics.
-    """
+def classify_album_type(album_row: dict[str, Any]) -> str:
+    """Classify an album into the artist-page discography buckets."""
     raw_type = str(
         album_row.get("musicbrainz_albumtype")
         or album_row.get("spotify_album_type")
@@ -91,26 +90,20 @@ def classify_album_type(album_row: dict) -> str:
 
     album_name = str(album_row.get("album") or "").lower()
 
-    # Compilation / soundtrack
     if "compilation" in raw_type:
         return "compilation"
     if "soundtrack" in raw_type or "soundtrack" in album_name:
         return "compilation"
 
-    # Live / unplugged / acoustic
     if "live" in raw_type or re.search(r"\blive\b", album_name) or "unplugged" in album_name:
         return "live_album"
 
-    # Remix
     if "remix" in raw_type or "remix" in album_name:
         return "remix_album"
 
-    # EP — catches "ep", "album+ep", "ep+mix", etc. (MusicBrainz combines
-    # primary+secondary types into a single "+"-joined string).
     if "ep" in raw_type:
         return "ep"
 
-    # Single
     if "single" in raw_type:
         return "single"
 
@@ -122,14 +115,6 @@ def is_live_or_alternate_album(album: str) -> bool:
 
 
 def detect_live_album_type(album: str, album_type_from_field: str = "") -> str:
-    # ``album_type_from_field`` (e.g. the MusicBrainz release type) is the
-    # AUTHORITATIVE signal: when the album is matched to a known album type,
-    # the type field ALONE decides.  A studio album whose title merely
-    # contains "live"/"concert" text ("(how to live) as ghosts") must not be
-    # flagged live, and an explicit "live" type is trusted even when the
-    # title looks like a regular album.  Title-based heuristics only run as
-    # a FALLBACK when the album has NO matched type (no MusicBrainz/Spotify
-    # album-type match).
     field_text = (album_type_from_field or "").lower()
     if field_text:
         if "acoustic" in field_text or "unplugged" in field_text:
@@ -142,9 +127,7 @@ def detect_live_album_type(album: str, album_type_from_field: str = "") -> str:
     title_text = title.lower()
     if "acoustic" in title_text or "unplugged" in title_text:
         return "acoustic"
-    # Title-based live detection uses the format-tag patterns only — a bare
-    # "live" word inside a phrase ("(how to live) as ghosts") is NOT a live
-    # album and must not cap the album's star ratings at 4★.
+        
     if is_live_album_enhanced(title):
         return "live"
 
@@ -159,30 +142,14 @@ def is_live_or_unplugged_track_title(title: str) -> bool:
     return any(re.search(p, title or "", re.IGNORECASE) for p in [r"\blive\b", r"\bunplugged\b"])
 
 
-# Version-marker positions a bonus live/acoustic track uses.  Deliberately
-# format-tag based (the same discipline ``is_live_album_enhanced`` applies to
-# album titles): a bare ``\blive\b`` would mis-flag songs literally named
-# "Live Fast, Die Young" or "Live In Colour", capping them at 4★.
 _LIVE_ALTERNATE_TRACK_MARKERS = [
-    # Trailing parenthetical version tags: "Song (Live)", "Song (Acoustic)",
-    # "Song (Live In Tokyo 1994)", "Song (Unplugged)", "Song (Demo)",
-    # "Song (Jam-Along Version)", "Song (Alternate Version)".
     r"\((?:live|unplugged|acoustic|orchestral|demo|jam[- ]along|alternate)[^)]*\)",
-    # Trailing "- Live" / "- Acoustic" separators.
     r"[-–—]\s*(?:live|unplugged|acoustic|orchestral|demo|jam[- ]along|alternate)\s*$",
 ]
 
 
 def is_live_or_alternate_track_title(title: str) -> bool:
-    """Return True when a track TITLE flags a live/acoustic alternate version.
-
-    Matches version-marker positions only (a trailing ``(Live ...)`` /
-    ``(Acoustic ...)`` / ``(Demo ...)`` parenthetical or a ``- Live``-style
-    separator) — the markers a bonus live cut on a studio album carries.
-    Used to give such a track live status (the live weight penalty on its
-    popularity score and the 4★ cap on its star rating) without treating the
-    whole album as live.
-    """
+    """Return True when a track TITLE flags a live/acoustic alternate version."""
     return any(
         re.search(pattern, title or "", re.IGNORECASE)
         for pattern in _LIVE_ALTERNATE_TRACK_MARKERS
@@ -193,33 +160,12 @@ _INSTRUMENTAL_TITLE_RE = re.compile(r"\binstrumental\b", re.IGNORECASE)
 
 
 def is_instrumental_track_title(title: str) -> bool:
-    """Return True when a track TITLE flags an instrumental version.
-
-    Whole-word ``instrumental`` marker — a "(instrumental)" suffix, "(Full
-    Instrumental)", or "- Instrumental" separator all match.  Used to:
-
-    - block instrumental tracks from the popularity ``z_standout`` upgrade
-      and the artist top-% ``popularity_marked`` 5★ award (an instrumental
-      with a massive score must not steal a 5★ slot from a real vocal
-      track), and
-    - apply the instrumental weight penalty (a reduced Last.fm weight so the
-      track's z-score does not mathematically bury the vocal tracks on the
-      album).
-    """
+    """Return True when a track TITLE flags an instrumental version."""
     return bool(_INSTRUMENTAL_TITLE_RE.search(title or ""))
 
 
 def is_bonus_track_title(title: str) -> bool:
-    """Return True when a track TITLE indicates a bonus / alternate version.
-
-    Title-only check matching ``ALT_TRACK_PATTERNS`` (live, unplugged,
-    acoustic, orchestral, remix, demo, instrumental, karaoke).  Used to filter
-    bonus tracks out of an album's average popularity scoring from STORED DB
-    rows, where the album-context flags (``album_context_live``) are not
-    persisted.  A studio album padded with extra live cuts is exactly the
-    bonus-track case this targets — the album's core tracks should be scored
-    against the album's core distribution, not the padded one.
-    """
+    """Return True when a track TITLE indicates a bonus / alternate version."""
     return any(re.search(pattern, title or "", re.IGNORECASE) for pattern in ALT_TRACK_PATTERNS)
 
 
@@ -233,28 +179,10 @@ def should_exclude_track_from_stats(
     exclude_below_seconds: float | None = None,
     exclude_title_regex: str | None = None,
 ) -> bool:
-    """True when a track must not anchor the album/artist stats baseline.
-
-    Live / bonus / alternate titles are excluded (existing rules).  Ambient
-    interludes and skits are excluded too:
-    - tracks shorter than ``statistics.exclude_from_median_below_seconds``
-      (default 90s, 1:30), and
-    - titles matching ``filters.exclude_title_regex`` — the default pattern
-      catches spoken-word intros / interludes that crater the album floor
-      ("Dig Intro", "Silenced Intro", "Golden Ratio [Interlude]"), which
-      would otherwise compress the median and shrink the MAD, dragging real
-      tracks down and inflating the artist baseline (the Mudvayne
-      "By the People, for the People" poisoning).
-
-    ``duration`` is the track length in seconds; ``exclude_below_seconds``
-    is the configurable floor (None → live config, 0 disables the filter);
-    ``exclude_title_regex`` is the configurable title pattern (None → live
-    config, empty disables).
-    """
+    """True when a track must not anchor the album/artist stats baseline."""
     if is_live or album_context_live:
         return True
 
-    # Short interludes / skits never anchor the stats baseline.
     if duration is not None:
         try:
             if exclude_below_seconds is None:
@@ -267,9 +195,6 @@ def should_exclude_track_from_stats(
         except Exception:
             pass
 
-    # Intro / interlude titles never anchor the stats baseline either — a
-    # 200-listen spoken intro on a compilation must not sit in the same
-    # distribution as a 90k-listen track.
     if title:
         try:
             if exclude_title_regex is None:
@@ -283,10 +208,6 @@ def should_exclude_track_from_stats(
         except Exception:
             pass
 
-    # When the album is matched to an authoritative album type (MusicBrainz/
-    # Spotify), the type alone decides the live verdict — title text like
-    # "(Live)" in an otherwise-studio album must not exclude its tracks.
-    # Unmatched albums fall back to the title heuristic.
     if not (album_type or "").strip():
         if is_live_or_alternate_album(album):
             return True
@@ -298,8 +219,8 @@ def should_exclude_track_from_stats(
 # Advanced helpers
 # --------------------------------------------------------------------
 
-def detect_alternate_takes(tracks: list) -> dict:
-    groups = defaultdict(list)
+def detect_alternate_takes(tracks: list[Any]) -> dict[str, list[Any]]:
+    groups: dict[str, list[Any]] = defaultdict(list)
 
     for track in tracks or []:
         title = track.get("title") if isinstance(track, dict) else str(track)
@@ -308,10 +229,6 @@ def detect_alternate_takes(tracks: list) -> dict:
     return {k: v for k, v in groups.items() if len(v) > 1}
 
 
-# Album-artist values that identify a release as a TRUE Various-Artists
-# compilation — the per-track artist context is required for scoring/marking.
-# Matches the "generic artist" set used across the scan pipeline (runner /
-# album stage / finalise).
 _VA_ALBUM_ARTIST_NAMES = frozenset(
     {
         "various artists", "various artists -", "various",
@@ -323,32 +240,12 @@ _VA_ALBUM_ARTIST_NAMES = frozenset(
 def classify_compilation_category(
     artist: str,
     album: str,
-    tracks: list,
+    tracks: list[Any],
     album_artist: str | None = None,
     spotify_album_type: str | None = None,
     musicbrainz_album_type: str | None = None,
 ) -> str:
-    """Classify a compilation candidate as ``"va"``, ``"single_artist"`` or ``""``.
-
-    MusicBrainz and Spotify both tag single-artist retrospectives ("Queen -
-    Greatest Hits") AND true Various-Artists albums ("Now That's What I Call
-    Music", movie soundtracks) with the ``compilation`` release type, but the
-    two need OPPOSITE handling:
-
-    - ``"va"``            — TRUE Various-Artists compilation: the album artist
-      is a VA alias ("Various Artists" / "Soundtrack" / ...) or the tracklist
-      spans >= 4 distinct artists that the album artist is not one of.  Every
-      track has a different artist, so scoring and marking need per-track
-      artist context and the singles z-gates are meaningless.
-    - ``"single_artist"`` — release tagged ``compilation``/``soundtrack`` but
-      the album artist is a single real artist (Greatest Hits / anthology).
-      Treated like a standard studio album: album-relative scoring, the
-      artist's own ``artist_stats`` and the normal singles gates apply.
-    - ``""``              — not a compilation.
-
-    ``detect_compilation_album`` keeps the original boolean view of this
-    classification.
-    """
+    """Classify a compilation candidate as ``"va"``, ``"single_artist"`` or ``""``."""
     type_text = " ".join(
         filter(None, (spotify_album_type or "", musicbrainz_album_type or ""))
     ).lower()
@@ -374,16 +271,11 @@ def classify_compilation_category(
 def detect_compilation_album(
     artist: str,
     album: str,
-    tracks: list,
+    tracks: list[Any],
     album_artist: str | None = None,
     spotify_album_type: str | None = None,
 ) -> bool:
-    """Return True when the album is ANY kind of compilation (VA or single-artist).
-
-    See ``classify_compilation_category`` for the VA vs single-artist split;
-    this is the original boolean view kept for callers that only need the
-    yes/no verdict.
-    """
+    """Return True when the album is ANY kind of compilation."""
     return (
         classify_compilation_category(
             artist=artist,
@@ -419,15 +311,7 @@ _CHRISTMAS_PATTERNS = [
 
 
 def detect_christmas_song(track_title: str, album_title: str) -> bool:
-    """Detect if a song is Christmas-related based on track or album title.
-
-    Args:
-        track_title: Track title.
-        album_title: Album title.
-
-    Returns:
-        True if detected as a Christmas song.
-    """
+    """Detect if a song is Christmas-related based on track or album title."""
     combined = f"{track_title or ''} {album_title or ''}".lower()
     return any(re.search(pattern, combined) for pattern in _CHRISTMAS_PATTERNS)
 
@@ -436,8 +320,6 @@ def detect_christmas_song(track_title: str, album_title: str) -> bool:
 # Enhanced live-album detection
 # --------------------------------------------------------------------
 
-# More specific than LIVE_ALBUM_PATTERNS above — requires "live" to be
-# in a format-tag position rather than anywhere in the title.
 _LIVE_ALBUM_ENHANCED_PATTERNS = [
     r"\(live\)\s*$",
     r"\[live\]\s*$",
@@ -457,18 +339,7 @@ _LIVE_ALBUM_ENHANCED_PATTERNS = [
 
 
 def is_live_album_enhanced(album_title: str) -> bool:
-    """Enhanced live-album detection — only matches unambiguous format tags.
-
-    Unlike ``is_live_or_alternate_album`` which catches any occurrence of
-    "live" (including false positives like ``"(how to live) AS GHOSTS"``),
-    this only matches when "live" appears in a format-tag position.
-
-    Args:
-        album_title: Album title to analyse.
-
-    Returns:
-        True when the title unambiguously indicates a live album.
-    """
+    """Enhanced live-album detection — only matches unambiguous format tags."""
     if not album_title:
         return False
     text = album_title.lower()

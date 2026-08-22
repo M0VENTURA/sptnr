@@ -9,43 +9,60 @@ All data comes from ``musicbrainz_releases`` / ``musicbrainz_release_tracks`` ta
 """
 
 from __future__ import annotations
-import logging
+
 from typing import Any
+
+import structlog
 from sqlalchemy import text
+
 from db.engine import db_session
 from db.repositories.musicbrainz_cache import get_active_musicbrainz_releases
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
-def get_release_details(release_id: str):
-    with db_session() as session:
-        result = session.execute(text("SELECT * FROM musicbrainz_releases WHERE release_id = :id"), {"id": release_id})
-        release_row = result.fetchone()
-        if not release_row:
-            return None
-        release = dict(release_row._mapping)
+def get_release_details(release_id: str) -> dict[str, Any] | None:
+    """Get full release metadata including track list from cache."""
+    try:
+        with db_session() as session:
+            result = session.execute(
+                text("SELECT * FROM musicbrainz_releases WHERE release_id = :id"),
+                {"id": release_id}
+            )
+            release_row = result.fetchone()
+            if not release_row:
+                return None
+            release = dict(release_row._mapping)
 
-        result = session.execute(text("SELECT * FROM musicbrainz_release_tracks WHERE release_id = :id"), {"id": release_id})
-        tracks = [dict(r._mapping) for r in result.fetchall()]
+            result = session.execute(
+                text("SELECT * FROM musicbrainz_release_tracks WHERE release_id = :id"),
+                {"id": release_id}
+            )
+            tracks = [dict(r._mapping) for r in result.fetchall()]
 
-    return {"release": release, "tracks": tracks}
+        return {"release": release, "tracks": tracks}
+    except Exception as exc:
+        logger.error("Failed to get release details", release_id=release_id, error=str(exc))
+        return None
 
 
-def get_cached_missing_releases(artist: str):
+def get_cached_missing_releases(artist: str) -> tuple[dict[str, Any], int]:
+    """Return cached missing releases for an artist."""
     if not artist:
         return {"success": False, "error": "Artist is required"}, 400
 
     try:
         with db_session() as session:
-            result = session.execute(text("""
-                SELECT release_id, title, primary_type, first_release_date,
-                       cover_art_url, category, last_checked
-                FROM missing_releases
-                WHERE artist = :artist
-                ORDER BY first_release_date DESC
-            """), {"artist": artist})
-
+            result = session.execute(
+                text("""
+                    SELECT release_id, title, primary_type, first_release_date,
+                           cover_art_url, category, last_checked
+                    FROM missing_releases
+                    WHERE artist = :artist
+                    ORDER BY first_release_date DESC
+                """),
+                {"artist": artist}
+            )
             rows = [dict(r._mapping) for r in result.fetchall()]
 
         return {
@@ -64,13 +81,14 @@ def get_cached_missing_releases(artist: str):
             "from_cache": True
         }, 200
 
-    except Exception as e:
-        logger.error("[MISSING_RELEASES] %s", e)
-        return {"success": False, "error": str(e)}, 500
+    except Exception as exc:
+        logger.error("Failed to get cached missing releases", artist=artist, error=str(exc))
+        return {"success": False, "error": str(exc)}, 500
 
-def get_active_releases_with_progress():
-    # Calling the repository function we defined earlier
-    releases = get_active_musicbrainz_releases()
+
+def get_active_releases_with_progress() -> list[dict[str, Any]]:
+    """Return active releases with calculated download progress."""
+    releases = get_active_musicbrainz_releases() or []
     
     for r in releases:
         total = r.get("total_tracks", 0) or 0

@@ -7,9 +7,10 @@ Provides API endpoints for:
 
 from __future__ import annotations
 
-import logging
+from typing import Any
 
 from quart import Blueprint, jsonify, request
+import structlog
 
 from services.metadata.release_service import get_release_details
 from services.metadata.conflict_service import (
@@ -21,7 +22,7 @@ from services.metadata.conflict_service import (
     ignore_conflict,
 )
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 metadata_bp = Blueprint("metadata", __name__)
 
 
@@ -30,7 +31,7 @@ metadata_bp = Blueprint("metadata", __name__)
 # ---------------------------------------------------------------------------
 
 @metadata_bp.route("/api/musicbrainz/release/<release_id>")
-def api_get_release_details(release_id):
+def api_get_release_details(release_id: str) -> Any:
     result = get_release_details(release_id)
     if not result:
         return jsonify({"error": "Release not found"}), 404
@@ -42,7 +43,7 @@ def api_get_release_details(release_id):
 # ---------------------------------------------------------------------------
 
 @metadata_bp.route("/api/conflicts/pending", methods=["GET"])
-async def api_get_pending_conflicts():
+async def api_get_pending_conflicts() -> Any:
     """Return unresolved metadata conflicts, paginated."""
     try:
         limit = min(request.args.get("limit", 100, type=int), 500)
@@ -64,23 +65,23 @@ async def api_get_pending_conflicts():
             "offset": offset,
         })
     except Exception as exc:
-        logger.error("Failed to fetch conflicts: %s", exc, exc_info=True)
+        logger.error("Failed to fetch conflicts", error=str(exc), exc_info=True)
         return jsonify({"success": False, "error": str(exc)}), 500
 
 
 @metadata_bp.route("/api/conflicts/stats", methods=["GET"])
-async def api_get_conflict_stats():
+async def api_get_conflict_stats() -> Any:
     """Return aggregate conflict statistics for the corrections page."""
     try:
         stats = get_conflict_stats()
         return jsonify({"success": True, **stats})
     except Exception as exc:
-        logger.error("Failed to fetch conflict stats: %s", exc)
+        logger.error("Failed to fetch conflict stats", error=str(exc))
         return jsonify({"success": False, "error": str(exc)}), 500
 
 
 @metadata_bp.route("/api/conflicts/resolve", methods=["POST"])
-async def api_resolve_conflict():
+async def api_resolve_conflict() -> Any:
     """Resolve a single conflict, optionally applying a chosen value."""
     try:
         data = await request.get_json() or {}
@@ -99,12 +100,12 @@ async def api_resolve_conflict():
         status = 200 if result.get("success") else 400
         return jsonify(result), status
     except Exception as exc:
-        logger.error("Failed to resolve conflict: %s", exc, exc_info=True)
+        logger.error("Failed to resolve conflict", error=str(exc), exc_info=True)
         return jsonify({"success": False, "error": str(exc)}), 500
 
 
 @metadata_bp.route("/api/conflicts/resolve-batch", methods=["POST"])
-async def api_resolve_conflicts_batch():
+async def api_resolve_conflicts_batch() -> Any:
     """Resolve all pending conflicts for a track atomically."""
     try:
         data = await request.get_json() or {}
@@ -125,12 +126,12 @@ async def api_resolve_conflicts_batch():
         )
         return jsonify(result)
     except Exception as exc:
-        logger.error("Failed to batch-resolve conflicts: %s", exc, exc_info=True)
+        logger.error("Failed to batch-resolve conflicts", error=str(exc), exc_info=True)
         return jsonify({"success": False, "error": str(exc)}), 500
 
 
 @metadata_bp.route("/api/conflicts/ignore", methods=["POST"])
-async def api_ignore_conflict():
+async def api_ignore_conflict() -> Any:
     """Mark a conflict as ignored (keep local value)."""
     try:
         data = await request.get_json() or {}
@@ -145,5 +146,5 @@ async def api_ignore_conflict():
         )
         return jsonify(result)
     except Exception as exc:
-        logger.error("Failed to ignore conflict: %s", exc, exc_info=True)
+        logger.error("Failed to ignore conflict", error=str(exc), exc_info=True)
         return jsonify({"success": False, "error": str(exc)}), 500

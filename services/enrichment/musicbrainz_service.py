@@ -17,16 +17,17 @@ Owns MusicBrainz interpretation/business rules:
 from __future__ import annotations
 
 import json
-import logging
 import os
 import re
 import threading
-from typing import Any, List, Dict, Tuple
+from typing import Any
 
-try:  # C-speed fuzzy matching — see _similarity
+import structlog
+
+try:  
     from rapidfuzz import fuzz as _rapidfuzz_fuzz  # type: ignore[import-untyped]
     _HAVE_RAPIDFUZZ = True
-except ImportError:  # pragma: no cover — stdlib fallback keeps matching working
+except ImportError:
     import difflib as _difflib
     _HAVE_RAPIDFUZZ = False
 
@@ -47,16 +48,8 @@ from helpers.normalization_service import (
     edition_annotations_compatible,
 )
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
-
-# Library-track query used by ``compare_musicbrainz_release``.  Kept as a
-# module constant so tests can assert it stays portable across SQLite (test
-# runs) and PostgreSQL (production): ``disc_number`` / ``track_number`` are
-# TEXT columns, so COALESCE must use string literals — integer literals make
-# PostgreSQL raise "COALESCE types text and integer cannot be matched",
-# which was silently swallowed and surfaced as the misleading "No library
-# tracks found for this album".
 _COMPARE_LIBRARY_TRACKS_SQL = """
     SELECT id, title, track_number, disc_number, artist, year,
            mbid, file_path, duration, mb_ignored_fields
@@ -74,17 +67,6 @@ def _similarity(a: str, b: str) -> float:
 
 
 def _mbid_similarity(a: str, b: str) -> float:
-    """Order-insensitive title similarity WITHOUT subset inflation.
-
-    ``token_set_ratio`` treats "Valhalla" as a 1.0 subset match of "Valhalla
-    (Epic Edition)", which makes MBID resolution ambiguous — a studio track
-    could tie with its live/epic edition recording and resolve to whichever
-    MusicBrainz returns first.  Recording MBID selection needs precision, so
-    ``token_sort_ratio`` (word-order insensitive, subset-penalising) is used
-    there; single-detection title matching uses ``_similarity`` where subset
-    matches are the desired outcome.  ``difflib`` fallback mirrors the legacy
-    ``SequenceMatcher`` ratio.
-    """
     if not a or not b:
         return 0.0
     if a == b:
@@ -93,28 +75,13 @@ def _mbid_similarity(a: str, b: str) -> float:
         return _rapidfuzz_fuzz.token_sort_ratio(a, b) / 100.0
     return _difflib.SequenceMatcher(None, a, b).ratio()
 
+
 CACHE_FILE = "/tmp/mbid_cache.json" if os.path.exists("/tmp") else "mbid_cache.json"
 
-# Serialises reads/writes of the shared on-disk mbid cache — several
-# MusicBrainzService instances may exist at once (album batch, per-track
-# fallbacks) and concurrent scan threads must not interleave file IO.
 _CACHE_IO_LOCK = threading.Lock()
+_INIT_LOCK = threading.Lock()
 
-# Entries per batched MusicBrainz search (``lookup_album_metadata``).  Each
-# entry contributes a Lucene OR-group to the query — beyond ~20 the URL grows
-# unwieldy and the results get diluted across too many candidates.
 _MB_BATCH_CHUNK = 20
-
-# Minimum recording-title similarity for a batched match to be accepted.
-# The batch resolver picks each track's best candidate from ONE shared,
-# truncated result set (the OR query's top-N across ALL tracks in the chunk);
-# without a floor a track whose own recording was starved out of that pool can
-# resolve to a WRONG sibling recording (inheriting its ISRC / ListenBrainz
-# counts) — the "State bleed" / wrong-ISRC reports from #887.  Below the floor
-# the track is left unmatched so the per-track lookup decides (never a wrong
-# sibling).  0.6 keeps the remaster-anchor case ("Last of Us (2018 Version)"
-# → the plain "Last of Us" recording, sim ≈ 0.606) while rejecting live /
-# jam-along / alternate-cuts vs their studio sibling (sim ≈ 0.43-0.55).
 _MB_BATCH_SIMILARITY_FLOOR = 0.6
 
 
@@ -122,9 +89,7 @@ _MB_BATCH_SIMILARITY_FLOOR = 0.6
 # HELPERS
 # =============================================================================
 
-
-def build_artist_credit_string(artist_credit):
-    """Build a display string from a MusicBrainz artist-credit array."""
+def build_artist_credit_string(artist_credit: list[Any]) -> str:
     result = ''
     for credit in artist_credit:
         if isinstance(credit, dict):
@@ -135,16 +100,7 @@ def build_artist_credit_string(artist_credit):
     return result.strip()
 
 
-def primary_album_artist(artist_credit):
-    """Return the PRIMARY album artist from a MusicBrainz artist-credit.
-
-    A release's ``artist-credit`` can credit MULTIPLE artists joined by
-    phrases ("Weezer", " & ", "Rivers Cuomo").  For the ALBUM ARTIST tag that
-    string must be the FIRST credit's name only — writing the joined string
-    ("Weezer & Rivers Cuomo") makes Navidrome split the album because it
-    treats it as two album artists.  The full multi-artist credit belongs on
-    the TRACK ARTIST (per-track), never the album artist.
-    """
+def primary_album_artist(artist_credit: list[Any] | str) -> str:
     if isinstance(artist_credit, list) and artist_credit:
         first = artist_credit[0]
         if isinstance(first, dict):
@@ -155,7 +111,7 @@ def primary_album_artist(artist_credit):
     return ""
 
 
-def calculate_match_score(mb_title, mb_artist_credit, local_album, local_artist) -> float:
+def calculate_match_score(mb_title: str, mb_artist_credit: list[Any] | str, local_album: str, local_artist: str) -> float:
     title_sim = _similarity(normalize_string(local_album), normalize_string(mb_title))
 
     artist_name = ""
@@ -170,12 +126,7 @@ def calculate_match_score(mb_title, mb_artist_credit, local_album, local_artist)
     return (title_sim * 0.6) + (artist_sim * 0.4)
 
 
-def _parse_secondary_types(raw) -> list[str]:
-    """Normalise the MusicBrainz ``secondary-types`` field into a list.
-
-    The search API returns secondary types as a comma-joined string (e.g.
-    ``"live"`` or ``"live,compilation"``); treat a list payload defensively.
-    """
+def _parse_secondary_types(raw: Any) -> list[str]:
     if raw is None:
         return []
     if isinstance(raw, str):
@@ -186,12 +137,6 @@ def _parse_secondary_types(raw) -> list[str]:
 
 
 def _artist_lookup_candidates(artist: str) -> list[str]:
-    """Full credit first, then the feat.-stripped primary artist.
-
-    MusicBrainz has no artist named "Feuerschwanz feat. Dag von SDP" — the
-    single is credited to "Feuerschwanz".  Dedupes case-insensitively so a
-    plain artist name yields a single candidate.
-    """
     candidates: list[str] = []
     seen: set[str] = set()
     for candidate in (artist or "", strip_featured_artist(artist or "")):
@@ -206,37 +151,19 @@ def _artist_lookup_candidates(artist: str) -> list[str]:
 # MAIN SERVICE
 # =============================================================================
 
-# Process-wide shared MusicBrainz HTTP client (one throttle/rate-limit state,
-# one HTTP connection pool).  The per-track scan path constructs a
-# ``MusicBrainzService`` for every track — sharing the underlying client
-# avoids tens of thousands of throwaway sessions per scan.
 _SHARED_MB_CLIENT: MusicBrainzHttpClient | None = None
-
 
 def get_shared_mb_client() -> MusicBrainzHttpClient:
     """Return the process-wide shared ``MusicBrainzHttpClient`` singleton."""
     global _SHARED_MB_CLIENT
     if _SHARED_MB_CLIENT is None:
-        _SHARED_MB_CLIENT = MusicBrainzHttpClient(enabled=True)
+        with _INIT_LOCK:
+            if _SHARED_MB_CLIENT is None:
+                _SHARED_MB_CLIENT = MusicBrainzHttpClient(enabled=True)
     return _SHARED_MB_CLIENT
 
 
-def _recording_matches_album(recording: dict, album: str) -> bool:
-    """True when a recording's embedded releases include the scanned album.
-
-    A version / alternate-take / bonus track ("Last Of Us (2018 Version)")
-    must resolve to the recording that actually appears on the album being
-    scanned: MusicBrainz assigns the SAME recording MBID to a remastered
-    reissue (the version track IS the original recording) and a DIFFERENT
-    recording to a full rerecording — so anchoring on the album resolves
-    both cases from MusicBrainz data alone, without guessing whether a
-    "(2018 Version)" marker means "remaster" or "rerecord".
-
-    Both the release title and its release-group title are checked (search
-    docs embed both); the match is fuzzy so a local folder name like
-    "Last Of Us" still matches a release titled "Last of Us" or
-    "Last Of Us (Deluxe)".
-    """
+def _recording_matches_album(recording: dict[str, Any], album: str) -> bool:
     if not album or not recording:
         return False
     album = str(album).strip().lower()
@@ -254,14 +181,7 @@ def _recording_matches_album(recording: dict, album: str) -> bool:
     return False
 
 
-def _first_isrc(recording: dict) -> str | None:
-    """First ISRC from a MusicBrainz recording or search document.
-
-    Both the JSON search docs and the recording entity expose ISRCs as an
-    ``isrcs`` array; a defensive ``isrc-list`` alias covers older payloads.
-    The value is normalized to a bare 12-char code (see ``normalize_isrc``)
-    so a wrapped ``{A/B}``-style tag list never leaks downstream.
-    """
+def _first_isrc(recording: dict[str, Any]) -> str | None:
     from helpers.normalization_service import normalize_isrc
     isrcs = recording.get("isrcs") or recording.get("isrc-list") or []
     if isinstance(isrcs, list):
@@ -279,25 +199,19 @@ class MusicBrainzService:
         self.enabled = enabled
         self.http = http_client or MusicBrainzHttpClient(enabled=enabled)
         self._artist_singles_cache: dict[str, list[dict[str, Any]]] = {}
+        self._mem_lock = threading.Lock()
         self._mbid_cache = self._load_cache()
 
     # -----------------------------------------------------------------------------
     # CACHE
     # -----------------------------------------------------------------------------
 
-    def _load_cache(self) -> dict:
-        # Multiple MusicBrainzService instances (per-scan batch, per-track
-        # fallbacks) share the SAME disk file — concurrent scan threads could
-        # interleave read/write and corrupt it.  The lock serialises file IO
-        # only; in-memory dicts stay per-instance.
+    def _load_cache(self) -> dict[str, Any]:
         with _CACHE_IO_LOCK:
             try:
                 if os.path.exists(CACHE_FILE):
                     with open(CACHE_FILE, "r", encoding="utf-8") as f:
                         raw = json.load(f)
-                    # Purge poisoned entries: earlier versions cached failed
-                    # lookups as ["", 0.0], which permanently disabled single
-                    # detection for that track. Only keep entries with a real MBID.
                     if isinstance(raw, dict):
                         return {
                             key: value
@@ -310,43 +224,37 @@ class MusicBrainzService:
                 pass
             return {}
 
-    def _save_cache(self):
+    def _save_cache(self) -> None:
+        # Safely clone the cache so we don't hold the memory lock during slow disk I/O
+        with self._mem_lock:
+            data_to_save = dict(self._mbid_cache)
+            
         with _CACHE_IO_LOCK:
             try:
                 with open(CACHE_FILE, "w", encoding="utf-8") as f:
-                    json.dump(self._mbid_cache, f)
+                    json.dump(data_to_save, f)
             except Exception:
                 pass
 
-    def _cache_key(self, title, artist):
+    def _cache_key(self, title: str, artist: str) -> str:
         return f"{artist.lower()}::{title.lower()}"
 
     # -----------------------------------------------------------------------------
     # CORE LOOKUPS
     # -----------------------------------------------------------------------------
 
-    def get_suggested_mbid(self, title: str, artist: str, limit: int = 5) -> Tuple[str, float]:
+    def get_suggested_mbid(self, title: str, artist: str, limit: int = 5) -> tuple[str, float]:
         if not self.enabled:
             return "", 0.0
 
         cache_key = self._cache_key(title, artist)
 
-        cached = self._mbid_cache.get(cache_key)
+        with self._mem_lock:
+            cached = self._mbid_cache.get(cache_key)
+            
         if isinstance(cached, (list, tuple)) and len(cached) == 2 and str(cached[0] or "").strip():
-            return tuple(cached)
+            return tuple(cached)  # type: ignore
 
-        # Punctuation in titles ("What's the Deal?") breaks Lucene phrase
-        # matching — the recording index is tokenised without punctuation.
-        # Normalise the query title the same way, and compare candidates
-        # against a BRACKET-PRESERVING normalisation so both sides are
-        # punctuation-consistent *and* version-tagged.  Using
-        # ``normalize_title_for_lookup`` here stripped "(Live)"/"(Acoustic)"
-        # from BOTH the query title and the candidates, so a live bonus track
-        # tied with its studio version and resolved to whichever recording
-        # MusicBrainz returned first (usually the studio one) — leaking the
-        # studio MBID's ListenBrainz counts onto the alternate take.
-        # Configurable Search Filters (search.strip_keywords) still strip
-        # same-song cuts like "(Radio Edit)" / "(Remastered)" here.
         query_title = normalize_title_for_lucene_query(strip_search_keywords(title))
         query = f'recording:"{escape_lucene_special_chars(query_title)}" AND artist:"{escape_lucene_special_chars(artist)}"'
 
@@ -359,20 +267,8 @@ class MusicBrainzService:
 
             for rec in recordings:
                 rec_title = str(rec.get("title") or "")
-                # A candidate whose edition annotation differs from the
-                # track's is a DIFFERENT edition — never the match (a
-                # "(Epic Edition)" cut must not resolve to the plain
-                # recording).  Live/remaster/version markers are not
-                # editions and never gate here.
                 if not edition_annotations_compatible(title, rec_title):
                     continue
-                # Compare both sides BRACKET-PRESERVING: normalising the
-                # candidate with ``normalize_title_for_lookup`` stripped
-                # "(Live)"/"(Acoustic)"/"(2018 Version)" off the candidate
-                # too, so a version-tagged track tied with its plain studio
-                # sibling and resolved to whichever recording MusicBrainz
-                # returned first — leaking that recording's ListenBrainz
-                # counts onto the alternate take.
                 sim = _mbid_similarity(
                     norm_title, normalize_title_for_mbid_match(rec_title)
                 )
@@ -382,24 +278,22 @@ class MusicBrainzService:
                     best_mbid = rec.get("id", "")
 
             result = (best_mbid, round(best_score, 3))
-            # Never persist empty results — a failed lookup (rate limit,
-            # transient error, no match) would otherwise poison the cache for
-            # the lifetime of /tmp/mbid_cache.json and permanently disable
-            # single detection for that track.
+            
             if best_mbid:
-                self._mbid_cache[cache_key] = result
+                with self._mem_lock:
+                    self._mbid_cache[cache_key] = result
                 self._save_cache()
 
             logger.debug(
-                "[MB_LOOKUP] '%s - %s' → mbid=%s (sim=%.3f, %d candidate(s))",
-                artist, title, best_mbid or "-", best_score, len(recordings),
+                "MB lookup suggested MBID",
+                artist=artist, track=title, mbid=best_mbid or "-", sim=best_score, candidates=len(recordings),
             )
             return result
-        except Exception:
-            logger.debug("[MB_LOOKUP] Search failed for '%s - %s'", artist, title, exc_info=True)
+        except Exception as exc:
+            logger.debug("MB lookup search failed", artist=artist, track=title, error=str(exc))
             return "", 0.0
 
-    def lookup_recording_metadata(self, title: str, artist: str) -> Dict[str, Any]:
+    def lookup_recording_metadata(self, title: str, artist: str) -> dict[str, Any]:
         if not title or not artist:
             return {}
 
@@ -417,16 +311,10 @@ class MusicBrainzService:
             return self._recording_to_metadata(recording, mbid, confidence)
 
         except Exception as e:
-            logger.debug("[MB LOOKUP] %s", e, exc_info=True)
+            logger.debug("Recording metadata lookup failed", error=str(e), exc_info=True)
             return {}
 
-    def _recording_to_metadata(self, recording: dict, mbid: str, confidence: float) -> Dict[str, Any]:
-        """Project a raw MusicBrainz recording document onto the metadata dict.
-
-        Shared by the per-track lookup (``lookup_recording_metadata``) and the
-        album batch (``lookup_album_metadata``) so both paths produce
-        identical output shapes.
-        """
+    def _recording_to_metadata(self, recording: dict[str, Any], mbid: str, confidence: float) -> dict[str, Any]:
         credits = recording.get("artist-credit", [])
         rec_artist = ""
         rec_artist_mbid = ""
@@ -468,29 +356,7 @@ class MusicBrainzService:
         entries: list[tuple[str, str]],
         candidates_per_entry: int = 5,
         album: str = "",
-    ) -> Dict[str, Dict[str, Any]]:
-        """Batch MusicBrainz metadata for many tracks in ONE search per chunk.
-
-        Builds a single Lucene OR query over ``(recording:"<title>" AND
-        artist:"<artist>")`` groups (chunked to keep URL length sane) and
-        scores each hit with the same bracket-preserving similarity used by
-        ``get_suggested_mbid``.  Metadata — album, year, artist credit,
-        recording MBID — comes straight from the search documents, replacing
-        the per-track (search + recording lookup) request pair with a single
-        batched search.
-
-        ``album`` (the release being scanned) anchors version / alternate-take
-        / bonus tracks ("Last Of Us (2018 Version)") to the recording that
-        actually appears on that album — a remastered reissue reuses the
-        original recording, a full rerecording carries its own — so the tie
-        between a version track and its plain studio sibling resolves to the
-        ALBUM's recording instead of whichever MusicBrainz returned first.
-
-        Returns ``{artist.lower()::title.lower(): metadata}`` for matched
-        entries only; unmatched entries fall back to the per-track lookup.
-        Resolved MBIDs are written to the persistent mbid cache so later
-        scans skip the search entirely.
-        """
+    ) -> dict[str, dict[str, Any]]:
         if not self.enabled:
             return {}
         album = str(album or "").strip()
@@ -505,7 +371,7 @@ class MusicBrainzService:
             if not unique:
                 return {}
 
-            results: Dict[str, Dict[str, Any]] = {}
+            results: dict[str, dict[str, Any]] = {}
             for chunk_start in range(0, len(unique), _MB_BATCH_CHUNK):
                 chunk = unique[chunk_start:chunk_start + _MB_BATCH_CHUNK]
                 groups = [
@@ -520,8 +386,8 @@ class MusicBrainzService:
                         " OR ".join(groups),
                         limit=min(100, len(chunk) * candidates_per_entry),
                     )
-                except Exception:
-                    logger.debug("[MB_LOOKUP] Album batch search failed for chunk %d", chunk_start, exc_info=True)
+                except Exception as exc:
+                    logger.debug("Album batch search failed", chunk_start=chunk_start, error=str(exc))
                     continue
 
                 for title, artist in chunk:
@@ -529,28 +395,18 @@ class MusicBrainzService:
                     best = None
                     best_score = 0.0
                     best_album_anchor = False
+                    
                     for rec in recordings:
                         rec_title = str(rec.get("title") or "")
-                        # A candidate whose edition annotation differs from
-                        # the track's is a DIFFERENT edition — never the
-                        # match.  Version/live/remaster markers are not
-                        # editions and never gate here.
                         if not edition_annotations_compatible(title, rec_title):
                             continue
-                        # Bracket-preserving BOTH sides (see get_suggested_mbid):
-                        # bracket-stripping the candidate made a version track
-                        # tie with its plain sibling and resolve to whichever
-                        # MusicBrainz returned first — the reported wrong-ISRC
-                        # bug for "(2018 Version)" / alternate-take bonus tracks.
+                            
                         sim = _mbid_similarity(
                             norm_title, normalize_title_for_mbid_match(rec_title)
                         )
                         if sim <= 0:
                             continue
-                        # The scanned album is the tie-breaker: when two
-                        # recordings score the same title similarity, the one
-                        # that actually appears on this album wins (remaster →
-                        # same recording, rerecording → its own).
+                            
                         album_anchor = _recording_matches_album(rec, album)
                         if (
                             sim > best_score
@@ -563,49 +419,30 @@ class MusicBrainzService:
                             best_score = sim
                             best = rec
                             best_album_anchor = album_anchor
+                            
                     mbid = (best or {}).get("id", "")
-                    # Similarity floor: the best candidate in the shared pool
-                    # must be a confident title match.  A track whose true
-                    # recording was pushed out of the truncated result set by
-                    # other tracks' candidates would otherwise resolve to the
-                    # best WRONG sibling in the pool — inheriting that
-                    # recording's ISRC and ListenBrainz counts.  Below the
-                    # floor the track stays unmatched and falls back to the
-                    # per-track lookup (which queries its own focused search).
+                    
                     if not best or not mbid or best_score < _MB_BATCH_SIMILARITY_FLOOR:
                         continue
+                        
                     confidence = round(best_score, 3)
                     results[self._cache_key(title, artist)] = self._recording_to_metadata(best, mbid, confidence)
-                    self._mbid_cache[self._cache_key(title, artist)] = (mbid, confidence)
-                if self._mbid_cache:
+                    
+                    with self._mem_lock:
+                        self._mbid_cache[self._cache_key(title, artist)] = (mbid, confidence)
+                        
+                has_items = False
+                with self._mem_lock:
+                    has_items = bool(self._mbid_cache)
+                if has_items:
                     self._save_cache()
+                    
             return results
-        except Exception:
-            logger.debug("[MB_LOOKUP] Album batch failed for %d entry(s)", len(entries or []), exc_info=True)
+        except Exception as exc:
+            logger.debug("Album batch failed", entries_count=len(entries or []), error=str(exc))
             return {}
 
     def is_single(self, title: str, artist: str, album_track_count: int | None = None) -> bool:
-        """Check if a track is a single using MusicBrainz release-group type.
-
-        A track is a single when any release it appears on belongs to a
-        Single/EP release-group. Three passes, in order of reliability:
-
-        1. Recording search — results embed each recording's releases with
-           their release-groups, which surfaces the single release even when
-           the recording lookup truncates the embedded release list.
-        2. Recording lookup — the suggested recording's releases (fallback
-           when search embeds are sparse).
-        3. Release-group search — the RG index tokenises punctuation
-           differently (phrase queries miss "What's the Deal?"), so when the
-           phrase query finds nothing, retry with an artist-scoped search and
-           match by title similarity.
-
-        Featured-artist credits ("Feuerschwanz feat. Dag von SDP") are not
-        MusicBrainz artist names — every pass retries with the feat.-stripped
-        primary artist so a single credited to "Feuerschwanz" alone is still
-        found (e.g. "Knightclub" is a single by Feuerschwanz, not by
-        "Feuerschwanz feat. Dag von SDP").
-        """
         if not self.enabled or not title or not artist:
             return False
         try:
@@ -621,18 +458,10 @@ class MusicBrainzService:
                     return True
             return False
         except Exception as exc:
-            logger.debug("MusicBrainz is_single failed for %s / %s: %s", artist, title, exc)
+            logger.debug("MusicBrainz is_single failed", artist=artist, track=title, error=str(exc))
             return False
 
     def _release_group_has_single_release(self, title: str, artist: str) -> bool:
-        """True when the artist has a Single/EP release-group titled like the track.
-
-        Phrase queries tokenise punctuation differently (they miss "What's
-        the Deal?"), so when the ``releasegroup:`` query finds nothing the
-        search falls back to an artist-scoped query matched by title
-        similarity.  A generous limit keeps large discographies (50+ release
-        groups) from hiding the matching single beyond the first page.
-        """
         query_title = normalize_title_for_lucene_query(strip_search_keywords(title))
         rg_query = (
             f'releasegroup:"{escape_lucene_special_chars(query_title)}" '
@@ -654,9 +483,6 @@ class MusicBrainzService:
             ).lower()
             if pt not in ("single", "ep"):
                 continue
-            # Edition-annotated track ("Valhalla (Epic Edition)") must only
-            # match a single/EP release-group carrying the SAME edition
-            # annotation — never the plain "Valhalla" single.
             if not edition_annotations_compatible(title, group.get("title") or ""):
                 continue
             sim = _similarity(
@@ -668,16 +494,6 @@ class MusicBrainzService:
         return False
 
     def _recording_search_has_single_release(self, title: str, artist: str) -> bool:
-        """True when a recording-search result embeds a Single/EP release-group.
-
-        The WS/2 recording lookup truncates the embedded ``releases`` list, but
-        search results carry each recording's releases (with release-groups),
-        so scan those directly before falling back to a lookup.
-
-        The release-group title must ALSO match the track title — a track that
-        merely appears on a single as a b-side ("Out on Patrol" on the "I'll
-        Be Waiting" single) is NOT itself a single.
-        """
         query_title = normalize_title_for_lucene_query(strip_search_keywords(title))
         query = (
             f'recording:"{escape_lucene_special_chars(query_title)}" '
@@ -694,20 +510,11 @@ class MusicBrainzService:
                 ).lower()
                 if pt not in ("single", "ep"):
                     continue
-                # The single/EP release-group must be FOR this track, not just
-                # contain it (b-sides live on singles too).
                 if self._rg_title_matches(title, rg.get("title") or ""):
                     return True
         return False
 
     def _rg_title_matches(self, title: str, rg_title: str) -> bool:
-        """True when a release-group title matches the track title.
-
-        Exact normalized equality first, then a similarity fallback for
-        residual punctuation/case drift. An edition-annotated track
-        ("Valhalla (Epic Edition)") must only match a release-group carrying
-        the SAME edition annotation — never the plain "Valhalla" single.
-        """
         if not title or not rg_title:
             return False
         if not edition_annotations_compatible(title, rg_title):
@@ -719,12 +526,6 @@ class MusicBrainzService:
         return _similarity(norm_rg, norm_title) >= 0.85
 
     def _recording_has_single_release(self, mbid: str, title: str = "") -> bool:
-        """True when any release of the recording belongs to a Single/EP
-        release-group whose title matches the track title.
-
-        Without the title check, b-sides ("Out on Patrol" on the "I'll Be
-        Waiting" single) are falsely detected as singles.
-        """
         recording = self.http.get_recording(
             mbid,
             inc="releases+release-groups",
@@ -769,7 +570,7 @@ class MusicBrainzService:
         except Exception:
             return ""
 
-    def get_genres(self, title: str, artist: str) -> List[str]:
+    def get_genres(self, title: str, artist: str) -> list[str]:
         if not self.enabled:
             return []
 
@@ -791,7 +592,7 @@ class MusicBrainzService:
     # MATCHING / RELEASE HELPERS
     # -----------------------------------------------------------------------------
 
-    def search_releasegroup_matches(self, artist_name: str, album_name: str, limit: int = 10) -> list:
+    def search_releasegroup_matches(self, artist_name: str, album_name: str, limit: int = 10) -> list[dict[str, Any]]:
         if not artist_name or not album_name:
             return []
 
@@ -803,13 +604,6 @@ class MusicBrainzService:
         except Exception:
             groups = []
 
-        # Punctuation-heavy titles ("GOLDEN HOUR: Part.4") fail the QUOTED
-        # phrase — MusicBrainz's index tokenises the colon/spacing differently
-        # from the stored value ("GOLDEN HOUR : Part.4"), so the phrase returns
-        # zero even though the release-group exists.  Fall back to an UNQUOTED
-        # term query (all terms ANDed), which the exact release-group ranks
-        # first; ``calculate_match_score`` below re-scores locally so the exact
-        # title wins.
         if not groups and clean_album:
             terms = normalize_title_for_lucene_query(clean_album)
             if terms:
@@ -825,8 +619,8 @@ class MusicBrainzService:
 
         for group in groups:
             score = calculate_match_score(
-                group.get("title"),
-                group.get("artist-credit"),
+                group.get("title") or "",
+                group.get("artist-credit") or [],
                 album_name,
                 artist_name,
             )
@@ -836,24 +630,20 @@ class MusicBrainzService:
                 "title": group.get("title"),
                 "primary_type": group.get("primary-type"),
                 "match_score": round(score, 3),
-                # Secondary types refine the primary type (e.g. a primary
-                # "album" that is secondary "live").  The search API returns
-                # them as a comma-joined string; normalise to a list.
                 "secondary_types": _parse_secondary_types(group.get("secondary-types")),
             })
 
         matches.sort(key=lambda x: x["match_score"], reverse=True)
-
         return matches
 
     # -----------------------------------------------------------------------------
     # MERGE HELPER
     # -----------------------------------------------------------------------------
 
-    def merge_metadata(self, base: dict, mb: dict, overrides: dict | None = None) -> dict:
+    def merge_metadata(self, base: dict[str, Any], mb: dict[str, Any], overrides: dict[str, Any] | None = None) -> dict[str, Any]:
         overrides = overrides or {}
 
-        def pick(*values):
+        def pick(*values: Any) -> Any:
             for v in values:
                 if v:
                     return v
@@ -876,16 +666,6 @@ class MusicBrainzService:
     # ------------------------------------------------------------------
 
     def get_artist_relationships(self, artist_mbid: str, relation_type: str = "artist") -> list[dict[str, Any]]:
-        """Fetch relationships for an artist (e.g. similar artists, collaborators).
-
-        Args:
-            artist_mbid: MusicBrainz artist ID.
-            relation_type: Relationship direction — ``"artist"`` for artist-artist
-                relationships (similar artists, collaboration).
-
-        Returns:
-            List of relationship dicts with ``type``, ``direction``, and target entity.
-        """
         if not self.enabled or not artist_mbid:
             return []
 
@@ -900,18 +680,10 @@ class MusicBrainzService:
             data = self.http.get_artist(artist_mbid, inc=inc)
             return data.get("relations", []) or []
         except Exception as exc:
-            logger.debug("Failed to fetch relationships for artist %s: %s", artist_mbid, exc)
+            logger.debug("Failed to fetch relationships for artist", artist_mbid=artist_mbid, error=str(exc))
             return []
 
     def get_recording_relationships(self, recording_mbid: str) -> list[dict[str, Any]]:
-        """Fetch relationships for a recording (writers, producers, engineers).
-
-        Args:
-            recording_mbid: MusicBrainz recording ID.
-
-        Returns:
-            List of relationship dicts including work-level relationships.
-        """
         if not self.enabled or not recording_mbid:
             return []
 
@@ -922,17 +694,10 @@ class MusicBrainzService:
             )
             return data.get("relations", []) or []
         except Exception as exc:
-            logger.debug("Failed to fetch recording relationships for %s: %s", recording_mbid, exc)
+            logger.debug("Failed to fetch recording relationships", recording_mbid=recording_mbid, error=str(exc))
             return []
 
     def get_composers_for_recording(self, recording_mbid: str) -> list[str]:
-        """Extract composer/writer/lyricist names for a recording.
-
-        Mirrors the legacy ``MusicBrainzClient.get_composers_for_track``
-        parsing: composer/writer/lyricist credits attached directly to the
-        recording, plus those attached to any linked Work entity (via
-        ``work-level-rels``). Returns deduplicated names.
-        """
         if not self.enabled or not recording_mbid:
             return []
         composers: list[str] = []
@@ -956,17 +721,6 @@ class MusicBrainzService:
     # ------------------------------------------------------------------
 
     def get_recording_genres(self, title: str, artist: str) -> list[str]:
-        """Fetch genres for a recording via MusicBrainz.
-
-        Uses ``inc=genres`` to get MusicBrainz genre tags directly.
-
-        Args:
-            title: Recording title.
-            artist: Artist name.
-
-        Returns:
-            List of genre name strings.
-        """
         from api_clients.musicbrainz_http import escape_lucene_special_chars
 
         if not self.enabled or not title or not artist:
@@ -986,58 +740,47 @@ class MusicBrainzService:
                         genres.append(name)
             return genres
         except Exception as exc:
-            logger.debug("Failed to fetch genres for '%s - %s': %s", artist, title, exc)
+            logger.debug("Failed to fetch genres", artist=artist, track=title, error=str(exc))
             return []
 
 
 _service = None
-
 _shared_mb_service: "MusicBrainzService | None" = None
 
-
-def _get_service():
+def _get_service() -> MusicBrainzService:
     global _service
     if _service is None:
-        _service = MusicBrainzService()
+        with _INIT_LOCK:
+            if _service is None:
+                _service = MusicBrainzService()
     return _service
 
 
 def get_shared_mb_service() -> "MusicBrainzService":
-    """Process-wide MusicBrainzService sharing the shared HTTP client.
-
-    Per-track code used to construct a fresh ``MusicBrainzService`` per track,
-    re-reading the on-disk mbid cache on EVERY construction — one shared
-    instance keeps the in-memory suggestion cache warm across the whole scan
-    (and across scan threads; the disk cache IO is lock-protected).
-    """
     global _shared_mb_service
     if _shared_mb_service is None:
-        _shared_mb_service = MusicBrainzService(http_client=get_shared_mb_client())
+        with _INIT_LOCK:
+            if _shared_mb_service is None:
+                _shared_mb_service = MusicBrainzService(http_client=get_shared_mb_client())
     return _shared_mb_service
 
 
-def lookup_recording_metadata(title: str, artist: str):
+def lookup_recording_metadata(title: str, artist: str) -> dict[str, Any]:
     return _get_service().lookup_recording_metadata(title, artist)
 
 
-def merge_metadata(base: dict, mb: dict, overrides: dict | None = None):
+def merge_metadata(base: dict[str, Any], mb: dict[str, Any], overrides: dict[str, Any] | None = None) -> dict[str, Any]:
     return _get_service().merge_metadata(base, mb, overrides)
 
-def fetch_musicbrainz_release_metadata(release_id: str) -> Dict[str, Any] | None:
-    """
-    Fetch full release metadata including tracks + cover art.
-    """
-
+def fetch_musicbrainz_release_metadata(release_id: str) -> dict[str, Any] | None:
     try:
-        # Shared client applies the canonical User-Agent, the 1 req/s throttle
-        # and transport-layer retry/backoff — never a bare unthrottled call.
         data = get_shared_mb_client().get_release(
             release_id,
             inc="recordings+artist-credits+release-groups",
         )
 
         if not data:
-            logger.debug("[MB] Release %s not found", release_id)
+            logger.debug("Release not found", release_id=release_id)
             return None
 
         rg = data.get("release-group", {})
@@ -1047,7 +790,7 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> Dict[str, Any] | None
             or (data.get("date") or "")[:4]
         )
 
-        release_info = {
+        release_info: dict[str, Any] = {
             "release_title": data.get("title"),
             "release_year": release_year,
             "artist": "",
@@ -1056,15 +799,10 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> Dict[str, Any] | None
             "release_mbid": data.get("id"),
         }
 
-        # ✅ album artist — the PRIMARY credit only.  A collab release credits
-        # multiple artists ("Weezer & Rivers Cuomo"); the full joined string
-        # must never become ALBUMARTIST (Navidrome splits the album into two
-        # artists).  The joined credit stays on the per-track artist.
         if data.get("artist-credit"):
             release_info["artist"] = primary_album_artist(data["artist-credit"])
             release_info["artist_credit"] = build_artist_credit_string(data["artist-credit"])
 
-        # ✅ extract tracks
         for disc_index, media in enumerate(data.get("media", []), start=1):
             for track in media.get("tracks", []):
                 recording = track.get("recording", {})
@@ -1075,9 +813,6 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> Dict[str, Any] | None
                     "title": track.get("title") or recording.get("title"),
                     "recording_mbid": recording.get("id"),
                     "duration": track.get("length"),
-                    # Per-track artist: the recording's OWN artist-credit
-                    # (full multi-artist string for collab tracks).  Falls
-                    # back to the release's joined credit.
                     "artist": (
                         build_artist_credit_string(recording.get("artist-credit"))
                         if recording.get("artist-credit")
@@ -1085,7 +820,6 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> Dict[str, Any] | None
                     ),
                 })
 
-        # ✅ cover art (best effort) — CAA also requires a UA header
         try:
             from api_clients.coverartarchive import get_release_front_image_bytes
             cover = get_release_front_image_bytes(release_id)
@@ -1097,23 +831,11 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> Dict[str, Any] | None
         return release_info
 
     except Exception as e:
-        logger.error("[MB RELEASE metadata] %s", e, exc_info=True)
+        logger.error("MB RELEASE metadata error", error=str(e), exc_info=True)
         return None
 
 
 def resolve_release_id(release_id: str) -> str:
-    """Return a concrete release MBID for a release or release-group MBID.
-
-    The download/search UI often hands over a *release-group* MBID (the search
-    endpoint returns ``release-group`` results).  ``/ws/2/release/{id}`` 404s
-    for a release-group id, which previously made ``start_release_download``
-    fail and collapse the whole album into a single "album as one track" queue
-    row.  Legacy parity: browse the release-group to its first release and
-    return that concrete release MBID so per-track rows can be created.
-
-    Returns the input unchanged when it is already a valid release lookup or
-    when no release can be resolved.
-    """
     if not release_id:
         return release_id
 
@@ -1128,11 +850,7 @@ def resolve_release_id(release_id: str) -> str:
     try:
         releases = http.browse_releases_for_group(release_id, inc="media", limit=50)
         if releases:
-            # Smart selector: prefer OFFICIAL releases, then the one with the
-            # MOST tracks (summed across all media).  The default browse order
-            # frequently surfaces 4-track promos / sampler editions before the
-            # canonical full album (e.g. a 15-track Greatest Hits).
-            def _total_tracks(rel: dict) -> int:
+            def _total_tracks(rel: dict[str, Any]) -> int:
                 return sum(
                     int((m.get("track-count") or 0))
                     for m in (rel.get("media") or [])
@@ -1147,18 +865,17 @@ def resolve_release_id(release_id: str) -> str:
             best = max(candidates, key=_total_tracks)
             resolved = best["id"]
             logger.info(
-                "[MB_RESOLVE] Release-group %s resolved to release %s "
-                "(%s tracks, status %s)",
-                release_id, resolved, _total_tracks(best), best.get("status"),
+                "Release-group resolved to release",
+                release_group_mbid=release_id, resolved_id=resolved, tracks=_total_tracks(best), status=best.get("status")
             )
             return resolved
     except Exception as exc:
-        logger.warning("[MB_RESOLVE] Failed to resolve release-group %s: %s", release_id, exc)
+        logger.warning("Failed to resolve release-group", release_id=release_id, error=str(exc))
 
     return release_id
 
 
-def fetch_release_metadata(release_id: str):
+def fetch_release_metadata(release_id: str) -> dict[str, Any] | None:
     try:
         service = _get_service()
         http = service.http
@@ -1178,7 +895,7 @@ def fetch_release_metadata(release_id: str):
             or (data.get("date") or "")[:4]
         )
 
-        release_info = {
+        release_info: dict[str, Any] = {
             "release_title": data.get("title"),
             "release_year": release_year,
             "artist": "",
@@ -1188,10 +905,6 @@ def fetch_release_metadata(release_id: str):
         }
 
         if data.get("artist-credit"):
-            # Primary credit only for the album artist — the joined
-            # multi-artist string ("Weezer & Rivers Cuomo") would make
-            # Navidrome split the album.  The full joined credit is kept on
-            # ``artist_credit`` so per-track artists can carry it.
             release_info["artist"] = primary_album_artist(data["artist-credit"])
             release_info["artist_credit"] = build_artist_credit_string(data["artist-credit"])
 
@@ -1205,10 +918,6 @@ def fetch_release_metadata(release_id: str):
                     "title": track.get("title") or recording.get("title"),
                     "recording_mbid": recording.get("id"),
                     "duration": track.get("length"),
-                    # Per-track artist: the recording's OWN artist-credit
-                    # (full multi-artist string when the recording credits
-                    # several artists).  Falls back to the release's joined
-                    # credit so collabs stay attributed on the track.
                     "artist": (
                         build_artist_credit_string(recording.get("artist-credit"))
                         if recording.get("artist-credit")
@@ -1219,12 +928,11 @@ def fetch_release_metadata(release_id: str):
         return release_info
 
     except Exception as e:
-        logger.error("[MB RELEASE track fetch] %s", e, exc_info=True)
+        logger.error("MB RELEASE track fetch error", error=str(e), exc_info=True)
         return None
 
 
-def _mb_artist_credit_name(artist_credit) -> str:
-    """Return the primary artist name from a MusicBrainz artist-credit."""
+def _mb_artist_credit_name(artist_credit: list[Any] | str) -> str:
     if isinstance(artist_credit, list) and artist_credit:
         first = artist_credit[0]
         if isinstance(first, dict):
@@ -1235,11 +943,6 @@ def _mb_artist_credit_name(artist_credit) -> str:
 
 
 def _cover_art_url(rg_id: str, release_id: str = "") -> str:
-    """CoverArtArchive URL for a release-group (falls back to release art).
-
-    Mirrors the legacy album lookup: release-group art is preferred because it
-    is more reliably available than art for a specific pressing/reissue MBID.
-    """
     if rg_id:
         return f"https://coverartarchive.org/release-group/{rg_id}/front-250"
     if release_id:
@@ -1247,25 +950,14 @@ def _cover_art_url(rg_id: str, release_id: str = "") -> str:
     return ""
 
 
-def _lookup_existing_mbid(existing_mbid: str, artist: str, album: str) -> dict | None:
-    """Direct lookup of the stored MBID — release first, then release-group.
-
-    Returns a result dict shaped for the album-page JS (``mbid``, ``artist``,
-    ``primary_type``, ``secondary_types``, ``first_release_date``,
-    ``cover_art_url``, ``confidence``, ``is_stored_mbid``, ``mbid_type``) or
-    ``None`` when neither resolves.  This is the legacy behaviour: the stored
-    release is surfaced so the user can compare it against text-search hits.
-    """
+def _lookup_existing_mbid(existing_mbid: str, artist: str, album: str) -> dict[str, Any] | None:
     if not existing_mbid:
         return None
     client = get_shared_mb_client()
 
-    # Try as a release MBID first (musicbrainz_album_mbid stores a release).
     try:
         rel_data = client.get_release(existing_mbid, inc="artist-credits+release-groups")
         if rel_data:
-            # Primary credit only — the joined multi-artist string would split
-            # the album on Navidrome if applied as album artist.
             rel_artist = primary_album_artist(rel_data.get("artist-credit") or []) or artist
             rg = rel_data.get("release-group") or {}
             rg_id = rg.get("id", "")
@@ -1286,9 +978,8 @@ def _lookup_existing_mbid(existing_mbid: str, artist: str, album: str) -> dict |
                 "mbid_type": "release",
             }
     except Exception as exc:
-        logger.debug("[MB] Stored release lookup failed for %s: %s", existing_mbid, exc)
+        logger.debug("Stored release lookup failed", existing_mbid=existing_mbid, error=str(exc))
 
-    # Fall back to a release-group MBID.
     try:
         rg_data = client.get_release_group(existing_mbid, inc="artist-credits")
         if rg_data:
@@ -1307,38 +998,25 @@ def _lookup_existing_mbid(existing_mbid: str, artist: str, album: str) -> dict |
                 "mbid_type": "release-group",
             }
     except Exception as exc:
-        logger.debug("[MB] Stored release-group lookup failed for %s: %s", existing_mbid, exc)
+        logger.debug("Stored release-group lookup failed", existing_mbid=existing_mbid, error=str(exc))
     return None
 
 
-def lookup_musicbrainz_album(artist: str, album: str, existing_mbid: str = "") -> dict:
-    """Look up an album on MusicBrainz and return release candidates.
-
-    Legacy-compatible contract (the album-page JS consumes it):
-    - The stored MBID (when present) is resolved directly — release first,
-      then release-group — and surfaced first as ``is_stored_mbid``.
-    - A text search for release groups follows, scored with a title/artist
-      similarity confidence.
-
-    Returns ``{"results": [...]}`` so the album page's
-    ``displayAlbumResults(data.results, 'musicbrainz')`` renders matches.
-    """
+def lookup_musicbrainz_album(artist: str, album: str, existing_mbid: str = "") -> dict[str, Any]:
     results: list[dict[str, Any]] = []
 
-    # 1. Direct lookup of the currently stored MBID (release → release-group).
     if existing_mbid:
         stored = _lookup_existing_mbid(existing_mbid, artist, album)
         if stored:
             results.append(stored)
-            logger.info("[MB_LOOKUP] Found stored %s MBID %s: %s by %s",
-                        stored["mbid_type"], existing_mbid, stored["title"], stored["artist"])
+            logger.info("Found stored MBID",
+                        mbid_type=stored["mbid_type"], mbid=existing_mbid, title=stored["title"], artist=stored["artist"])
 
-    # 2. Text search for release groups (mirrors the legacy query).
     query = f'release:"{escape_lucene_special_chars(album)}" AND artist:"{escape_lucene_special_chars(artist)}"'
     try:
         groups = get_shared_mb_client().search_release_groups(query, limit=10)
     except Exception as exc:
-        logger.warning("[MB_LOOKUP] MusicBrainz album search unavailable: %s", exc)
+        logger.warning("MusicBrainz album search unavailable", error=str(exc))
         groups = []
 
     seen_mbids = {r["mbid"] for r in results}
@@ -1367,7 +1045,6 @@ def lookup_musicbrainz_album(artist: str, album: str, existing_mbid: str = "") -
         })
         seen_mbids.add(rg_id)
 
-    # Stored MBID first, then by confidence desc.
     stored = [r for r in results if r.get("is_stored_mbid")]
     others = sorted(
         [r for r in results if not r.get("is_stored_mbid")],
@@ -1377,25 +1054,7 @@ def lookup_musicbrainz_album(artist: str, album: str, existing_mbid: str = "") -
     return {"results": (stored + others)[:11]}
 
 
-def get_release_group_releases(rg_mbid: str, include_track_counts: bool = False) -> dict:
-    """Fetch all releases within a release group.
-
-    Args:
-        rg_mbid: MusicBrainz release-group MBID.
-        include_track_counts: If True, also fetches track counts for each
-            release via the releases browse endpoint (one extra API call).
-
-    Returns:
-        Dict with ``success`` and ``releases`` list.  Each release dict is
-        NORMALISED to the album-page release-picker contract (same shape as
-        ``get_musicbrainz_best_release``): ``id``, ``title``, ``date``,
-        ``country``, ``status``, ``disambiguation``, ``track_count``,
-        ``disc_count``, ``formats`` (list) and ``cover_art_url``.  The raw
-        MusicBrainz dicts carry ``media`` arrays, NOT a flat ``formats``
-        list — the picker's ``r.formats.join(' + ')`` throws on the raw
-        shape, which is exactly the "modal opens but no releases load"
-        regression.
-    """
+def get_release_group_releases(rg_mbid: str, include_track_counts: bool = False) -> dict[str, Any]:
     try:
         data = get_shared_mb_client().get_release_group(rg_mbid, inc="releases")
         if not data:
@@ -1434,19 +1093,9 @@ def get_release_group_releases(rg_mbid: str, include_track_counts: bool = False)
         return {"success": False, "error": str(exc)}
 
 
-def _enrich_releases_with_track_counts(releases: list[dict], rg_mbid: str | None = None) -> None:
-    """Mutate releases in-place, adding ``track_count`` from MusicBrainz.
-
-    Uses the browse endpoint to fetch all releases for the release-group with
-    media info, then maps back by release MBID.  ``rg_mbid`` is passed
-    directly (the flattened releases from ``get_release_group_releases`` do
-    NOT carry the nested ``release-group`` object, so deriving it from
-    ``releases[0]`` always failed and no counts were ever attached).
-    """
+def _enrich_releases_with_track_counts(releases: list[dict[str, Any]], rg_mbid: str | None = None) -> None:
     if not releases:
         return
-    # Fall back to deriving the group from the first release's nested
-    # release-group (the raw MB shape / best-release path).
     if not rg_mbid:
         first_rg = releases[0].get("release-group")
         if isinstance(first_rg, dict):
@@ -1458,7 +1107,6 @@ def _enrich_releases_with_track_counts(releases: list[dict], rg_mbid: str | None
         browse_releases = get_shared_mb_client().browse_releases_for_group(
             rg_mbid, inc="media", limit=100,
         )
-        # Build a lookup: release MBID → total track count
         tc_lookup: dict[str, int] = {}
         for rel in browse_releases:
             rel_id = rel.get("id")
@@ -1475,40 +1123,15 @@ def _enrich_releases_with_track_counts(releases: list[dict], rg_mbid: str | None
             if rel_id and rel_id in tc_lookup:
                 rel["track_count"] = tc_lookup[rel_id]
     except Exception as exc:
-        logger.debug("Failed to fetch track counts for release-group %s: %s", rg_mbid, exc)
+        logger.debug("Failed to fetch track counts", release_group_mbid=rg_mbid, error=str(exc))
 
 
-def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict:
-    """Compare a MusicBrainz release's tracklist with the local library.
-
-    Ported from the old_system album-compare engine (per-track matching +
-    field-diff recommendations).  For every MusicBrainz track it tries to
-    find the matching library track (by track number with a title-similarity
-    gate, exact normalised title, fuzzy title ≥ 80 %, then a core-title /
-    parenthetical-stripped pass, and finally a cross-disc fuzzy pass) and
-    reports which fields differ (title, track_number, year, mbid, duration,
-    disc_number) so the album page can recommend and apply corrections.
-
-    Matches as many tracks as it can; anything it cannot match is returned as
-    unmatched (``matched: False``) and library tracks not claimed by any MB
-    track are returned in ``extra_tracks``.
-
-    Returns the frontend contract expected by ``album_detail.js``:
-    ``{success, mb_title, mb_year, mb_artist, release_group_mbid,
-    comparison, extra_tracks, tracks_needing_update, total_tracks}``.
-    """
+def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict[str, Any]:
     try:
         from db.engine import db_session
         from sqlalchemy import text
         import difflib as _difflib
 
-        # Resolve a concrete RELEASE MBID for the tracklist fetch.  The input
-        # (``rg_mbid``) can be either a release-GROUP MBID (the shared search
-        # modal hands back the group) or a concrete RELEASE MBID (older lookup
-        # flows handed back a release).  A release id is used directly —
-        # browsing it as if it were a group 404s and wastes a slow round-trip;
-        # group ids go through the best-release resolver so the right
-        # edition's tracklist is compared.
         _direct = None
         try:
             _direct = get_shared_mb_client().get_release(rg_mbid, inc="")
@@ -1521,10 +1144,7 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict:
             best = get_musicbrainz_best_release(artist, album, rg_mbid)
             best_release = (best or {}).get("best_release")
             release_id = (best_release or {}).get("id") or rg_mbid
-            # ``fetch_musicbrainz_release_metadata`` needs a concrete RELEASE
-            # MBID (a release-group 404s on /ws/2/release/{id}) — resolve the
-            # group to a real release when best-release resolution came up
-            # empty.
+            
             if not (best_release or {}).get("id"):
                 resolved = resolve_release_id(rg_mbid)
                 if resolved and resolved != rg_mbid:
@@ -1538,9 +1158,6 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict:
         mb_year = str(mb_release.get("release_year") or "")
         mb_release_title = str(mb_release.get("release_title") or "")
 
-        # Load library tracks for this album.  Case-insensitive matching —
-        # consistent with the album detail page route — so a URL casing
-        # difference never empties the comparison.
         library_tracks: list[dict[str, Any]] = []
         try:
             with db_session() as session:
@@ -1550,15 +1167,8 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict:
                 )
                 library_tracks = [dict(r._mapping) for r in result.fetchall()]
         except Exception as exc:
-            logger.debug("[MB_COMPARE] library track fetch failed: %s", exc)
+            logger.debug("Library track fetch failed", error=str(exc))
 
-        # ``disc_number`` / ``track_number`` are TEXT columns in PostgreSQL.
-        # The old ``COALESCE(disc_number, 1)`` integer literals made the whole
-        # query fail on Postgres ("COALESCE types text and integer cannot be
-        # matched") — the exception was swallowed above and surfaced as the
-        # misleading "No library tracks found for this album".  String
-        # literals keep the query portable (SQLite tests + Postgres); the
-        # Python sort below restores numeric disc/track ordering.
         def _disc_track_key(t: dict[str, Any]) -> tuple[int, int]:
             def _num(v: Any, default: int) -> int:
                 s = str(v or "").strip()
@@ -1579,18 +1189,15 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict:
                 "comparison": [],
             }
 
-        # Normalisation helper mirroring the old_system passes.
-        def _norm(value: str) -> str:
+        def _norm(value: Any) -> str:
             return re.sub(r"\s+", " ", str(value or "").lower().strip())
 
         def _core(value: str) -> str:
-            """Title truncated at the first ( or [ — strips venue/year/version
-            annotations that the local library usually omits."""
             return re.sub(r"\s*[\(\[].+$", "", _norm(value)).strip()
 
-        # Lookups: (disc, track_number) -> track, (disc, norm_title) -> track.
-        lib_by_tracknum: dict[tuple, dict] = {}
-        lib_by_title: dict[tuple, dict] = {}
+        lib_by_tracknum: dict[tuple[int, int], dict[str, Any]] = {}
+        lib_by_title: dict[tuple[int, str], dict[str, Any]] = {}
+        
         for t in library_tracks:
             disc = int(t.get("disc_number") or 1)
             tn = t.get("track_number")
@@ -1601,12 +1208,10 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict:
                     pass
             lib_by_title[(disc, _norm(t.get("title") or ""))] = t
 
-        matched_lib_ids: set = set()
+        matched_lib_ids: set[Any] = set()
         comparison: list[dict[str, Any]] = []
 
-        # Duration tolerance (seconds) — legacy parity.
         _DURATION_TOLERANCE_SEC = 5.0
-        # Minimum title similarity to trust a track-number match.
         _TRACK_NUM_TITLE_SIM_MIN = 0.30
 
         for mb_track in mb_tracks:
@@ -1625,7 +1230,6 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict:
 
             lib_track = None
 
-            # 1. Match by track number — only when titles are reasonably similar.
             if mb_num is not None and not lib_track:
                 candidate = lib_by_tracknum.get((disc, mb_num))
                 if candidate is not None:
@@ -1634,11 +1238,9 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict:
                     ).ratio() >= _TRACK_NUM_TITLE_SIM_MIN:
                         lib_track = candidate
 
-            # 2. Match by exact normalised title (same disc).
             if lib_track is None:
                 lib_track = lib_by_title.get((disc, norm_mb))
 
-            # 3. Fuzzy title match (≥ 80%) — same disc, unclaimed tracks only.
             if lib_track is None:
                 best_ratio, best_t = 0.0, None
                 for t in library_tracks:
@@ -1651,7 +1253,6 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict:
                         best_ratio, best_t = ratio, t
                 lib_track = best_t
 
-            # 4. Core-title match: strip parenthetical/bracketed suffixes and retry.
             if lib_track is None and norm_mb_core and norm_mb_core != norm_mb:
                 candidate = lib_by_title.get((disc, norm_mb_core))
                 if candidate is not None and candidate.get("id") not in matched_lib_ids:
@@ -1711,7 +1312,7 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict:
                         lib_duration_sec = None
                 entry["library_duration"] = lib_duration_sec
 
-                def _fmt_dur(sec):
+                def _fmt_dur(sec: float | None) -> str | None:
                     if sec is None:
                         return None
                     s = int(round(sec))
@@ -1721,7 +1322,6 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict:
                 entry["library_duration"] = _fmt_dur(lib_duration_sec)
 
                 diff_fields: list[str] = []
-                # Title differs (ignore an expected "(Artist Cover)" suffix).
                 lib_title = str(lib_track.get("title") or "")
                 if mb_title and mb_title != lib_title:
                     cover_match = re.search(r'\([^)]*\bcover\b[^)]*\)', lib_title, re.IGNORECASE)
@@ -1731,27 +1331,26 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict:
                             diff_fields.append("title")
                     else:
                         diff_fields.append("title")
-                # Track number differs.
+                
                 lib_tn = lib_track.get("track_number")
                 if mb_num is not None and str(mb_num) != str(lib_tn or ""):
                     diff_fields.append("track_number")
-                # Year differs.
+                
                 lib_year = str(lib_track.get("year") or "")
                 if mb_year and mb_year != lib_year:
                     diff_fields.append("year")
-                # Missing recording MBID.
+                
                 lib_mbid = str(lib_track.get("mbid") or "").strip()
                 if mb_recording_id and not lib_mbid:
                     diff_fields.append("mbid")
-                # Duration differs by more than the tolerance.
+                
                 if mb_duration_sec is not None and lib_duration_sec is not None:
                     if abs(mb_duration_sec - lib_duration_sec) > _DURATION_TOLERANCE_SEC:
                         diff_fields.append("duration")
-                # Disc number differs.
+                
                 if int(lib_track.get("disc_number") or 1) != disc:
                     diff_fields.append("disc_number")
 
-                # Remove fields the user has permanently ignored.
                 import json as _json_cmp
                 try:
                     ignored = set(_json_cmp.loads(lib_track.get("mb_ignored_fields") or "[]"))
@@ -1763,11 +1362,8 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict:
 
             comparison.append(entry)
 
-        # ── Cross-disc matching pass ────────────────────────────────────────
-        # Some MB tracks remain unmatched because the library stores them under
-        # a different disc number.  Match those against unclaimed library tracks
-        # on ANY disc (fuzzy ≥ 80%) and promote them with disc_number flagged.
         matched_mb_recording_ids = {e.get("mb_recording_id", "") for e in comparison if e.get("matched")}
+        
         for mb_track in mb_tracks:
             mb_recording_id = str(mb_track.get("recording_mbid") or "")
             if mb_recording_id and mb_recording_id in matched_mb_recording_ids:
@@ -1777,6 +1373,7 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict:
             norm_mb = _norm(mb_title)
             norm_mb_core = _core(mb_title)
             mb_num_raw = mb_track.get("track_number")
+            
             try:
                 mb_num = int(str(mb_num_raw).split("/")[0].strip()) if mb_num_raw is not None else None
             except (TypeError, ValueError):
@@ -1797,7 +1394,7 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict:
                     continue
                 lib_disc = int(t.get("disc_number") or 1)
                 if lib_disc == disc:
-                    continue  # same disc already handled in the main pass
+                    continue  
                 ratio = _difflib.SequenceMatcher(None, norm_mb, _norm(t.get("title") or "")).ratio()
                 if ratio < 0.80 and norm_mb_core and norm_mb_core != norm_mb:
                     ratio = max(ratio, _difflib.SequenceMatcher(None, norm_mb_core, _norm(t.get("title") or "")).ratio())
@@ -1846,15 +1443,18 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict:
                         diff_fields.append("title")
                 else:
                     diff_fields.append("title")
+                    
             if mb_num is not None and str(mb_num) != str(best_lib.get("track_number") or ""):
                 diff_fields.append("track_number")
+                
             lib_year = str(best_lib.get("year") or "")
             if mb_year and mb_year != lib_year:
                 diff_fields.append("year")
+                
             lib_mbid = str(best_lib.get("mbid") or "").strip()
             if mb_recording_id and not lib_mbid:
                 diff_fields.append("mbid")
-            # disc_number mismatch is the point of a cross-disc match.
+                
             diff_fields.append("disc_number")
 
             import json as _json_xdisc
@@ -1862,6 +1462,7 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict:
                 ignored = set(_json_xdisc.loads(best_lib.get("mb_ignored_fields") or "[]"))
             except Exception:
                 ignored = set()
+                
             diff_fields = list(dict.fromkeys(f for f in diff_fields if f not in ignored))
             entry["diff_fields"] = diff_fields
             entry["needs_update"] = len(diff_fields) > 0
@@ -1869,7 +1470,6 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict:
 
         tracks_needing_update = sum(1 for c in comparison if c.get("needs_update"))
 
-        # Library tracks never claimed by any MB track = "extra" tracks.
         extra_tracks = []
         for t in library_tracks:
             if t["id"] not in matched_lib_ids:
@@ -1894,21 +1494,15 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict:
             "total_tracks": len(comparison),
         }
     except Exception as exc:
-        logger.error("[MB_COMPARE] Error: %s", exc, exc_info=True)
+        logger.error("Compare MusicBrainz release error", error=str(exc), exc_info=True)
         return {"success": False, "error": str(exc)}
 
 
 def _get_local_track_count(artist: str, album: str) -> int:
-    """Query the local database for the number of tracks in an album."""
     try:
         from db.engine import db_session
         from sqlalchemy import text
         with db_session() as session:
-            # Case-insensitive + NULL-safe matching, mirroring the album-detail
-            # page route query — the URL-decoded artist/album names frequently
-            # differ in case from the stored values, and an exact match would
-            # report 0 tracks (confidence 0.5 → "not confident enough" on the
-            # album page's auto-match).
             result = session.execute(
                 text("SELECT COUNT(*) AS cnt FROM tracks WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist) AND LOWER(COALESCE(album, '')) = LOWER(:album)"),
                 {"artist": artist, "album": album},
@@ -1919,39 +1513,15 @@ def _get_local_track_count(artist: str, album: str) -> int:
         return 0
 
 
-def get_musicbrainz_best_release(artist: str, album: str, rg_mbid: str) -> dict:
-    """Find the best matching release inside a release group.
-
-    Matches the legacy (old_system) response contract so the album-page JS
-    (``autoPickRelease``) works: returns ``releases`` (full release list for
-    the picker), ``best_release`` (highest-scoring release), ``confidence``
-    (0.0–1.0) and ``local_track_count``.
-
-    Scoring:
-    - Track-count proximity to the local album (dominant).
-    - Official/Promotional status bonus.
-    - Release date (older editions like anniversary remasters score slightly
-      lower than the original).
-    - Release-title similarity to the local album name.
-
-    Confidence is 1.0 when the best release's track count exactly matches the
-    local album, otherwise scaled down by ``1.0 - (diff * 0.2)`` (legacy
-    parity).  A confidence >= 0.8 lets the frontend apply the match directly.
-    """
+def get_musicbrainz_best_release(artist: str, album: str, rg_mbid: str) -> dict[str, Any]:
     try:
-        # ``get_shared_mb_client`` is defined in this module (singleton client).
         client = get_shared_mb_client()
 
-        # Browse all releases in the group WITH media so track counts,
-        # disc counts and formats are available without extra calls.
-        # NOTE: ``recordings`` is intentionally NOT requested — the release
-        # BROWSE endpoint rejects some inc combinations and the release
-        # detail (with recordings) is fetched lazily by the picker's
-        # "Tracks" button instead.
         releases_raw = client.browse_releases_for_group(
             rg_mbid, inc="media+labels", limit=50,
         )
         releases: list[dict[str, Any]] = []
+        
         for r in releases_raw or []:
             media = r.get("media") or []
             total_tracks = sum(int(m.get("track-count", 0) or 0) for m in media)
@@ -1973,7 +1543,6 @@ def get_musicbrainz_best_release(artist: str, album: str, rg_mbid: str) -> dict:
                 ),
             })
 
-        # Sort chronologically (blank dates last) so the picker is stable.
         releases.sort(key=lambda x: (x.get("date") == "", x.get("date") or ""))
 
         if not releases:
@@ -1988,21 +1557,19 @@ def get_musicbrainz_best_release(artist: str, album: str, rg_mbid: str) -> dict:
         local_tc = _get_local_track_count(artist, album)
         local_tc = local_tc if local_tc > 0 else None
 
-        def _score_release(rel: dict) -> float:
+        def _score_release(rel: dict[str, Any]) -> float:
             score = 0.0
-            # Track-count proximity: dominant signal (legacy parity: -100 per
-            # unit of difference).
             if local_tc is not None:
                 diff = abs(local_tc - int(rel.get("track_count") or 0))
                 score -= diff * 100.0
-            # Official releases get a modest bonus.
+                
             if (rel.get("status") or "").lower() == "official":
                 score += 50.0
-            # Older editions (anniversary remasters etc.) score slightly lower.
+                
             date = (rel.get("date") or "").strip()
             if date and date[:4].isdigit():
                 score += max(0.0, 2100.0 - int(date[:4])) * 0.01
-            # Title similarity to the local album nudges the correct edition.
+                
             if album and rel.get("title"):
                 score += _similarity(album.lower(), str(rel["title"]).lower()) * 30.0
             return score
@@ -2014,7 +1581,6 @@ def get_musicbrainz_best_release(artist: str, album: str, rg_mbid: str) -> dict:
         )
         best_release, best_score = scored[0][0], scored[0][1]
 
-        # Confidence: 1.0 on exact track-count match, else scaled down.
         confidence = 0.0
         if local_tc is not None:
             if int(best_release.get("track_count") or 0) == local_tc:
@@ -2023,7 +1589,7 @@ def get_musicbrainz_best_release(artist: str, album: str, rg_mbid: str) -> dict:
                 diff = abs(local_tc - int(best_release.get("track_count") or 0))
                 confidence = max(0.0, 1.0 - (diff * 0.2))
         else:
-            confidence = 0.5  # no local data → not confident
+            confidence = 0.5 
 
         return {
             "success": True,
@@ -2033,6 +1599,5 @@ def get_musicbrainz_best_release(artist: str, album: str, rg_mbid: str) -> dict:
             "local_track_count": local_tc,
         }
     except Exception as exc:
-        logger.error("[MB_BEST_RELEASE] Error: %s", exc, exc_info=True)
+        logger.error("Best release resolution error", error=str(exc), exc_info=True)
         return {"success": False, "error": str(exc)}
-

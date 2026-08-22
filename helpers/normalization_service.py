@@ -8,28 +8,18 @@ Canonical normalization for titles, artists, albums, and filenames.
 
 from __future__ import annotations
 
+import os
 import re
 import unicodedata
+from typing import Any
 
-import os
-from typing import Tuple, Optional
-
-
-from helpers.config_helpers import (
-    get_queue_matching_config_v2,
-)
+from helpers.config_helpers import get_queue_matching_config_v2
 
 
 # =============================================================================
-# ✅ UNICODE PUNCTUATION EQUIVALENTS
+# UNICODE PUNCTUATION EQUIVALENTS
 # =============================================================================
 
-# Map of Unicode punctuation to ASCII equivalents.  Applied BEFORE
-# punctuation removal because ``\w`` is Unicode-aware: a curly apostrophe
-# (U+2019) is a word character, so it survives ``re.sub(r"[^\w\s]", ...)``
-# while a straight ASCII apostrophe is replaced — "they're all around us"
-# (Discogs) vs "they’re all around us" (library) would otherwise score
-# ~0.88 on SequenceMatcher instead of 1.00.
 UNICODE_PUNCT_MAP = str.maketrans({
     "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'",  # ‘’‚‛
     "\u201c": '"', "\u201d": '"', "\u2032": "'", "\u2033": '"',  # “”′″
@@ -39,18 +29,14 @@ UNICODE_PUNCT_MAP = str.maketrans({
 
 
 def normalize_unicode_punctuation(value: str) -> str:
-    """Convert smart quotes, primes, dashes and NBSP to ASCII equivalents.
-
-    Must run before any ``\w``-based punctuation removal so curly and
-    straight apostrophes normalize identically.
-    """
+    """Convert smart quotes, primes, dashes and NBSP to ASCII equivalents."""
     if not value:
         return value
     return value.translate(UNICODE_PUNCT_MAP)
 
 
 # =============================================================================
-# ✅ CORE NORMALIZATION
+# CORE NORMALIZATION
 # =============================================================================
 
 def clean_title(
@@ -60,57 +46,27 @@ def clean_title(
     remove_single_release: bool = True,
     remove_remaster: bool = True,
 ) -> str:
-    """
-    Shared title cleanup pipeline.
-
-    Used by title normalization functions to avoid
-    duplicated cleanup logic.
-    """
-
+    """Shared title cleanup pipeline."""
     if not value:
         return ""
 
     if remove_brackets:
-        value = strip_parentheses(
-            value,
-            full=True,
-        )
+        value = strip_parentheses(value, full=True)
 
     if remove_single_release:
-        value = strip_single_release_suffix(
-            value,
-        )
+        value = strip_single_release_suffix(value)
 
     if remove_remaster:
-        value = strip_remaster_suffix(
-            value,
-        )
+        value = strip_remaster_suffix(value)
 
     return value.strip()
 
 
-def normalize_isrc(value) -> str:
-    """Normalize an ISRC / ISRC-list to a bare 12-char code (uppercased).
-
-    File taggers and API payloads vary wildly: MusicBrainz Picard writes
-    multi-ISRC as ``{A/B}``, others use commas/semicolons/whitespace, and the
-    raw MB API returns arrays.  Downstream consumers use the value as a
-    precise key (the Subsonic ``isrc/{isrc}`` lookup, the finalise ISRC
-    ``GROUP BY``), so a wrapped value silently breaks matching and splits
-    one recording across copies.  Normalizes to the FIRST code found:
-    strips braces, splits on ``/ , ; |`` and whitespace, uppercases, and
-    validates the 12-char ISRC shape.  Returns ``""`` when nothing valid
-    remains.
-    """
+def normalize_isrc(value: Any) -> str:
+    """Normalize an ISRC / ISRC-list to a bare 12-char code (uppercased)."""
     if value is None:
         return ""
-    import re as _re
 
-    # A raw list (Navidrome/OpenSubsonic ``tags`` map, MusicBrainz ``isrcs``
-    # array) must be unpacked FIRST — ``str(["A/B"])`` would render the
-    # literal ``"['A/B']"``, which no 12-char regex can match, and the
-    # bracketed string would leak downstream into the ISRC lookups
-    # (``resolve_isrc_recording`` / ListenBrainz by-recording) as a junk key.
     if isinstance(value, (list, tuple, set)):
         for item in value:
             code = normalize_isrc(item)
@@ -119,37 +75,22 @@ def normalize_isrc(value) -> str:
         return ""
 
     raw = str(value)
-    cleaned = _re.sub(r"[{}]", " ", raw)
-    for code in _re.split(r"[/,;|\s]+", cleaned):
+    cleaned = re.sub(r"[{}]", " ", raw)
+    for code in re.split(r"[/,;|\s]+", cleaned):
         code = code.strip().upper()
-        if _re.fullmatch(r"[A-Z]{2}[0-9A-Z]{3}[0-9]{7}", code):
+        if re.fullmatch(r"[A-Z]{2}[0-9A-Z]{3}[0-9]{7}", code):
             return code
-    # No full 12-char code survived — fall back to the uppercased raw string
-    # stripped of braces so at least the dominant format (bare code) matches.
-    return _re.sub(r"[{}]", "", raw).strip().upper()
+    return re.sub(r"[{}]", "", raw).strip().upper()
 
 
 def normalize_string(value: str) -> str:
-    """
-    Canonical normalization:
-    - lowercase
-    - remove accents
-    - smart quotes/dashes → ASCII equivalents
-    - remove punctuation
-    - collapse whitespace
-    """
+    """Canonical normalization: lowercase, remove accents, remove punctuation, collapse whitespace."""
     if not value:
         return ""
 
     value = value.lower().strip()
-
-    # Smart quotes must become ASCII BEFORE the punctuation regex — a curly
-    # apostrophe is a Unicode word char and would otherwise survive while a
-    # straight one is replaced (see normalize_unicode_punctuation).
     value = normalize_unicode_punctuation(value)
 
-    # NFKD (not NFD) also splits Unicode ligatures (ﬁ → fi), so "Ofﬁcial"
-    # matches "Official".
     value = unicodedata.normalize("NFKD", value)
     value = "".join(c for c in value if not unicodedata.combining(c))
 
@@ -159,11 +100,7 @@ def normalize_string(value: str) -> str:
 
 
 def normalize_filename(value: str) -> str:
-    """
-    Normalize filenames for matching:
-    - remove extension
-    - normalize text
-    """
+    """Normalize filenames for matching: remove extension, normalize text."""
     if not value:
         return ""
 
@@ -172,16 +109,11 @@ def normalize_filename(value: str) -> str:
 
 
 # =============================================================================
-# ✅ GENERIC CLEANING HELPERS (CONSOLIDATED)
+# GENERIC CLEANING HELPERS
 # =============================================================================
 
 def strip_parentheses(value: str, full: bool = False) -> str:
-    """
-    Remove parentheses.
-
-    full=True  → remove all bracket sections
-    full=False → remove trailing only
-    """
+    """Remove parentheses. full=True removes all bracket sections, full=False removes trailing only."""
     if not value:
         return ""
 
@@ -192,15 +124,10 @@ def strip_parentheses(value: str, full: bool = False) -> str:
 
 
 def strip_brackets(value: str) -> str:
-    """
-    Remove both () and [] — useful for filenames.
-    """
+    """Remove both () and [] — useful for filenames."""
     return re.sub(r"(\(.*?\)|\[.*?\])", "", value or "").strip()
 
 
-# Canonical feat/ft/featuring suffix pattern — single source of truth used
-# by all modules that need to strip featured-artist suffixes from artist names.
-# Handles both plain "feat. Guest" and bracket notation "[feat. Guest]".
 FEAT_SUFFIX_RE = re.compile(
     r"""
     \s+
@@ -213,22 +140,13 @@ FEAT_SUFFIX_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
-def strip_featured_artist(
-    value: str,
-) -> str:
+
+def strip_featured_artist(value: str) -> str:
     if not value:
         return ""
-
-    return FEAT_SUFFIX_RE.sub(
-        "",
-        value,
-    ).strip()
+    return FEAT_SUFFIX_RE.sub("", value).strip()
 
 
-# Conservative featured-guest suffix pattern for TITLES (search queries).
-# Deliberately excludes "with" / "&" / "and" — those occur in real song
-# titles ("Better With You", "Love & Hate") and stripping them would corrupt
-# the query.  Only explicit credit markers are stripped.
 TITLE_FEAT_SUFFIX_RE = re.compile(
     r"""
     \s+
@@ -243,15 +161,7 @@ TITLE_FEAT_SUFFIX_RE = re.compile(
 
 
 def strip_featured_guest_suffix(value: str) -> str:
-    """Strip a trailing featured-guest credit from a TITLE.
-
-    Discogs/MusicBrainz release titles rarely carry the guest credit, so a
-    local title like "Uncontrolled (feat. Charlie Rolfe of As Everything
-    Unfolds)" scores ~0.0 similarity against the plain "Uncontrolled"
-    single/EP — real singles collapse to ``single=low``.  Handles bare
-    (" feat. X") and bracketed ("(feat. X)") suffixes.  Falls back to the
-    original value when stripping would empty the title.
-    """
+    """Strip a trailing featured-guest credit from a TITLE."""
     if not value:
         return value
     cleaned = TITLE_FEAT_SUFFIX_RE.sub("", value).strip()
@@ -259,7 +169,7 @@ def strip_featured_guest_suffix(value: str) -> str:
 
 
 # =============================================================================
-# ✅ SUFFIX STRIPPING
+# SUFFIX STRIPPING
 # =============================================================================
 
 SINGLE_RELEASE_SUFFIX_RE = re.compile(
@@ -281,13 +191,6 @@ def strip_remaster_suffix(value: str) -> str:
     return REMASTER_SUFFIX_RE.sub("", value or "").strip()
 
 
-# Album edition/version markers that are NOT part of the release's canonical
-# title.  Navidrome's album folders routinely carry a parenthetical edition
-# ("Slipknot (Clean)", "Weezer (Deluxe Edition)") — those are *editions of the
-# release*, not the release title, so the canonical album name should drop
-# them.  Studio-affecting markers (Live, Remix, Acoustic, ...) and the
-# "Various Artists" disambiguator are deliberately NOT stripped — they change
-# what the album IS, not just which edition it is.
 _ALBUM_EDITION_STRIP_RE = re.compile(
     r"\s*[\(\[]\s*(?:clean|explicit|deluxe(?:\s+edition)?|special\s+edition|"
     r"expanded\s+edition|extended\s+edition|anniversary\s+edition|"
@@ -299,27 +202,12 @@ _ALBUM_EDITION_STRIP_RE = re.compile(
 
 
 def strip_album_edition_marker(value: str) -> str:
-    """Return the album title with a trailing edition marker removed.
-
-    ``"Slipknot (Clean)"`` → ``"Slipknot"``, ``"Weezer (Deluxe Edition)"`` →
-    ``"Weezer"``.  Only a trailing bracketed marker whose content is an
-    edition keyword counts; ``(Live)``, ``(Remix)``, ``(Explicit Version)``
-    and non-trailing markers are preserved.  Returns the input unchanged when
-    no marker matches (so already-canonical titles are untouched).
-    """
+    """Return the album title with a trailing edition marker removed."""
     return _ALBUM_EDITION_STRIP_RE.sub("", value or "").strip() or (value or "")
 
 
 def strip_search_keywords(value: str) -> str:
-    """Remove parenthetical edition markers for *same-song different-cut* variants.
-
-    Mirrors the config page's Search Filters: parenthetical content matching a
-    configured keyword (``search.strip_keywords``, legacy
-    ``strip_parentheses_filters``) is removed so "Song (Radio Edit)" searches
-    as "Song".  Different-recording markers (live / remix / acoustic / ...)
-    are NOT in the default keyword list and are preserved — they must keep
-    their parentheses so the correct recording is matched.
-    """
+    """Remove parenthetical edition markers for *same-song different-cut* variants."""
     try:
         from helpers.config_helpers import get_config
         cfg = get_config() or {}
@@ -332,22 +220,18 @@ def strip_search_keywords(value: str) -> str:
     if not keyword_set or not value:
         return value or ""
 
-    def _repl(match):
+    def _repl(match: Any) -> str:
         return "" if match.group(1).strip().lower() in keyword_set else match.group(0)
 
     return re.sub(r"\(([^)]*)\)", _repl, value)
 
 
 # =============================================================================
-# ✅ VERSION / VARIANT EXTRACTION
+# VERSION / VARIANT EXTRACTION
 # =============================================================================
 
-
 def get_version_keywords() -> set[str]:
-    """
-    Variant tokens used during title parsing.
-    """
-
+    """Variant tokens used during title parsing."""
     return {
         str(token).lower()
         for token in get_queue_matching_config_v2()[
@@ -360,15 +244,8 @@ ROMAN_NUMERAL_PATTERN = r'\s+(I{1,3}|IV|V|VI{0,3}|IX|X{1,3})\s*$'
 PUNCTUATION_SUFFIX_PATTERN = re.compile(r'([!+?]+)\s*$')
 
 
-def extract_version_info(
-    title: str,
-) -> tuple[str, set[str]]:
-    """
-    Extract base title + version tags.
-
-    Does NOT normalize.
-    """
-
+def extract_version_info(title: str) -> tuple[str, set[str]]:
+    """Extract base title + version tags without normalizing."""
     if not title:
         return "", set()
 
@@ -415,10 +292,7 @@ def extract_version_info(
             base_title[:roman_match.start()]
             .strip()
         )
-
-        base_title += (
-            f" {roman_match.group(1).lower()}"
-        )
+        base_title += f" {roman_match.group(1).lower()}"
 
     base_title += preserved_suffix
 
@@ -428,15 +302,6 @@ def extract_version_info(
     )
 
 
-# Edition / version annotations that mark a track as a DIFFERENT EDITION of
-# the song ("(Epic Edition)", "(Deluxe Edition)", ...).  A track carrying one
-# must only be treated as the same release as a title carrying the SAME
-# annotation — it must never be matched against the plain (un-annotated)
-# title.  Cover annotations ("(PSY Cover)", "(Nirvana Cover)") and live/remix
-# markers are NOT editions and never gate matching: MusicBrainz omits cover
-# annotations from release-group titles, so a cover track matches the cover's
-# own plain single, and remastered variants are intentionally treated as the
-# same song as the original.
 _EDITION_ANNOTATION_KEYWORDS = frozenset({
     "anniversary", "collector", "deluxe", "edition", "epic", "expanded",
     "extended", "limited", "reissue", "special", "tour", "ultimate",
@@ -446,12 +311,7 @@ _EDITION_ANNOTATION_RE = re.compile(r"[\(\[]([^\)\]]+)[\)\]]\s*$", re.IGNORECASE
 
 
 def extract_edition_annotation(title: str) -> str | None:
-    """Return the normalized trailing edition annotation, or None.
-
-    Only a bracketed suffix whose content contains an edition marker
-    ("Epic Edition", "Deluxe Edition", ...) counts.  Cover annotations
-    ("(PSY Cover)") and live/remix markers are not editions and return None.
-    """
+    """Return the normalized trailing edition annotation, or None."""
     if not title:
         return None
     m = _EDITION_ANNOTATION_RE.search(title)
@@ -464,14 +324,7 @@ def extract_edition_annotation(title: str) -> str | None:
 
 
 def edition_annotations_compatible(title_a: str, title_b: str) -> bool:
-    """True when the edition annotations on two titles are compatible.
-
-    An edition-annotated track (e.g. "Valhalla (Epic Edition)") is only the
-    same release as a title carrying the SAME edition annotation — it must
-    never be matched against the plain "Valhalla".  When neither title carries
-    an edition annotation the titles are compatible; when exactly one carries
-    an annotation they are not.
-    """
+    """True when the edition annotations on two titles are compatible."""
     ann_a = extract_edition_annotation(title_a)
     ann_b = extract_edition_annotation(title_b)
     if ann_a is None and ann_b is None:
@@ -480,14 +333,9 @@ def edition_annotations_compatible(title_a: str, title_b: str) -> bool:
         return False
     return ann_a == ann_b
 
-def is_compilation_artist(
-    artist: str | None,
-) -> bool:
-    """
-    Determine whether an artist string represents
-    a compilation/various-artists release.
-    """
 
+def is_compilation_artist(artist: str | None) -> bool:
+    """Determine whether an artist string represents a compilation/various-artists release."""
     if not artist:
         return False
 
@@ -506,17 +354,13 @@ def is_compilation_artist(
         in compilation_artists
     )
 
+
 # =============================================================================
-# ✅ PRIMARY NORMALIZATION PIPELINES
+# PRIMARY NORMALIZATION PIPELINES
 # =============================================================================
 
-def normalize_title_for_lookup(
-    title: str,
-) -> str:
-    """
-    Canonical matching normalization.
-    """
-
+def normalize_title_for_lookup(title: str) -> str:
+    """Canonical matching normalization."""
     return normalize_string(
         clean_title(
             title,
@@ -527,24 +371,8 @@ def normalize_title_for_lookup(
     )
 
 
-def normalize_title_for_mbid_match(
-    title: str,
-) -> str:
-    """
-    Bracket-preserving canonical normalization for MusicBrainz MBID matching.
-
-    ``normalize_title_for_lookup`` strips ALL parenthetical text, so
-    "Alcohaulin' Ass (Live)" normalizes identically to the studio
-    "Alcohaulin' Ass" — candidate similarity ties then resolve to whichever
-    recording MusicBrainz returns first (usually the more popular studio
-    version), leaking the studio MBID's ListenBrainz counts onto the live
-    bonus track.  Version descriptors ("(Live)", "(Acoustic)", "(Demo)",
-    "(feat. X)", ...) are real title content on MusicBrainz recordings and
-    must survive normalization so a version-tagged track matches its OWN
-    recording.  Single-release and remaster suffixes are still stripped —
-    those are release-group annotations, not version content.
-    """
-
+def normalize_title_for_mbid_match(title: str) -> str:
+    """Bracket-preserving canonical normalization for MusicBrainz MBID matching."""
     return normalize_string(
         clean_title(
             title,
@@ -555,27 +383,8 @@ def normalize_title_for_mbid_match(
     )
 
 
-def normalize_title_for_lucene_query(
-    title: str,
-) -> str:
-    """
-    Punctuation-free title for MusicBrainz Lucene phrase queries.
-
-    Lucene phrase queries are matched against the index's token stream, which
-    is built without punctuation ("What's The Deal?" indexes as
-    "whats the deal"). Removing punctuation without inserting spaces keeps the
-    query tokens aligned with the index; the canonical
-    :func:`normalize_title_for_lookup` replaces punctuation with spaces and is
-    therefore unsuitable for phrase queries.
-
-    Only parenthetical cover annotations ("(PSY Cover)", "(Cover)") are
-    stripped — MusicBrainz titles omit those, so a track titled "Gangnam
-    Style (PSY Cover)" must query for "gangnam style", not the unmatched
-    phrase "gangnam style psy cover". Other annotations such as "(Epic
-    Edition)" are preserved because MusicBrainz release groups carry them in
-    their real titles (e.g. the "Das Elfte Gebot (Epic Edition)" single).
-    """
-
+def normalize_title_for_lucene_query(title: str) -> str:
+    """Punctuation-free title for MusicBrainz Lucene phrase queries."""
     if not title:
         return ""
 
@@ -587,13 +396,8 @@ def normalize_title_for_lucene_query(
     return re.sub(r"\s+", " ", value).strip()
 
 
-def normalize_title_for_lastfm(
-    title: str,
-) -> str:
-    """
-    Lighter normalization for Last.fm.
-    """
-
+def normalize_title_for_lastfm(title: str) -> str:
+    """Lighter normalization for Last.fm."""
     if not title:
         return ""
 
@@ -617,31 +421,13 @@ def normalize_title_for_lastfm(
     return normalize_string(value)
 
 
-# =============================================================================
-# ✅ CANONICAL ENTRY POINTS (NEW + IMPORTANT)
-# =============================================================================
-
-
-
 def normalize_artist(value: str) -> str:
     value = strip_featured_artist(value)
     return normalize_string(value)
 
 
 def clean_artist_name_for_storage(value: str) -> str:
-    """Conservative canonicalization for artist/album_artist DB fields.
-
-    Unlike ``normalize_artist`` (which lowercases for comparison), this
-    preserves readable casing while collapsing multi-valued artist fields
-    (e.g. "Artist A • Artist B / Artist C") and normalising all-caps or
-    all-lower variants to title case.
-
-    Args:
-        value: Raw artist name string.
-
-    Returns:
-        Cleaned artist name suitable for DB storage.
-    """
+    """Conservative canonicalization for artist/album_artist DB fields."""
     if not value:
         return ""
 
@@ -649,8 +435,6 @@ def clean_artist_name_for_storage(value: str) -> str:
     if not cleaned:
         return ""
 
-    # Collapse multi-valued artist fields that can appear from malformed
-    # metadata.  Keep exactly one canonical artist token.
     parts = [
         p.strip()
         for p in re.split(r"\s*[•·]+\s*|\s+[/|;]+\s+", cleaned)
@@ -667,8 +451,6 @@ def clean_artist_name_for_storage(value: str) -> str:
                 cleaned = part
                 break
 
-    # Normalise all-caps / all-lower names to title case
-    # (e.g. EELS → Eels, radiohead → Radiohead).
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9' .-]*", cleaned):
         letters = re.sub(r"[^A-Za-z]+", "", cleaned)
         if letters and (letters.islower() or letters.isupper()):
@@ -687,12 +469,13 @@ def normalize_album(value: str) -> str:
         )
     )
 
+
 # alias
 normalize = normalize_title_for_lookup
 
 
 # =============================================================================
-# ✅ LIGHT HEURISTICS (SAFE)
+# LIGHT HEURISTICS
 # =============================================================================
 
 def detect_cover_and_normalize_title(title: str) -> tuple[bool, str]:
@@ -706,16 +489,7 @@ def detect_cover_and_normalize_title(title: str) -> tuple[bool, str]:
 
 
 def normalise_result(result: Any) -> tuple[dict[str, Any], int]:
-    """Normalise different service return shapes into (dict, int).
-
-    Used by the queue orchestrator to handle various processor return types.
-
-    Supported shapes:
-    - ``(dict, int)`` — payload + HTTP status
-    - ``dict`` — success/error payload
-    - ``bool`` — treated as success/failure
-    - ``None`` — treated as success with no result
-    """
+    """Normalise different service return shapes into (dict, int)."""
     if isinstance(result, tuple) and len(result) == 2:
         payload, status = result
         if isinstance(payload, dict) and isinstance(status, int):
@@ -745,19 +519,7 @@ def is_remastered_only_variant(title: str) -> bool:
 
 
 def normalise_year_tag(raw_year: str | int | None) -> str:
-    """Extract a clean 4-digit year from a potentially longer date string.
-
-    MusicBrainz returns full ISO dates (e.g. ``2007-11-23``).  Writing the
-    full date to tag fields causes Navidrome to treat tracks from the same
-    album as separate releases when some tracks carry the full date and
-    others only the year.  This normalises to a consistent year-only value.
-
-    Args:
-        raw_year: Year value (string, int, or None).
-
-    Returns:
-        4-digit year string, or empty string if the input is empty/invalid.
-    """
+    """Extract a clean 4-digit year from a potentially longer date string."""
     if not raw_year:
         return ""
     m = re.search(r"((?:19|20)\d{2})", str(raw_year))
@@ -765,7 +527,7 @@ def normalise_year_tag(raw_year: str | int | None) -> str:
 
 
 # =============================================================================
-# ✅ TITLE CLEANUP
+# TITLE CLEANUP
 # =============================================================================
 
 _COVER_ATTRIBUTION_RE = re.compile(
@@ -775,18 +537,7 @@ _COVER_ATTRIBUTION_RE = re.compile(
 
 
 def strip_cover_attribution(title: str) -> str:
-    """Strip cover attributions from the end of a track title.
-
-    Removes trailing parenthesised or bracketed text containing the word
-    "cover" (case-insensitive), e.g. ``"(Foo Fighters Cover)"``,
-    ``"[Beatles Cover]"``, ``"(Cover Version)"``.
-
-    Args:
-        title: Track title to clean.
-
-    Returns:
-        Cleaned title with cover attribution removed.
-    """
+    """Strip cover attributions from the end of a track title."""
     if not title:
         return ""
     result = _COVER_ATTRIBUTION_RE.sub("", title).strip()
@@ -794,7 +545,7 @@ def strip_cover_attribution(title: str) -> str:
 
 
 # =============================================================================
-# ✅ COVER-DETECTION HELPERS (migrated from legacy cover_detector.py)
+# COVER-DETECTION HELPERS
 # =============================================================================
 
 def canonical_track_title(value: str) -> str:
@@ -855,12 +606,10 @@ def normalize_writer_credits(writers: list[str]) -> list[str]:
 
 
 # =============================================================================
-# ✅ DISCOGS CLEANUP
+# DISCOGS CLEANUP
 # =============================================================================
 
-DISCOGS_ARTIST_ID_RE = re.compile(
-    r"\[a\d+\]"
-)
+DISCOGS_ARTIST_ID_RE = re.compile(r"\[a\d+\]")
 
 DISCOGS_ORPHANED_AKA_RE = re.compile(
     r"\baka\s*(?=\s*\(|,|\.|$)",
@@ -874,65 +623,20 @@ DISCOGS_LEADING_AKA_RE = re.compile(
 
 
 def clean_discogs_biography(text: str) -> str:
-    """
-    Clean Discogs biography text.
-
-    Discogs often embeds internal artist references such as:
-
-        [a123456]
-
-    and combinations such as:
-
-        [a111] aka [a222]
-
-    which should not be shown to users.
-
-    Examples:
-
-        "[a111] aka [a222]"
-        -> ""
-
-        "[a111] aka John Smith"
-        -> "John Smith"
-
-        "John Doe [a123456]"
-        -> "John Doe"
-    """
-
+    """Clean Discogs biography text."""
     if not text:
         return ""
 
-    cleaned = DISCOGS_ARTIST_ID_RE.sub(
-        "",
-        text,
-    )
-
-    cleaned = DISCOGS_ORPHANED_AKA_RE.sub(
-        "",
-        cleaned,
-    )
-
-    cleaned = DISCOGS_LEADING_AKA_RE.sub(
-        "",
-        cleaned,
-    )
-
-    cleaned = re.sub(
-        r"\s+",
-        " ",
-        cleaned,
-    )
+    cleaned = DISCOGS_ARTIST_ID_RE.sub("", text)
+    cleaned = DISCOGS_ORPHANED_AKA_RE.sub("", cleaned)
+    cleaned = DISCOGS_LEADING_AKA_RE.sub("", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned)
 
     return cleaned.strip()
 
 
-def normalize_core_title(
-    value: str,
-) -> str:
-    """
-    Strict title normalization for matching.
-    """
-
+def normalize_core_title(value: str) -> str:
+    """Strict title normalization for matching."""
     return normalize_string(
         clean_title(
             value,
@@ -943,47 +647,39 @@ def normalize_core_title(
     )
 
 
-def normalize_core_filename(
-    value: str,
-) -> str:
+def normalize_core_filename(value: str) -> str:
     value = re.sub(
         r"\.[a-z0-9]{2,5}$",
         "",
         value or "",
         flags=re.IGNORECASE,
     )
-
     value = strip_brackets(value)
-
     return normalize_string(value)
 
+
 # ============================================================
-# ✅ TRACK PREFIX CLEANUP
+# TRACK PREFIX CLEANUP
 # ============================================================
 
 def strip_track_number_prefix(title: str) -> str:
-    """
-    Remove leading track numbers and trailing Soulseek IDs.
-    """
-
+    """Remove leading track numbers and trailing Soulseek IDs."""
     if not title:
         return title
 
-    # Remove leading track/disc prefix (e.g. "01 -", "1-05 -", "0108.")
     cleaned = re.sub(
         r'^\d+(?:\s*-\s*\d+)?\s*[-\.]\s*',
         '',
         title
     ).strip()
 
-    # Remove trailing Soulseek UID (>=12 digits)
     cleaned = re.sub(r'_\d{12,}$', '', cleaned).strip()
 
     return cleaned if cleaned else title
 
 
 # ============================================================
-# ✅ TEXT NORMALIZATION FOR MATCHING
+# TEXT NORMALIZATION FOR MATCHING
 # ============================================================
 
 def normalize_match_text(value: str) -> str:
@@ -1013,79 +709,46 @@ def normalize_match_text(value: str) -> str:
 
 
 # ============================================================
-# ✅ TRACK/DISC EXTRACTION (FROM TAGS)
+# TRACK/DISC EXTRACTION (FROM TAGS)
 # ============================================================
 
 def extract_track_disc(
     value: str,
     *,
     is_filename: bool = False,
-) -> tuple[Optional[int], Optional[int]]:
-    """
-    Extract (track_number, disc_number).
-
-    Supported formats:
-
-        05       -> (5, None)
-        05/12    -> (5, None)
-        1-05     -> (5, 1)
-        1/05     -> (5, 1)
-        1.05     -> (5, 1)
-
-    If is_filename=True the filename is converted
-    to a stem before parsing.
-    """
-
+) -> tuple[int | None, int | None]:
+    """Extract (track_number, disc_number)."""
     if not value:
         return None, None
 
     text = value
-
     if is_filename:
-        text = os.path.splitext(
-            os.path.basename(value)
-        )[0]
+        text = os.path.splitext(os.path.basename(value))[0]
 
     text = str(text).strip()
 
-    # disc-track format
     match = re.match(
         r"^\s*(\d{1,2})\s*[-/\.]\s*(\d{1,3})",
         text,
     )
-
     if match:
         try:
-            return (
-                int(match.group(2)),
-                int(match.group(1)),
-            )
+            return int(match.group(2)), int(match.group(1))
         except ValueError:
             return None, None
 
-    # track-only format
-    match = re.match(
-        r"^\s*(\d{1,3})",
-        text,
-    )
-
+    match = re.match(r"^\s*(\d{1,3})", text)
     if match:
         try:
-            return (
-                int(match.group(1)),
-                None,
-            )
+            return int(match.group(1)), None
         except ValueError:
             return None, None
 
     return None, None
 
 
-
-
-
-def _coerce_position_to_int(value, default):
-    """Convert MusicBrainz position strings (e.g. 'A1', '1/12') into an integer."""
+def _coerce_position_to_int(value: Any, default: int) -> int:
+    """Convert MusicBrainz position strings into an integer."""
     raw = str(value or '').strip()
     if not raw:
         return default
@@ -1097,13 +760,13 @@ def _coerce_position_to_int(value, default):
     return default
 
 
-
 def sanitize_path(value: str) -> str:
     """Sanitize any string to be safe for OS file systems."""
-    if not value: return "Unknown"
-    # Unified replacement for path-invalid characters
+    if not value:
+        return "Unknown"
     clean = re.sub(r'[<>:"|?*\\]', '_', value)
     return clean.strip().strip(".")
+
 
 def normalize_album_artist(value: str) -> str:
     """Canonical VA/Various Artists handling."""
@@ -1113,11 +776,8 @@ def normalize_album_artist(value: str) -> str:
     return value.strip()
 
 
-def safe_int(value, default: int = 0) -> int:
-    """Safely convert a value to int, returning *default* on failure.
-
-    Handles None, empty strings, and non-convertible types gracefully.
-    """
+def safe_int(value: Any, default: int = 0) -> int:
+    """Safely convert a value to int, returning *default* on failure."""
     try:
         if value is None:
             return default
@@ -1126,36 +786,15 @@ def safe_int(value, default: int = 0) -> int:
         return default
 
 
-def safe_str(value, default: str = "") -> str:
-    """Safely convert a value to string, returning *default* on failure.
-
-    Handles None and other edge cases gracefully.
-    """
+def safe_str(value: Any, default: str = "") -> str:
+    """Safely convert a value to string, returning *default* on failure."""
     if value is None:
         return default
     return str(value)
 
 
-def queue_duration_seconds(value: Any) -> Optional[float]:
-    """Normalize a download_queue ``duration`` value to seconds.
-
-    Queue rows historically store duration in inconsistent units:
-    - Rows written via ``add_release_tracks_to_queue`` persist the raw
-      MusicBrainz millisecond ``length`` (e.g. ``233000`` for 3:53).
-    - Rows written via the download matching service (and rows whose missing
-      duration is backfilled by the completion service) store plain seconds
-      (e.g. ``233``).
-
-    Matchers therefore accept either unit: a value of 3000 or above is treated
-    as milliseconds and converted, smaller values are already seconds. Returns
-    None for missing/non-numeric/zero values so callers can skip the check.
-
-    Args:
-        value: Stored queue duration (seconds or milliseconds).
-
-    Returns:
-        Duration in seconds as a float, or None when unusable.
-    """
+def queue_duration_seconds(value: Any) -> float | None:
+    """Normalize a download_queue ``duration`` value to seconds."""
     if value is None or value == "":
         return None
     try:
@@ -1168,18 +807,7 @@ def queue_duration_seconds(value: Any) -> Optional[float]:
 
 
 def is_valid_version(track_title: str, allow_live_remix: bool = False) -> bool:
-    """Validate track version against blacklist and whitelist.
-
-    Filters out undesirable versions (live, remix, edit, etc.) from search
-    results unless the album context permits them (e.g. a live album).
-
-    Args:
-        track_title: Track title to validate.
-        allow_live_remix: If True, allow "live" and "remix" variants.
-
-    Returns:
-        True if the track version is acceptable.
-    """
+    """Validate track version against blacklist and whitelist."""
     title = track_title.lower()
     blacklist = {"live", "remix", "mix", "edit", "rework", "bootleg"}
     whitelist = {"remaster"}

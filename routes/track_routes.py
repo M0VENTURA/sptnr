@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
-import logging
 import os
 from typing import Any
 
 from quart import Blueprint, jsonify, request, Response, send_file
-
 from sqlalchemy import text
+import structlog
 
-from db.engine import db_session
+from db.engine import async_db_session, db_session
 from helpers.config_helpers import get_config
-from helpers.response_helpers import _ok, _fail
+from services.enrichment.musicbrainz_service import get_shared_mb_client
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 track_bp = Blueprint("track_api", __name__, url_prefix="/api/track")
 
@@ -23,12 +22,12 @@ def _coerce_optional_int(value: Any, allow_prefix: bool = False) -> int | None:
     """Return an int for numeric input, otherwise None."""
     if value is None:
         return None
-    text = str(value).strip()
-    if not text:
+    text_val = str(value).strip()
+    if not text_val:
         return None
-    candidate = text
-    if allow_prefix and "/" in text:
-        candidate = text.split("/", 1)[0].strip()
+    candidate = text_val
+    if allow_prefix and "/" in text_val:
+        candidate = text_val.split("/", 1)[0].strip()
     if not candidate:
         return None
     signless = candidate[1:] if candidate.startswith("-") else candidate
@@ -48,18 +47,13 @@ def _parse_flag_bool(value: Any) -> bool:
 
 
 def _values_equal(a: Any, b: Any) -> bool:
-    """Compare a DB value and an incoming API value loosely.
-
-    ``None`` and the empty string are treated as equivalent so that forms
-    which always submit every field (e.g. ``album_artist: null``) never count
-    as a change when the stored value is already empty.
-    """
-    a = "" if a is None else str(a).strip()
-    b = "" if b is None else str(b).strip()
-    return a == b
+    """Compare a DB value and an incoming API value loosely."""
+    a_str = "" if a is None else str(a).strip()
+    b_str = "" if b is None else str(b).strip()
+    return a_str == b_str
 
 
-def _get_track_column_types(session) -> dict[str, str]:
+def _get_track_column_types(session: Any) -> dict[str, str]:
     """Return tracks column name -> normalized data type."""
     try:
         result = session.execute(
@@ -81,12 +75,7 @@ def _normalize_track_updates(
     updates: dict[str, Any],
     column_types: dict[str, str],
 ) -> dict[str, Any]:
-    """Coerce incoming values to match the real tracks column types.
-
-    The frontend sends flags as JSON 0/1 integers; PostgreSQL BOOLEAN
-    columns reject those with a DatatypeMismatch. Integer/numeric columns
-    also need their values cast so text payloads don't error either.
-    """
+    """Coerce incoming values to match the real tracks column types."""
     int_types = {"integer", "bigint", "smallint"}
     numeric_types = {"numeric", "double precision", "real", "decimal"}
 
@@ -114,11 +103,11 @@ def _normalize_track_updates(
 
 
 # ---------------------------------------------------------------------------
-# GET /api/track/<track_id> — single track metadata
+# GET /api/track/<track_id>
 # ---------------------------------------------------------------------------
 
 @track_bp.route("/<track_id>", methods=["GET"])
-def api_get_track(track_id):
+def api_get_track(track_id: str) -> Any:
     """Get track metadata by ID."""
     try:
         with db_session() as session:
@@ -127,23 +116,20 @@ def api_get_track(track_id):
             if not row:
                 return jsonify({"error": "Track not found"}), 404
             track = dict(row._mapping)
-            # Return track fields at the top level (legacy frontend contract used
-            # by the album/downloads edit-track modals, genre removal, etc.), and
-            # also expose them under ``track`` for API consumers.
             payload = {"success": True, "track": track}
             payload.update(track)
             return jsonify(payload)
     except Exception as exc:
-        logger.error("Error fetching track %s: %s", track_id, exc)
+        logger.error("Error fetching track", track_id=track_id, error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
 # ---------------------------------------------------------------------------
-# GET /api/track/<track_id>/audio — stream audio file
+# GET /api/track/<track_id>/audio
 # ---------------------------------------------------------------------------
 
 @track_bp.route("/<track_id>/audio")
-async def api_track_audio(track_id):
+async def api_track_audio(track_id: str) -> Any:
     """Stream an audio file for in-browser playback."""
     try:
         with db_session() as session:
@@ -173,7 +159,7 @@ async def api_track_audio(track_id):
         }
         return await send_file(resolved, mimetype=mime_map.get(ext, "application/octet-stream"), conditional=True)
     except Exception as exc:
-        logger.error("Error streaming track %s: %s", track_id, exc)
+        logger.error("Error streaming track audio", track_id=track_id, error=str(exc))
         return Response("", status=500)
 
 
@@ -182,15 +168,8 @@ async def api_track_audio(track_id):
 # ---------------------------------------------------------------------------
 
 @track_bp.route("/<track_id>/rename-file", methods=["POST"])
-def api_track_rename_file(track_id):
-    """Rename/move a single track's file using the configured naming format.
-
-    The destination is resolved under MUSIC_ROOT from
-    ``downloads.file_name_format`` (same convention the album rename flow and
-    the download organizer use), and is containment-checked so a crafted
-    metadata value or format string cannot move the file outside the music
-    library.
-    """
+def api_track_rename_file(track_id: str) -> Any:
+    """Rename/move a single track's file using the configured naming format."""
     try:
         from services.downloads.download_organize_helpers import _build_target_path
         from services.infrastructure.filesystem_service import is_path_under_directory
@@ -222,15 +201,10 @@ def api_track_rename_file(track_id):
             or os.environ.get("MUSIC_FOLDER")
             or "/music"
         )
-        # Navidrome imports store RELATIVE paths ("Artist/Album/01 - Song.mp3").
-        # Resolve against the music root so the existence check, the unchanged
-        # comparison and the rename work regardless of the process CWD.
         src_resolved = src if os.path.isabs(src) else os.path.join(music_root, src)
         if not src or not os.path.isfile(src_resolved):
             return jsonify({"success": False, "error": f"File not found: {src}"}), 404
 
-        # Build the relative destination from the configured naming format and
-        # resolve it under the music root.
         dest = _build_target_path(
             music_root,
             album_artist or artist,
@@ -248,7 +222,6 @@ def api_track_rename_file(track_id):
         if os.path.normpath(dest) == os.path.normpath(src_resolved):
             return jsonify({"success": True, "renamed": False, "unchanged": True, "old_path": src, "new_path": dest})
 
-        # Avoid clobbering an existing file.
         if os.path.exists(dest):
             stem, suffix = os.path.splitext(dest)
             counter = 1
@@ -259,8 +232,6 @@ def api_track_rename_file(track_id):
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         os.rename(src_resolved, dest)
 
-        # Remove now-empty source folders (only inside MUSIC_ROOT) so a
-        # successful rename does not leave an empty album shell behind.
         try:
             from services.infrastructure.filesystem_service import cleanup_empty_parents
             if is_path_under_directory(src_resolved, music_root):
@@ -268,7 +239,6 @@ def api_track_rename_file(track_id):
         except Exception:
             pass
 
-        # Keep the stored path style: relative stays relative, absolute stays absolute.
         store_path = (
             os.path.relpath(dest, music_root)
             if not os.path.isabs(src)
@@ -281,7 +251,7 @@ def api_track_rename_file(track_id):
             )
         return jsonify({"success": True, "renamed": True, "old_path": src, "new_path": dest})
     except Exception as exc:
-        logger.error("Error renaming track file %s: %s", track_id, exc, exc_info=True)
+        logger.error("Error renaming track file", track_id=track_id, error=str(exc), exc_info=True)
         return jsonify({"success": False, "error": str(exc)}), 500
 
 
@@ -290,7 +260,7 @@ def api_track_rename_file(track_id):
 # ---------------------------------------------------------------------------
 
 @track_bp.route("/<track_id>/toggle-manual-single", methods=["POST"])
-def api_toggle_manual_single(track_id):
+def api_toggle_manual_single(track_id: str) -> Any:
     """Toggle single_manual_override flag for a track."""
     try:
         with db_session() as session:
@@ -303,17 +273,16 @@ def api_toggle_manual_single(track_id):
             session.execute(text("UPDATE tracks SET single_manual_override = :val WHERE CAST(id AS TEXT) = :id"), {"val": new_val, "id": track_id})
             return jsonify({"success": True, "single_manual_override": bool(new_val)})
     except Exception as exc:
+        logger.error("Toggle manual single failed", track_id=track_id, error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
 # ---------------------------------------------------------------------------
-# Track favourites (bookmarks-backed)
+# Track favourites
 # ---------------------------------------------------------------------------
-# Split into dedicated GET / POST / DELETE handlers (previously one overloaded
-# handler dispatched on request.method).
 
 @track_bp.get("/favourite")
-async def api_track_favourite_get():
+async def api_track_favourite_get() -> Any:
     """Check whether a track is favourited."""
     track_id = request.args.get("track_id", "").strip()
     if not track_id:
@@ -327,7 +296,7 @@ async def api_track_favourite_get():
 
 
 @track_bp.post("/favourite")
-async def api_track_favourite_add():
+async def api_track_favourite_add() -> Any:
     """Add a track to favourites."""
     data = (await request.get_json()) or {}
     track_id = str(data.get("track_id") or "").strip()
@@ -342,7 +311,7 @@ async def api_track_favourite_add():
 
 
 @track_bp.delete("/favourite")
-async def api_track_favourite_remove():
+async def api_track_favourite_remove() -> Any:
     """Remove a track from favourites."""
     track_id = request.args.get("track_id", "").strip()
     if not track_id:
@@ -360,7 +329,7 @@ async def api_track_favourite_remove():
 # ---------------------------------------------------------------------------
 
 @track_bp.route("/update-metadata", methods=["POST"])
-async def api_track_update_metadata():
+async def api_track_update_metadata() -> Any:
     """Update track metadata comprehensively."""
     try:
         data = (await request.get_json()) or {}
@@ -368,8 +337,6 @@ async def api_track_update_metadata():
         if not track_id:
             return jsonify({"error": "track_id required"}), 400
         with db_session() as session:
-            # Only fields backed by real tracks columns — anything else would
-            # raise an "undefined column" SQL error.
             allowed_fields = {
                 "title", "artist", "album", "album_artist", "writer", "work",
                 "genres", "stars", "is_single", "single_confidence",
@@ -386,17 +353,8 @@ async def api_track_update_metadata():
             if not updates:
                 return jsonify({"error": "No fields to update"}), 400
 
-            # Coerce values to the real column types so PostgreSQL BOOLEAN
-            # columns accept the 0/1 integers the edit modals send, and so
-            # integer/numeric columns don't reject string payloads either.
             updates = _normalize_track_updates(updates, _get_track_column_types(session))
 
-            # Normalise a genres payload that arrived as a single
-            # backslash/comma/semicolon-joined string (the edit modals join
-            # with ``\`` — ``metal\nu metal\rock``).  Store a clean
-            # comma-joined list so the DB, the file tags and the genre
-            # playlist pools all see three genres, never one literal
-            # ``metal\nu metal\rock`` string.
             if "genres" in updates and updates["genres"] is not None:
                 _g_raw = updates["genres"]
                 if isinstance(_g_raw, list):
@@ -410,21 +368,6 @@ async def api_track_update_metadata():
                     ]
                 updates["genres"] = ", ".join(_g_parts) if _g_parts else None
 
-            # Album-scoped fields describe the release as a whole. By default a
-            # single-track edit only touches that one track — fixing a song that
-            # was mis-tagged onto the wrong album must not rewrite every sibling
-            # on the old album. Callers opt in to album-wide propagation by
-            # sending ``apply_to_album: true``.
-            #
-            # Two guards keep an opted-in album edit from clobbering sibling
-            # tracks:
-            #   1. Only fields whose value really changed are propagated — the
-            #      edit modals submit every field, so an unchanged album/year
-            #      must not be re-written onto the rest of the album.
-            #   2. Propagation only touches sibling tracks that still hold the
-            #      old value of the changed field, so e.g. fixing one bonus
-            #      track's year never rewrites a different edition/release
-            #      that merely shares the album name.
             album_scoped_fields = {
                 "album", "album_artist", "year",
                 "musicbrainz_albumid", "musicbrainz_albumartistid",
@@ -487,40 +430,27 @@ async def api_track_update_metadata():
                             )
                             album_tracks_updated = result.rowcount or 0
                 except Exception as album_err:
-                    logger.warning(
-                        "Album-scoped propagation failed for %s: %s",
-                        track_id,
-                        album_err,
-                    )
+                    logger.warning("Album-scoped propagation failed", track_id=track_id, error=str(album_err))
 
             set_clause = ", ".join(f"{k} = :{k}" for k in updates)
             params = {**updates, "id": track_id}
             session.execute(text(f"UPDATE tracks SET {set_clause} WHERE CAST(id AS TEXT) = :id"), params)
 
-            # Legacy parity undo: clearing is_live/is_acoustic strips the
-            # "(Live)"/"(Acoustic)" suffix the album stage appended, so
-            # wrongly-detected live tracks can be fixed from the UI.
             if any(f in updates for f in ("is_live", "is_acoustic")) \
                     and not (updates.get("is_live") or updates.get("is_acoustic")):
                 try:
                     from services.popularity.stages.album_stage import revert_track_live_state
                     revert_track_live_state(track_id)
                 except Exception as revert_err:
-                    logger.debug("Live-state revert failed for %s: %s", track_id, revert_err)
+                    logger.debug("Live-state revert failed", track_id=track_id, error=str(revert_err))
 
-        # Sync tags back to the audio file by default for the album/artist/
-        # track editing flows (frontend sends sync_to_file: true).
         file_synced = False
         if data.get("sync_to_file", True):
             try:
                 from services.metadata.tag_file_service import sync_track_tags_to_file
                 file_synced = bool(sync_track_tags_to_file(track_id))
             except Exception as sync_err:
-                logger.warning(
-                    "Track metadata DB update succeeded but file sync failed for %s: %s",
-                    track_id,
-                    sync_err,
-                )
+                logger.warning("File tag sync failed after DB update", track_id=track_id, error=str(sync_err))
         return jsonify({
             "success": True,
             "updated": list(updates.keys()),
@@ -528,6 +458,7 @@ async def api_track_update_metadata():
             "album_tracks_updated": album_tracks_updated,
         })
     except Exception as exc:
+        logger.error("Update metadata failed", track_id=track_id, error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
@@ -536,7 +467,7 @@ async def api_track_update_metadata():
 # ---------------------------------------------------------------------------
 
 @track_bp.route("/genre-recommendations", methods=["GET"])
-def track_genre_recommendations():
+def track_genre_recommendations() -> Any:
     """Get genre recommendations for a track from various sources."""
     track_id = request.args.get("track_id", "").strip()
     if not track_id:
@@ -568,6 +499,7 @@ def track_genre_recommendations():
                     genres[key] = parsed if isinstance(parsed, list) else [str(parsed)]
         return jsonify({"success": True, "genres": genres})
     except Exception as exc:
+        logger.error("Get genre recommendations failed", track_id=track_id, error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
@@ -576,13 +508,8 @@ def track_genre_recommendations():
 # ---------------------------------------------------------------------------
 
 @track_bp.route("/<track_id>/rescan-single", methods=["POST"])
-async def api_rescan_single_track(track_id):
-    """Force a fresh single detection scan for one track.
-
-    When a ``source`` key is supplied (from the per-source Re-check buttons),
-    only that detection source is dropped from the stored ``single_sources``
-    JSON so the next scan re-runs the check for that source alone.
-    """
+async def api_rescan_single_track(track_id: str) -> Any:
+    """Force a fresh single detection scan for one track."""
     try:
         import json as _json
 
@@ -600,7 +527,7 @@ async def api_rescan_single_track(track_id):
                     {"id": track_id},
                 ).fetchone()
                 raw = str(row[0] or "") if row and row[0] else ""
-                remaining: list = []
+                remaining: list[Any] = []
                 if raw.strip():
                     try:
                         parsed = _json.loads(raw)
@@ -617,8 +544,6 @@ async def api_rescan_single_track(track_id):
                     except Exception:
                         remaining = []
 
-                # No other sources remain → drop the single flag too, so a
-                # stale "Detected" badge cannot outlive its only evidence.
                 if not remaining:
                     session.execute(
                         text("""
@@ -656,6 +581,7 @@ async def api_rescan_single_track(track_id):
                 )
                 return jsonify({"success": True, "message": "Single detection cleared for re-scan"})
     except Exception as exc:
+        logger.error("Rescan single failed", track_id=track_id, error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
@@ -664,7 +590,7 @@ async def api_rescan_single_track(track_id):
 # ---------------------------------------------------------------------------
 
 @track_bp.route("/<track_id>/apply-mb-release", methods=["POST"])
-async def api_track_apply_mb_release(track_id):
+async def api_track_apply_mb_release(track_id: str) -> Any:
     """Apply a chosen MusicBrainz release MBID to a track."""
     try:
         data = (await request.get_json()) or {}
@@ -678,23 +604,17 @@ async def api_track_apply_mb_release(track_id):
             )
         return jsonify({"success": True})
     except Exception as exc:
+        logger.error("Apply MB release failed", track_id=track_id, error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
 # ---------------------------------------------------------------------------
-# POST /api/track/<track_id>/lyrics/fetch — LRCLIB lyrics lookup
+# POST /api/track/<track_id>/lyrics/fetch
 # ---------------------------------------------------------------------------
 
 @track_bp.route("/<track_id>/lyrics/fetch", methods=["POST"])
-async def api_fetch_track_lyrics(track_id):
-    """Fetch plain + synced lyrics from LRCLIB and store them on the track.
-
-    LRCLIB (https://lrclib.net) needs no API key.  The matched lyrics are
-    written to the track's ``lyrics`` column (the synced LRC form when
-    available, otherwise the plain text) so the track page Lyrics tab renders
-    instantly afterwards.  Returns ``{"found": bool, "lyrics": str|null,
-    "synced": bool, "source": "lrclib"}``.
-    """
+async def api_fetch_track_lyrics(track_id: str) -> Any:
+    """Fetch plain + synced lyrics from LRCLIB and store them on the track."""
     try:
         from api_clients.lrclib import fetch_lyrics
 
@@ -722,8 +642,6 @@ async def api_fetch_track_lyrics(track_id):
         if not plain and not synced:
             return jsonify({"found": False, "lyrics": None, "synced": False, "source": "lrclib"})
 
-        # Prefer the synced LRC form (renders a scrolling player on the page);
-        # fall back to plain text.
         stored = synced or plain
         with db_session() as session:
             session.execute(
@@ -739,22 +657,17 @@ async def api_fetch_track_lyrics(track_id):
             "source": "lrclib",
         })
     except Exception as exc:
-        logger.error("Lyrics fetch failed for %s: %s", track_id, exc)
+        logger.error("Lyrics fetch failed", track_id=track_id, error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
 # ---------------------------------------------------------------------------
-# POST /api/track/<track_id>/fetch-credits — MusicBrainz recording credits
+# POST /api/track/<track_id>/fetch-credits
 # ---------------------------------------------------------------------------
 
 @track_bp.route("/<track_id>/fetch-credits", methods=["POST"])
-async def api_fetch_track_credits(track_id):
-    """Fetch recording credits from MusicBrainz artist relations.
-
-    Returns composer / lyricist / producer / engineer / conductor names so the
-    track page's Credits form can be quick-filled without a full rescan.
-    Requires the track to have a MusicBrainz recording MBID resolved.
-    """
+async def api_fetch_track_credits(track_id: str) -> Any:
+    """Fetch recording credits from MusicBrainz artist relations."""
     try:
         with db_session() as session:
             row = session.execute(
@@ -771,8 +684,9 @@ async def api_fetch_track_credits(track_id):
                 "error": "Track has no MusicBrainz recording ID — run a MusicBrainz lookup first.",
             })
 
-        from api_clients.musicbrainz_http import MusicBrainzHttpClient
-        data = MusicBrainzHttpClient().get_recording(rec_mbid, inc="artist-rels") or {}
+        # ✅ Use shared MusicBrainz client singleton
+        client = get_shared_mb_client()
+        data = client.get_recording(rec_mbid, inc="artist-rels") or {}
         relations = data.get("relations") or []
 
         credits: dict[str, list[str]] = {
@@ -790,7 +704,7 @@ async def api_fetch_track_credits(track_id):
         found = {k: "; ".join(v) for k, v in credits.items() if v}
         return jsonify({"found": bool(found), **found})
     except Exception as exc:
-        logger.error("Credits fetch failed for %s: %s", track_id, exc)
+        logger.error("Credits fetch failed", track_id=track_id, error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
@@ -799,7 +713,7 @@ async def api_fetch_track_credits(track_id):
 # ---------------------------------------------------------------------------
 
 @track_bp.route("/<track_id>/mb-releases", methods=["GET"])
-def api_track_mb_releases(track_id):
+def api_track_mb_releases(track_id: str) -> Any:
     """Fetch all MusicBrainz releases containing this track's recording."""
     try:
         with db_session() as session:
@@ -809,14 +723,16 @@ def api_track_mb_releases(track_id):
                 return jsonify({"error": "Track not found"}), 404
             artist = row[0]
             title = row[1]
-        from api_clients.musicbrainz_http import MusicBrainzHttpClient
-        client = MusicBrainzHttpClient(enabled=True)
+            
+        # ✅ Use shared MusicBrainz client singleton
+        client = get_shared_mb_client()
         recordings = client.search_recordings(
             f'artist:"{artist}" AND recording:"{title}"',
             limit=10,
         )
         return jsonify({"success": True, "recordings": recordings})
     except Exception as exc:
+        logger.error("Failed to fetch MB releases for track", track_id=track_id, error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
@@ -825,7 +741,7 @@ def api_track_mb_releases(track_id):
 # ---------------------------------------------------------------------------
 
 @track_bp.route("/match-missing", methods=["POST"])
-async def api_track_match_missing():
+async def api_track_match_missing() -> Any:
     """Match a MusicBrainz 'missing' track to an existing track."""
     try:
         data = (await request.get_json()) or {}
@@ -837,6 +753,7 @@ async def api_track_match_missing():
             session.execute(text("UPDATE tracks SET title = :title WHERE CAST(id AS TEXT) = :id"), {"title": mb_title, "id": track_id})
         return jsonify({"success": True, "updated_title": mb_title})
     except Exception as exc:
+        logger.error("Match missing track failed", error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
@@ -845,7 +762,7 @@ async def api_track_match_missing():
 # ---------------------------------------------------------------------------
 
 @track_bp.route("/ignore-mb-field", methods=["POST"])
-async def api_track_ignore_mb_field():
+async def api_track_ignore_mb_field() -> Any:
     """Permanently ignore a specific MusicBrainz diff field for a track."""
     try:
         data = (await request.get_json()) or {}
@@ -871,4 +788,5 @@ async def api_track_ignore_mb_field():
                            {"fields": _json.dumps(ignored), "id": track_id})
         return jsonify({"success": True, "ignored_fields": ignored})
     except Exception as exc:
+        logger.error("Ignore MB field failed", error=str(exc))
         return jsonify({"error": str(exc)}), 500

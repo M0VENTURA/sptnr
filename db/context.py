@@ -5,12 +5,20 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Any, Iterator
 
+import structlog
+
 from db.utils import get_db_connection
+
+logger = structlog.get_logger(__name__)
 
 
 @contextmanager
 def db_cursor(commit: bool = False) -> Iterator[tuple[Any, Any]]:
-    """Open a DB connection/cursor and always clean up safely.
+    """Open a raw DBAPI connection/cursor and always clean up safely.
+
+    Note: For new code, prefer `db_session` or `async_db_session` from 
+    `db.engine`. This is maintained for legacy operations requiring raw 
+    psycopg2 cursors.
 
     Args:
         commit: Commit the transaction after a successful block when True.
@@ -19,26 +27,22 @@ def db_cursor(commit: bool = False) -> Iterator[tuple[Any, Any]]:
         Tuple of (connection, cursor). Caller may commit manually when
         commit=False.
     """
+    logger.warning(
+        "Legacy database context manager used", 
+        function="db_cursor", 
+        recommendation="Migrate to db.engine.db_session or async_db_session"
+    )
+    
     conn = get_db_connection()
-    cursor = None
+    cursor = conn.cursor()
+    
     try:
-        cursor = conn.cursor()
         yield conn, cursor
         if commit:
             conn.commit()
     except Exception:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
+        conn.rollback()
         raise
     finally:
-        if cursor is not None:
-            try:
-                cursor.close()
-            except Exception:
-                pass
-        try:
-            conn.close()
-        except Exception:
-            pass
+        cursor.close()
+        conn.close()

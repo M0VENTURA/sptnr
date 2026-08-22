@@ -1,225 +1,94 @@
-"""Core PostgreSQL connection and row utility helpers.
+"""Database utilities and helpers.
 
-This replaces the old helpers/db_utils.py as the source of truth.
-Anything that is not connection handling or generic row/JSON conversion has
-been moved into db.schema_helpers or db.repositories.*.
+Provides generic row/JSON conversion, SQL dialect helpers, and access
+to raw database connections via the SQLAlchemy connection pool.
 """
 
 from __future__ import annotations
 
-import os
-import time
 from datetime import datetime
 from typing import Any
 
-try:
-    import psycopg2  # type: ignore
-    import psycopg2.extras  # type: ignore
-    from psycopg2.extras import execute_values  # type: ignore
+import structlog
+from sqlalchemy.exc import OperationalError
 
-except ImportError:  # pragma: no cover - depends on runtime image
-    psycopg2 = None
-    execute_values = None
-
-
-_PG_LAST_FAILURE_MONOTONIC = 0.0
-_PG_FAILURE_BACKOFF_SECONDS = float(os.environ.get("PG_FAILURE_BACKOFF_SECONDS", "30"))
-_PG_IDLE_IN_TRANSACTION_TIMEOUT_MS = int(os.environ.get("PG_IDLE_IN_TRANSACTION_TIMEOUT_MS", "60000"))
-_PG_CONNECT_MAX_ATTEMPTS = int(os.environ.get("PG_CONNECT_MAX_ATTEMPTS", "3"))
-_PG_CONNECT_RETRY_DELAYS = (2.0, 5.0)
-
-_PG_TRANSIENT_ERROR_MARKERS = (
-    "the database system is starting up",
-    "the database system is in recovery mode",
-    "cannot connect now",
-    "terminating connection due to administrator command",
-    "timeout expired",
-    "connection timed out",
-    "could not connect to server",
-    "connection refused",
-    "server closed the connection unexpectedly",
-    "temporarily unavailable",
-    "could not translate host name",
-    "name or service not known",
-    "temporary failure in name resolution",
-    "recent connection failures are in backoff",
-)
-
-
-class AutoRollbackPGConnection:
-    """Wrap a psycopg2 connection so close() rolls back before closing.
-
-    This helps avoid leaving PostgreSQL connections idle-in-transaction when
-    callers forget to explicitly commit or roll back before closing.
-    """
-
-    __slots__ = ("_conn", "_closed")
-
-    def __init__(self, conn: Any) -> None:
-        """Store the wrapped psycopg2 connection."""
-        object.__setattr__(self, "_conn", conn)
-        object.__setattr__(self, "_closed", False)
-
-    def close(self) -> None:
-        """Rollback any open transaction, then close the wrapped connection."""
-        if object.__getattribute__(self, "_closed"):
-            return
-        object.__setattr__(self, "_closed", True)
-        conn = object.__getattribute__(self, "_conn")
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        try:
-            conn.close()
-        except Exception:
-            pass
-
-    def __enter__(self) -> "AutoRollbackPGConnection":
-        """Return this wrapper when used as a context manager."""
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
-        """Commit on successful context exit; rollback on exception."""
-        conn = object.__getattribute__(self, "_conn")
-        if exc_type is not None:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-        else:
-            try:
-                conn.commit()
-            except Exception:
-                pass
-        return False
-
-    def __getattr__(self, name: str) -> Any:
-        """Proxy unknown attributes to the wrapped connection."""
-        return getattr(object.__getattribute__(self, "_conn"), name)
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        """Proxy normal attributes to the wrapped connection."""
-        if name in {"_conn", "_closed"}:
-            object.__setattr__(self, name, value)
-        else:
-            setattr(object.__getattribute__(self, "_conn"), name, value)
+logger = structlog.get_logger(__name__)
 
 
 def ensure_psycopg2_loaded() -> bool:
-    """Lazy-load psycopg2 if it was not available at module import time."""
-    global psycopg2, execute_values
-    if psycopg2 is not None:
-        return True
+    """Check if psycopg2 is available."""
     try:
-        import psycopg2 as _psycopg2
-        import psycopg2.extras  # noqa: F401
-        from psycopg2.extras import execute_values as _execute_values
-        psycopg2 = _psycopg2
-        execute_values = _execute_values
+        import psycopg2  # noqa: F401
         return True
     except ImportError:
         return False
 
 
-def is_transient_pg_startup_error(error: Exception | str) -> bool:
+def is_transient_pg_startup_error(exc: BaseException | str) -> bool:
     """Return True for common transient PostgreSQL startup/connectivity errors."""
-    message = str(error or "").lower()
-    return any(marker in message for marker in _PG_TRANSIENT_ERROR_MARKERS)
+    if isinstance(exc, OperationalError):
+        return True
+        
+    msg = str(exc or "").lower()
+    transient_phrases = (
+        "the database system is starting up",
+        "the database system is in recovery mode",
+        "cannot connect now",
+        "terminating connection",
+        "timeout expired",
+        "connection timed out",
+        "could not connect to server",
+        "connection refused",
+        "server closed the connection unexpectedly",
+        "temporarily unavailable",
+        "unexpected eof on client connection",
+        "recent connection failures are in backoff",
+    )
+    return any(phrase in msg for phrase in transient_phrases)
 
 
 def is_postgres_configured() -> bool:
     """Return True if PostgreSQL connection settings are present."""
-    pg_dsn = (os.environ.get("DATABASE_URL") or os.environ.get("PG_DSN") or "").strip()
-    pg_host = (os.environ.get("PG_HOST") or os.environ.get("PGHOST") or "").strip()
-    pg_user = (os.environ.get("PG_USER") or os.environ.get("PGUSER") or "").strip()
-    pg_database = (os.environ.get("PG_DATABASE") or os.environ.get("PGDATABASE") or "").strip()
-    return bool(pg_dsn or (pg_host and pg_user and pg_database))
+    from db.engine import db_settings
+    return bool(db_settings.database_url or db_settings.pg_host)
 
 
-def _build_pg_options() -> str | None:
-    """Build PostgreSQL startup options for new connections."""
-    options_parts: list[str] = []
-    if _PG_IDLE_IN_TRANSACTION_TIMEOUT_MS > 0:
-        options_parts.append(f"-c idle_in_transaction_session_timeout={_PG_IDLE_IN_TRANSACTION_TIMEOUT_MS}")
-    return " ".join(options_parts) or None
-
-
-def get_db_connection() -> AutoRollbackPGConnection:
-    """Create and return an AutoRollbackPGConnection PostgreSQL connection."""
-    if not ensure_psycopg2_loaded() or psycopg2 is None:
-        raise RuntimeError("psycopg2 is not installed.")
-    if not is_postgres_configured():
-        raise RuntimeError("PostgreSQL is not configured in the environment.")
-
-    global _PG_LAST_FAILURE_MONOTONIC
-    now = time.monotonic()
-    if _PG_LAST_FAILURE_MONOTONIC > 0:
-        elapsed = now - _PG_LAST_FAILURE_MONOTONIC
-        if elapsed < _PG_FAILURE_BACKOFF_SECONDS:
-            remaining = int(_PG_FAILURE_BACKOFF_SECONDS - elapsed)
-            raise RuntimeError(f"PostgreSQL recent connection failures are in backoff for another ~{remaining}s")
-
-    pg_dsn = os.environ.get("DATABASE_URL") or os.environ.get("PG_DSN")
-    pg_host = os.environ.get("PG_HOST") or os.environ.get("PGHOST") or ""
-    pg_port = int(os.environ.get("PG_PORT") or os.environ.get("PGPORT") or "5432")
-    pg_user = os.environ.get("PG_USER") or os.environ.get("PGUSER") or ""
-    pg_password = os.environ.get("PG_PASSWORD") or os.environ.get("PGPASSWORD") or ""
-    pg_database = os.environ.get("PG_DATABASE") or os.environ.get("PGDATABASE") or "popularr"
-    options = _build_pg_options()
-
-    last_exc: Exception = RuntimeError("PostgreSQL connection failed: no attempts made")
-    for attempt in range(_PG_CONNECT_MAX_ATTEMPTS):
-        try:
-            connect_kwargs: dict[str, Any] = {
-                "cursor_factory": psycopg2.extras.RealDictCursor,
-                "connect_timeout": 10,
-                "keepalives": 1,
-                "keepalives_idle": 60,
-                "keepalives_interval": 10,
-                "keepalives_count": 5,
-            }
-            if options:
-                connect_kwargs["options"] = options
-            if pg_dsn:
-                raw = psycopg2.connect(pg_dsn, **connect_kwargs)
-            else:
-                raw = psycopg2.connect(
-                    host=pg_host,
-                    port=pg_port,
-                    user=pg_user,
-                    password=pg_password,
-                    dbname=pg_database,
-                    **connect_kwargs,
-                )
-            _PG_LAST_FAILURE_MONOTONIC = 0.0
-            return AutoRollbackPGConnection(raw)
-        except Exception as exc:
-            last_exc = exc
-            if is_transient_pg_startup_error(exc) and attempt < (_PG_CONNECT_MAX_ATTEMPTS - 1):
-                delay = _PG_CONNECT_RETRY_DELAYS[min(attempt, len(_PG_CONNECT_RETRY_DELAYS) - 1)]
-                time.sleep(delay)
-                continue
-            break
-
-    _PG_LAST_FAILURE_MONOTONIC = time.monotonic()
-    raise RuntimeError(f"PostgreSQL connection failed: {last_exc}") from last_exc
+def get_db_connection() -> Any:
+    """Get a raw DBAPI (psycopg2/sqlite) connection from the SQLAlchemy pool."""
+    logger.warning(
+        "Legacy raw database connection requested", 
+        function="get_db_connection", 
+        recommendation="Use db.engine.get_engine() or db.engine.db_session() instead"
+    )
+    
+    from db.engine import get_engine
+    return get_engine().raw_connection()
 
 
 def is_postgres_connection(conn: Any) -> bool:
     """Return True when a connection appears to be a psycopg2 PostgreSQL connection."""
+    if conn is None:
+        return False
     raw = getattr(conn, "_conn", conn)
-    module_name = raw.__class__.__module__.lower()
-    return "psycopg2" in module_name
+    try:
+        module_name = raw.__class__.__module__.lower()
+        return "psycopg2" in module_name
+    except Exception:
+        return False
+
+
+def _is_postgres_connection(conn: Any) -> bool:
+    """Backward-compatible alias."""
+    logger.warning(
+        "Legacy function alias used", 
+        function="_is_postgres_connection", 
+        recommendation="Use is_postgres_connection instead"
+    )
+    return is_postgres_connection(conn)
 
 
 def is_postgres_session(session: Any) -> bool:
-    """Return True when a SQLAlchemy session is bound to PostgreSQL.
-
-    Used to branch Postgres-only SQL (``INTERVAL``, ``~`` regex, ``::`` casts,
-    ``REGEXP_REPLACE``) against the SQLite equivalent so the unit suite can
-    run the same code paths against an in-memory database.
-    """
+    """Return True when a SQLAlchemy session is bound to PostgreSQL."""
     try:
         bind = session.get_bind() if hasattr(session, "get_bind") else getattr(session, "bind", None)
         dialect = getattr(bind, "dialect", None)
@@ -229,25 +98,14 @@ def is_postgres_session(session: Any) -> bool:
 
 
 def interval_minutes_expr(session: Any, delay_bind: str) -> str:
-    """Return a SQL fragment adding ``:delay_bind`` minutes to the current time.
-
-    PostgreSQL: ``CURRENT_TIMESTAMP + (:delay * INTERVAL '1 minute')``.
-    SQLite has no ``INTERVAL`` type — ``datetime('now', '+N minutes')`` is
-    the equivalent, so the queue retry logic is testable against SQLite.
-    """
+    """Return a SQL fragment adding ``:delay_bind`` minutes to the current time."""
     if is_postgres_session(session):
         return f"CURRENT_TIMESTAMP + ({delay_bind} * INTERVAL '1 minute')"
     return f"datetime('now', '+' || CAST({delay_bind} AS TEXT) || ' minutes')"
 
 
 def numeric_track_number_expr(session: Any, column: str = "track_number") -> str:
-    """Return a portable numeric sort expression for ``column``.
-
-    PostgreSQL uses ``~ '^\\d+$'`` plus a ``::integer`` cast; SQLite supports
-    neither the regex match operator nor the cast syntax, so a
-    ``GLOB`` + ``CAST`` form is emitted instead.  Tracks without a numeric
-    track number sort last (9999).
-    """
+    """Return a portable numeric sort expression for ``column``."""
     col = f"TRIM(COALESCE({column}, ''))"
     if is_postgres_session(session):
         return (
@@ -260,28 +118,18 @@ def numeric_track_number_expr(session: Any, column: str = "track_number") -> str
     )
 
 
-def _is_postgres_connection(conn: Any) -> bool:
-    """Backward-compatible alias for older imports."""
-    return is_postgres_connection(conn)
-
-
 def row_get(row: Any, key: str, index: int | None = None, default: Any = None) -> Any:
-    """Read a value from dict-like or tuple/list-like DB rows.
-
-    Handles SQLAlchemy 2.0 ``Row`` objects (no ``.keys()``, string indexing
-    raises ``TypeError``): those are read via ``row._mapping[key]``.  Plain
-    dicts, ``RowMapping`` and ``LegacyRow`` (both have ``.keys()``) fall
-    through to the dict path, and plain tuples/lists use positional access.
-    """
+    """Read a value from dict-like, Row-like, or tuple-like DB rows."""
     if row is None:
         return default
-    # SQLAlchemy 2.0 Row: string indexing raises, but _mapping[key] works.
+    
     mapping = getattr(row, "_mapping", None)
     if mapping is not None:
         try:
             return mapping[key]
         except Exception:
             pass
+            
     if hasattr(row, "keys"):
         try:
             return row.get(key, default)
@@ -290,11 +138,13 @@ def row_get(row: Any, key: str, index: int | None = None, default: Any = None) -
                 return row[key]
             except Exception:
                 return default
+                
     if index is not None:
         try:
             return row[index]
         except (IndexError, KeyError, TypeError):
             return default
+            
     return default
 
 
@@ -327,31 +177,42 @@ def convert_row_to_json_serializable(obj: Any) -> Any:
 
     if obj is None:
         return None
-    # Jinja2 template Undefined objects (a missing context variable leaked into
-    # data that gets JSON-serialised) are not JSON-serializable — the previous
-    # import of ``Undefined`` here was never used, so ``json.dumps`` raised
-    # "Object of type Undefined is not JSON serializable".
+        
     if Undefined is not None and isinstance(obj, Undefined):
         return None
+        
     if hasattr(obj, "keys") and not isinstance(obj, dict):
         obj = dict(obj)
+        
     if isinstance(obj, dict):
         return {k: convert_row_to_json_serializable(v) for k, v in obj.items()}
+        
     if isinstance(obj, (list, tuple, set)):
         return [convert_row_to_json_serializable(v) for v in obj]
+        
     if isinstance(obj, datetime):
         return obj.isoformat()
+        
     try:
         from decimal import Decimal
         if isinstance(obj, Decimal):
             return float(obj)
     except ImportError:
         pass
+        
     return obj
 
 
-def get_execute_values():
-    """Return psycopg2.extras.execute_values, loading psycopg2 if required."""
-    if not ensure_psycopg2_loaded() or execute_values is None:
+def get_execute_values() -> Any:
+    """Return psycopg2.extras.execute_values for legacy bulk inserts."""
+    logger.warning(
+        "Legacy bulk insert requested", 
+        function="get_execute_values", 
+        recommendation="Migrate to SQLAlchemy bulk inserts (e.g., session.scalars(insert().values(...)))"
+    )
+    
+    try:
+        from psycopg2.extras import execute_values
+        return execute_values
+    except ImportError:
         raise RuntimeError("psycopg2.extras.execute_values is unavailable.")
-    return execute_values

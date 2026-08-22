@@ -2,17 +2,21 @@
 
 Responsible for external release comparison and scan orchestration.
 DB persistence is delegated to repositories; network calls go through
-``api_clients.musicbrainz_http.MusicBrainzHttpClient``.
+the shared MusicBrainz client singleton.
 """
 
 from __future__ import annotations
 
-import logging
+import re
 import threading
 import time
+from collections import Counter
+from datetime import datetime
 from typing import Any
 
+import structlog
 from sqlalchemy import text
+
 from db.engine import db_session
 from db.repositories.metadata import (
     fetch_artist_albums,
@@ -21,11 +25,13 @@ from db.repositories.metadata import (
 )
 from helpers.normalization_service import normalize_title_for_lookup
 from helpers.musicbrainz_helpers import normalize_single_mbid
+from services.enrichment.musicbrainz_service import get_shared_mb_client
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 _PROGRESS_PATH = "missing_releases_scan_progress.json"
 _scan_thread: threading.Thread | None = None
+_scan_lock = threading.Lock()
 
 
 def _normalize_release_title(title: str) -> str:
@@ -33,21 +39,8 @@ def _normalize_release_title(title: str) -> str:
 
 
 def _fetch_musicbrainz_release_groups(artist_mbid: str, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
-    """Browse release-groups for an artist via the MusicBrainz HTTP client.
-
-    Uses ``browse_artist_release_groups`` (the browse endpoint is the
-    recommended way to list an artist's release groups; text search is
-    unreliable for this purpose).
-    """
-    from api_clients.musicbrainz_http import MusicBrainzHttpClient
-
-    client = MusicBrainzHttpClient()
-    # NOTE: no ``inc`` here — the release-group BROWSE endpoint returns 400
-    # for ``inc=cover-art-archive`` (that inc is only valid on lookups of a
-    # specific release-group, not browse).  The good news: every release-group
-    # entity ALREADY includes the ``cover-art-archive`` block by default, so
-    # ``_release_cover_art_url`` can build real Cover Art Archive URLs without
-    # requesting anything extra.
+    """Browse release-groups for an artist via the shared MusicBrainz client."""
+    client = get_shared_mb_client()
     page = client.browse_artist_release_groups(
         artist_mbid, limit=limit, offset=offset,
     )
@@ -70,27 +63,15 @@ def _fetch_all_musicbrainz_releases(artist_mbid: str, max_pages: int = 4) -> lis
 
 
 def _categorize_release(release_group: dict[str, Any]) -> str:
-    """Route a release-group into a display category.
-
-    Mirrors legacy behaviour: EPs and singles stay in their own buckets;
-    secondary types decide Compilation / Live Album / Remix; otherwise Album.
-
-    MusicBrainz routinely tags short-form releases as ``primary-type: album``
-    with a ``secondary-type`` of ``single`` or ``ep`` (e.g. Poppy's
-    *Guardian* single).  Those secondary types are honoured so the release
-    lands in the Singles / EPs bucket instead of cluttering Albums.
-    """
+    """Route a release-group into a display category."""
     primary_type = (release_group.get("primary-type") or release_group.get("primary_type") or "").lower()
     if primary_type not in ("album", "ep", "single"):
         return "Album"
 
-    # The browse/search APIs return ``secondary-types`` as an ARRAY, but the
-    # search endpoint can also yield a comma-joined STRING ("Live,Compilation").
-    # Iterating a string character-by-character never matches — normalise to a
-    # list first (mirrors ``_parse_secondary_types`` in musicbrainz_service).
     raw_secondary = release_group.get("secondary-types") or release_group.get("secondary_types") or []
     if isinstance(raw_secondary, str):
         raw_secondary = [raw_secondary]
+        
     secondary = [
         s.lower()
         for s in raw_secondary
@@ -130,18 +111,7 @@ def _build_missing_release_items(
     existing_norm: set[str],
     include_singles_current_year_only: bool = False,
 ) -> list[dict[str, Any]]:
-    """Filter release-groups into missing-release items.
-
-    Includes ALL release types the artist page displays: Albums, Live Albums,
-    Remix Albums, Compilations, EPs and Singles.  Excludes releases already
-    in the library and non album/ep/single primary types.
-
-    ``include_singles_current_year_only`` is a legacy escape hatch that can
-    be re-enabled to only surface current-year singles; it defaults to False
-    so the full singles catalogue is populated.
-    """
-    from datetime import datetime
-
+    """Filter release-groups into missing-release items."""
     now_year = datetime.now().year
     missing: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
@@ -158,8 +128,6 @@ def _build_missing_release_items(
 
         category = _categorize_release(rg)
 
-        # Only include singles released in the current calendar year when the
-        # legacy flag is explicitly enabled (default: include all singles).
         if category == "Single" and include_singles_current_year_only:
             first_release = (rg.get("first-release-date") or rg.get("first_release_date") or "")
             try:
@@ -231,22 +199,12 @@ def _cleanup_imported_releases() -> int:
         return result.rowcount or 0
 
 
-def _resolve_artist_mbid(artist: str, conn) -> str | None:
-    """Return a stable artist MBID, falling back to a MusicBrainz lookup.
-
-    Mirrors legacy resolution order:
-    1. Most-common ``musicbrainz_albumartistid`` from tracks
-    2. ``fetch_artist_mbid`` (album_artist based)
-    3. ``lookup_and_save_artist_mbid`` (live MusicBrainz search)
-    """
-    from collections import Counter
-
+def _resolve_artist_mbid(artist: str, conn: Any) -> str | None:
+    """Return a stable artist MBID, falling back to a MusicBrainz lookup."""
     try:
-        from sqlalchemy import text as _text
-        from db.engine import db_session as _db_session
-        with _db_session() as session:
+        with db_session() as session:
             rows = session.execute(
-                _text("""
+                text("""
                     SELECT COALESCE(
                         NULLIF(TRIM(musicbrainz_albumartistid), ''),
                         NULLIF(TRIM(musicbrainz_artistid), '')
@@ -260,6 +218,7 @@ def _resolve_artist_mbid(artist: str, conn) -> str | None:
                 """),
                 {"artist": artist},
             ).fetchall()
+            
         mbids = []
         for row in rows:
             raw = row[0]
@@ -267,24 +226,26 @@ def _resolve_artist_mbid(artist: str, conn) -> str | None:
                 normalized = normalize_single_mbid(str(raw))
                 if normalized:
                     mbids.append(normalized)
+                    
         if mbids:
             return Counter(mbids).most_common(1)[0][0]
     except Exception as exc:
-        logger.debug("[MISSING_RELEASES] MBID query failed for '%s': %s", artist, exc)
+        logger.debug("MBID query failed", artist=artist, error=str(exc))
 
     try:
         mbid = fetch_artist_mbid(None, artist)
         if mbid:
             return normalize_single_mbid(mbid) or mbid
     except Exception as exc:
-        logger.debug("[MISSING_RELEASES] fetch_artist_mbid failed for '%s': %s", artist, exc)
+        logger.debug("fetch_artist_mbid failed", artist=artist, error=str(exc))
 
     try:
         from services.enrichment.musicbrainz_persistence_service import lookup_and_save_artist_mbid
         mbid = lookup_and_save_artist_mbid(artist)
         return normalize_single_mbid(mbid) or mbid
     except Exception as exc:
-        logger.debug("[MISSING_RELEASES] Artist MBID lookup failed for '%s': %s", artist, exc)
+        logger.debug("Artist MBID lookup failed", artist=artist, error=str(exc))
+        
     return None
 
 
@@ -311,17 +272,8 @@ def _cached_missing_releases(artist: str) -> list[dict[str, Any]]:
         return [dict(r._mapping) for r in result.fetchall() or []]
 
 
-def get_missing_releases(artist: str, background: bool = False):
-    """Detect missing releases for an artist and persist the results.
-
-    Compares the local library against MusicBrainz release-groups, caches the
-    result in ``missing_releases`` (so the artist page and dashboard read from
-    the cache), and returns the fresh list.
-
-    When ``background`` is True and a full-library missing-releases scan is
-    already running, returns the cached results instead of performing a live
-    MusicBrainz lookup (avoids contending with the active scan).
-    """
+def get_missing_releases(artist: str, background: bool = False) -> tuple[dict[str, Any], int]:
+    """Detect missing releases for an artist and persist the results."""
     if not artist:
         return {"error": "Artist is required"}, 400
 
@@ -348,7 +300,7 @@ def get_missing_releases(artist: str, background: bool = False):
         existing_albums = fetch_artist_albums(None, artist)
         artist_mbid = _resolve_artist_mbid(artist, None)
     except Exception as exc:
-        logger.error("[MISSING_RELEASES] get_missing_releases failed for %s: %s", artist, exc)
+        logger.error("get_missing_releases failed", artist=artist, error=str(exc))
         return {"artist": artist, "missing": [], "existing_albums": [], "info": str(exc)}, 500
 
     existing_norm = {_normalize_release_title(a) for a in existing_albums if a}
@@ -364,7 +316,7 @@ def get_missing_releases(artist: str, background: bool = False):
     try:
         release_groups = _fetch_all_musicbrainz_releases(artist_mbid)
     except Exception as exc:
-        logger.error("[MISSING_RELEASES] MusicBrainz fetch failed for %s: %s", artist, exc)
+        logger.error("MusicBrainz fetch failed", artist=artist, error=str(exc))
         return {"artist": artist, "missing": [], "existing_albums": existing_albums, "info": str(exc)}, 500
 
     missing_items = _build_missing_release_items(release_groups, existing_norm)
@@ -372,14 +324,9 @@ def get_missing_releases(artist: str, background: bool = False):
     try:
         _persist_missing_releases(artist, missing_items)
     except Exception as exc:
-        # The API response is built from ``missing_items`` regardless, so the
-        # frontend always shows the freshly-detected rows even when the DB
-        # write fails — log loudly (error, with traceback) so a persistence
-        # failure is never invisible (it used to be a warning, which users
-        # mistook for "the DB was populated").
         logger.error(
-            "[MISSING_RELEASES] Could not persist missing releases for %s — they will reset on page reload: %s",
-            artist, exc, exc_info=True,
+            "Could not persist missing releases",
+            artist=artist, error=str(exc), exc_info=True,
         )
 
     return {
@@ -401,13 +348,9 @@ def _run_missing_releases_scan() -> None:
         clear_stop_request(_PROGRESS_PATH)
 
         try:
-            artists = fetch_all_distinct_artists(None)
-            # Prefer canonical album_artist identities (avoids scanning featured artists).
-            from sqlalchemy import text as _text
-            from db.engine import db_session as _db_session
-            with _db_session() as session:
+            with db_session() as session:
                 rows = session.execute(
-                    _text("""
+                    text("""
                         SELECT DISTINCT COALESCE(NULLIF(album_artist, ''), artist) AS canonical_artist
                         FROM tracks
                         WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
@@ -416,26 +359,29 @@ def _run_missing_releases_scan() -> None:
                     """)
                 ).fetchall()
             if rows:
-                artists = [str(r[0]) for r in rows]
-                artists = [a for a in artists if a]
+                artists = [str(r[0]) for r in rows if r[0]]
+            else:
+                artists = []
         except Exception as exc:
-            logger.debug("[MISSING_RELEASES] Artist list fetch failed: %s", exc)
+            logger.debug("Artist list fetch failed", error=str(exc))
+            artists = []
 
         total_artists = len(artists)
-        logger.info("[MISSING_RELEASES] Starting scan for %s artists", total_artists)
+        logger.info("Starting missing releases scan", total_artists=total_artists)
 
         try:
             cleaned = _cleanup_imported_releases()
             if cleaned:
-                logger.info("[MISSING_RELEASES] Cleaned up %s releases imported since last scan", cleaned)
+                logger.info("Cleaned up imported releases", cleaned_count=cleaned)
         except Exception as exc:
-            logger.debug("[MISSING_RELEASES] Cleanup failed: %s", exc)
+            logger.debug("Cleanup failed", error=str(exc))
 
         total_missing = 0
         processed = 0
+        
         for artist in artists:
             if is_stop_requested(_PROGRESS_PATH):
-                logger.info("[MISSING_RELEASES] Stop signal received, exiting gracefully")
+                logger.info("Stop signal received, exiting gracefully")
                 write_progress_with_current_artist(
                     _PROGRESS_PATH, "missing_releases_scan", False,
                     extra={"status": "stopped", "processed_artists": processed,
@@ -467,10 +413,9 @@ def _run_missing_releases_scan() -> None:
                     _persist_missing_releases(artist, missing_items)
                     total_missing += len(missing_items)
             except Exception as exc:
-                logger.error("[MISSING_RELEASES] Error scanning %s: %s", artist, exc)
+                logger.error("Error scanning artist", artist=artist, error=str(exc))
                 continue
             finally:
-                # MusicBrainz rate limit: ~1 request per second.
                 time.sleep(1.1)
 
         write_progress_with_current_artist(
@@ -479,9 +424,10 @@ def _run_missing_releases_scan() -> None:
                    "total_artists": total_artists, "total_missing_found": total_missing,
                    "percent_complete": 100},
         )
-        logger.info("[MISSING_RELEASES] Scan complete. Found %s missing releases across %s artists", total_missing, total_artists)
+        logger.info("Missing releases scan complete", total_missing=total_missing, total_artists=total_artists)
+        
     except Exception as exc:
-        logger.error("[MISSING_RELEASES] Scan failed: %s", exc, exc_info=True)
+        logger.error("Scan failed", error=str(exc), exc_info=True)
         try:
             from services.scanning.scan_state import write_progress_with_current_artist
             write_progress_with_current_artist(
@@ -491,37 +437,23 @@ def _run_missing_releases_scan() -> None:
         except Exception:
             pass
     finally:
-        _scan_thread = None
+        with _scan_lock:
+            _scan_thread = None
 
 
-def start_missing_release_scan():
+def start_missing_release_scan() -> tuple[dict[str, Any], int]:
     """Start the full-library missing-releases scan in the background."""
     global _scan_thread
-    if _scan_thread and _scan_thread.is_alive():
-        return {"success": False, "error": "Missing releases scan already running"}, 400
-    _scan_thread = threading.Thread(target=_run_missing_releases_scan, daemon=True, name="missing-release-scan")
-    _scan_thread.start()
+    with _scan_lock:
+        if _scan_thread and _scan_thread.is_alive():
+            return {"success": False, "error": "Missing releases scan already running"}, 400
+        _scan_thread = threading.Thread(target=_run_missing_releases_scan, daemon=True, name="missing-release-scan")
+        _scan_thread.start()
     return {"success": True, "message": "Missing releases scan started"}, 200
 
 
-def import_release(artist: str, release_id: str, title: str):
-    """Import a missing release as placeholder track records.
-
-    Supports BOTH sources that populate ``missing_releases``:
-
-    - **MusicBrainz** (UUID release or release-group MBID): fetched via the
-      MusicBrainz client, with a release-group → concrete-release fallback
-      (the artist page hands over release-group MBIDs; ``/release/{id}`` 404s
-      for those).
-    - **Discogs** (integer release ID): fetched via the Discogs client — the
-      Discogs release cache also seeds ``missing_releases`` with integer IDs.
-
-    Each track is saved via ``save_to_db`` with the full legacy record shape
-    (a stable ``id`` is REQUIRED — the previous refactor dropped it, which
-    would raise "track must include id").
-    """
-    from datetime import datetime
-
+def import_release(artist: str, release_id: str, title: str) -> tuple[dict[str, Any], int]:
+    """Import a missing release as placeholder track records."""
     artist = str(artist or "").strip()
     release_id = str(release_id or "").strip()
     title = str(title or "").strip()
@@ -529,21 +461,17 @@ def import_release(artist: str, release_id: str, title: str):
     if not artist or not release_id or not title:
         return {"error": "Artist, release_id, and title are required"}, 400
 
-    # Discogs release IDs are integers (e.g. "6834679"); MusicBrainz IDs are
-    # UUIDs.  Route by shape so a Discogs-sourced missing release imports
-    # instead of 404ing against MusicBrainz.
-    import re
     is_mb_uuid = bool(re.fullmatch(
         r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
         release_id, re.IGNORECASE,
     ))
 
     release_year = ""
-    media: list[dict] = []
+    media: list[dict[str, Any]] = []
 
     if is_mb_uuid:
-        from api_clients.musicbrainz_http import MusicBrainzHttpClient
-        client = MusicBrainzHttpClient()
+        # ✅ Use shared MusicBrainz client singleton
+        client = get_shared_mb_client()
         data, _resolved = _resolve_mb_release(client, release_id)
         if not data:
             return {"error": "Release not found on MusicBrainz"}, 404
@@ -557,15 +485,15 @@ def import_release(artist: str, release_id: str, title: str):
             client = DiscogsClient(token=_token)
             data = client.get_release(release_id)
         except Exception as exc:
-            logger.debug("[MISSING_RELEASES] Discogs release fetch failed for %s: %s", release_id, exc)
+            logger.debug("Discogs release fetch failed", release_id=release_id, error=str(exc))
             data = None
+            
         if not data:
             return {"error": "Release not found on Discogs"}, 404
+            
         release_year = str(data.get("year") or "")
-        # Discogs tracklist: [{position, title, duration}] — one flat list.
         media = [{"tracks": [
-            {"title": t.get("title", ""), "duration": t.get("duration"),
-             "position": t.get("position")}
+            {"title": t.get("title", ""), "duration": t.get("duration"), "position": t.get("position")}
             for t in (data.get("tracklist") or [])
         ]}]
 
@@ -575,7 +503,7 @@ def import_release(artist: str, release_id: str, title: str):
     try:
         from db.repositories.popularity_repository import save_to_db
     except Exception:
-        from db.repositories.popularity_repository import save_to_db  # compatibility fallback
+        from db.repositories.popularity_repository import save_to_db
 
     count = 0
     for disc_idx, disc in enumerate(media, start=1):
@@ -586,9 +514,8 @@ def import_release(artist: str, release_id: str, title: str):
             duration = track.get("length") or recording.get("length")
             if isinstance(duration, str) and duration.isdigit():
                 duration = int(duration)
+                
             mbid = recording.get("id", "")
-            # Legacy record shape — ``id`` is REQUIRED by save_to_db; fall back
-            # to a stable composite when the recording has no MBID.
             track_record = {
                 "id": mbid or f"{release_id}_{disc_number}_{track_idx}",
                 "title": track_title,
@@ -612,7 +539,6 @@ def import_release(artist: str, release_id: str, title: str):
             save_to_db(track_record)
             count += 1
 
-    # Remove the imported release from the missing-releases cache.
     try:
         with db_session() as session:
             session.execute(
@@ -623,24 +549,20 @@ def import_release(artist: str, release_id: str, title: str):
                 {"artist": artist, "release_id": release_id},
             )
     except Exception as exc:
-        logger.debug("[MISSING_RELEASES] Could not clear imported release from cache: %s", exc)
+        logger.debug("Could not clear imported release from cache", error=str(exc))
 
     return {"success": True, "tracks_imported": count, "message": f"Imported {count} tracks from '{title}'"}, 200
 
 
-def _resolve_mb_release(client, mb_id: str) -> tuple[dict | None, str]:
-    """Resolve a MusicBrainz release OR release-group MBID to a release payload.
-
-    ``get_release`` raises ``httpx.HTTPStatusError`` on a 404 (release-group
-    MBIDs from the artist page), so the fallback browses the release-group for
-    a concrete release (mirrors download_folder_service._resolve_release).
-    """
+def _resolve_mb_release(client: Any, mb_id: str) -> tuple[dict[str, Any] | None, str]:
+    """Resolve a MusicBrainz release OR release-group MBID to a release payload."""
     try:
         data = client.get_release(mb_id, inc="recordings")
         if data and data.get("id"):
             return data, str(data["id"])
     except Exception:
         pass
+        
     try:
         release_search = client.get(
             "release",
@@ -650,28 +572,28 @@ def _resolve_mb_release(client, mb_id: str) -> tuple[dict | None, str]:
         releases = (release_search or {}).get("releases") or []
         if not releases:
             return None, ""
+            
         release_mbid = str(releases[0].get("id") or "")
         if not release_mbid:
             return None, ""
+            
         data = client.get_release(release_mbid, inc="recordings")
         return (data, release_mbid) if data else (None, "")
     except Exception as exc:
-        logger.debug("[MISSING_RELEASES] release-group resolution failed for %s: %s", mb_id, exc)
+        logger.debug("Release-group resolution failed", mb_id=mb_id, error=str(exc))
         return None, ""
 
 
-def scan_all_missing_releases() -> tuple[dict, int]:
+def scan_all_missing_releases() -> tuple[dict[str, Any], int]:
     """Scan all artists for missing releases in the background."""
     return start_missing_release_scan()
 
 
-def add_artist(artist: str) -> tuple[dict, int]:
+def add_artist(artist: str) -> tuple[dict[str, Any], int]:
     """Add an artist to the database by creating a placeholder record."""
     if not artist:
         return {"success": False, "error": "artist required"}, 400
     try:
-        from sqlalchemy import text
-        from db.engine import db_session
         with db_session() as session:
             session.execute(
                 text("INSERT INTO artists (name) VALUES (:artist) ON CONFLICT (name) DO NOTHING"),

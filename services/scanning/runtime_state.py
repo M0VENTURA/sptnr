@@ -18,6 +18,9 @@ from __future__ import annotations
 import threading
 from typing import Any
 
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 scan_lock = threading.RLock()
 
@@ -95,7 +98,8 @@ def is_process_alive(obj: Any) -> bool:
         if hasattr(obj, "poll"):
             return obj.poll() is None
 
-    except Exception:
+    except Exception as exc:
+        logger.debug("Failed to check process/thread liveness", error=str(exc))
         return False
 
     return False

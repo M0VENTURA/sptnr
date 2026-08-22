@@ -14,12 +14,17 @@ from api_clients.lastfm_http import LastFmHttpClient, retry_with_backoff
 class LastFmClient:
     """Backward-compatible Last.fm facade."""
 
-    def __init__(self, api_key: str, username: str = None, http_session=None, db_connection=None):
+    def __init__(self, api_key: str, username: str | None = None, http_session: Any = None, db_connection: Any = None):
         from services.enrichment.lastfm_service import LastFmService
         self.api_key = api_key
         self.username = username
         self.http = LastFmHttpClient(api_key=api_key, http_session=http_session)
-        self.service = LastFmService(api_key=api_key, username=username, http_client=self.http, db_connection=db_connection)
+        self.service = LastFmService(
+            api_key=api_key, 
+            username=username, 
+            http_client=self.http, 
+            db_connection=db_connection
+        )
         self.session = self.http.session
         self.base_url = self.http.base_url
         self.cache = self.service.cache

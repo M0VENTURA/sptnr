@@ -7,10 +7,10 @@ Stable WebUI/scheduler entrypoint for popularity scans.
 from __future__ import annotations
 
 import importlib
-import logging
 import os
-
 from typing import Any, Callable
+
+import structlog
 
 from services.popularity.progress_tracker import update
 from services.scanning.scan_state import (
@@ -18,7 +18,7 @@ from services.scanning.scan_state import (
     clear_stop_request,
 )
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 DEFAULT_SCANNER_MODULE = "services.popularity.scan_stage_runner"
 
@@ -79,17 +79,11 @@ def _reload_config_before_scan() -> None:
         from helpers.config_helpers import clear_config_cache
         clear_config_cache()
     except Exception as exc:
-        logger.debug("[POPULARITY_PIPELINE] Config reload skipped: %s", exc)
+        logger.debug("Config reload skipped", error=str(exc))
 
 
 def _log_scan_config() -> None:
-    """Emit every applied scan setting to the unified log at scan start.
-
-    Reads the LIVE config through the SAME helpers the scan uses, so the
-    dump is evidence of what WILL be applied — a mis-saved config value
-    shows up here (``source: config`` vs ``defaults``) instead of silently
-    producing unexpected star ratings.
-    """
+    """Emit every applied scan setting to the unified log at scan start."""
     try:
         from helpers.logging_config import log_unified
         from helpers.config_helpers import get_config, get_genre_weights
@@ -186,7 +180,7 @@ def _log_scan_config() -> None:
             f"delete<{int(_pl_cfg.get('genre_playlists_delete_threshold', 80))})"
         )
     except Exception as exc:
-        logger.debug("[POPULARITY_PIPELINE] Scan config dump skipped: %s", exc)
+        logger.debug("Scan config dump skipped", error=str(exc))
 
 
 def run_popularity_scan(
@@ -210,23 +204,20 @@ def run_popularity_scan(
     log_unified(f"[POPULARITY_PIPELINE] Starting scan (artist={artist_filter or 'ALL'}, verbose={verbose}, force={force}) — config.yaml reloaded")
     _log_scan_config()
 
-    # ✅ CLEAR STALE STOP FLAGS: Ensure the scan starts with a clean slate
+    # ✅ CLEAR STALE STOP FLAGS
     if progress_file:
         try:
             clear_stop_request(progress_file)
         except Exception as e:
-            logger.warning("Failed to clear stop request flag: %s", e)
+            logger.warning("Failed to clear stop request flag", error=str(e))
 
-    # Persist the DB scan-state "running" marker so the dashboard /api/scan-progress
-    # feed shows targeted album/artist scans too (previously only
-    # ``run_popularity_mode`` wrote progress, so a scan started from the album or
-    # artist page was invisible to the dashboard and looked like it had halted).
     _scan_type_label = _derive_progress_scan_type(
         metadata_only=metadata_only,
         singles_only=singles_only,
         singles_with_missing_popularity=singles_with_missing_popularity,
         popularity_only=popularity_only,
     )
+    
     if progress_file:
         try:
             write_progress_with_current_artist(
@@ -241,7 +232,7 @@ def run_popularity_scan(
                 },
             )
         except Exception as e:
-            logger.debug("Failed to mark scan running in DB state: %s", e)
+            logger.debug("Failed to mark scan running in DB state", error=str(e))
 
     update(stage="initialising", progress=1, message="Starting popularity scan...")
 
@@ -269,7 +260,6 @@ def run_popularity_scan(
     try:
         result = scanner(**kwargs)
 
-        # Check if the scan was gracefully stopped by the user
         if result is False or (isinstance(result, dict) and result.get("status") == "stopped"):
             update(stage="stopped", message="Scan stopped by user")
             log_unified("[POPULARITY] Scan stopped by user request")
@@ -293,7 +283,7 @@ def run_popularity_scan(
                     },
                 )
             except Exception as e:
-                logger.debug("Failed to mark scan complete in DB state: %s", e)
+                logger.debug("Failed to mark scan complete in DB state", error=str(e))
 
         return result
     except Exception:
@@ -317,7 +307,7 @@ def run_popularity_scan(
                     },
                 )
             except Exception as e:
-                logger.debug("Failed to mark scan failed in DB state: %s", e)
+                logger.debug("Failed to mark scan failed in DB state", error=str(e))
 
         raise
 
@@ -349,15 +339,13 @@ def run_popularity_from_artist(
     verbose: bool = False,
 ):
     _reload_config_before_scan()
-    logger.info("Starting popularity scan from artist '%s'", artist)
+    logger.info("Starting popularity scan from artist", artist=artist)
+    
     from helpers.logging_config import log_unified
     log_unified(f"Starting popularity scan from artist '{artist}'")
     _log_scan_config()
 
     if progress_file:
-        payload: dict[str, Any] = {
-            "resume_from": artist,
-        }
         write_progress_with_current_artist(
             progress_file,
             "popularity_scan",
@@ -387,7 +375,6 @@ def run_popularity_from_artist(
                 "resume_from": artist,
             }
 
-            # Check for the dictionary stop payload
             if completed is False or (isinstance(completed, dict) and completed.get("status") == "stopped"):
                 payload["status"] = "stopped"
                 payload["exit_code"] = 1
@@ -409,7 +396,7 @@ def run_popularity_from_artist(
         return completed
 
     except Exception as exc:
-        logger.error("Scan failed for '%s': %s", artist, exc, exc_info=True)
+        logger.error("Scan failed for artist", artist=artist, error=str(exc), exc_info=True)
 
         if progress_file:
             write_progress_with_current_artist(
@@ -432,11 +419,11 @@ def run_popularity_from_artist(
 # Convenience wrappers
 # =============================================================================
 
-def run_metadata_only_scan(**kwargs):
+def run_metadata_only_scan(**kwargs: Any):
     kwargs["metadata_only"] = True
     return run_popularity_scan(**kwargs)
 
 
-def run_popularity_only_scan(**kwargs):
+def run_popularity_only_scan(**kwargs: Any):
     kwargs["popularity_only"] = True
     return run_popularity_scan(**kwargs)

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 from typing import Any
 
 from quart import Blueprint, jsonify, request, session
+import structlog
+from sqlalchemy import text
 
+from db.engine import db_session
 from helpers.config_helpers import get_config
-from helpers.response_helpers import _ok, _fail
 from services.playlists.listenbrainz_sync_service import (
     sync_rss_playlists_for_user,
     get_playlists_for_user,
@@ -18,7 +19,7 @@ from services.playlists.listenbrainz_sync_service import (
 )
 from services.enrichment.lastfm_service import get_lastfm_recommendations
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 listenbrainz_bp = Blueprint("listenbrainz", __name__, url_prefix="/api/listenbrainz")
 lastfm_bp = Blueprint("lastfm", __name__, url_prefix="/api/lastfm")
@@ -29,20 +30,18 @@ weekly_bp = Blueprint("weekly_sync", __name__, url_prefix="/api/weekly-sync")
 # LISTENBRAINZ ROUTES
 # ===========================================================================
 
-
 @listenbrainz_bp.route("/rss/sync", methods=["POST"])
-async def api_listenbrainz_rss_sync():
+async def api_listenbrainz_rss_sync() -> Any:
     """Sync ListenBrainz RSS feeds into playlists."""
     data = (await request.get_json()) or {}
     app_username = session.get("username", "default_user")
     lb_username = (data.get("listenbrainz_username") or app_username or "").strip()
-    # Blocking ListenBrainz HTTP + DB work — offload from the event loop.
     result = await asyncio.to_thread(sync_rss_playlists_for_user, app_username, lb_username)
     return jsonify(result), (200 if result.get("success") else 500)
 
 
 @listenbrainz_bp.route("/rss/playlists", methods=["GET"])
-def api_listenbrainz_rss_playlists():
+def api_listenbrainz_rss_playlists() -> Any:
     """Return persisted ListenBrainz RSS playlists."""
     app_username = session.get("username", "default_user")
     result = get_playlists_for_user(app_username)
@@ -50,7 +49,7 @@ def api_listenbrainz_rss_playlists():
 
 
 @listenbrainz_bp.route("/rss/sync-status", methods=["GET"])
-def api_listenbrainz_rss_sync_status():
+def api_listenbrainz_rss_sync_status() -> Any:
     """Return last sync time and rematch time."""
     app_username = session.get("username", "default_user")
     result = get_sync_status(app_username)
@@ -58,7 +57,7 @@ def api_listenbrainz_rss_sync_status():
 
 
 @listenbrainz_bp.route("/sync/now", methods=["POST"])
-async def api_listenbrainz_sync_now():
+async def api_listenbrainz_sync_now() -> Any:
     """Manually trigger ListenBrainz recommendations sync."""
     data = (await request.get_json()) or {}
     app_username = session.get("username", "default_user")
@@ -68,17 +67,11 @@ async def api_listenbrainz_sync_now():
 
 
 @listenbrainz_bp.route("/recommendations/<rec_type>", methods=["GET"])
-async def api_listenbrainz_recommendations(rec_type):
-    """Get ListenBrainz recommendations for the current user.
-
-    Returns fresh RSS-synced tracks for ``rec_type`` (weekly_jams,
-    weekly_exploration, last_week_jams, last_week_exploration, rolling_*).
-    """
+async def api_listenbrainz_recommendations(rec_type: str) -> Any:
+    """Get ListenBrainz recommendations for the current user."""
     app_username = session.get("username", "default_user")
     lb_username = (request.args.get("listenbrainz_username") or app_username or "").strip()
 
-    # Read cached tracks first; fall back to a live sync when the type is
-    # empty or the cache has never been populated.
     playlists = (get_playlists_for_user(app_username) or {}).get("playlists", {})
     tracks = playlists.get(rec_type) or []
     if not tracks:
@@ -90,7 +83,7 @@ async def api_listenbrainz_recommendations(rec_type):
 
 
 @listenbrainz_bp.route("/recommendations", methods=["GET"])
-def api_listenbrainz_recommendations_cached():
+def api_listenbrainz_recommendations_cached() -> Any:
     """Get ListenBrainz recommendations from cache."""
     app_username = session.get("username", "default_user")
     result = get_playlists_for_user(app_username)
@@ -98,20 +91,11 @@ def api_listenbrainz_recommendations_cached():
 
 
 @listenbrainz_bp.route("/create-playlist", methods=["POST"])
-async def api_listenbrainz_create_playlist():
-    """Create a Navidrome playlist from ListenBrainz recommendations.
-
-    Two-phase contract (see ``static/js/playlist.js``):
-      1. ``{type: <rec_type>}`` — fetch + match, returns
-         ``{total_recommendations, matched, missing, matched_tracks[],
-         missing_tracks[]}``.
-      2. ``{name, description, songs: [matched_tracks]}`` — writes the
-         playlist file.
-    """
+async def api_listenbrainz_create_playlist() -> Any:
+    """Create a Navidrome playlist from ListenBrainz recommendations."""
     data = (await request.get_json(silent=True)) or {}
     app_username = session.get("username", "default_user")
 
-    # Phase 2: build the playlist from already-matched tracks.
     playlist_name = (data.get("name") or "").strip()
     if playlist_name and data.get("songs"):
         track_ids = [s.get("id") for s in data.get("songs", []) if isinstance(s, dict) and s.get("id")]
@@ -127,9 +111,9 @@ async def api_listenbrainz_create_playlist():
                 "track_count": len(track_ids),
             })
         except Exception as exc:
+            logger.error("Playlist creation failed", error=str(exc))
             return jsonify({"error": str(exc)}), 500
 
-    # Phase 1: fetch + match recommendations.
     rec_type = (data.get("type") or "weekly_jams").strip()
     lb_username = (data.get("username") or app_username or "").strip()
     await asyncio.to_thread(sync_rss_playlists_for_user, app_username, lb_username)
@@ -154,12 +138,7 @@ def _match_recommendations(
     recommendations: list[dict[str, Any]],
     source: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Match recommendation entries against the local library.
-
-    ListenBrainz entries carry ``recording_mbid``; Last.fm entries carry
-    ``name``/``artist`` (tracks, albums, artists).  Matched tracks get their
-    local ``id`` attached for the playlist-build phase.
-    """
+    """Match recommendation entries against the local library."""
     from db.repositories.tracks import find_library_track
 
     matched: list[dict[str, Any]] = []
@@ -185,12 +164,10 @@ def _match_recommendations(
                 missing.append({"artist": artist, "title": title, "mbid": mbid or None})
             continue
 
-        # Last.fm: tracks/albums use name+artist; artists are name-only.
         title = str(rec.get("name") or rec.get("title") or "").strip()
         artist = str(rec.get("artist") or "").strip()
         playcount = rec.get("playcount", 0)
         if not artist:
-            # Artist-only recommendation — check the library by artist name.
             row = find_library_track(artist=title, title="", strict_album=False)
             if row:
                 matched.append({
@@ -217,15 +194,12 @@ def _match_recommendations(
 
 
 def _match_lb_track(artist: str, title: str, recording_mbid: str = "") -> dict[str, Any] | None:
-    """Match a ListenBrainz track against the library — MBID first, then text."""
-    from db.engine import db_session
-    from sqlalchemy import text as sa_text
-
+    """Match a ListenBrainz track against the library."""
     if recording_mbid:
         try:
             with db_session() as session_db:
                 row = session_db.execute(
-                    sa_text("SELECT id, artist, title FROM tracks WHERE musicbrainz_id = :m LIMIT 1"),
+                    text("SELECT id, artist, title FROM tracks WHERE musicbrainz_id = :m LIMIT 1"),
                     {"m": recording_mbid},
                 ).fetchone()
             if row:
@@ -240,9 +214,8 @@ def _match_lb_track(artist: str, title: str, recording_mbid: str = "") -> dict[s
 # LAST.FM ROUTES
 # ===========================================================================
 
-
 @lastfm_bp.route("/sync/now", methods=["POST"])
-async def api_lastfm_sync_now():
+async def api_lastfm_sync_now() -> Any:
     """Manually trigger Last.fm recommendations sync."""
     data = (await request.get_json()) or {}
     cfg = get_config()
@@ -252,7 +225,6 @@ async def api_lastfm_sync_now():
         return jsonify({"error": "Last.fm API key not configured"}), 400
     username = (data.get("username") or session.get("username") or "").strip()
     if not username:
-        # Try per-user config
         nav_users = cfg.get("navidrome_users", [])
         for u in nav_users:
             if u.get("user") == session.get("username"):
@@ -264,11 +236,12 @@ async def api_lastfm_sync_now():
         recommendations = get_lastfm_recommendations(api_key, username=username)
         return jsonify({"success": True, "recommendations": recommendations})
     except Exception as exc:
+        logger.error("Last.fm sync failed", error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
 @lastfm_bp.route("/recommendations", methods=["GET"])
-def api_lastfm_recommendations():
+def api_lastfm_recommendations() -> Any:
     """Get Last.fm recommendations from cache."""
     cfg = get_config()
     lastfm_cfg = cfg.get("api_integrations", {}).get("lastfm", {})
@@ -276,34 +249,24 @@ def api_lastfm_recommendations():
     if not api_key:
         return jsonify({"error": "Last.fm API key not configured"}), 400
     try:
-        from sqlalchemy import text as sa_text
-        from db.engine import db_session
         current_user = session.get("username", "default_user")
         with db_session() as session_db:
             result = session_db.execute(
-                sa_text("SELECT payload_json FROM lastfm_recommendations WHERE username = :user ORDER BY created_at DESC LIMIT 50"),
+                text("SELECT payload_json FROM lastfm_recommendations WHERE username = :user ORDER BY created_at DESC LIMIT 50"),
                 {"user": current_user},
             )
             rows = result.fetchall()
         return jsonify({"success": True, "recommendations": [json.loads(r[0]) for r in rows if r[0]]})
     except Exception as exc:
+        logger.error("Failed to fetch Last.fm recommendations", error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
 @lastfm_bp.route("/create-playlist", methods=["POST"])
-async def api_lastfm_create_playlist():
-    """Create a Navidrome playlist from Last.fm recommendations.
-
-    Two-phase contract (see ``static/js/playlist.js``):
-      1. ``{type: <tracks|albums|artists>}`` — fetch + match, returns
-         ``{total_recommendations, matched, missing, matched_tracks[],
-         missing_tracks[]}``.
-      2. ``{name, description, songs: [matched_tracks]}`` — writes the
-         playlist file.
-    """
+async def api_lastfm_create_playlist() -> Any:
+    """Create a Navidrome playlist from Last.fm recommendations."""
     data = (await request.get_json(silent=True)) or {}
 
-    # Phase 2: build the playlist from already-matched tracks.
     playlist_name = (data.get("name") or "").strip()
     if playlist_name and data.get("songs"):
         track_ids = [s.get("id") for s in data.get("songs", []) if isinstance(s, dict) and s.get("id")]
@@ -319,9 +282,9 @@ async def api_lastfm_create_playlist():
                 "track_count": len(track_ids),
             })
         except Exception as exc:
+            logger.error("Last.fm playlist creation failed", error=str(exc))
             return jsonify({"error": str(exc)}), 500
 
-    # Phase 1: fetch + match recommendations.
     cfg = get_config()
     lastfm_cfg = cfg.get("api_integrations", {}).get("lastfm", {})
     api_key = lastfm_cfg.get("api_key", "")
@@ -362,7 +325,7 @@ async def api_lastfm_create_playlist():
 
 
 @lastfm_bp.route("/sync-status", methods=["GET"])
-def api_lastfm_sync_status():
+def api_lastfm_sync_status() -> Any:
     """Get Last.fm sync status and next scheduled sync."""
     cfg = get_config()
     lastfm_cfg = cfg.get("api_integrations", {}).get("lastfm", {})
@@ -370,18 +333,16 @@ def api_lastfm_sync_status():
     enabled = bool(lastfm_cfg.get("enabled")) and bool(api_key)
     last_sync = None
     try:
-        from sqlalchemy import text as sa_text
-        from db.engine import db_session
         current_user = session.get("username", "default_user")
         with db_session() as session_db:
             row = session_db.execute(
-                sa_text("SELECT MAX(created_at) FROM lastfm_recommendations WHERE username = :user"),
+                text("SELECT MAX(created_at) FROM lastfm_recommendations WHERE username = :user"),
                 {"user": current_user},
             ).fetchone()
             if row and row[0]:
                 last_sync = row[0]
     except Exception as exc:
-        logger.debug("Last.fm sync-status lookup failed: %s", exc)
+        logger.debug("Last.fm sync-status lookup failed", error=str(exc))
     return jsonify({"success": True, "enabled": enabled, "last_sync": last_sync, "next_sync": None})
 
 
@@ -389,15 +350,9 @@ def api_lastfm_sync_status():
 # WEEKLY SYNC ROUTES
 # ===========================================================================
 
-
 @weekly_bp.route("/trigger", methods=["POST"])
-async def api_weekly_sync_trigger():
-    """Manually trigger weekly playlist sync.
-
-    Delegates to the ListenBrainz RSS sync service (weekly jams /
-    exploration feeds), which replaced the legacy ``weekly_playlist_sync``
-    module in the current architecture.
-    """
+async def api_weekly_sync_trigger() -> Any:
+    """Manually trigger weekly playlist sync."""
     data = (await request.get_json(silent=True)) or {}
     app_username = session.get("username", "default_user")
     lb_username = (data.get("username") or app_username or "").strip()
@@ -406,7 +361,7 @@ async def api_weekly_sync_trigger():
 
 
 @weekly_bp.route("/status", methods=["GET"])
-def api_weekly_sync_status():
+def api_weekly_sync_status() -> Any:
     """Get weekly sync status."""
     app_username = session.get("username", "default_user")
     result = get_sync_status(app_username)
@@ -414,12 +369,8 @@ def api_weekly_sync_status():
 
 
 @weekly_bp.route("/hourly-update", methods=["POST"])
-async def api_weekly_sync_hourly_update():
-    """Manually trigger the hourly playlist update job.
-
-    Re-syncs the weekly ListenBrainz RSS feeds so newly matched/downloaded
-    tracks are reflected in the playlist.
-    """
+async def api_weekly_sync_hourly_update() -> Any:
+    """Manually trigger the hourly playlist update job."""
     app_username = session.get("username", "default_user")
     result = await asyncio.to_thread(sync_rss_playlists_for_user, app_username, app_username)
     return jsonify(result), (200 if result.get("success") else 500)

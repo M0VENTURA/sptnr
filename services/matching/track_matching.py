@@ -7,17 +7,17 @@ Shared track matching utilities.
 
 from __future__ import annotations
 
-import logging
-import re
-from typing import Dict, List, Optional, Tuple
+from typing import Any
 
+import structlog
+
+from helpers.config_helpers import get_matching_thresholds
 from helpers.normalization_service import (
     normalize_artist,
     normalize_album,
     normalize_string,
     normalize_title_for_lookup,
 )
-from helpers.config_helpers import get_matching_thresholds
 
 try:
     from rapidfuzz import fuzz as _fuzz  # type: ignore[import-untyped]
@@ -26,16 +26,12 @@ except ImportError:
     _fuzz: Any = None  # type: ignore[no-redef]
     _HAVE_RAPIDFUZZ = False
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 _matching_cfg = get_matching_thresholds()
 FUZZY_THRESHOLD = _matching_cfg["fuzzy_threshold"]
 MAX_FUZZY_SCORE = 0.95
 
-
-# =============================================================================
-# ✅ ARTIST / ALBUM NORMALIZATION (KEEP LOCAL)
-# =============================================================================
 
 # =============================================================================
 # ✅ SIMILARITY
@@ -56,9 +52,9 @@ def calculate_similarity(s1: str, s2: str) -> float:
 # =============================================================================
 
 def calculate_track_similarity(
-    track1: Dict,
-    track2: Dict,
-) -> Tuple[float, Dict[str, float]]:
+    track1: dict[str, Any],
+    track2: dict[str, Any],
+) -> tuple[float, dict[str, float]]:
 
     raw_title1 = track1.get("title", "")
     raw_title2 = track2.get("title", "")
@@ -106,7 +102,7 @@ def calculate_track_similarity(
     return round(score, 3), components
 
 
-def is_strict_match(track1: Dict, track2: Dict) -> bool:
+def is_strict_match(track1: dict[str, Any], track2: dict[str, Any]) -> bool:
     return (
         normalize_title_for_lookup(track1.get("title", "")) ==
         normalize_title_for_lookup(track2.get("title", ""))
@@ -116,6 +112,6 @@ def is_strict_match(track1: Dict, track2: Dict) -> bool:
     )
 
 
-def is_fuzzy_match(track1: Dict, track2: Dict) -> Tuple[bool, float]:
+def is_fuzzy_match(track1: dict[str, Any], track2: dict[str, Any]) -> tuple[bool, float]:
     score, _ = calculate_track_similarity(track1, track2)
     return score >= FUZZY_THRESHOLD, score

@@ -10,11 +10,12 @@ Album metadata service (clean version)
 
 from __future__ import annotations
 
-import logging
 import os
 from typing import Any
 
+import structlog
 from sqlalchemy import text
+
 from db.engine import db_session
 from db.repositories.metadata import (
     album_is_favourite,
@@ -31,14 +32,15 @@ from db.repositories.metadata import (
     ignore_missing_track_db,
 )
 from services.queue.queue_constraints import STATUS_DISPLAY_CONFIG
-
 from services.enrichment.album_art_service import (
     save_album_art_to_db,
     fetch_album_art_from_itunes,
-    fetch_album_art_from_musicbrainz
+    fetch_album_art_from_musicbrainz,
+    get_or_fetch_album_art as _fetch_art_canonical,
 )
+from services.enrichment.musicbrainz_service import get_shared_mb_client
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 # =============================================================================
@@ -49,21 +51,7 @@ def rename_album_files_service(
     artist: str,
     album: str,
 ) -> dict[str, Any]:
-    """Rename all files in an album based on the configured naming format.
-
-    The relative target path comes from ``downloads.file_name_format`` in
-    config (the "Default Naming Convention" on the File Management settings
-    tab) and is resolved under MUSIC_ROOT (e.g. ``/music``). Placeholders:
-    ``{track_number}``, ``{artist}``, ``{album_artist}``, ``{title}``,
-    ``{album}``, ``{year}``.
-
-    When conversion on import is enabled (``downloads.conversion``), FLAC
-    tracks are converted to MP3 first (metadata and cover art carried over
-    by ffmpeg) and the renamed file becomes the converted copy.
-
-    Returns a dict with ``renamed_count``, ``updated_db_count``, ``errors``
-    and per-file ``details`` for the album page's result panel.
-    """
+    """Rename all files in an album based on the configured naming format."""
     import shutil
 
     from helpers.config_helpers import get_config
@@ -120,7 +108,6 @@ def rename_album_files_service(
     def _render_target(fmt: str, fmt_vars: dict[str, str], ext: str) -> str:
         rel = fmt.format(**fmt_vars).replace("\\", "/").strip()
         if rel.endswith("/"):
-            # The format only defines the folder — derive a filename.
             rel = rel + f"{fmt_vars['track_number']}. {fmt_vars['artist']} - {fmt_vars['title']}"
         rel = rel.strip("/")
         if not os.path.splitext(os.path.basename(rel))[1]:
@@ -143,16 +130,16 @@ def rename_album_files_service(
                 {"artist": artist, "album": album},
             ).fetchall()
     except Exception as exc:
-        logger.error("Failed to load tracks for rename '%s' / '%s': %s", artist, album, exc, exc_info=True)
+        logger.error("Failed to load tracks for rename", artist=artist, album=album, error=str(exc), exc_info=True)
         return {"success": False, "error": f"Failed to load album tracks: {exc}"}
 
     if not rows:
-        logger.debug("[RENAME] No tracks found for '%s' / '%s' — nothing to rename", artist, album)
+        logger.debug("No tracks found for rename", artist=artist, album=album)
         return {"success": False, "error": "No tracks found for this album"}
 
     logger.debug(
-        "[RENAME] Renaming %d file(s) for '%s' / '%s' (format=%r, conversion=%s)",
-        len(rows), artist, album, file_name_format, conversion_enabled,
+        "Renaming album files",
+        artist=artist, album=album, count=len(rows), format=file_name_format, conversion=conversion_enabled,
     )
 
     renamed_count = 0
@@ -169,7 +156,7 @@ def rename_album_files_service(
         if not src_path:
             _msg = f"{track.get('title') or '?'}: file not found on disk ({file_path_value or 'no path'})"
             errors.append(_msg)
-            logger.warning("[RENAME] %s", _msg)
+            logger.warning("File not found on disk for rename", track=track.get("title"), path=file_path_value)
             continue
 
         ext = os.path.splitext(src_path)[1]
@@ -187,10 +174,8 @@ def rename_album_files_service(
         try:
             rel_target = _render_target(file_name_format, fmt_vars, ext)
         except Exception:
-            # Unknown placeholder in the configured format — fall back.
             rel_target = _render_target(fallback_format, fmt_vars, ext)
 
-        # Conversion on import: FLAC → MP3 (in place) before moving.
         actual_src = src_path
         if conversion_enabled and ext.lower() == ".flac":
             try:
@@ -200,25 +185,20 @@ def rename_album_files_service(
                 if not converted or not os.path.isfile(converted):
                     _msg = f"{fmt_vars['title']}: FLAC→MP3 conversion failed (is ffmpeg installed?)"
                     errors.append(_msg)
-                    logger.warning("[RENAME] %s (src=%s)", _msg, src_path)
+                    logger.warning("Conversion failed", track=fmt_vars["title"], src=src_path)
                     continue
                 actual_src = converted
-                logger.debug(
-                    "[RENAME] Converted '%s' → '%s' (original FLAC deleted by converter)",
-                    src_path, converted,
-                )
                 if os.path.splitext(rel_target)[1].lower() == ".flac":
                     rel_target = os.path.splitext(rel_target)[0] + ".mp3"
             except Exception as exc:
                 _msg = f"{fmt_vars['title']}: conversion failed ({exc})"
                 errors.append(_msg)
-                logger.warning("[RENAME] %s (src=%s)", _msg, src_path)
+                logger.warning("Conversion failed with exception", track=fmt_vars["title"], error=str(exc))
                 continue
 
         target_abs = os.path.join(music_root, rel_target)
 
         if os.path.normpath(target_abs) == os.path.normpath(actual_src):
-            logger.debug("[RENAME] '%s' already at target — skipped", actual_src)
             continue
 
         if os.path.exists(target_abs):
@@ -227,7 +207,6 @@ def rename_album_files_service(
             while os.path.exists(target_abs):
                 target_abs = f"{stem} ({counter}){suffix}"
                 counter += 1
-            logger.debug("[RENAME] Target exists — collision-resolved to '%s'", target_abs)
 
         try:
             os.makedirs(os.path.dirname(target_abs), exist_ok=True)
@@ -235,16 +214,13 @@ def rename_album_files_service(
         except Exception as exc:
             _msg = f"{fmt_vars['title']}: move failed ({exc})"
             errors.append(_msg)
-            logger.warning("[RENAME] %s (src=%s → target=%s)", _msg, actual_src, target_abs)
+            logger.warning("File move failed", track=fmt_vars["title"], error=str(exc))
             continue
-
-        logger.debug("[RENAME] Moved '%s' → '%s'", actual_src, target_abs)
 
         old_dir = os.path.dirname(os.path.abspath(actual_src))
         if old_dir.startswith(music_root + os.sep):
             moved_src_dirs.append(old_dir)
 
-        # Keep the stored path style: relative stays relative, absolute stays absolute.
         store_path = (
             os.path.relpath(target_abs, music_root)
             if not os.path.isabs(str(file_path_value or ""))
@@ -262,8 +238,7 @@ def rename_album_files_service(
         except Exception as exc:
             _msg = f"{fmt_vars['title']}: database update failed ({exc})"
             errors.append(_msg)
-            logger.warning("[RENAME] %s (track=%s)", _msg, track_id)
-            # File already moved — keep counting the rename itself.
+            logger.warning("DB path update failed after move", track=fmt_vars["title"], error=str(exc))
             renamed_count += 1
             details.append({
                 "track": fmt_vars["title"],
@@ -278,25 +253,12 @@ def rename_album_files_service(
             "old_path": str(file_path_value or ""),
             "new_path": store_path,
         })
-        logger.debug(
-            "[RENAME] '%s' → DB file_path updated to '%s' (track=%s)",
-            fmt_vars["title"], store_path, track_id,
-        )
 
-    # Remove now-empty folders left behind (only inside MUSIC_ROOT).
     for directory in set(moved_src_dirs):
         try:
             cleanup_empty_parents(directory, music_root)
-            logger.debug("[RENAME] Cleaned up empty parent dirs under '%s'", directory)
         except Exception as exc:
-            logger.debug("[RENAME] Empty-dir cleanup failed for '%s': %s", directory, exc)
-
-    logger.debug(
-        "[RENAME] Done '%s' / '%s': renamed=%d updated_db=%d errors=%d",
-        artist, album, renamed_count, updated_db_count, len(errors),
-    )
-    if errors:
-        logger.warning("[RENAME] Errors for '%s' / '%s': %s", artist, album, "; ".join(errors))
+            logger.debug("Empty-dir cleanup failed", directory=directory, error=str(exc))
 
     return {
         "success": renamed_count > 0 or not errors,
@@ -319,10 +281,7 @@ def is_album_favourite(
     artist: str,
     album: str,
 ) -> bool:
-    return album_is_favourite(
-        artist=artist,
-        album=album,
-    )
+    return album_is_favourite(artist=artist, album=album)
 
 
 def set_album_favourite(
@@ -331,19 +290,10 @@ def set_album_favourite(
     is_favourite: bool,
 ) -> bool:
     try:
-        set_album_favourite_db(
-            artist=artist,
-            album=album,
-            is_favourite=is_favourite,
-        )
+        set_album_favourite_db(artist=artist, album=album, is_favourite=is_favourite)
         return True
-
     except Exception as exc:
-        logger.error(
-            "Error setting favourite: %s",
-            exc,
-            exc_info=True,
-        )
+        logger.error("Error setting favourite", artist=artist, album=album, error=str(exc), exc_info=True)
         return False
 
 
@@ -355,17 +305,9 @@ def get_local_album_art(
     artist: str,
     album: str,
 ) -> tuple[bytes | None, str | None]:
-    """Get album art: local DB first, then Navidrome (default source).
-
-    Navidrome already holds the art the user sees in their library, so it is
-    consulted before any external service. Art pulled from Navidrome is
-    cached to the DB for future requests.
-    """
+    """Get album art: local DB first, then Navidrome."""
     with db_session() as session:
-        data, mime = fetch_album_art_blob(
-            artist=artist,
-            album=album,
-        )
+        data, mime = fetch_album_art_blob(artist=artist, album=album)
 
         if data:
             return data, mime or "image/jpeg"
@@ -381,19 +323,14 @@ def get_local_album_art(
             save_album_art_to_db(artist, album, data, source="navidrome")
             return data, "image/jpeg"
     except Exception as exc:
-        logger.debug("Navidrome album art fallback failed for '%s' / '%s': %s", artist, album, exc)
+        logger.debug("Navidrome album art fallback failed", artist=artist, album=album, error=str(exc))
 
     return None, None
 
-# In services/album_service.py
 
 def get_or_fetch_album_art(artist: str, album: str) -> tuple[bytes | None, str | None]:
-    """Fetch album art from DB or external sources.
-    
-    Delegates to the canonical implementation in services.enrichment.album_art_service.
-    """
-    from services.enrichment.album_art_service import get_or_fetch_album_art as _fetch
-    return _fetch(artist, album)
+    """Fetch album art from DB or external sources."""
+    return _fetch_art_canonical(artist, album)
 
 
 # =============================================================================
@@ -415,16 +352,14 @@ def get_album_tracklist(artist: str, album: str) -> list[dict[str, Any]]:
 
 
 def get_album_tracklist_from_db(artist: str, album: str) -> list[dict[str, Any]]:
-    """Alias for get_album_tracklist to satisfy blueprint imports."""
     return get_album_tracklist(artist, album)
 
 
 def match_album_tracklist(artist: str, album: str) -> dict[str, Any]:
-    """Matches album tracks against the local library, falling back to MusicBrainz."""
-    logger.debug("Matching tracklist for %s - %s", artist, album)
+    """Matches album tracks against local library, falling back to MusicBrainz."""
+    logger.debug("Matching tracklist", artist=artist, album=album)
 
     with db_session() as session:
-        # 1. Fetch tracks for this album from repository
         album_rows = fetch_album_queue_track_stubs(artist=artist, album=album)
         
         matched_tracks = []
@@ -441,10 +376,6 @@ def match_album_tracklist(artist: str, album: str) -> dict[str, Any]:
                 matched_tracks.append(entry)
 
         if album_rows:
-            logger.info(
-                "Found %d existing album tracks for %s - %s (library=%d, queued=%d)",
-                len(album_rows), artist, album, len(matched_tracks), len(queued_tracks)
-            )
             return {
                 "success": True,
                 "matched": matched_tracks,
@@ -453,8 +384,6 @@ def match_album_tracklist(artist: str, album: str) -> dict[str, Any]:
                 "status": 200,
             }
 
-        # 2. If no tracks found, check all artist tracks in the database
-        logger.debug("No album tracks found in database, checking all tracks for artist %s", artist)
         all_artist_rows = fetch_album_tracklist(artist=artist, album="")
         library_tracks = {
             str(r.get("title") if hasattr(r, "get") else r[1]).lower().strip(): True 
@@ -462,14 +391,10 @@ def match_album_tracklist(artist: str, album: str) -> dict[str, Any]:
             if (r.get("title") if hasattr(r, "get") else r[1])
         }
 
-    # 3. Fallback to MusicBrainz API check
+    # ✅ Fallback to MusicBrainz API via shared client singleton
     try:
-        from api_clients.musicbrainz_http import (
-            MusicBrainzHttpClient,
-            escape_lucene_special_chars,
-        )
-        # Shared client: canonical User-Agent + 1 req/s throttle + retry/backoff.
-        mb = MusicBrainzHttpClient(enabled=True)
+        from api_clients.musicbrainz_http import escape_lucene_special_chars
+        mb = get_shared_mb_client()
 
         releases = mb.search_releases(
             f'release:"{escape_lucene_special_chars(album)}" AND artist:"{escape_lucene_special_chars(artist)}"',
@@ -509,7 +434,6 @@ def match_album_tracklist(artist: str, album: str) -> dict[str, Any]:
                     else:
                         mb_unmatched.append(entry)
 
-            logger.info("Matched %d tracks from MusicBrainz for %s - %s", len(mb_matched), artist, album)
             return {
                 "success": True,
                 "matched": mb_matched,
@@ -521,17 +445,16 @@ def match_album_tracklist(artist: str, album: str) -> dict[str, Any]:
         return {"success": True, "matched": [], "queued": [], "unmatched": [], "status": 200}
 
     except Exception as exc:
-        logger.error("Error matching tracklist via MusicBrainz: %s", exc, exc_info=True)
+        logger.error("Error matching tracklist via MusicBrainz", error=str(exc), exc_info=True)
         return {"error": str(exc), "status": 500}
 
 
 # =============================================================================
-# QUEUE STATUS (SAFE — READ ONLY)
+# QUEUE STATUS
 # =============================================================================
 
-def get_album_queue_status_db(artist: str, album: str):
+def get_album_queue_status_db(artist: str, album: str) -> dict[str, Any]:
     result = {}
-
     rows = fetch_album_queue_track_stubs(artist=artist, album=album)
 
     for row in rows:
@@ -563,7 +486,7 @@ def get_album_queue_status_db(artist: str, album: str):
 # GENRES
 # =============================================================================
 
-def apply_genres_to_album(artist: str, album: str, genres: list[str]):
+def apply_genres_to_album(artist: str, album: str, genres: list[str]) -> dict[str, Any]:
     from services.metadata.tag_file_service import update_file_tags, resolve_music_file_path
 
     genres_clean = [g.strip() for g in genres if g.strip()]
@@ -579,8 +502,6 @@ def apply_genres_to_album(artist: str, album: str, genres: list[str]):
         title = t.get("title") if hasattr(t, "get") else t[1]
         path = t.get("file_path") if hasattr(t, "get") else t[2]
 
-        # Resolve the stored path (may be relative to the music root) so the
-        # file write targets the REAL file, never fails on a relative path.
         resolved = resolve_music_file_path(path)
 
         if resolved:
@@ -604,27 +525,25 @@ def apply_genres_to_album(artist: str, album: str, genres: list[str]):
 # MBID / DISCOGS
 # =============================================================================
 
-def apply_mbid_to_album(artist, album, mbid, rg_mbid, cover_url):
+def apply_mbid_to_album(artist: str, album: str, mbid: str, rg_mbid: str, cover_url: str) -> dict[str, Any]:
     rows = update_album_mbid_fields(
         artist=artist, album=album, mbid=mbid, rg_mbid=rg_mbid, cover_url=cover_url,
     )
-
     return {"success": rows > 0, "rows_updated": rows}
 
 
-def apply_discogs_id_to_album(artist, album, discogs_id, is_single):
+def apply_discogs_id_to_album(artist: str, album: str, discogs_id: str, is_single: bool) -> dict[str, Any]:
     rows = update_album_discogs_fields(
         artist=artist, album=album, discogs_id=discogs_id, is_single=is_single,
     )
-
     return {"success": True, "rows_updated": rows}
 
 
 # =============================================================================
-# BULK TRACK OPERATIONS (old-version parity)
+# BULK TRACK OPERATIONS
 # =============================================================================
 
-def bulk_tag_tracks(payload: dict) -> tuple[dict, int]:
+def bulk_tag_tracks(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
     """Add genre tags to multiple tracks — DB columns + audio file tags."""
     from services.metadata.tag_file_service import update_file_tags, resolve_music_file_path
 
@@ -652,7 +571,7 @@ def bulk_tag_tracks(payload: dict) -> tuple[dict, int]:
                 manual = str(row.get("manual_genres") or "")
                 file_path = str(row.get("file_path") or "")
 
-                def _split_genres(raw: str) -> set:
+                def _split_genres(raw: str) -> set[str]:
                     sep = "\\" if "\\" in raw else ","
                     return {g.strip() for g in raw.split(sep) if g.strip()}
 
@@ -664,8 +583,6 @@ def bulk_tag_tracks(payload: dict) -> tuple[dict, int]:
                 new_genres = ", ".join(sorted(existing))
                 new_manual = ", ".join(sorted(manual_existing))
 
-                # Resolve the stored path (may be relative to the music root)
-                # so the file write targets the REAL file.
                 resolved = resolve_music_file_path(file_path)
                 if resolved:
                     if not update_file_tags(resolved, {"genres": sorted(existing)}):
@@ -679,7 +596,7 @@ def bulk_tag_tracks(payload: dict) -> tuple[dict, int]:
                 )
                 updated_count += 1
             except Exception as exc:
-                logger.error("[bulk_tag] Track %s failed: %s", track_id, exc)
+                logger.error("Bulk tag track failed", track_id=track_id, error=str(exc))
                 continue
 
     return {
@@ -689,7 +606,7 @@ def bulk_tag_tracks(payload: dict) -> tuple[dict, int]:
     }, 200
 
 
-def bulk_delete_tracks(payload: dict) -> tuple[dict, int]:
+def bulk_delete_tracks(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
     """Delete multiple tracks from the database, optionally removing audio files."""
     track_ids = [str(t) for t in (payload.get("track_ids") or []) if t]
     delete_files = bool(payload.get("delete_files", True))
@@ -712,24 +629,18 @@ def bulk_delete_tracks(payload: dict) -> tuple[dict, int]:
                     try:
                         os.remove(file_path)
                     except Exception as exc:
-                        logger.warning("[bulk_delete] Could not delete file %s: %s", file_path, exc)
+                        logger.warning("Could not delete file from disk", path=file_path, error=str(exc))
                 session.execute(text("DELETE FROM tracks WHERE id = :id"), {"id": track_id})
                 deleted_count += 1
             except Exception as exc:
-                logger.error("[bulk_delete] Track %s failed: %s", track_id, exc)
+                logger.error("Bulk delete track failed", track_id=track_id, error=str(exc))
                 continue
 
     return {"success": True, "deleted_count": deleted_count}, 200
 
 
-def update_album_ids(payload: dict) -> tuple[dict, int]:
-    """Update release IDs (MusicBrainz release/release-group, Discogs) for an album's tracks.
-
-    DB columns AND the audio files stay in sync: the MusicBrainz release /
-    release-group IDs are written to each track's file tags
-    (``musicbrainz_albumid`` / ``musicbrainz_releasegroupid`` frames) so the
-    files carry the same release linkage as the DB (metadata fan-out rule).
-    """
+def update_album_ids(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
+    """Update release IDs for an album's tracks."""
     artist = str(payload.get("artist") or "").strip()
     album = str(payload.get("album") or "").strip()
     if not artist or not album:
@@ -776,8 +687,6 @@ def update_album_ids(payload: dict) -> tuple[dict, int]:
         )
         rows = result.rowcount or 0
 
-        # Metadata fan-out: write the release linkage to each track's audio
-        # file tags too (the files must carry what the DB now carries).
         if file_tag_updates:
             from services.metadata.tag_file_service import (
                 resolve_music_file_path,
@@ -796,7 +705,7 @@ def update_album_ids(payload: dict) -> tuple[dict, int]:
                         if update_file_tags(_path, file_tag_updates):
                             file_updated += 1
                     except Exception as exc:
-                        logger.debug("[album_ids] File tag write failed for %s: %s", r[0], exc)
+                        logger.debug("File tag write failed", track_id=r[0], error=str(exc))
 
     return {"success": True, "rows_updated": rows, "files_updated": file_updated}, 200
 
@@ -805,7 +714,7 @@ def update_album_ids(payload: dict) -> tuple[dict, int]:
 # IGNORE TRACK
 # =============================================================================
 
-def ignore_missing_track(missing_id, artist, album, title, disc_number):
+def ignore_missing_track(missing_id: Any, artist: str, album: str, title: str, disc_number: Any) -> bool:
     try:
         ignore_missing_track_db(
             missing_id=missing_id,
@@ -816,19 +725,17 @@ def ignore_missing_track(missing_id, artist, album, title, disc_number):
         )
         return True
     except Exception as exc:
-        logger.error("ignore_missing_track failed: %s", exc)
+        logger.error("ignore_missing_track failed", error=str(exc))
         return False
 
 
-def get_majority_artist(artist: str, album: str) -> dict:
+def get_majority_artist(artist: str, album: str) -> dict[str, Any]:
     """Return the most common artist across all tracks in an album."""
     from collections import Counter
     try:
-        from sqlalchemy import text as _text
-        from db.engine import db_session as _db_session
-        with _db_session() as session:
+        with db_session() as session:
             rows = session.execute(
-                _text("SELECT artist FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album"),
+                text("SELECT artist FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album"),
                 {"artist": artist, "album": album},
             ).fetchall()
         counts = Counter(str(r[0]) for r in rows if r[0])
@@ -845,14 +752,12 @@ def get_majority_artist(artist: str, album: str) -> dict:
         return {"success": False, "error": str(exc)}
 
 
-def add_album_to_missing_releases(artist: str, album: str, year: str | None = None) -> dict:
+def add_album_to_missing_releases(artist: str, album: str, year: str | None = None) -> dict[str, Any]:
     """Add an album to the missing_releases tracking table."""
     try:
-        from sqlalchemy import text as _text
-        from db.engine import db_session as _db_session
-        with _db_session() as session:
+        with db_session() as session:
             session.execute(
-                _text(
+                text(
                     "INSERT INTO missing_releases (artist, title, primary_type, first_release_date, category, created_at) "
                     "VALUES (:artist, :album, 'album', :year, 'album', CURRENT_TIMESTAMP) "
                     "ON CONFLICT (artist, title) DO NOTHING"
@@ -861,25 +766,23 @@ def add_album_to_missing_releases(artist: str, album: str, year: str | None = No
             )
         return {"success": True, "message": f"Added '{album}' to missing releases"}
     except Exception as exc:
-        logger.error("Error adding to missing releases: %s", exc)
+        logger.error("Error adding to missing releases", error=str(exc))
         return {"success": False, "error": str(exc)}
 
 
-def get_track_recommendations(artist: str, album: str) -> dict:
+def get_track_recommendations(artist: str, album: str) -> dict[str, Any]:
     """Get genre recommendations by aggregating all genre sources in DB."""
     try:
-        from sqlalchemy import text as _text
-        from db.engine import db_session as _db_session
-        with _db_session() as session:
+        with db_session() as session:
             rows = session.execute(
-                _text(
+                text(
                     "SELECT lastfm_tags, musicbrainz_genres, discogs_genres "
                     "FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album"
                 ),
                 {"artist": artist, "album": album},
             ).mappings().all()
     except Exception as exc:
-        logger.error("Error fetching track genres for %s - %s: %s", artist, album, exc)
+        logger.error("Error fetching track genres", artist=artist, album=album, error=str(exc))
         rows = []
 
     from collections import defaultdict

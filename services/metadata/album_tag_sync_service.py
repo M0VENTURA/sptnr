@@ -15,23 +15,21 @@ track of the album it:
     ``"musicbrainz"``) whenever a file tag already holds a value that differs
     from what the scan resolved — "could be wrong" candidates that the
     corrections UI can review instead of silently overwriting them.
-
-The file writes are fill-missing-only by design (never overwrite a populated
-frame) and funnel through ``tag_file_service.write_tags_to_file`` so the
-existing ``tagging`` config (master toggle, ratings_only, preserve timestamps)
-is honoured.
 """
 
 from __future__ import annotations
 
 import json
-import logging
 import os
 import re
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+from services.enrichment.musicbrainz_service import get_shared_mb_client
+
+logger = structlog.get_logger(__name__)
 
 
 def _norm(s: Any) -> str:
@@ -58,11 +56,7 @@ def _num(value: Any, default: int) -> int:
 # ---------------------------------------------------------------------------
 
 def _read_file_values(file_path: str) -> dict[str, str]:
-    """Read the current (non-empty) tag values from an MP3/FLAC file.
-
-    Keys are the tag keys understood by ``tag_file_service`` writers.  Values
-    are the on-disk display strings (used for correction comparisons).
-    """
+    """Read the current (non-empty) tag values from an MP3/FLAC file."""
     values: dict[str, str] = {}
 
     def _put(key: str, raw: Any) -> None:
@@ -131,7 +125,7 @@ def _read_file_values(file_path: str) -> dict[str, str]:
                 joined = ", ".join(str(v).strip() for v in vals if str(v).strip())
                 _put(key, joined)
     except Exception as exc:
-        logger.debug("[ALBUM_TAG_SYNC] Could not read tags from %s: %s", file_path, exc)
+        logger.debug("Could not read tags from file", file_path=file_path, error=str(exc))
     return values
 
 
@@ -140,11 +134,7 @@ def _read_file_values(file_path: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 def _db_tag_candidates(track: dict[str, Any], perfect: bool, include_lyrics: bool) -> dict[str, str]:
-    """Map a track's fresh DB values to file-tag keys (empty values omitted).
-
-    MusicBrainz IDs are only candidates when ``perfect`` — the album's
-    tracklist matches the MB release 1:1, so the IDs are trustworthy.
-    """
+    """Map a track's fresh DB values to file-tag keys (empty values omitted)."""
     out: dict[str, str] = {}
 
     def _put(key: str, value: Any) -> None:
@@ -162,7 +152,6 @@ def _db_tag_candidates(track: dict[str, Any], perfect: bool, include_lyrics: boo
     _put("disc_number", track.get("disc_number"))
     _put("isrc", track.get("isrc"))
 
-    # Composer/writer — MB work-rels backfill is stored as a JSON array.
     writer = track.get("writer")
     if writer:
         try:
@@ -176,7 +165,6 @@ def _db_tag_candidates(track: dict[str, Any], perfect: bool, include_lyrics: boo
         except Exception:
             _put("composer", writer)
 
-    # Genres — comma/backslash-joined in the DB; pass through joined.
     genres = track.get("genres")
     if genres:
         raw = str(genres)
@@ -206,10 +194,7 @@ def _db_tag_candidates(track: dict[str, Any], perfect: bool, include_lyrics: boo
 # ---------------------------------------------------------------------------
 
 def _resolve_mb_release(tracks: list[dict[str, Any]]) -> tuple[str, dict[tuple[int, int], dict[str, Any]], int]:
-    """Resolve the album's MB release and index its (disc, position) slots.
-
-    Returns ``(release_mbid, {(disc, pos): {recording_mbid, title}}, track_count)``.
-    """
+    """Resolve the album's MB release and index its (disc, position) slots."""
     release_mbid = ""
     for t in tracks:
         release_mbid = str(
@@ -221,10 +206,10 @@ def _resolve_mb_release(tracks: list[dict[str, Any]]) -> tuple[str, dict[tuple[i
         return "", {}, 0
 
     try:
-        from api_clients.musicbrainz_http import MusicBrainzHttpClient
-        data = MusicBrainzHttpClient(enabled=True).get_release(release_mbid, inc="recordings") or {}
+        # ✅ Use shared MusicBrainz client singleton
+        data = get_shared_mb_client().get_release(release_mbid, inc="recordings") or {}
     except Exception as exc:
-        logger.debug("[ALBUM_TAG_SYNC] MB release fetch failed for %s: %s", release_mbid, exc)
+        logger.debug("MB release fetch failed", release_mbid=release_mbid, error=str(exc))
         return release_mbid, {}, 0
 
     index: dict[tuple[int, int], dict[str, Any]] = {}
@@ -252,9 +237,7 @@ def _resolve_mb_release(tracks: list[dict[str, Any]]) -> tuple[str, dict[tuple[i
     return release_mbid, index, count
 
 
-def _is_perfect_match(tracks: list[dict[str, Any]], mb_index: dict, mb_count: int) -> bool:
-    """Every local track occupies a (disc, position) slot in the MB release
-    and the track counts agree — a 1:1 tracklist match."""
+def _is_perfect_match(tracks: list[dict[str, Any]], mb_index: dict[Any, Any], mb_count: int) -> bool:
     if not mb_index or mb_count <= 0 or not tracks:
         return False
     for t in tracks:
@@ -274,14 +257,12 @@ def _record_corrections(
     file_values: dict[str, str],
     db_candidates: dict[str, str],
 ) -> int:
-    """Record per-track corrections for file values that differ from the
-    scan-resolved DB values (both non-empty) into ``metadata_conflicts``."""
     local: dict[str, str] = {}
     remote: dict[str, str] = {}
     for key, db_val in db_candidates.items():
         file_val = str(file_values.get(key) or "").strip()
         if not file_val:
-            continue  # missing → filled, not a correction
+            continue
         if _norm(file_val) == _norm(db_val):
             continue
         local[key] = file_val
@@ -301,7 +282,7 @@ def _record_corrections(
         )
         return int(result.get("conflicts_recorded") or 0)
     except Exception as exc:
-        logger.debug("[ALBUM_TAG_SYNC] Correction record failed for %s: %s", track.get("id"), exc)
+        logger.debug("Correction record failed", track_id=track.get("id"), error=str(exc))
         return 0
 
 
@@ -310,12 +291,7 @@ def _record_corrections(
 # ---------------------------------------------------------------------------
 
 def sync_album_file_tags(artist: str, album: str) -> dict[str, Any]:
-    """Fill missing file tags + record corrections for one album's tracks.
-
-    Called at the end of the album metadata scan.  Returns a summary dict:
-    ``{artist, album, perfect_match, files_updated, corrections_recorded,
-    tracks, skipped?}``.  Never raises — all lookups/writes are best-effort.
-    """
+    """Fill missing file tags + record corrections for one album's tracks."""
     try:
         from helpers.config_helpers import get_tagging_config
         tagging = get_tagging_config()
@@ -341,7 +317,6 @@ def sync_album_file_tags(artist: str, album: str) -> dict[str, Any]:
         file_values = _read_file_values(file_path)
         db_candidates = _db_tag_candidates(track, perfect, include_lyrics)
 
-        # Fill missing fields only — never overwrite a populated frame.
         fill = {
             k: v for k, v in db_candidates.items()
             if not str(file_values.get(k) or "").strip()
@@ -352,14 +327,14 @@ def sync_album_file_tags(artist: str, album: str) -> dict[str, Any]:
                 if write_tags_to_file(file_path, fill):
                     files_updated += 1
             except Exception as exc:
-                logger.debug("[ALBUM_TAG_SYNC] Tag fill failed for %s: %s", track.get("id"), exc)
+                logger.debug("Tag fill failed", track_id=track.get("id"), error=str(exc))
 
         corrections_recorded += _record_corrections(track, file_values, db_candidates)
 
     if files_updated or corrections_recorded:
         logger.info(
-            "[ALBUM_TAG_SYNC] %s - %s: filled %d file(s), %d correction(s) (perfect=%s)",
-            artist, album, files_updated, corrections_recorded, perfect,
+            "Album file tags synced",
+            artist=artist, album=album, files_updated=files_updated, corrections_recorded=corrections_recorded, perfect_match=perfect,
         )
     return {
         "artist": artist,
@@ -372,7 +347,6 @@ def sync_album_file_tags(artist: str, album: str) -> dict[str, Any]:
 
 
 def _load_fresh_tracks(artist: str, album: str) -> list[dict[str, Any]]:
-    """Re-read the album's tracks from the DB (post-scan values)."""
     try:
         from sqlalchemy import text as _text
         from db.engine import db_session as _db_session
@@ -388,5 +362,5 @@ def _load_fresh_tracks(artist: str, album: str) -> list[dict[str, Any]]:
             ).mappings().all() or []
         return [dict(r) for r in rows]
     except Exception as exc:
-        logger.debug("[ALBUM_TAG_SYNC] Track load failed for %s - %s: %s", artist, album, exc)
+        logger.debug("Track load failed", artist=artist, album=album, error=str(exc))
         return []

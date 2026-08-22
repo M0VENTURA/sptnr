@@ -15,12 +15,13 @@ Architecture:
 from __future__ import annotations
 
 import json
-import logging
 import re
 from collections import Counter, defaultdict
-from typing import Any, Dict, List
+from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -34,19 +35,18 @@ def parse_json_tags(json_str: str | None) -> list[dict[str, Any]]:
     ``musicbrainz_genres``, ``listenbrainz_genres``
     which store JSON arrays of ``{"name": …, "count": …}`` dicts.
 
-    Also tolerates plain-string arrays (``["rock", "metal"]``) — the scan
-    persists genre lists that way, and normalising them here keeps the
-    artist/album/track pages working regardless of the stored shape.
+    Also tolerates plain-string arrays (``["rock", "metal"]``).
     """
     if not json_str:
         return []
     try:
         data = json.loads(json_str)
     except (json.JSONDecodeError, TypeError) as exc:
-        logger.debug("Failed to parse JSON tags: %s", exc)
+        logger.debug("Failed to parse JSON tags", error=str(exc))
         return []
     if not isinstance(data, list):
         return []
+        
     normalized: list[dict[str, Any]] = []
     for item in data:
         if isinstance(item, dict):
@@ -66,12 +66,7 @@ def parse_json_tags(json_str: str | None) -> list[dict[str, Any]]:
 
 
 def parse_delimited_tags(value: Any) -> list[dict[str, Any]]:
-    """Parse a delimited genre string into tag dicts.
-
-    Handles columns like ``essentia_genres`` (semicolon-separated),
-    ``navidrome_genres`` (backslash-separated), and ``manual_genres``
-    (comma-separated) that are stored as plain text.
-    """
+    """Parse a delimited genre string into tag dicts."""
     if not value:
         return []
 
@@ -82,7 +77,6 @@ def parse_delimited_tags(value: Any) -> list[dict[str, Any]]:
         text = str(value).strip()
         if not text:
             return []
-        # Normalise backslashes and semicolons to commas, then split.
         text = text.replace("\\", ",").replace(";", ",")
         items = [x.strip() for x in text.split(",") if x.strip()]
 
@@ -98,11 +92,7 @@ def parse_delimited_tags(value: Any) -> list[dict[str, Any]]:
 
 
 def parse_mood_values(mood_value: Any) -> list[str]:
-    """Normalize a track mood field into a list of mood labels.
-
-    Handles JSON arrays, semicolon-separated, comma-separated, and
-    backslash-separated formats.
-    """
+    """Normalize a track mood field into a list of mood labels."""
     if not mood_value:
         return []
 
@@ -138,15 +128,10 @@ def parse_mood_values(mood_value: Any) -> list[str]:
 # Single-track extraction
 # ---------------------------------------------------------------------------
 
-def get_track_genre_sources(track_dict: dict) -> dict[str, list[dict[str, Any]]]:
-    """Extract all genre/tag sources from a single track dictionary.
-
-    Returns a dict mapping source column name to a list of
-    ``{"name": …, "count": …}`` dicts, ready for template rendering.
-    """
+def get_track_genre_sources(track_dict: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """Extract all genre/tag sources from a single track dictionary."""
     sources: dict[str, list[dict[str, Any]]] = {}
 
-    # JSON-array sources
     for key in ("lastfm_tags", "listenbrainz_genres", "discogs_genres",
                 "musicbrainz_genres", "spotify_genres"):
         if track_dict.get(key):
@@ -154,14 +139,12 @@ def get_track_genre_sources(track_dict: dict) -> dict[str, list[dict[str, Any]]]
             if parsed:
                 sources[key] = parsed
 
-    # Delimited plain-text sources
     for key in ("essentia_genres", "navidrome_genres", "manual_genres"):
         if track_dict.get(key):
             parsed = parse_delimited_tags(track_dict[key])
             if parsed:
                 sources[key] = parsed
 
-    # Mood column (multi-format)
     if track_dict.get("mood"):
         moods = parse_mood_values(track_dict["mood"])
         if moods:
@@ -175,12 +158,9 @@ def get_track_genre_sources(track_dict: dict) -> dict[str, list[dict[str, Any]]]
 # ---------------------------------------------------------------------------
 
 def aggregate_tags_with_counts(
-    track_list: list[dict],
+    track_list: list[dict[str, Any]],
 ) -> dict[str, Counter[str]]:
-    """Aggregate tags from multiple tracks, counting frequency per source.
-
-    Returns a dict like ``{"lastfm_tags": Counter({"rock": 5, …}), …}``.
-    """
+    """Aggregate tags from multiple tracks, counting frequency per source."""
     aggregated: dict[str, Counter[str]] = defaultdict(Counter)
 
     for track in track_list:
@@ -200,20 +180,16 @@ def aggregate_tags_with_counts(
 
 
 def get_album_genre_sources(
-    track_list: list[dict],
+    track_list: list[dict[str, Any]],
     limit: int = 25,
 ) -> dict[str, list[dict[str, Any]]]:
-    """Build ``genre_sources`` for an album from its tracks.
-
-    Returns a dict of ``{source_name: [{name, count}, …]}`` sorted by
-    count descending, limited to the top *limit* per source.
-    """
+    """Build ``genre_sources`` for an album from its tracks."""
     aggregated = aggregate_tags_with_counts(track_list)
     return _format_aggregated(aggregated, limit)
 
 
 def get_artist_genre_sources(
-    track_list: list[dict],
+    track_list: list[dict[str, Any]],
     limit: int = 30,
 ) -> dict[str, list[dict[str, Any]]]:
     """Build ``genre_sources`` for an artist from all their tracks."""
