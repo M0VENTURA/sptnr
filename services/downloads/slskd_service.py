@@ -51,6 +51,26 @@ def _is_transient_error(exc: BaseException) -> bool:
     return False
 
 
+def _is_connection_error(exc: BaseException) -> bool:
+    """Return True when ``exc`` is a CONNECTIVITY failure (host unreachable /
+    refused / timed out) rather than a logic or payload error.
+
+    Used to decide whether to dump a full traceback: connect failures happen
+    every queue cycle while slskd is down, so they log at error with just the
+    message; everything else keeps exc_info for debuggability.
+    """
+    if type(exc).__name__ in ("ConnectError", "ConnectTimeout", "ConnectionRefusedError", "OSError"):
+        return True
+    if any(base.__name__ in ("ConnectError", "ConnectTimeout") for base in type(exc).__mro__):
+        return True
+    # httpx.ConnectError wraps httpcore.ConnectError; the message includes
+    # the platform errno text.  Match the errno number too.
+    msg = str(exc)
+    if "No route to host" in msg or "Connection refused" in msg or "Name or service not known" in msg:
+        return True
+    return False
+
+
 @dataclass
 class SearchFile:
     filename: str
@@ -454,7 +474,17 @@ class SlskdService:
             raw = self.http.get_json("transfers/downloads", timeout=timeout, default=[])
             return self.parse_transfers_response(raw)
         except Exception as exc:
-            logger.error("slskd get active downloads failed", error=str(exc), exc_info=True)
+            # Connectivity failures (host unreachable / timeout) are expected
+            # when slskd is down or restarting — the queue poll hits this
+            # every cycle, so don't dump a full traceback for them.  Only
+            # genuinely unexpected errors (malformed payload, logic bugs)
+            # get exc_info.
+            is_conn = _is_connection_error(exc)
+            logger.error(
+                "slskd get active downloads failed",
+                error=str(exc),
+                exc_info=False if is_conn else True,
+            )
             return []
 
     def get_completed_transfers(self, timeout: Optional[int] = None) -> list[dict]:
