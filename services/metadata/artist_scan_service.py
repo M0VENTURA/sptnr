@@ -2,7 +2,7 @@
 
 Responsible for external release comparison and scan orchestration.
 DB persistence is delegated to repositories; network calls go through
-``api_clients.musicbrainz_http.MusicBrainzHttpClient``.
+the shared MusicBrainz client singleton.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from db.repositories.metadata import (
 )
 from helpers.normalization_service import normalize_title_for_lookup
 from helpers.musicbrainz_helpers import normalize_single_mbid
+from services.enrichment.musicbrainz_service import get_shared_mb_client
 
 logger = structlog.get_logger(__name__)
 
@@ -38,10 +39,8 @@ def _normalize_release_title(title: str) -> str:
 
 
 def _fetch_musicbrainz_release_groups(artist_mbid: str, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
-    """Browse release-groups for an artist via the MusicBrainz HTTP client."""
-    from api_clients.musicbrainz_http import MusicBrainzHttpClient
-
-    client = MusicBrainzHttpClient()
+    """Browse release-groups for an artist via the shared MusicBrainz client."""
+    client = get_shared_mb_client()
     page = client.browse_artist_release_groups(
         artist_mbid, limit=limit, offset=offset,
     )
@@ -326,7 +325,7 @@ def get_missing_releases(artist: str, background: bool = False) -> tuple[dict[st
         _persist_missing_releases(artist, missing_items)
     except Exception as exc:
         logger.error(
-            "Could not persist missing releases (they will reset on page reload)",
+            "Could not persist missing releases",
             artist=artist, error=str(exc), exc_info=True,
         )
 
@@ -349,7 +348,6 @@ def _run_missing_releases_scan() -> None:
         clear_stop_request(_PROGRESS_PATH)
 
         try:
-            artists = fetch_all_distinct_artists(None)
             with db_session() as session:
                 rows = session.execute(
                     text("""
@@ -361,10 +359,12 @@ def _run_missing_releases_scan() -> None:
                     """)
                 ).fetchall()
             if rows:
-                artists = [str(r[0]) for r in rows]
-                artists = [a for a in artists if a]
+                artists = [str(r[0]) for r in rows if r[0]]
+            else:
+                artists = []
         except Exception as exc:
             logger.debug("Artist list fetch failed", error=str(exc))
+            artists = []
 
         total_artists = len(artists)
         logger.info("Starting missing releases scan", total_artists=total_artists)
@@ -372,7 +372,7 @@ def _run_missing_releases_scan() -> None:
         try:
             cleaned = _cleanup_imported_releases()
             if cleaned:
-                logger.info("Cleaned up releases imported since last scan", cleaned_count=cleaned)
+                logger.info("Cleaned up imported releases", cleaned_count=cleaned)
         except Exception as exc:
             logger.debug("Cleanup failed", error=str(exc))
 
@@ -470,8 +470,8 @@ def import_release(artist: str, release_id: str, title: str) -> tuple[dict[str, 
     media: list[dict[str, Any]] = []
 
     if is_mb_uuid:
-        from api_clients.musicbrainz_http import MusicBrainzHttpClient
-        client = MusicBrainzHttpClient()
+        # ✅ Use shared MusicBrainz client singleton
+        client = get_shared_mb_client()
         data, _resolved = _resolve_mb_release(client, release_id)
         if not data:
             return {"error": "Release not found on MusicBrainz"}, 404
@@ -592,7 +592,7 @@ def scan_all_missing_releases() -> tuple[dict[str, Any], int]:
 def add_artist(artist: str) -> tuple[dict[str, Any], int]:
     """Add an artist to the database by creating a placeholder record."""
     if not artist:
-        return {"success": False, "error": "artist required"}, 400
+        return {"success": False, "error": artist required}, 400
     try:
         with db_session() as session:
             session.execute(
