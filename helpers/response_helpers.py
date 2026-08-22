@@ -1,7 +1,7 @@
 """Shared response helpers for internal service-to-route communication.
 
-These helpers return ``(dict, int)`` tuples — *not* Flask ``Response`` objects.
-For Flask-specific ``jsonify`` wrappers see ``services.web.api_response``.
+These helpers return ``(dict, int)`` tuples — *not* Quart/Flask ``Response`` objects.
+For framework-specific ``jsonify`` wrappers see ``services.web.api_response``.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ def _fail(message: str, status: int = 400, **extra: Any) -> tuple[dict[str, Any]
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
-    """Convert *value* to int, returning *default* on failure."""
+    """Convert a value to an integer, returning the default on failure."""
     try:
         return int(value) if value is not None else default
     except (TypeError, ValueError):
