@@ -7,16 +7,17 @@ per-track API calls, which avoids rate limits and inconsistent data.
 
 from __future__ import annotations
 
-import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
+import structlog
 from sqlalchemy import text
+
 from db.engine import db_session
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
-def get_cached_track_popularity(artist: str, title: str) -> Optional[Dict[str, Any]]:
+def get_cached_track_popularity(artist: str, title: str) -> dict[str, Any] | None:
     """Return a single cached popularity row, or None."""
     try:
         with db_session() as session:
@@ -32,14 +33,14 @@ def get_cached_track_popularity(artist: str, title: str) -> Optional[Dict[str, A
             row = result.fetchone()
             return dict(row._mapping) if row else None
     except Exception as exc:
-        logger.error("[track_popularity_cache] get failed for %s / %s: %s", artist, title, exc)
+        logger.error("Failed to get cached track popularity", artist=artist, title=title, error=str(exc))
         return None
 
 
 def get_cached_popularity_for_titles(
     artist: str,
-    titles: List[str],
-) -> Dict[str, Dict[str, Any]]:
+    titles: list[str],
+) -> dict[str, dict[str, Any]]:
     """Return cached popularity for all given titles of one artist.
 
     Rows are returned for the whole artist (not just the exact requested
@@ -64,21 +65,19 @@ def get_cached_popularity_for_titles(
                 {"artist": artist},
             )
             rows = result.fetchall() or []
-            out: Dict[str, Dict[str, Any]] = {}
+            out: dict[str, dict[str, Any]] = {}
             for row in rows:
                 # SQLAlchemy 2.0 Row objects do NOT support string indexing
-                # (``row["title"]`` raises ``TypeError: tuple indices must be
-                # integers or slices, not str``) — read through ``_mapping``.
                 title = row._mapping["title"]
                 if title:
                     out[str(title).lower()] = dict(row._mapping)
             return out
     except Exception as exc:
-        logger.error("[track_popularity_cache] bulk get failed for %s: %s", artist, exc)
+        logger.error("Failed to bulk get cached popularity", artist=artist, error=str(exc))
         return {}
 
 
-def upsert_track_popularity_bulk(rows: List[Dict[str, Any]]) -> int:
+def upsert_track_popularity_bulk(rows: list[dict[str, Any]]) -> int:
     """Upsert popularity rows for one artist.
 
     Each row: ``artist``, ``title``, optional ``lastfm_listeners``,
@@ -120,5 +119,5 @@ def upsert_track_popularity_bulk(rows: List[Dict[str, Any]]) -> int:
                 )
             return len(rows)
     except Exception as exc:
-        logger.error("[track_popularity_cache] bulk upsert failed for %s: %s", rows[0].get("artist"), exc)
+        logger.error("Failed to bulk upsert track popularity", artist=rows[0].get("artist"), error=str(exc))
         return 0
