@@ -6,21 +6,17 @@ payloads. Intentionally separate from API, DB, and import concerns.
 Key Functions:
     - extract_track_metadata(): Normalise a Navidrome track dict into
       structured metadata ready for DB persistence.
-
-Separation of Concerns:
-    - api_clients.navidrome: HTTP layer only.
-    - payload_builder: DB payload construction using extracted data.
-    - navidrome_import: Orchestration of artist/album/track import.
-    - This module: Pure metadata extraction and normalisation.
 """
 
 from __future__ import annotations
 
 import json
-import logging
+import re
 from typing import Any, Callable
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 WRITER_ROLES = {
     "composer",
@@ -159,14 +155,13 @@ def _extract_writers(track: dict[str, Any], get_song: Callable[[str], dict[str, 
             elif artist_info:
                 add(artist_info)
 
-    # Fallback to getSong only when album listing did not expose writers.
     if not writers and get_song and track.get("id"):
         try:
             extended = get_song(str(track.get("id"))) or {}
             if extended and extended is not track:
                 writers.extend(_extract_writers(extended, get_song=None))
         except Exception as exc:
-            logger.debug("[WRITER] getSong fallback failed for %s: %s", track.get("id"), exc)
+            logger.debug("getSong fallback failed", track_id=track.get("id"), error=str(exc))
 
     return writers
 
@@ -176,15 +171,7 @@ def extract_track_metadata(
     *,
     get_song: Callable[[str], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Extract DB-ready metadata from a raw Navidrome track dictionary.
-
-    Args:
-        track: Raw track object returned by Navidrome.
-        get_song: Optional callback for fetching extended song metadata.
-
-    Returns:
-        Dict of normalised metadata fields used by payload_builder.
-    """
+    """Extract DB-ready metadata from a raw Navidrome track dictionary."""
     raw_track = track.get("trackNumber") if "trackNumber" in track else track.get("track")
     raw_disc = track.get("discNumber") if "discNumber" in track else track.get("disc")
     tags = track.get("tags") if isinstance(track.get("tags"), dict) else {}
