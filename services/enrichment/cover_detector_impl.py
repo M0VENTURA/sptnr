@@ -16,7 +16,8 @@ from typing import Any
 
 import structlog
 
-from api_clients.musicbrainz_http import MusicBrainzHttpClient, get_shared_mb_client
+from api_clients.musicbrainz_http import MusicBrainzHttpClient
+from services.enrichment.musicbrainz_service import get_shared_mb_client
 from db.repositories.cover_detection_repository import (
     apply_cover_metadata_batch,
     get_track_genres,
