@@ -9,9 +9,12 @@ Routes should remain thin:
 
 from __future__ import annotations
 
+import logging
 from urllib.parse import unquote
 
 from quart import flash, redirect, request, url_for
+
+logger = logging.getLogger(__name__)
 
 from routes.scan_routes import scans_bp
 from routes.scan_routes._common import (
@@ -51,12 +54,46 @@ def _start_targeted_popularity_scan(
     (mirrors the dashboard's /api/popularity/run duplicate protection).
     """
     with scan_lock:
-        if is_runtime_running("popularity"):
+        # In-process guard first (cheap).  Then the cross-process guard: a
+        # scan running in ANOTHER hypercorn worker is invisible to the
+        # per-process registry, but it has marked the shared DB scan state as
+        # running.  Without this check two scans can overlap and clobber each
+        # other's progress rows — which shows as a scan that "started" with
+        # no log output (the other worker owns the popularity_scan row).
+        from services.scanning.pipelines.popularity_pipeline import is_popularity_scan_active
+
+        if is_runtime_running("popularity") or is_popularity_scan_active():
             return False
 
         def _worker():
             try:
                 runner(*args, **kwargs)
+            except Exception as exc:
+                # A daemon-thread exception would otherwise be swallowed by
+                # ``run_async`` (no handler) — the route returns "started",
+                # the worker dies silently, and the Unified Scan log shows
+                # nothing at all for the requested artist.  Surface it so the
+                # failure is diagnosable (mirrors the dashboard API worker).
+                import traceback
+
+                from helpers.logging_config import log_unified
+                log_unified(f"[POPULARITY] Targeted worker failed: {exc}")
+                logger.error(
+                    "[POPULARITY] Targeted worker failed: %s\n%s",
+                    exc,
+                    traceback.format_exc(),
+                )
+                try:
+                    from services.scanning.scan_history_service import record_scan
+                    record_scan(
+                        str(kwargs.get("scan_type") or "popularity"),
+                        "failed",
+                        message=f"targeted scan failed: {exc}",
+                        artist=str(args[0] if args else kwargs.get("artist") or ""),
+                        album="",
+                    )
+                except Exception:
+                    pass
             finally:
                 clear_runtime("popularity")
 

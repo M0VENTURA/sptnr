@@ -85,18 +85,39 @@ class UnifiedLogFilter(logging.Filter):
 
 
 def log_unified(message: str, **kwargs: Any) -> None:
-    """Write a progress message to the unified scan log."""
-    structlog.get_logger("popularr.unified").info(message, **kwargs)
+    """Write a progress message to the unified scan log.
+
+    Uses the stdlib logger directly so the message ALWAYS lands in
+    ``unified_scan.log`` — structlog's stdlib bridge is only configured when
+    ``STRUCTLOG=1``, and relying on it unconditionally silently dropped every
+    unified line to stdout when the env var was unset (the default).  In
+    structlog mode the ``ProcessorFormatter`` on the ``unified_file`` handler
+    re-renders the record via ``foreign_pre_chain``, so output stays JSON; in
+    plain mode the stdlib formatter prints ``message`` verbatim.
+
+    ``kwargs`` are appended as ``key=value`` pairs so callers that pass extra
+    context keep it visible in both modes (a stdlib ``extra=`` cannot be used
+    safely here — arbitrary keys collide with reserved LogRecord attributes).
+    """
+    if kwargs:
+        rendered = message + " " + " ".join(f"{k}={v!r}" for k, v in kwargs.items())
+    else:
+        rendered = message
+    logging.getLogger("popularr.unified").info(rendered)
 
 
 def log_queue(message: str, **kwargs: Any) -> None:
     """Write a download-queue event to ``queue.log``."""
-    structlog.get_logger("popularr.queue").info(message, **kwargs)
+    if kwargs:
+        message = message + " " + " ".join(f"{k}={v!r}" for k, v in kwargs.items())
+    logging.getLogger("popularr.queue").info(message)
 
 
 def log_search(message: str, **kwargs: Any) -> None:
     """Write a Soulseek search event to ``search.log``."""
-    structlog.get_logger("popularr.search").info(message, **kwargs)
+    if kwargs:
+        message = message + " " + " ".join(f"{k}={v!r}" for k, v in kwargs.items())
+    logging.getLogger("popularr.search").info(message)
 
 
 class SafePrefixFormatter(logging.Formatter):
