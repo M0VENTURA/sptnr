@@ -7,47 +7,34 @@ augmenting the Wikipedia scrape with direct MusicBrainz data.
 
 A global discovery pass (no artist constraint) also runs first so brand-new
 MusicBrainz releases from artists NOT in the collection surface too.
-
-Config (``features.*`` in config.yaml, editable on the config page):
-    daily_musicbrainz_release_scan_enabled (default True)
-    daily_musicbrainz_release_lookback_days (default 42)
-    daily_musicbrainz_release_lookahead_days (default 120)
-    daily_musicbrainz_release_max_artists (default 500)
-    daily_musicbrainz_release_per_artist_limit (default 100)
-    daily_musicbrainz_release_global_limit (default 50; 0 disables global discovery)
 """
 
 from __future__ import annotations
 
-import logging
 import threading
 import unicodedata
 from datetime import datetime, timedelta
 from typing import Any
 
+import structlog
 from sqlalchemy import text
 
 from api_clients.musicbrainz_http import MusicBrainzHttpClient, escape_lucene_special_chars
 from db.engine import db_session
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 SOURCE_NAME = "MusicBrainz Daily Collection"
 
 _DISQUALIFYING_SECONDARY_TYPES = ("live", "remix", "compilation")
 
 _mb_client: MusicBrainzHttpClient | None = None
+_client_lock = threading.Lock()
 _refresh_lock = threading.Lock()
 _refresh_running = False
 
-# Circuit breaker: abort the whole refresh after this many consecutive
-# per-artist failures (rate limits / network errors usually repeat).  Kept
-# generous — MusicBrainz search frequently returns transient 503s, and a low
-# threshold meant one flaky minute aborted the entire weekly run, surfacing
-# zero "MusicBrainz Daily Collection" rows.
 _MAX_CONSECUTIVE_FAILURES = 20
 
-# Live progress snapshot shared with the /scrape/status endpoint.
 _status_lock = threading.Lock()
 _status: dict[str, Any] = {
     "status": "idle",
@@ -78,7 +65,9 @@ def get_refresh_status() -> dict[str, Any]:
 def _get_mb_client() -> MusicBrainzHttpClient:
     global _mb_client
     if _mb_client is None:
-        _mb_client = MusicBrainzHttpClient(enabled=True)
+        with _client_lock:
+            if _mb_client is None:
+                _mb_client = MusicBrainzHttpClient(enabled=True)
     return _mb_client
 
 
@@ -101,16 +90,7 @@ def _parse_release_date(raw: Any) -> str | None:
 
 
 def _normalize_release_date(raw: Any) -> str:
-    """Expand a partial MB release date to a comparable ISO date string.
-
-    MusicBrainz stores partial dates ("2026", "2026-07").  Storing them as-is
-    breaks the upcoming-releases page: its window filter compares
-    ``release_date`` with ``BETWEEN :win_start AND :win_end`` as strings, so a
-    year-only row ("2026") silently drops out of the feed even though it is
-    within the scan window.  Expand to the earliest representable date
-    (matching the legacy scraper): "2026" -> "2026-01-01", "2026-07" ->
-    "2026-07-01".  Full dates pass through untouched.
-    """
+    """Expand a partial MB release date to a comparable ISO date string."""
     raw = str(raw or "").strip()
     if len(raw) == 4 and raw[:4].isdigit():
         return f"{raw}-01-01"
@@ -148,7 +128,7 @@ def _collection_artists(limit: int) -> list[str]:
             )
             return [str(r[0]).strip() for r in result.fetchall() or [] if r[0]]
     except Exception as exc:
-        logger.error("[UPCOMING_MB] Collection artist query failed: %s", exc)
+        logger.error("Collection artist query failed", error=str(exc))
         return []
 
 
@@ -156,17 +136,11 @@ def _fetch_artist_release_groups(
     client: MusicBrainzHttpClient,
     artist: str,
     limit: int,
-    min_date,
-    max_date,
+    min_date: Any,
+    max_date: Any,
 ) -> list[dict[str, Any]]:
     """Fetch one artist's release-groups inside the date window."""
     escaped = escape_lucene_special_chars(artist)
-    # The date range is part of the Lucene query — keep its brackets/colons
-    # unescaped (escape_lucene_special_chars would mangle them).
-    # The QUERY range is deliberately wider than the requested window: MB
-    # indexes partial first-release dates ("2026", "2026-10") as ranges, and
-    # a day-precision query bound can silently exclude them.  The exact
-    # window is re-applied client-side below (partial dates included).
     query_margin = timedelta(days=90)
     query_range = (
         f"[{(min_date - query_margin).isoformat()} TO {(max_date + query_margin).isoformat()}]"
@@ -187,7 +161,6 @@ def _fetch_artist_release_groups(
         secondary = [str(s).lower() for s in (rg.get("secondary-types") or []) if s]
         if any(t in secondary for t in _DISQUALIFYING_SECONDARY_TYPES):
             continue
-        # Artist-credit sanity check when present (name search can overmatch).
         credits = rg.get("artist-credit") or []
         if credits:
             names = []
@@ -214,28 +187,10 @@ def _fetch_artist_release_groups(
 def _fetch_global_upcoming_release_groups(
     client: MusicBrainzHttpClient,
     limit: int,
-    min_date,
-    max_date,
+    min_date: Any,
+    max_date: Any,
 ) -> list[dict[str, Any]]:
-    """Fetch upcoming/recent release-groups from ANY artist (discovery).
-
-    Unlike the per-artist scan, this query carries NO ``artist:`` constraint
-    so it surfaces releases from artists NOT in the local catalogue — the
-    "new MusicBrainz releases" the user expects alongside Wikipedia matches.
-    The same date-window + type filters apply; results are capped by
-    ``daily_musicbrainz_release_global_limit`` (config).
-
-    CRITICAL: a single OR'd query ``(primarytype:album OR primarytype:ep OR
-    primarytype:single)`` is NOT used here. MusicBrainz ranks OR'd
-    primary-type terms by relevance and empirically returns ONLY EPs/singles
-    on the first pages, burying every album — the exact "isn't finding new
-    albums" symptom.  Albums are therefore queried FIRST with their own
-    ``primarytype:album`` term (full limit), then EPs/singles are topped up
-    with a separate query only if the album result came up short.
-    """
-    # Widen the query window so partial first-release dates (year / year-month)
-    # indexed as ranges are not silently excluded; exact window re-applied
-    # below via ``_within_window``.
+    """Fetch upcoming/recent release-groups from ANY artist (discovery)."""
     query_margin = timedelta(days=90)
     query_range = (
         f"[{(min_date - query_margin).isoformat()} TO {(max_date + query_margin).isoformat()}]"
@@ -246,7 +201,6 @@ def _fetch_global_upcoming_release_groups(
         return client.search_release_groups(query, limit=max(1, min(fetch_limit, 100)))
 
     out: list[dict[str, Any]] = []
-    # Pass 1 — albums first (the whole point of the discovery pass).
     for rg in _fetch_type("album", limit) or []:
         if not isinstance(rg, dict):
             continue
@@ -264,10 +218,6 @@ def _fetch_global_upcoming_release_groups(
             "artist": _release_group_artist(rg),
         })
 
-    # Pass 2 — EPs/singles only when albums didn't fill the limit.  The same
-    # relevance-ranking quirk that buries albums in the OR'd query would also
-    # hide singles under an EP-heavy top page, so each type is queried with
-    # its own term too.
     remaining = max(1, min(limit, 100)) - len(out)
     if remaining > 0:
         for primary_type in ("ep", "single"):
@@ -291,13 +241,11 @@ def _fetch_global_upcoming_release_groups(
                 })
                 remaining -= 1
 
-    # Newest first so the feed leads with what is actually coming out.
     out.sort(key=lambda r: r.get("first_release_date") or "", reverse=True)
     return out[: max(1, min(limit, 100))]
 
 
 def _release_group_artist(rg: dict[str, Any]) -> str:
-    """Artist credit string for a release-group ('' when absent)."""
     credits = rg.get("artist-credit") or []
     parts = []
     for credit in credits:
@@ -313,21 +261,12 @@ def _release_group_artist(rg: dict[str, Any]) -> str:
     return "".join(parts).strip()
 
 
-def _within_window(raw_date: str, min_date, max_date) -> bool:
-    """True when a possibly-partial release date falls inside the window.
-
-    Handles YYYY-MM-DD / YYYY-MM / YYYY (the forms ``_parse_release_date``
-    accepts).  A year-only date is accepted when its year overlaps the
-    window's year span; a year-month date when the month overlaps; a full
-    date is compared exactly.  Releases with no usable date component are
-    rejected (the caller keeps TBA rows out of the daily scan).
-    """
+def _within_window(raw_date: str, min_date: Any, max_date: Any) -> bool:
     try:
         if len(raw_date) >= 10:
             return min_date <= datetime.strptime(raw_date[:10], "%Y-%m-%d").date() <= max_date
         if len(raw_date) == 7:
             ym = datetime.strptime(raw_date, "%Y-%m").date()
-            # Overlap test: the release month intersects the window month span.
             return ym.replace(day=1) <= max_date.replace(day=1) and ym.replace(day=28) >= min_date.replace(day=1)
         if len(raw_date) == 4:
             year = int(raw_date)
@@ -338,13 +277,6 @@ def _within_window(raw_date: str, min_date, max_date) -> bool:
 
 
 def _persist_artist_releases(artist: str, releases: list[dict[str, Any]]) -> tuple[int, int]:
-    """Upsert one artist's releases; returns (inserted, updated).
-
-    Precedence rule (per-album identity): MusicBrainz metadata is
-    authoritative, so an MB row overwrites an existing Wikipedia row — but it
-    keeps the earlier valid release date.  A Wikipedia row never clobbers an
-    existing MB row (handled in the Wikipedia scraper's upsert).
-    """
     inserted = 0
     updated = 0
     if not releases:
@@ -358,9 +290,7 @@ def _persist_artist_releases(artist: str, releases: list[dict[str, Any]]) -> tup
                     continue
                 rel_date = _normalize_release_date(rel.get("first_release_date") or "")
                 release_year = int(rel_date[:4]) if len(rel_date) >= 4 and rel_date[:4].isdigit() else None
-                # Case/punctuation-insensitive dedupe: a Wikipedia-scraped row
-                # with different casing ("Tanzneid" vs "TANZNEID") must merge
-                # into this row instead of creating a duplicate.
+                
                 dup = session.execute(
                     text("""
                         SELECT id FROM upcoming_releases
@@ -376,7 +306,6 @@ def _persist_artist_releases(artist: str, releases: list[dict[str, Any]]) -> tup
                 _mbid = rel.get("id") or None
                 _ptype = str(rel.get("primary_type") or "").strip()
                 if dup:
-                    # Same precedence as the ON CONFLICT branch below.
                     session.execute(
                         text("""
                             UPDATE upcoming_releases SET
@@ -487,7 +416,7 @@ def _persist_artist_releases(artist: str, releases: list[dict[str, Any]]) -> tup
                     updated += 1
         return inserted, updated
     except Exception as exc:
-        logger.debug("[UPCOMING_MB] Persist failed for %s: %s", artist, exc)
+        logger.debug("Persist failed for artist", artist=artist, error=str(exc))
         return 0, 0
 
 
@@ -496,7 +425,6 @@ def _persist_artist_releases(artist: str, releases: list[dict[str, Any]]) -> tup
 # ---------------------------------------------------------------------------
 
 def _artist_in_collection(artist: str) -> bool:
-    """True when the artist exists anywhere in the local library."""
     if not artist:
         return False
     try:
@@ -511,18 +439,11 @@ def _artist_in_collection(artist: str) -> bool:
             )
             return result.fetchone() is not None
     except Exception as exc:
-        logger.debug("[UPCOMING_MB] Collection check failed for %s: %s", artist, exc)
+        logger.debug("Collection check failed", artist=artist, error=str(exc))
         return False
 
 
 def _persist_global_releases(releases: list[dict[str, Any]]) -> tuple[int, int]:
-    """Upsert globally-discovered release-groups (ANY artist).
-
-    Unlike the per-artist path (which hard-codes ``artist_in_collection =
-    TRUE``), the global path resolves each release's artist credit and sets
-    ``artist_in_collection`` accordingly so the UI can distinguish genuinely
-    new artists from collection artists.  Returns ``(inserted, updated)``.
-    """
     inserted = 0
     updated = 0
     if not releases:
@@ -541,7 +462,6 @@ def _persist_global_releases(releases: list[dict[str, Any]]) -> tuple[int, int]:
                 _ptype = str(rel.get("primary_type") or "").strip()
                 in_collection = _artist_in_collection(_artist)
 
-                # Case/punctuation-insensitive dedupe (same as per-artist path).
                 dup = session.execute(
                     text("""
                         SELECT id FROM upcoming_releases
@@ -667,8 +587,9 @@ def _persist_global_releases(releases: list[dict[str, Any]]) -> tuple[int, int]:
                     updated += 1
         return inserted, updated
     except Exception as exc:
-        logger.debug("[UPCOMING_MB] Global persist failed: %s", exc)
+        logger.debug("Global persist failed", error=str(exc))
         return 0, 0
+
 
 def fetch_musicbrainz_upcoming_releases(
     artists_limit: int | None = None,
@@ -676,16 +597,11 @@ def fetch_musicbrainz_upcoming_releases(
     lookback_days: int | None = None,
     lookahead_days: int | None = None,
 ) -> dict[str, Any]:
-    """Fetch upcoming/recent release-groups from MusicBrainz for the collection.
-
-    Returns stats: ``{"artists_scanned", "inserted", "updated"}`` (or
-    ``{"skipped": True, "reason": ...}`` when disabled / nothing to scan).
-    """
+    """Fetch upcoming/recent release-groups from MusicBrainz for the collection."""
     try:
         from helpers.config_helpers import get_feature
         enabled = get_feature("upcoming_releases_scan_enabled", None)
         if enabled is None:
-            # Legacy alias — the old per-scanner toggle predates the unified flag.
             enabled = get_feature("daily_musicbrainz_release_scan_enabled", True)
         enabled = bool(enabled)
     except Exception:
@@ -698,9 +614,6 @@ def fetch_musicbrainz_upcoming_releases(
     if lookback_days is None:
         lookback_days = _feature_int("daily_musicbrainz_release_lookback_days", 42)
     if lookahead_days is None:
-        # ~4 months: albums are usually announced well ahead of release
-        # (singles only days/weeks out), so a short lookahead starves the
-        # upcoming list of albums.  Tunable on the config page.
         lookahead_days = _feature_int("daily_musicbrainz_release_lookahead_days", 120)
 
     today = datetime.now().date()
@@ -710,19 +623,11 @@ def fetch_musicbrainz_upcoming_releases(
     client = _get_mb_client()
     stats: dict[str, Any] = {"artists_scanned": 0, "inserted": 0, "updated": 0, "global_inserted": 0, "global_updated": 0}
 
-    # ── 1. Global discovery (releases from ANY artist) ───────────────────
-    # The collection-artist scan below only surfaces releases for artists
-    # already in the library.  Run a global upcoming-window query first so
-    # brand-new MusicBrainz releases (from artists NOT in the catalogue) also
-    # land in ``upcoming_releases`` — this is the "find new releases" the
-    # user expects alongside Wikipedia + catalogue-artist matching.
     try:
         global_limit = _feature_int("daily_musicbrainz_release_global_limit", 50)
         if global_limit > 0:
             global_groups = _fetch_global_upcoming_release_groups(client, global_limit, min_date, max_date)
             if global_groups:
-                # Attach the artist credit so persistence can flag
-                # artist_in_collection correctly.
                 for rg in global_groups:
                     rg["artist"] = _release_group_artist(rg)
                 g_ins, g_upd = _persist_global_releases(global_groups)
@@ -731,11 +636,11 @@ def fetch_musicbrainz_upcoming_releases(
                 stats["inserted"] += g_ins
                 stats["updated"] += g_upd
                 logger.info(
-                    "[UPCOMING_MB] Global discovery: %d inserted, %d updated (of %d candidates)",
-                    g_ins, g_upd, len(global_groups),
+                    "Global discovery complete",
+                    inserted=g_ins, updated=g_upd, candidates=len(global_groups),
                 )
     except Exception as exc:
-        logger.warning("[UPCOMING_MB] Global discovery failed: %s", exc)
+        logger.warning("Global discovery failed", error=str(exc))
 
     artists = _collection_artists(artists_limit)
     if not artists:
@@ -758,18 +663,14 @@ def fetch_musicbrainz_upcoming_releases(
             except Exception as exc:
                 consecutive_failures += 1
                 failed_artists.append(artist)
-                # The FIRST failure of a run surfaces at warning level so a
-                # silent zero-insert run is diagnosable without debug logging;
-                # repeats stay at debug (rate-limit errors usually repeat for
-                # every artist).
                 if len(failed_artists) == 1:
-                    logger.warning("[UPCOMING_MB] Artist %s failed: %s", artist, exc)
+                    logger.warning("Artist fetch failed", artist=artist, error=str(exc))
                 else:
-                    logger.debug("[UPCOMING_MB] Artist %s failed: %s", artist, exc)
+                    logger.debug("Artist fetch failed", artist=artist, error=str(exc))
                 if consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
                     logger.warning(
-                        "[UPCOMING_MB] Aborting refresh after %s consecutive failures (last artist: %s)",
-                        consecutive_failures, artist,
+                        "Aborting refresh due to consecutive failures",
+                        consecutive_failures=consecutive_failures, last_artist=artist,
                     )
                     stats["aborted"] = True
                     stats["abort_reason"] = f"{consecutive_failures} consecutive failures"
@@ -786,21 +687,16 @@ def fetch_musicbrainz_upcoming_releases(
     if failed_artists:
         stats["artists_failed"] = len(failed_artists)
         logger.warning(
-            "[UPCOMING_MB] Refresh complete with %d/%d artists failed (inserted=%d, updated=%d)",
-            len(failed_artists), total_artists, stats["inserted"], stats["updated"],
+            "Refresh completed with failures",
+            failed_count=len(failed_artists), total_artists=total_artists, inserted=stats["inserted"], updated=stats["updated"],
         )
     else:
-        logger.info("[UPCOMING_MB] Refresh complete: %s", stats)
+        logger.info("Refresh complete", stats=stats)
     return stats
 
 
 def start_musicbrainz_refresh() -> bool:
-    """Kick off the MusicBrainz collection refresh in a background thread.
-
-    Returns False when a refresh is already running.  Runs in the background
-    because a large library takes minutes (one throttled MusicBrainz request
-    per artist) and the caller's HTTP request must return promptly.
-    """
+    """Kick off the MusicBrainz collection refresh in a background thread."""
     global _refresh_running
     with _refresh_lock:
         if _refresh_running:
@@ -813,7 +709,7 @@ def start_musicbrainz_refresh() -> bool:
             stats = fetch_musicbrainz_upcoming_releases()
             _set_status(status="idle", current_artist=None, last_stats=stats if isinstance(stats, dict) else None)
         except Exception as exc:
-            logger.error("[UPCOMING_MB] Background refresh failed: %s", exc)
+            logger.error("Background refresh failed", error=str(exc))
             _set_status(status="error", current_artist=None, last_error=str(exc))
         finally:
             with _refresh_lock:
