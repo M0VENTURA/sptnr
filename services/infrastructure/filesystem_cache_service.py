@@ -8,17 +8,23 @@ Provides:
 - ``invalidate_cache`` – Force cache refresh.
 """
 
+from __future__ import annotations
+
 import os
 import time
 from typing import List
 
+import structlog
+
 from services.infrastructure.filesystem_service import resolve_downloads_dir
+
+logger = structlog.get_logger(__name__)
 
 # ==============================================================================
 # CACHE STATE
 # ==============================================================================
 
-_DOWNLOADS_CACHE: List[str] | None = None
+_DOWNLOADS_CACHE: list[str] | None = None
 _DOWNLOADS_CACHE_TS: float = 0.0
 _CACHE_TTL_SECONDS = 30
 
@@ -27,18 +33,12 @@ _CACHE_TTL_SECONDS = 30
 # PUBLIC API
 # ==============================================================================
 
-def get_download_files() -> List[str]:
-    """
-    Return a cached list of all audio files under the downloads directory.
-
-    Avoids repeated expensive os.walk() calls.
-    """
-
+def get_download_files() -> list[str]:
+    """Return a cached list of all audio files under the downloads directory."""
     global _DOWNLOADS_CACHE, _DOWNLOADS_CACHE_TS
 
     now = time.monotonic()
 
-    # ✅ Serve from cache
     if (
         _DOWNLOADS_CACHE is not None
         and now - _DOWNLOADS_CACHE_TS < _CACHE_TTL_SECONDS
@@ -46,17 +46,14 @@ def get_download_files() -> List[str]:
         return _DOWNLOADS_CACHE
 
     root = resolve_downloads_dir()
-    files: List[str] = []
+    files: list[str] = []
 
-    # Skip the FLAC conversion archive — archived originals are not fresh
-    # downloads and must never surface in the downloads listing.
     try:
         from services.infrastructure.filesystem_service import resolve_original_archive_dir
         archive_dir = resolve_original_archive_dir()
     except Exception:
         archive_dir = ""
 
-    # ✅ Rebuild cache
     if os.path.isdir(root):
         for r, dirnames, filenames in os.walk(root):
             if archive_dir:
@@ -71,7 +68,16 @@ def get_download_files() -> List[str]:
     _DOWNLOADS_CACHE = files
     _DOWNLOADS_CACHE_TS = now
 
+    logger.debug("Refreshed downloads filesystem cache", file_count=len(files))
     return files
+
+
+def invalidate_cache() -> None:
+    """Force refresh of the downloads filesystem cache on the next call."""
+    global _DOWNLOADS_CACHE, _DOWNLOADS_CACHE_TS
+    _DOWNLOADS_CACHE = None
+    _DOWNLOADS_CACHE_TS = 0.0
+    logger.debug("Invalidated downloads filesystem cache")
 
 
 # ==============================================================================
@@ -91,4 +97,3 @@ def _is_audio_file(filename: str) -> bool:
             ".aiff",
         )
     )
-

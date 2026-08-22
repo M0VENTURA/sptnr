@@ -10,13 +10,16 @@ Registered as an optional maintenance hook (``MAINTENANCE_CANDIDATES``) —
 best-effort, never raises.
 """
 
-import logging
+from __future__ import annotations
+
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+import structlog
+
 from db.repositories.queue import get_active_queue, mark_failed
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # A transfer at 0% after this many minutes is treated as never-started
 # (offline peer / queue never picked up).  Transfers that were progressing
@@ -98,8 +101,11 @@ def reap_stalled_transfers() -> dict[str, int]:
                 if slskd.cancel_download(username, transfer_id, remove=True):
                     stats["cancelled_transfers"] += 1
                     logger.warning(
-                        "[SLSKD-REAPER] cancelled stalled transfer %s (%s - %s, %s%%)",
-                        transfer_id, username, transfer.get("filename"), progress,
+                        "Cancelled stalled transfer",
+                        transfer_id=transfer_id,
+                        username=username,
+                        filename=transfer.get("filename"),
+                        progress=progress,
                     )
 
             item = _find_owning_item(transfer, active_items)
@@ -110,11 +116,13 @@ def reap_stalled_transfers() -> dict[str, int]:
                 )
                 stats["requeued_items"] += 1
                 logger.warning(
-                    "[SLSKD-REAPER] failed queue item %s (%s - %s) for stalled transfer",
-                    item.get("id"), item.get("artist"), item.get("title"),
+                    "Failed queue item for stalled transfer",
+                    queue_id=item.get("id"),
+                    artist=item.get("artist"),
+                    title=item.get("title"),
                 )
 
         return stats
     except Exception as exc:
-        logger.error("[SLSKD-REAPER] failed: %s", exc, exc_info=True)
+        logger.error("Stalled transfer reaper failed", error=str(exc), exc_info=True)
         return stats

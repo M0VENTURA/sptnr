@@ -14,25 +14,27 @@ Handles:
 from __future__ import annotations
 
 import json
-import logging
 import re
+import threading
 from datetime import datetime, timezone
 from typing import Any
 
 import httpx
-
+import structlog
 from sqlalchemy import text
+
 from db.engine import db_session
 from db.utils import row_get
 
-# ── Existing enrichment/metadata services (not duplicated) ─────────────────
+# Enrichment/metadata services
 from services.enrichment.album_art_service import (
     save_album_art_to_db,
     fetch_album_art_from_musicbrainz,
 )
 from services.enrichment.artist_bio_service import get_artist_biography
-from services.metadata.artist_metadata_service import (
-    cleanup_false_positive_missing,
+from services.enrichment.musicbrainz_service import (
+    get_shared_mb_client,
+    get_shared_mb_service,
 )
 from services.catalog.album_classification_service import (
     detect_live_album_type,
@@ -40,10 +42,10 @@ from services.catalog.album_classification_service import (
     normalize_primary_release_type,
 )
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
-# Album type detection (orchestration logic — no existing service covers this)
+# Album type detection
 # ---------------------------------------------------------------------------
 
 _COMPILATION_ARTISTS = frozenset(["various artists", "various artists -", "various", "compilation", "soundtrack"])
@@ -78,7 +80,6 @@ def _detect_album_type(artist: str, album: str, album_artist: str | None, spotif
     if "soundtrack" in album_lower:
         return "album+soundtrack"
 
-    import re
     if any(re.search(p, album_lower) for p in _LIVE_ALBUM_PATTERNS):
         return "album+live"
 
@@ -89,40 +90,32 @@ def _detect_album_type(artist: str, album: str, album_artist: str | None, spotif
 
 
 # ---------------------------------------------------------------------------
-# Album art helper (uses existing services, adds fallback orchestration)
+# Album art helper
 # ---------------------------------------------------------------------------
 
 def _fetch_album_art_with_fallback(artist: str, album: str, discogs_token: str | None = None) -> str | None:
-    """Fetch album art: Navidrome first (default), then MusicBrainz/CAA, then AudioDB, then Discogs.
-
-    Navidrome already holds the art the user sees in their library, so it is
-    the preferred source; external providers are only consulted when it has
-    no art.
-    """
-    # 0) Try Navidrome (default source — no external calls needed)
+    """Fetch album art: Navidrome first (default), then MusicBrainz/CAA, then AudioDB, then Discogs."""
+    
+    # 0) Try Navidrome
     try:
-        from services.enrichment.album_art_service import (
-            fetch_album_art_from_navidrome,
-            save_album_art_to_db,
-        )
-
+        from services.enrichment.album_art_service import fetch_album_art_from_navidrome
         data = fetch_album_art_from_navidrome(artist, album)
         if data:
             save_album_art_to_db(artist, album, data, source="navidrome")
             return "navidrome"
     except Exception as exc:
-        logger.debug("[album_stage] Navidrome art failed: %s", exc)
+        logger.debug("Navidrome art fetch failed", artist=artist, album=album, error=str(exc))
 
-    # 1) Try MusicBrainz / Cover Art Archive via existing service
+    # 1) Try MusicBrainz / Cover Art Archive
     try:
         data = fetch_album_art_from_musicbrainz(artist, album)
         if data:
             save_album_art_to_db(artist, album, data, source="musicbrainz")
             return "musicbrainz"
     except Exception as exc:
-        logger.debug("[album_stage] CAA fetch failed: %s", exc)
+        logger.debug("CAA fetch failed", artist=artist, album=album, error=str(exc))
 
-    # 2) Try AudioDB via existing helper
+    # 2) Try AudioDB
     try:
         from api_clients.audiodb import get_album_artwork
         art_url = get_album_artwork(artist, album, enabled=True)
@@ -132,14 +125,13 @@ def _fetch_album_art_with_fallback(artist: str, album: str, discogs_token: str |
                 save_album_art_to_db(artist, album, resp.content, source="audiodb")
                 return "audiodb"
     except Exception as exc:
-        logger.debug("[album_stage] AudioDB art failed: %s", exc)
+        logger.debug("AudioDB art fetch failed", artist=artist, album=album, error=str(exc))
 
     # 3) Try Discogs
     try:
         from api_clients.discogs_http import DiscogsHttpClient
         if discogs_token and len(discogs_token) >= 10 and discogs_token.lower() not in ("your_discogs_token", "your_token", "placeholder"):
             client = DiscogsHttpClient(discogs_token)
-            # Use the existing discogs_http-based search
             results = client.search_album_release(artist, album)
             if results and results[0].get("cover_image"):
                 resp = httpx.get(results[0]["cover_image"], timeout=10)
@@ -147,23 +139,22 @@ def _fetch_album_art_with_fallback(artist: str, album: str, discogs_token: str |
                     save_album_art_to_db(artist, album, resp.content, source="discogs")
                     return "discogs"
     except Exception as exc:
-        logger.debug("[album_stage] Discogs art failed: %s", exc)
+        logger.debug("Discogs art fetch failed", artist=artist, album=album, error=str(exc))
 
     return None
 
 
 # ---------------------------------------------------------------------------
-# Artist metadata helper (delegates to existing enrichment services)
+# Artist metadata helper
 # ---------------------------------------------------------------------------
 
-def _fetch_artist_metadata(artist: str, conn) -> dict[str, Any]:
+def _fetch_artist_metadata(artist: str, conn: Any) -> dict[str, Any]:
     """Fetch artist country, bio, and image, delegating to existing services."""
     result: dict[str, Any] = {"country": None, "bio": None, "image_url": None}
-    from sqlalchemy import text as _text
-    from db.engine import db_session as _db_session
-    with _db_session() as session:
+    
+    with db_session() as session:
         existing = session.execute(
-            _text("SELECT country, bio, image_url FROM artists WHERE name = :artist"),
+            text("SELECT country, bio, image_url FROM artists WHERE name = :artist"),
             {"artist": artist},
         ).mappings().first()
         if existing:
@@ -179,17 +170,16 @@ def _fetch_artist_metadata(artist: str, conn) -> dict[str, Any]:
             bio = get_artist_biography(artist)
             result["bio"] = str(bio) if bio else None
         except Exception as exc:
-            logger.debug("[album_stage] Bio lookup failed: %s", exc)
+            logger.debug("Bio lookup failed", artist=artist, error=str(exc))
 
-    # Country via MusicBrainz HTTP client
+    # Country via MusicBrainz Shared Client
     if not result["country"]:
         try:
-            from api_clients.musicbrainz_http import MusicBrainzHttpClient
-            mb = MusicBrainzHttpClient()
+            mb = get_shared_mb_client()
             country = mb.get_artist_country(artist)
             result["country"] = str(country) if country else None
         except Exception as exc:
-            logger.debug("[album_stage] Country lookup failed: %s", exc)
+            logger.debug("Country lookup failed", artist=artist, error=str(exc))
 
     # Image via AudioDB
     if not result["image_url"]:
@@ -198,15 +188,13 @@ def _fetch_artist_metadata(artist: str, conn) -> dict[str, Any]:
             img = get_artist_fanart(artist, enabled=True)
             result["image_url"] = str(img) if img else None
         except Exception as exc:
-            logger.debug("[album_stage] Image lookup failed: %s", exc)
+            logger.debug("Image lookup failed", artist=artist, error=str(exc))
 
     # Persist
     try:
-        from sqlalchemy import text as _text
-        from db.engine import db_session as _db_session
-        with _db_session() as session:
+        with db_session() as session:
             session.execute(
-                _text("""
+                text("""
                     INSERT INTO artists (id, name, country, bio, image_url)
                     VALUES (:artist, :artist, :country, :bio, :image_url)
                     ON CONFLICT (name) DO UPDATE SET
@@ -217,35 +205,35 @@ def _fetch_artist_metadata(artist: str, conn) -> dict[str, Any]:
                 {"artist": artist, "country": result["country"], "bio": result["bio"], "image_url": result["image_url"]},
             )
     except Exception as exc:
-        logger.debug("[album_stage] Persist artist metadata failed: %s", exc)
+        logger.debug("Persist artist metadata failed", artist=artist, error=str(exc))
 
     return result
 
 
 # ---------------------------------------------------------------------------
-# Similar artists helper (no existing service — kept here for now)
+# Similar artists helper
 # ---------------------------------------------------------------------------
 
-def _fetch_similar_artists(artist: str, conn, options: dict) -> dict[str, list]:
-    """Fetch and cache similar artists from Last.fm (and ListenBrainz in future)."""
-    result: dict[str, list] = {"lastfm": [], "listenbrainz": []}
-    from sqlalchemy import text as _text
-    from db.engine import db_session as _db_session
+def _fetch_similar_artists(artist: str, conn: Any, options: dict[str, Any]) -> dict[str, list[Any]]:
+    """Fetch and cache similar artists from Last.fm and ListenBrainz."""
+    result: dict[str, list[Any]] = {"lastfm": [], "listenbrainz": []}
 
     if bool(options.get("singles_only")) or bool(options.get("singles_with_missing_popularity")):
         return result
 
     try:
-        with _db_session() as session:
+        with db_session() as session:
             cached = session.execute(
-                _text("""
+                text("""
                     SELECT similar_artists_lastfm, similar_artists_listenbrainz, similar_artists_last_updated
                     FROM artists WHERE name = :artist
                 """),
                 {"artist": artist},
             ).mappings().first()
+            
         cached_lf_fresh = False
         cached_lb_fresh = False
+        
         if cached:
             lf_raw = row_get(cached, "similar_artists_lastfm")
             lb_raw = row_get(cached, "similar_artists_listenbrainz")
@@ -254,24 +242,18 @@ def _fetch_similar_artists(artist: str, conn, options: dict) -> dict[str, list]:
                 try:
                     result["lastfm"] = json.loads(lf_raw)
                 except Exception:
-                    result["lastfm"] = []
+                    pass
             if lb_raw:
                 try:
                     result["listenbrainz"] = json.loads(lb_raw)
                 except Exception:
-                    result["listenbrainz"] = []
+                    pass
             if ts_raw:
                 try:
                     ts = ts_raw if isinstance(ts_raw, datetime) else datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
                     if ts.tzinfo is None:
                         ts = ts.replace(tzinfo=timezone.utc)
                     age = (datetime.now(timezone.utc) - ts).days
-                    # Per-source freshness: a source is served from cache only
-                    # when it has data AND is under the 90-day TTL.  An empty
-                    # ListenBrainz result must NEVER block a retry — the old
-                    # whole-row gate returned on ANY fresh cached source, so a
-                    # first scan that cached only Last.fm left ListenBrainz
-                    # empty for 90 days.
                     cached_lf_fresh = bool(result["lastfm"]) and age < 90
                     cached_lb_fresh = bool(result["listenbrainz"]) and age < 90
                 except Exception:
@@ -290,15 +272,12 @@ def _fetch_similar_artists(artist: str, conn, options: dict) -> dict[str, list]:
                 similar = lf.get_similar_artists(artist, limit=10) or []
                 result["lastfm"] = [s.get("name", "") for s in similar if isinstance(s, dict)]
 
-        # ListenBrainz similar artists (labs API) — requires the artist MBID.
-        # Retried on every scan until it yields data (or the cache holds a
-        # fresh non-empty result).
         if not cached_lb_fresh:
             try:
                 artist_mbid = None
-                with _db_session() as session:
+                with db_session() as session:
                     row = session.execute(
-                        _text("SELECT NULLIF(TRIM(musicbrainz_artistid), '') AS mbid "
+                        text("SELECT NULLIF(TRIM(musicbrainz_artistid), '') AS mbid "
                               "FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
                               "AND COALESCE(NULLIF(TRIM(musicbrainz_artistid), ''), '') <> '' LIMIT 1"),
                         {"artist": artist},
@@ -306,11 +285,6 @@ def _fetch_similar_artists(artist: str, conn, options: dict) -> dict[str, list]:
                     if row and row_get(row, "mbid"):
                         artist_mbid = row_get(row, "mbid")
                 if not artist_mbid:
-                    # Proper artist search (NOT a recording search — the
-                    # previous get_suggested_mbid(artist, "") call searched
-                    # for a recording titled after the artist and returned a
-                    # recording MBID, which the LB similar-artists API
-                    # rejected).
                     from services.enrichment.musicbrainz_persistence_service import lookup_and_save_artist_mbid
                     artist_mbid = lookup_and_save_artist_mbid(artist, None)
                 if artist_mbid:
@@ -318,12 +292,12 @@ def _fetch_similar_artists(artist: str, conn, options: dict) -> dict[str, list]:
                     lb_similar = ListenBrainzClient().get_similar_artists(artist_mbid, limit=10) or []
                     result["listenbrainz"] = [s.get("name", "") for s in lb_similar if isinstance(s, dict) and s.get("name")]
             except Exception as exc:
-                logger.debug("[album_stage] ListenBrainz similar artists failed for '%s': %s", artist, exc)
+                logger.debug("ListenBrainz similar artists failed", artist=artist, error=str(exc))
 
         try:
-            with _db_session() as session:
+            with db_session() as session:
                 session.execute(
-                    _text("""
+                    text("""
                         INSERT INTO artists (id, name, similar_artists_lastfm, similar_artists_listenbrainz, similar_artists_last_updated)
                         VALUES (:artist, :artist, :lf, :lb, :updated)
                         ON CONFLICT (name) DO UPDATE SET
@@ -339,27 +313,19 @@ def _fetch_similar_artists(artist: str, conn, options: dict) -> dict[str, list]:
                     },
                 )
         except Exception as exc:
-            logger.debug("[album_stage] Similar-artist persist failed for '%s': %s", artist, exc)
+            logger.debug("Similar-artist persist failed", artist=artist, error=str(exc))
+            
     except Exception as exc:
-        logger.debug("[album_stage] Similar artists failed: %s", exc)
+        logger.debug("Similar artists failed entirely", artist=artist, error=str(exc))
 
     return result
 
 
-# Per-process Discogs artist-ID cache: artist.casefold() → id ("" when the
-# artist was looked up and not found).  ``_fetch_discogs_artist_id`` runs once
-# per ALBUM — the API call was previously unconditional (only the DB UPDATE
-# was guarded), so a 10-album artist paid 10 search_database calls for one
-# id.  The cache turns that into one call per artist per process.
 _discogs_artist_id_cache: dict[str, str] = {}
+_discogs_artist_id_lock = threading.Lock()
 
-
-def _fetch_discogs_artist_id(artist: str, conn, options: dict) -> None:
-    """Fetch and cache the Discogs artist ID (legacy parity).
-
-    Skips compilation groups and singles/metadata-only scan modes, matching
-    the legacy scanner. Stores the ID on all of the artist's tracks.
-    """
+def _fetch_discogs_artist_id(artist: str, conn: Any, options: dict[str, Any]) -> None:
+    """Fetch and cache the Discogs artist ID."""
     if bool(options.get("singles_only")) or bool(options.get("singles_with_missing_popularity")):
         return
     if artist.lower() in ("various artists", "various", "compilation", "soundtrack"):
@@ -373,55 +339,42 @@ def _fetch_discogs_artist_id(artist: str, conn, options: dict) -> None:
             return
         if token.lower() in ("your_discogs_token", "your_token", "placeholder", ""):
             return
+            
         _cache_key = artist.casefold().strip()
-        if _cache_key not in _discogs_artist_id_cache:
-            from api_clients.discogs import DiscogsClient
-            client = DiscogsClient(token=token)
-            # One API call per artist per process (was once per album).
-            discogs_artist_id = str(client.get_artist_id(artist, timeout=12) or "")
-            _discogs_artist_id_cache[_cache_key] = discogs_artist_id
-        discogs_artist_id = _discogs_artist_id_cache[_cache_key]
+        
+        with _discogs_artist_id_lock:
+            if _cache_key not in _discogs_artist_id_cache:
+                from api_clients.discogs_http import DiscogsHttpClient
+                client = DiscogsHttpClient(token=token)
+                discogs_artist_id = str(client.get_artist_id(artist, timeout=12) or "")
+                _discogs_artist_id_cache[_cache_key] = discogs_artist_id
+            discogs_artist_id = _discogs_artist_id_cache[_cache_key]
+            
         if not discogs_artist_id:
             return
-        from sqlalchemy import text as _text
-        from db.engine import db_session as _db_session
-        with _db_session() as session:
+            
+        with db_session() as session:
             session.execute(
-                _text(
+                text(
                     "UPDATE tracks SET discogs_artist_id = :did "
                     "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
                     "AND (discogs_artist_id IS NULL OR TRIM(CAST(discogs_artist_id AS TEXT)) = '')"
                 ),
                 {"did": discogs_artist_id, "artist": artist},
             )
-        logger.info("[album_stage] Discogs artist ID for '%s': %s", artist, discogs_artist_id)
+        logger.info("Retrieved and persisted Discogs artist ID", artist=artist, discogs_id=discogs_artist_id)
     except Exception as exc:
-        logger.debug("[album_stage] Discogs artist ID lookup failed for '%s': %s", artist, exc)
+        logger.debug("Discogs artist ID lookup failed", artist=artist, error=str(exc))
 
 
-# ---------------------------------------------------------------------------
-# Main entrypoint
-# ---------------------------------------------------------------------------
-
-def _fetch_musicbrainz_artist_id(artist: str, conn, options: dict) -> None:
-    """Resolve and persist the MusicBrainz artist ID (legacy parity).
-
-    Mirrors ``_fetch_discogs_artist_id``: skips compilation groups, resolves
-    the ID via a scored MusicBrainz artist search when the artist's tracks
-    carry none, and stores it on all of the artist's tracks. The artist page
-    ID field, ListenBrainz similar artists, missing-releases detection and
-    single detection all depend on this value — the per-recording lookup in
-    track_stage alone never populates it for tracks that already have a
-    recording MBID (the metadata lookup is skipped for those).
-    """
+def _fetch_musicbrainz_artist_id(artist: str, conn: Any, options: dict[str, Any]) -> None:
+    """Resolve and persist the MusicBrainz artist ID."""
     if artist.lower() in ("various artists", "various", "compilation", "soundtrack"):
         return
     try:
-        from sqlalchemy import text as _text
-        from db.engine import db_session as _db_session
-        with _db_session() as session:
+        with db_session() as session:
             row = session.execute(
-                _text(
+                text(
                     "SELECT NULLIF(TRIM(musicbrainz_artistid), '') AS mbid "
                     "FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
                     "AND COALESCE(NULLIF(TRIM(musicbrainz_artistid), ''), '') <> '' LIMIT 1"
@@ -434,23 +387,15 @@ def _fetch_musicbrainz_artist_id(artist: str, conn, options: dict) -> None:
         from services.enrichment.musicbrainz_persistence_service import lookup_and_save_artist_mbid
         mbid = lookup_and_save_artist_mbid(artist)
         if mbid:
-            logger.info("[album_stage] MusicBrainz artist ID for '%s': %s", artist, mbid)
+            logger.info("Persisted MusicBrainz artist ID", artist=artist, mbid=mbid)
     except Exception as exc:
-        logger.debug("[album_stage] MusicBrainz artist ID lookup failed for '%s': %s", artist, exc)
+        logger.debug("MusicBrainz artist ID lookup failed", artist=artist, error=str(exc))
 
 
 def _lookup_musicbrainz_album_type(artist: str, album: str) -> tuple[str | None, str | None]:
-    """Query MusicBrainz release-group for a confident album-type match.
-
-    Returns ``(album_type, release_group_mbid)``. ``album_type`` is one of
-    ``single``, ``ep``, ``album``, ``album+compilation``, ``album+live``,
-    ``album+remix`` — or ``None`` when no confident match exists. This
-    restores the legacy ``get_album_type_with_fallback`` MusicBrainz path that
-    the staged runner had dropped in favour of name-only detection.
-    """
+    """Query MusicBrainz release-group for a confident album-type match."""
     try:
-        from services.enrichment.musicbrainz_service import MusicBrainzService
-        svc = MusicBrainzService(enabled=True)
+        svc = get_shared_mb_service()
         matches = svc.search_releasegroup_matches(artist, album, limit=3)
         if not matches:
             return None, None
@@ -459,11 +404,7 @@ def _lookup_musicbrainz_album_type(artist: str, album: str) -> tuple[str | None,
             return None, None
         primary = (best.get("primary_type") or "").lower()
         rg_mbid = best.get("id")
-        # Secondary types refine the primary type: a release-group whose
-        # primary type is "album" but is tagged secondary "live" is a LIVE
-        # album (and "compilation"/"remix" refine to those verdicts).  This
-        # keeps the album TYPE the authoritative live signal instead of
-        # falling back to title text.
+        
         secondary = " ".join(str(s).lower() for s in (best.get("secondary_types") or []) if s)
         mapping = {
             "single": "single",
@@ -484,33 +425,28 @@ def _lookup_musicbrainz_album_type(artist: str, album: str) -> tuple[str | None,
                 return "album+remix", rg_mbid
         return mapping.get(primary), rg_mbid
     except Exception as exc:
-        logger.debug("[album_stage] MB album-type lookup failed for '%s - %s': %s", artist, album, exc)
+        logger.debug("MB album-type lookup failed", artist=artist, album=album, error=str(exc))
         return None, None
 
 
-def _persist_album_type_to_tracks(conn, cursor, artist, album, tracks, album_type, release_group_mbid):
-    """Propagate the detected album type (+ release-group MBID) to album tracks."""
+def _persist_album_type_to_tracks(conn: Any, cursor: Any, artist: str, album: str, tracks: list[dict[str, Any]], album_type: str, release_group_mbid: str | None) -> None:
+    """Propagate the detected album type to album tracks."""
     if not album_type:
         return
-    from sqlalchemy import text as _text
-    from db.engine import db_session as _db_session
+        
     primary = normalize_primary_release_type(album_type)
     updated = 0
-    with _db_session() as session:
+    with db_session() as session:
         for track in tracks or []:
             track_id = track.get("id")
             if not track_id:
                 continue
-            # Skip tracks whose stored type already matches — avoids a write
-            # storm on every re-scan (legacy behaviour wrote only on change).
-            # Compare against musicbrainz_albumtype — the canonical display
-            # column (spotify_album_type is legacy and no longer read).
             current_type = str(track.get("musicbrainz_albumtype") or "")
             if current_type == album_type:
                 continue
             try:
                 session.execute(
-                    _text("""
+                    text("""
                         UPDATE tracks
                         SET spotify_album_type = :album_type, releasetype = :primary, musicbrainz_albumtype = :album_type
                         WHERE id = :tid
@@ -519,18 +455,16 @@ def _persist_album_type_to_tracks(conn, cursor, artist, album, tracks, album_typ
                 )
                 updated += 1
             except Exception as exc:
-                logger.debug("[album_stage] Album-type persist failed for %s: %s", track_id, exc)
+                logger.debug("Album-type persist failed", track_id=track_id, error=str(exc))
+                
     if updated:
-        logger.info(
-            "[album_stage] Persisted album type '%s' to %s track(s) for '%s - %s'",
-            album_type, updated, artist, album,
-        )
+        logger.info("Persisted album type", album_type=album_type, tracks_updated=updated, artist=artist, album=album)
 
     if release_group_mbid:
-        with _db_session() as session:
+        with db_session() as session:
             try:
                 session.execute(
-                    _text("""
+                    text("""
                         UPDATE tracks
                         SET musicbrainz_releasegroupid = :rg_mbid
                         WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album
@@ -539,28 +473,21 @@ def _persist_album_type_to_tracks(conn, cursor, artist, album, tracks, album_typ
                     {"rg_mbid": release_group_mbid, "artist": artist, "album": album},
                 )
             except Exception as exc:
-                logger.debug("[album_stage] Release-group MBID propagation failed: %s", exc)
+                logger.debug("Release-group MBID propagation failed", error=str(exc))
 
-        # Resolve the release-group MBID to a concrete release MBID and store
-        # it on tracks that are still missing one (legacy parity). The album
-        # page's "MusicBrainz Release ID" field reads musicbrainz_album_mbid,
-        # and Navidrome groups tracks by release MBID — without this, albums
-        # whose audio files carry no release tag stay ungrouped.
-        # NOTE: never store a release-group MBID in the release-level column —
-        # when resolution fails, resolve_release_id returns the input
-        # unchanged, and we skip the write entirely.
         release_mbid = ""
         try:
             from services.enrichment.musicbrainz_service import resolve_release_id
             release_mbid = resolve_release_id(release_group_mbid)
         except Exception as exc:
-            logger.debug("[album_stage] Release MBID resolution failed for %s: %s", release_group_mbid, exc)
+            logger.debug("Release MBID resolution failed", release_group_mbid=release_group_mbid, error=str(exc))
             release_mbid = ""
+            
         if release_mbid and str(release_mbid).strip() and str(release_mbid).strip() != str(release_group_mbid).strip():
             try:
-                with _db_session() as session:
+                with db_session() as session:
                     session.execute(
-                        _text("""
+                        text("""
                             UPDATE tracks
                             SET musicbrainz_album_mbid = :mbid, musicbrainz_albumid = :mbid
                             WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album
@@ -569,19 +496,21 @@ def _persist_album_type_to_tracks(conn, cursor, artist, album, tracks, album_typ
                         {"mbid": release_mbid, "artist": artist, "album": album},
                     )
             except Exception as exc:
-                logger.debug("[album_stage] Release MBID propagation failed: %s", exc)
+                logger.debug("Release MBID propagation failed", error=str(exc))
 
 
-def _inject_album_genre(track_id: str, label: str, mb_genres_raw, genres_raw) -> None:
+def _inject_album_genre(track_id: str, label: str, mb_genres_raw: Any, genres_raw: Any) -> None:
     """Insert a genre label (Live/Acoustic/Remix) into stored genre columns."""
-    mb_list: list = []
+    mb_list: list[str] = []
     try:
         if mb_genres_raw and str(mb_genres_raw) not in ("null", "[]", ""):
             mb_list = json.loads(mb_genres_raw) if isinstance(mb_genres_raw, str) else list(mb_genres_raw)
     except Exception:
         mb_list = []
+        
     if not isinstance(mb_list, list):
         mb_list = []
+        
     if label.lower() not in [str(g).lower() for g in mb_list]:
         mb_list.insert(0, label)
 
@@ -590,29 +519,21 @@ def _inject_album_genre(track_id: str, label: str, mb_genres_raw, genres_raw) ->
         genre_list.insert(0, label)
 
     try:
-        from sqlalchemy import text as _text
-        from db.engine import db_session as _db_session
-        with _db_session() as session:
+        with db_session() as session:
             session.execute(
-                _text("UPDATE tracks SET musicbrainz_genres = :mb, genres = :genres WHERE id = :tid"),
+                text("UPDATE tracks SET musicbrainz_genres = :mb, genres = :genres WHERE id = :tid"),
                 {"mb": json.dumps(mb_list), "genres": ", ".join(genre_list), "tid": str(track_id)},
             )
     except Exception as exc:
-        logger.debug("[album_stage] Genre label inject failed for %s: %s", track_id, exc)
+        logger.debug("Genre label inject failed", track_id=track_id, error=str(exc))
 
 
-def _fetch_artist_lastfm_tags(artist: str, conn) -> None:
-    """Fetch and cache Last.fm artist top tags (legacy parity).
-
-    Stores a JSON list of tag names in ``artists.lastfm_artist_tags``.
-    Skips artists that already have tags cached.
-    """
+def _fetch_artist_lastfm_tags(artist: str, conn: Any) -> None:
+    """Fetch and cache Last.fm artist top tags."""
     try:
-        from sqlalchemy import text as _text
-        from db.engine import db_session as _db_session
-        with _db_session() as session:
+        with db_session() as session:
             row = session.execute(
-                _text("SELECT lastfm_artist_tags FROM artists WHERE name = :artist"),
+                text("SELECT lastfm_artist_tags FROM artists WHERE name = :artist"),
                 {"artist": artist},
             ).fetchone()
             if row and row[0]:
@@ -632,29 +553,18 @@ def _fetch_artist_lastfm_tags(artist: str, conn) -> None:
         tags = lf.get_artist_top_tags(artist, limit=15) or []
         names = [t.get("name") for t in tags if isinstance(t, dict) and t.get("name")]
         if names:
-            from sqlalchemy import text as _text
-            from db.engine import db_session as _db_session
-            with _db_session() as session:
+            with db_session() as session:
                 session.execute(
-                    _text("UPDATE artists SET lastfm_artist_tags = :tags WHERE name = :artist"),
+                    text("UPDATE artists SET lastfm_artist_tags = :tags WHERE name = :artist"),
                     {"tags": json.dumps(names), "artist": artist},
                 )
-            logger.info("[album_stage] Stored %d Last.fm tag(s) for '%s'", len(names), artist)
+            logger.info("Stored Last.fm tag(s)", tag_count=len(names), artist=artist)
     except Exception as exc:
-        logger.debug("[album_stage] Last.fm artist tags failed for '%s': %s", artist, exc)
+        logger.debug("Last.fm artist tags failed", artist=artist, error=str(exc))
 
 
 def ensure_album_type(album_row: dict[str, Any], options: dict[str, Any] | None = None) -> str | None:
-    """Lightweight album-type enrichment for SKIPPED albums.
-
-    Runs when the popularity diff check skips an album but it still needs its
-    album type (re)set during a combined scan. Reuses a consistent stored
-    verdict when one exists (zero API cost); only albums missing a type hit
-    the MusicBrainz release-group lookup. Forced scans always re-verify.
-
-    Returns the detected album type (e.g. ``"album"``, ``"album+compilation"``,
-    ``"single"``, ``"ep"``) or ``None`` when no type could be determined.
-    """
+    """Lightweight album-type enrichment for SKIPPED albums."""
     options = options or {}
     artist = str(album_row.get("artist") or "")
     album = str(album_row.get("album") or "")
@@ -669,7 +579,7 @@ def ensure_album_type(album_row: dict[str, Any], options: dict[str, Any] | None 
     }
     stored.discard("")
     if len(stored) == 1 and not options.get("force"):
-        return next(iter(stored))  # tracks already carry a consistent verdict — reuse it
+        return next(iter(stored))
 
     detected: str | None = None
     try:
@@ -682,7 +592,6 @@ def ensure_album_type(album_row: dict[str, Any], options: dict[str, Any] | None 
         mb_type, rg_mbid = _lookup_musicbrainz_album_type(artist, album)
         if mb_type:
             track_count = len(tracks)
-            # Same single/EP downgrade guards as the full enrich path.
             if mb_type in ("single", "ep") and track_count > 6:
                 mb_type = "album"
             elif mb_type == "single" and track_count > 3:
@@ -692,24 +601,15 @@ def ensure_album_type(album_row: dict[str, Any], options: dict[str, Any] | None 
         if not detected:
             return None
         _persist_album_type_to_tracks(None, None, artist, album, tracks, detected, rg_mbid)
-        logger.info("[album_stage] Ensured album type '%s' for skipped '%s - %s'", detected, artist, album)
+        logger.info("Ensured album type", detected=detected, artist=artist, album=album)
         return detected
     except Exception as exc:
-        logger.debug("[album_stage] ensure_album_type failed for '%s - %s': %s", artist, album, exc)
+        logger.debug("ensure_album_type failed", artist=artist, album=album, error=str(exc))
         return detected
 
 
-def _apply_live_remix_album_tagging(artist, album, album_type, tracks) -> None:
-    """Tag live/acoustic/remix albums (legacy parity).
-
-    Live/acoustic albums: rename tracks with a ``(Live)`` / ``(Acoustic)``
-    suffix, inject the genre, set ``is_live`` / ``is_acoustic`` and
-    ``album_context_live``. Remix albums: inject a ``Remix`` genre and set
-    ``is_remix`` (no title rename).
-    """
-    from sqlalchemy import text as _text
-    from db.engine import db_session as _db_session
-
+def _apply_live_remix_album_tagging(artist: str, album: str, album_type: str, tracks: list[dict[str, Any]]) -> None:
+    """Tag live/acoustic/remix albums."""
     lower = (album_type or "").lower()
     is_live_album = "+live" in lower or "(live)" in lower
     is_remix_album = "+remix" in lower or "(remix)" in lower
@@ -718,7 +618,7 @@ def _apply_live_remix_album_tagging(artist, album, album_type, tracks) -> None:
         live_type = detect_live_album_type(album, album_type) or "live"
         label = "Acoustic" if live_type == "acoustic" else "Live"
         tagged = 0
-        with _db_session() as session:
+        with db_session() as session:
             for track in tracks or []:
                 track_id = track.get("id")
                 title = str(track.get("title") or "")
@@ -738,7 +638,7 @@ def _apply_live_remix_album_tagging(artist, album, album_type, tracks) -> None:
                     new_title = f"{title} ({label})"
                 try:
                     session.execute(
-                        _text("""
+                        text("""
                             UPDATE tracks
                             SET is_live = :is_live, is_acoustic = :is_acoustic,
                                 album_context_live = 1, title = :title
@@ -754,45 +654,38 @@ def _apply_live_remix_album_tagging(artist, album, album_type, tracks) -> None:
                     tagged += 1
                     _inject_album_genre(str(track_id), label, track.get("musicbrainz_genres"), track.get("genres"))
                 except Exception as exc:
-                    logger.debug("[album_stage] Live tagging failed for %s: %s", track_id, exc)
+                    logger.debug("Live tagging failed", track_id=track_id, error=str(exc))
         if tagged:
-            logger.info("[album_stage] Tagged '%s - %s' as %s album", artist, album, label)
+            logger.info("Tagged as Live/Acoustic album", artist=artist, album=album, label=label)
 
     if is_remix_album:
         tagged = 0
-        with _db_session() as session:
+        with db_session() as session:
             for track in tracks or []:
                 track_id = track.get("id")
                 if not track_id:
                     continue
                 try:
                     session.execute(
-                        _text("UPDATE tracks SET is_remix = 1 WHERE id = :tid AND COALESCE(is_remix, 0) = 0"),
+                        text("UPDATE tracks SET is_remix = 1 WHERE id = :tid AND COALESCE(is_remix, 0) = 0"),
                         {"tid": str(track_id)},
                     )
                     tagged += 1
                     _inject_album_genre(str(track_id), "Remix", track.get("musicbrainz_genres"), track.get("genres"))
                 except Exception as exc:
-                    logger.debug("[album_stage] Remix tagging failed for %s: %s", track_id, exc)
+                    logger.debug("Remix tagging failed", track_id=track_id, error=str(exc))
         if tagged:
-            logger.info("[album_stage] Tagged '%s - %s' as remix album", artist, album)
+            logger.info("Tagged as Remix album", artist=artist, album=album)
 
 
-# Trailing live/acoustic suffix the album stage appends when tagging live
-# albums ("Song (Live)", "Song (Acoustic)").
 _LIVE_SUFFIX_RE = re.compile(r"\s*\((?:Live|Acoustic)[^)]*\)\s*$", re.IGNORECASE)
 
 
 def strip_live_acoustic_suffix(title: str) -> str:
-    """Remove a trailing ``(Live ...)`` / ``(Acoustic ...)`` suffix."""
     return _LIVE_SUFFIX_RE.sub("", title or "").strip()
 
 
 def _drop_live_genres_from_json(raw: Any) -> str | None:
-    """Remove injected ``Live``/``Acoustic`` entries from a JSON genre list.
-
-    Returns the new JSON string, or None when nothing changed.
-    """
     try:
         if not raw:
             return None
@@ -804,7 +697,6 @@ def _drop_live_genres_from_json(raw: Any) -> str | None:
 
 
 def _drop_live_genres_from_csv(raw: Any) -> str | None:
-    """Remove injected ``Live``/``Acoustic`` entries from a comma list."""
     try:
         if not raw:
             return None
@@ -816,14 +708,7 @@ def _drop_live_genres_from_csv(raw: Any) -> str | None:
 
 
 def revert_track_live_state(track_id: str) -> bool:
-    """Undo album-stage live/acoustic tagging for a single track.
-
-    Called when a track is un-marked live (track edit) or its album type
-    changes away from live (album edit): strips the appended
-    ``(Live)``/``(Acoustic)`` suffix, clears ``is_live`` / ``is_acoustic`` /
-    ``album_context_live``, removes the injected ``Live``/``Acoustic`` genre
-    and rewrites the audio file tags. Returns True when anything changed.
-    """
+    """Undo album-stage live/acoustic tagging for a single track."""
     try:
         import os as _os
         with db_session() as session:
@@ -867,23 +752,20 @@ def revert_track_live_state(track_id: str) -> bool:
                         tags["genres"] = [g.strip() for g in new_genres.split(",") if g.strip()]
                     update_file_tags(resolved, tags)
             except Exception as tag_err:
-                logger.debug("[album_stage] Live revert tag write failed for %s: %s", track_id, tag_err)
+                logger.debug("Live revert tag write failed", track_id=track_id, error=str(tag_err))
 
-        logger.info("[album_stage] Reverted live/acoustic tagging for track %s ('%s' → '%s')",
-                    track_id, old_title, new_title or old_title)
+        logger.info("Reverted live/acoustic tagging for track", track_id=track_id, old_title=old_title, new_title=new_title or old_title)
         return True
     except Exception as exc:
-        logger.debug("[album_stage] Live-state revert failed for %s: %s", track_id, exc)
+        logger.debug("Live-state revert failed", track_id=track_id, error=str(exc))
         return False
 
 
-def _persist_alternate_takes(album_context) -> None:
+def _persist_alternate_takes(album_context: dict[str, Any]) -> None:
     """Mark alternate takes (``alternate_take`` / ``base_track_id``)."""
     alternate_takes = (album_context or {}).get("alternate_takes") or {}
     updated = 0
-    from sqlalchemy import text as _text
-    from db.engine import db_session as _db_session
-    with _db_session() as session:
+    with db_session() as session:
         for base_key, variants in alternate_takes.items():
             if not variants or len(variants) < 2:
                 continue
@@ -896,19 +778,18 @@ def _persist_alternate_takes(album_context) -> None:
                 if alt_id and str(alt_id) != str(base_id):
                     try:
                         session.execute(
-                            _text("UPDATE tracks SET alternate_take = 1, base_track_id = :base_id "
+                            text("UPDATE tracks SET alternate_take = 1, base_track_id = :base_id "
                                   "WHERE id = :alt_id AND COALESCE(alternate_take, 0) = 0"),
                             {"base_id": str(base_id), "alt_id": str(alt_id)},
                         )
                         updated += 1
                     except Exception as exc:
-                        logger.debug("[album_stage] Alternate-take persist failed for %s: %s", alt_id, exc)
+                        logger.debug("Alternate-take persist failed", alt_id=alt_id, error=str(exc))
     if updated:
-        logger.info("[album_stage] Marked %s alternate take(s) in album", updated)
+        logger.info("Marked alternate take(s) in album", count=updated)
 
 
 def _get_discogs_token() -> str | None:
-    """Resolve the configured Discogs token (empty placeholders → None)."""
     try:
         from helpers.config_helpers import get_config
         cfg = get_config()
@@ -928,52 +809,32 @@ def _run_full_enrichment(
     detected_type: str,
     options: dict[str, Any],
     discogs_token: str | None,
-) -> tuple[dict, dict[str, list]]:
-    """Album art, artist metadata, tags, similar artists, live/remix tagging.
-
-    The 'full metadata import': everything beyond what singles detection and
-    popularity scoring need.  In a full scan this runs AFTER the per-track
-    singles pass (via ``enrich_album_extras``) so singles never wait on
-    enrichment lookups; metadata-only scans run it inline.
-    """
-    # 2. Album art (delegates to existing enrichment services)
+) -> tuple[dict[str, Any], dict[str, list[Any]]]:
+    """Album art, artist metadata, tags, similar artists, live/remix tagging."""
+    
     art_source = _fetch_album_art_with_fallback(artist, album, discogs_token)
     if art_source:
-        logger.info("[album_stage] Album art cached for %s - %s (%s)", artist, album, art_source)
+        logger.info("Album art cached", artist=artist, album=album, source=art_source)
 
-    # 3. Artist metadata (delegates to existing enrichment services)
     meta = _fetch_artist_metadata(artist, None)
-
-    # Last.fm artist top tags (legacy parity)
     _fetch_artist_lastfm_tags(artist, None)
 
-    # Backfill releasecountry for tracks missing a release country so
-    # Navidrome's "Release Country" field stays populated (legacy parity).
     if meta.get("country"):
         try:
-            from sqlalchemy import text as _text
-            from db.engine import db_session as _db_session
-            with _db_session() as session:
+            with db_session() as session:
                 session.execute(
-                    _text("UPDATE tracks SET releasecountry = :country "
+                    text("UPDATE tracks SET releasecountry = :country "
                           "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
                           "AND (releasecountry IS NULL OR TRIM(releasecountry) = '')"),
                     {"country": meta["country"], "artist": artist},
                 )
         except Exception as exc:
-            logger.debug("[album_stage] releasecountry backfill failed: %s", exc)
+            logger.debug("releasecountry backfill failed", error=str(exc))
 
-    # 4. MusicBrainz artist ID — run BEFORE similar artists so the LB
-    #    similar-artists lookup can use the freshly resolved MBID.
     _fetch_musicbrainz_artist_id(artist, None, options)
-
-    # 5. Similar artists
     similar = _fetch_similar_artists(artist, None, options)
-
-    # 6. Discogs artist ID (legacy parity)
     _fetch_discogs_artist_id(artist, None, options)
-
-    # 7. Live/remix album tagging + alternate-take persistence
+    
     _apply_live_remix_album_tagging(artist, album, detected_type, album_tracks)
     _persist_alternate_takes(album_context)
 
@@ -988,15 +849,8 @@ def enrich_album_extras(
     album_tracks: list[dict[str, Any]],
     detected_type: str,
     options: dict[str, Any],
-) -> tuple[dict[str, Any], dict[str, list], dict]:
-    """Post-singles full metadata import for full scans.
-
-    Runs the album-level enrichment deferred by ``enrich_album`` (art cache,
-    artist metadata, Last.fm tags, similar artists, Discogs ID, live/remix
-    tagging, alternate takes) AFTER the per-track loop, so singles detection
-    never waits on enrichment lookups.  Returns ``(extra_context, similar,
-    meta)`` for the caller to merge into the album result.
-    """
+) -> tuple[dict[str, Any], dict[str, list[Any]], dict[str, Any]]:
+    """Post-singles full metadata import for full scans."""
     meta, similar = _run_full_enrichment(
         artist,
         album,
@@ -1023,22 +877,7 @@ def enrich_album(
     stat_eligible_tracks: list[dict[str, Any]],
     options: dict[str, Any],
 ) -> dict[str, Any]:
-    """Run album-level enrichment.
-
-    Returns a dict with enrichment results that the caller can pass downstream
-    to per-track processing and finalisation stages.
-
-    Scan-mode gates: a singles pass only needs the album type (compilation
-    detection feeds singles detection) and the MusicBrainz artist ID (the
-    artist-scoped release-group search); art / bio / country / similar
-    artists / Last.fm tags / live-remix tagging are NOT singles work. A
-    popularity-only pass needs none of the enrichment at all — popularity
-    scoring reads raw counts, not album enrichment — so only the free
-    name-based type detection runs (no API calls).  A full scan defers the
-    heavy enrichment (art / metadata / similar artists / tags / live-remix
-    tagging) to ``enrich_album_extras`` AFTER the per-track singles loop;
-    metadata-only scans run it inline here.
-    """
+    """Run album-level enrichment."""
     artist = str(album_row.get("artist") or "")
     album = str(album_row.get("album") or "")
     album_artist = str(album_row.get("album_artist") or "")
@@ -1054,20 +893,13 @@ def enrich_album(
         or options.get("singles_detection_only")
     )
     _popularity_pass = bool(options.get("popularity_only"))
-    _meta = {"country": None, "bio": None, "image_url": None}
-    _similar: dict[str, list] = {"lastfm": [], "listenbrainz": []}
+    _meta: dict[str, Any] = {"country": None, "bio": None, "image_url": None}
+    _similar: dict[str, list[Any]] = {"lastfm": [], "listenbrainz": []}
 
     discogs_token = _get_discogs_token()
-
     album_tracks = album_row.get("tracks") or []
+    
     try:
-        # 1. Album type detection (name-based + MusicBrainz release-group).
-        # A popularity-only pass runs the free name-based check only — the MB
-        # release-group lookup and the persistence write are not required to
-        # score popularity (and the persist could clobber a stronger type that
-        # a full scan detected). A singles pass keeps the MB lookup: the
-        # single/EP verdict feeds singles detection's compilation/track-count
-        # gates.
         detected_type = _detect_album_type(artist, album, album_artist or None, spotify_type or None)
         if _popularity_pass:
             is_hetero = any(m in detected_type.lower() for m in _HETEROGENEOUS_MARKERS)
@@ -1075,48 +907,31 @@ def enrich_album(
             mb_type, rg_mbid = _lookup_musicbrainz_album_type(artist, album)
             if mb_type:
                 track_count = len(album_tracks)
-                # A MusicBrainz 'single'/'ep' verdict for a large track count is
-                # almost certainly a full album — downgrade (legacy EP override).
                 if mb_type in ("single", "ep") and track_count > 6:
                     mb_type = "album"
                 elif mb_type == "single" and track_count > 3:
                     mb_type = "ep"
-                # Prefer the MusicBrainz verdict for single/EP (name-based heuristics
-                # cannot detect those) and let it refine a plain 'album' verdict;
-                # keep name-based live/soundtrack/compilation verdicts otherwise.
                 if detected_type == "album" or mb_type in ("single", "ep"):
                     detected_type = mb_type
-                    logger.info("[album_stage] MB album type for '%s - %s': %s", artist, album, detected_type)
+                    logger.info("MB album type detected", artist=artist, album=album, type=detected_type)
+                    
             is_hetero = any(m in detected_type.lower() for m in _HETEROGENEOUS_MARKERS)
-            logger.info("[album_stage] '%s - %s' → type=%s, heterogeneous=%s",
-                         artist, album, detected_type, is_hetero)
+            logger.info("Album type resolved", artist=artist, album=album, type=detected_type, heterogeneous=is_hetero)
 
-            # Propagate the detected type + release-group MBID to album tracks.
             _persist_album_type_to_tracks(None, None, artist, album, album_tracks, detected_type, rg_mbid)
 
-            # Mark compilation/soundtrack albums (legacy is_compilation flag).
             if "+compilation" in detected_type.lower() or "+soundtrack" in detected_type.lower():
                 try:
-                    from sqlalchemy import text as _text
-                    from db.engine import db_session as _db_session
-                    with _db_session() as session:
+                    with db_session() as session:
                         session.execute(
-                            _text("UPDATE tracks SET is_compilation = 1 "
+                            text("UPDATE tracks SET is_compilation = 1 "
                                   "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album "
                                   "AND COALESCE(is_compilation, 0) = 0"),
                             {"artist": artist, "album": album},
                         )
                 except Exception as exc:
-                    logger.debug("[album_stage] Compilation flag persist failed: %s", exc)
+                    logger.debug("Compilation flag persist failed", error=str(exc))
 
-        # 2. Album art / artist metadata / similar artists / Last.fm tags /
-        #    Discogs id / live-remix tagging — enrichment, not singles or
-        #    popularity work.  A singles pass keeps ONLY the MusicBrainz artist
-        #    ID (the artist-scoped release-group search feeds singles
-        #    detection); a popularity-only pass skips all of it.  A full scan
-        #    defers the heavy enrichment until AFTER the per-track singles
-        #    loop (``enrich_album_extras``) so singles never wait on it;
-        #    metadata-only scans run it inline here.
         if _popularity_pass or _singles_pass:
             art_source = None
             meta = _meta
@@ -1125,8 +940,6 @@ def enrich_album(
                 _fetch_musicbrainz_artist_id(artist, None, options)
         else:
             if bool(options.get("defer_full_enrichment")):
-                # Full scan: only the MB artist ID runs now (singles detection
-                # uses it); the rest runs post-singles in enrich_album_extras.
                 art_source = None
                 meta = _meta
                 similar = _similar
@@ -1137,15 +950,8 @@ def enrich_album(
                     detected_type, options, discogs_token,
                 )
 
-        # 8. Cover song detection (legacy parity — full CoverDetector).
-        # NOTE: the full cover pass (work-history lookup + "Title (Artist
-        # Cover)" rename) runs as its OWN stage AFTER the per-track singles
-        # detection loop in ``scan_stage_runner`` — keeping this album
-        # enrichment section fast (no serial cover API lookups right after
-        # album art caching). The per-track ``detect_cover_song`` check in
-        # track_stage still runs here implicitly via the track loop.
     except Exception as exc:
-        logger.error("[album_stage] Enrichment failed for '%s - %s': %s", artist, album, exc)
+        logger.error("Enrichment failed", artist=artist, album=album, error=str(exc), exc_info=True)
         detected_type = "album"
         is_hetero = False
         art_source = None
@@ -1169,4 +975,3 @@ def enrich_album(
         "similar_artists": similar,
         "artist_metadata": meta,
     }
-

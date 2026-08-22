@@ -4,25 +4,22 @@ Queue matching routes.
 
 from __future__ import annotations
 
-
 import asyncio
+from typing import Any
 
+import structlog
 from quart import Blueprint, request
+from sqlalchemy import text
+
+from db.engine import db_session
+from db.repositories.queue import get_queue_item, update_queue_item
 from routes.utils import json_response as _json_response
-
-
-from services.downloads.download_organize_service import (
-    organize_track,
-)
-
-from services.downloads.download_matching_service import (
-    match_folder,
-    auto_match_folder,
-)
+from services.downloads.download_organize_service import organize_track
+from services.downloads.download_matching_service import match_folder, auto_match_folder
 from services.queue.queue_processing_service import organize_group_sync
 from services.tasks.queue_tasks import start_organize_group
-from db.utils import row_get
 
+logger = structlog.get_logger(__name__)
 queue_matching_bp = Blueprint("queue_matching", __name__)
 
 # -----------------------------------------------------------------------------
@@ -30,7 +27,7 @@ queue_matching_bp = Blueprint("queue_matching", __name__)
 # -----------------------------------------------------------------------------
 
 @queue_matching_bp.route("/api/queue/move-to-music/<int:queue_id>", methods=["POST"])
-async def api_queue_move_to_music(queue_id: int):
+async def api_queue_move_to_music(queue_id: int) -> Any:
     payload = (await request.get_json(silent=True)) or {}
     return _json_response(organize_track(queue_id, payload))
 
@@ -40,18 +37,15 @@ async def api_queue_move_to_music(queue_id: int):
 # -----------------------------------------------------------------------------
 
 @queue_matching_bp.route("/api/queue/<int:queue_id>/match-targets", methods=["GET"])
-def api_queue_match_targets(queue_id: int):
+def api_queue_match_targets(queue_id: int) -> Any:
     """Search library tracks to manually link an orphan queue item."""
     query = (request.args.get("q") or "").strip()
     try:
-        from sqlalchemy import text as _text
-        from db.engine import db_session
-
         with db_session() as session:
             if query:
                 like = f"%{query}%"
                 rows = session.execute(
-                    _text("""
+                    text("""
                         SELECT id, artist, album, title, album_artist, year
                         FROM tracks
                         WHERE artist ILIKE :like OR title ILIKE :like OR album ILIKE :like
@@ -62,24 +56,26 @@ def api_queue_match_targets(queue_id: int):
                 ).fetchall()
             else:
                 rows = session.execute(
-                    _text("""
+                    text("""
                         SELECT id, artist, album, title, album_artist, year
                         FROM tracks
                         ORDER BY artist, album, title
                         LIMIT 30
                     """)
                 ).fetchall()
+                
         return _json_response({
             "success": True,
             "queue_id": queue_id,
             "tracks": [dict(r._mapping) for r in rows],
         })
     except Exception as exc:
+        logger.error("Failed to fetch match targets", queue_id=queue_id, error=str(exc))
         return _json_response({"success": False, "error": str(exc)})
 
 
 @queue_matching_bp.route("/api/queue/<int:queue_id>/link-track", methods=["POST"])
-async def api_queue_link_track(queue_id: int):
+async def api_queue_link_track(queue_id: int) -> Any:
     """Point an orphan queue item at a library track.
 
     Copies the track's metadata onto the queue row, stores
@@ -93,15 +89,12 @@ async def api_queue_link_track(queue_id: int):
         return _json_response({"success": False, "error": "track_id is required"})
 
     try:
-        from sqlalchemy import text as _text
-        from db.engine import db_session
-        from db.repositories.queue import get_queue_item, update_queue_item
-
         with db_session() as session:
             row = session.execute(
-                _text("SELECT id, artist, album, title, album_artist, year FROM tracks WHERE id = :tid"),
+                text("SELECT id, artist, album, title, album_artist, year FROM tracks WHERE id = :tid"),
                 {"tid": track_id},
             ).fetchone()
+            
         if row is None:
             return _json_response({"success": False, "error": "Track not found"})
 
@@ -122,6 +115,7 @@ async def api_queue_link_track(queue_id: int):
         )
         return _json_response({"success": True, "item": updated})
     except Exception as exc:
+        logger.error("Failed to link track", queue_id=queue_id, track_id=track_id, error=str(exc))
         return _json_response({"success": False, "error": str(exc)})
 
 
@@ -130,13 +124,13 @@ async def api_queue_link_track(queue_id: int):
 # -----------------------------------------------------------------------------
 
 @queue_matching_bp.route("/api/queue/<int:queue_id>/organize", methods=["POST"])
-async def api_queue_organize(queue_id: int):
+async def api_queue_organize(queue_id: int) -> Any:
     payload = (await request.get_json(silent=True)) or {}
     return _json_response(organize_track(queue_id, payload))
 
 
 @queue_matching_bp.route("/api/queue/organize-group", methods=["POST"])
-async def api_queue_organize_group():
+async def api_queue_organize_group() -> Any:
     payload = (await request.get_json(silent=True)) or {}
     group_id = payload.get("group_id") or payload.get("import_group")
 
@@ -158,8 +152,6 @@ async def api_queue_organize_group():
             "message": "Organization started in background",
         }, 202))
 
-    # organize_group_sync does filesystem moves + DB writes — offload so the
-    # event loop stays responsive while a large group organizes.
     return _json_response(await asyncio.to_thread(organize_group_sync, group_id, payload.get("metadata") or {}))
 
 # -----------------------------------------------------------------------------
@@ -167,7 +159,7 @@ async def api_queue_organize_group():
 # -----------------------------------------------------------------------------
 
 @queue_matching_bp.route("/api/queue/match-folder", methods=["POST"])
-async def api_match_folder():
+async def api_match_folder() -> Any:
     payload = (await request.get_json(silent=True)) or {}
     folder_path = payload.get("folder_path")
     if not folder_path:
@@ -180,7 +172,7 @@ async def api_match_folder():
 
 
 @queue_matching_bp.route("/api/queue/auto-match-folder", methods=["POST"])
-async def api_auto_match_folder():
+async def api_auto_match_folder() -> Any:
     payload = (await request.get_json(silent=True)) or {}
     folder_path = payload.get("folder_path")
     if not folder_path:
@@ -197,14 +189,9 @@ async def api_auto_match_folder():
 # -----------------------------------------------------------------------------
 
 @queue_matching_bp.route("/api/queue/matched-releases", methods=["GET"])
-def api_queue_matched_releases():
+def api_queue_matched_releases() -> Any:
     """Return all unique releases currently in the download queue."""
-    import logging as _logging
-
     try:
-        from sqlalchemy import text
-        from db.engine import db_session
-
         artist_filter = (request.args.get("artist") or "").strip()
         album_filter = (request.args.get("album") or "").strip()
         try:
@@ -252,18 +239,19 @@ def api_queue_matched_releases():
 
         releases = []
         for row in rows:
+            mapping = row._mapping
             releases.append({
-                "mbid": row_get(row, "mbid", 0) or "",
-                "artist": row_get(row, "release_artist", 1) or "",
-                "album": row_get(row, "release_album", 2) or "",
-                "year": row_get(row, "resolved_year", 3) or "",
-                "track_count": int(row_get(row, "track_count", 4) or 0),
+                "mbid": str(mapping.get("mbid") or ""),
+                "artist": str(mapping.get("release_artist") or ""),
+                "album": str(mapping.get("release_album") or ""),
+                "year": str(mapping.get("resolved_year") or ""),
+                "track_count": int(mapping.get("track_count") or 0),
             })
 
         return _json_response({"success": True, "releases": releases})
 
     except Exception as exc:
-        _logging.getLogger(__name__).error("Error fetching matched releases: %s", exc)
+        logger.error("Error fetching matched releases", error=str(exc))
         return _json_response({"success": False, "error": str(exc)}), 500
 
 
@@ -272,12 +260,9 @@ def api_queue_matched_releases():
 # -----------------------------------------------------------------------------
 
 @queue_matching_bp.route("/api/queue/<int:queue_id>/reset-match", methods=["POST"])
-def api_queue_reset_match(queue_id: int):
+def api_queue_reset_match(queue_id: int) -> Any:
     """Reset a queue item's match so it can be rematched manually."""
     try:
-        from sqlalchemy import text
-        from db.engine import db_session
-
         with db_session() as session:
             result = session.execute(
                 text("""
@@ -302,6 +287,7 @@ def api_queue_reset_match(queue_id: int):
         return _json_response({"success": True, "message": "Queue item match reset", "queue_id": queue_id})
 
     except Exception as exc:
+        logger.error("Failed to reset queue match", queue_id=queue_id, error=str(exc))
         return _json_response({"success": False, "error": str(exc)}), 500
 
 
@@ -310,10 +296,8 @@ def api_queue_reset_match(queue_id: int):
 # -----------------------------------------------------------------------------
 
 @queue_matching_bp.route("/api/queue/<int:queue_id>/apply-mbid-match", methods=["POST"])
-async def api_queue_apply_mbid_match(queue_id: int):
+async def api_queue_apply_mbid_match(queue_id: int) -> Any:
     """Apply a MusicBrainz release match to a single queue item."""
-    import logging as _logging
-
     try:
         payload = (await request.get_json(silent=True)) or {}
         new_mbid = (payload.get("new_mbid") or "").strip()
@@ -323,8 +307,6 @@ async def api_queue_apply_mbid_match(queue_id: int):
         if not new_mbid:
             return _json_response({"success": False, "error": "new_mbid is required"}), 400
 
-        from sqlalchemy import text
-        from db.engine import db_session
         import_group = f"mbid_{new_mbid}"
 
         with db_session() as session:
@@ -338,8 +320,6 @@ async def api_queue_apply_mbid_match(queue_id: int):
                 """),
                 {
                     "new_mbid": new_mbid,
-                    # COALESCE on the raw stripped values (empty string wins —
-                    # matches the legacy %s bind exactly).
                     "new_album": new_album,
                     "new_artist": new_artist,
                     "import_group": import_group,
@@ -353,5 +333,5 @@ async def api_queue_apply_mbid_match(queue_id: int):
         return _json_response({"success": True, "message": "MBID match applied", "queue_id": queue_id})
 
     except Exception as exc:
-        _logging.getLogger(__name__).error("Error applying MBID match: %s", exc)
+        logger.error("Error applying MBID match", queue_id=queue_id, error=str(exc))
         return _json_response({"success": False, "error": str(exc)}), 500

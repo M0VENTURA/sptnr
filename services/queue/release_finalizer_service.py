@@ -1,7 +1,5 @@
 """Release Finalization Service.
 
-Migrated from ``old_system/musicbrainz_finalizer.py``.
-
 Finalizes MusicBrainz releases when all tracks are discovered:
 1. Finds releases where ``discovered_count >= total_tracks``
 2. Creates final directory structure in the music library
@@ -12,19 +10,20 @@ Finalizes MusicBrainz releases when all tracks are discovered:
 
 from __future__ import annotations
 
-import logging
 import os
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
+import structlog
 from sqlalchemy import text
+
 from db.engine import db_session
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
-def get_ready_releases() -> List[Dict[str, Any]]:
+def get_ready_releases() -> list[dict[str, Any]]:
     """Find all active releases where all tracks have been discovered."""
     try:
         with db_session() as session:
@@ -40,34 +39,29 @@ def get_ready_releases() -> List[Dict[str, Any]]:
                     ORDER BY created_at ASC
                 """)
             ).fetchall() or []
-        releases: List[Dict[str, Any]] = []
+            
+        releases: list[dict[str, Any]] = []
         for row in rows:
+            mapping = getattr(row, "_mapping", None)
             releases.append({
-                "id": row[0],
-                "release_id": row[1],
-                "release_title": row[2],
-                "artist": row[3],
-                "release_year": row[4],
-                "monitoring_folder_path": row[5],
-                "total_tracks": row[6],
-                "discovered_count": row[7],
-                "created_at": row[8],
+                "id": mapping.get("id") if mapping else row[0],
+                "release_id": mapping.get("release_id") if mapping else row[1],
+                "release_title": mapping.get("release_title") if mapping else row[2],
+                "artist": mapping.get("artist") if mapping else row[3],
+                "release_year": mapping.get("release_year") if mapping else row[4],
+                "monitoring_folder_path": mapping.get("monitoring_folder_path") if mapping else row[5],
+                "total_tracks": mapping.get("total_tracks") if mapping else row[6],
+                "discovered_count": mapping.get("discovered_count") if mapping else row[7],
+                "created_at": mapping.get("created_at") if mapping else row[8],
             })
         return releases
     except Exception as exc:
-        logger.error("Failed to find ready releases: %s", exc)
+        logger.error("Failed to find ready releases", error=str(exc))
         return []
 
 
-def finalize_release(release: Dict[str, Any]) -> bool:
-    """Finalize a single release: move files, update DB, clean up.
-
-    Args:
-        release: Dict from ``get_ready_releases()``.
-
-    Returns:
-        True if the release was finalised successfully.
-    """
+def finalize_release(release: dict[str, Any]) -> bool:
+    """Finalize a single release: move files, update DB, clean up."""
     try:
         release_db_id = release["id"]
         release_id = release["release_id"]
@@ -77,10 +71,9 @@ def finalize_release(release: Dict[str, Any]) -> bool:
         monitoring_path = Path(str(release["monitoring_folder_path"]))
 
         if not monitoring_path.exists():
-            logger.error("Monitoring folder not found: %s", monitoring_path)
+            logger.error("Monitoring folder not found", path=str(monitoring_path), release_id=release_id)
             return False
 
-        # Build final destination: /music/ARTIST/YEAR - ALBUM/
         music_root = (
             os.environ.get("MUSIC_FOLDER")
             or os.environ.get("MUSIC_ROOT")
@@ -90,7 +83,6 @@ def finalize_release(release: Dict[str, Any]) -> bool:
         dest_dir = Path(music_root) / artist / f"{year_tag}{title}"
         dest_dir.mkdir(parents=True, exist_ok=True)
 
-        # Get track files and rename with track numbers
         audio_extensions = {".mp3", ".flac", ".m4a", ".ogg", ".wav", ".aac", ".wma"}
         with db_session() as session:
             result = session.execute(
@@ -120,26 +112,24 @@ def finalize_release(release: Dict[str, Any]) -> bool:
             if ext not in audio_extensions:
                 continue
 
-            # Build new filename: "01. Artist - Title.ext"
             num_str = f"{int(track_num):02d}" if track_num else f"{idx + 1:02d}"
             new_name = f"{num_str}. {artist} - {track_title}{ext}"
-            # Sanitize filename
             new_name = "".join(c for c in new_name if c.isprintable() and c not in '<>:"/\\|?*')
             dest_path = dest_dir / new_name
 
-            # Move file
             shutil.move(str(src), str(dest_path))
-            logger.debug("Moved %s → %s", src, dest_path)
+            logger.debug("Moved release track", source=str(src), target=str(dest_path))
 
-            # Update track record
             with db_session() as session:
                 session.execute(
-                    text("UPDATE musicbrainz_release_tracks SET file_path = :fp "
-                         "WHERE release_id = :release_id AND track_number = :track_number"),
+                    text("""
+                        UPDATE musicbrainz_release_tracks 
+                        SET file_path = :fp 
+                        WHERE release_id = :release_id AND track_number = :track_number
+                    """),
                     {"fp": str(dest_path), "release_id": release_id, "track_number": track_num},
                 )
 
-        # Update release status
         with db_session() as session:
             session.execute(
                 text("""
@@ -153,17 +143,19 @@ def finalize_release(release: Dict[str, Any]) -> bool:
                 {"path": str(dest_dir), "id": release_db_id},
             )
 
-        # Clean up empty monitoring folder
         _cleanup_folder(monitoring_path)
 
         logger.info(
-            "Finalized release '%s' by '%s' → %s (%d tracks)",
-            title, artist, dest_dir, len(tracks),
+            "Successfully finalized release",
+            title=title,
+            artist=artist,
+            destination=str(dest_dir),
+            track_count=len(tracks),
         )
         return True
 
     except Exception as exc:
-        logger.error("Failed to finalize release %s: %s", release.get("release_id"), exc)
+        logger.error("Failed to finalize release", release_id=release.get("release_id"), error=str(exc))
         return False
 
 
@@ -172,19 +164,13 @@ def _cleanup_folder(folder: Path) -> None:
     try:
         if folder.exists() and not any(folder.iterdir()):
             shutil.rmtree(folder, ignore_errors=True)
-            logger.debug("Removed empty monitoring folder: %s", folder)
+            logger.debug("Removed empty monitoring folder", path=str(folder))
     except Exception as exc:
-        logger.debug("Could not clean up folder %s: %s", folder, exc)
+        logger.debug("Could not clean up monitoring folder", path=str(folder), error=str(exc))
 
 
-def run_finalization_check() -> Dict[str, Any]:
-    """Find and finalize all ready releases.
-
-    Called periodically by the queue processor or scheduler.
-
-    Returns:
-        Dict with ``finalized`` and ``checked`` counts.
-    """
+def run_finalization_check() -> dict[str, Any]:
+    """Find and finalize all ready releases."""
     ready = get_ready_releases()
     if not ready:
         return {"finalized": 0, "checked": 0}
@@ -194,5 +180,5 @@ def run_finalization_check() -> Dict[str, Any]:
         if finalize_release(release):
             finalized += 1
 
-    logger.info("Release finalization: %d/%d finalized", finalized, len(ready))
+    logger.info("Release finalization check complete", finalized=finalized, checked=len(ready))
     return {"finalized": finalized, "checked": len(ready)}

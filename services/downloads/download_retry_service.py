@@ -1,21 +1,25 @@
-"""
-Download Retry Service (refactored)
+"""Download Retry Service (refactored).
 
-Handles retrying failed downloads.  Soulseek (slskd) is the only download
+Handles retrying failed downloads. Soulseek (slskd) is the only download
 method; legacy rows carrying a ``qbittorrent`` source are normalised to
 Soulseek when they are retried.
 """
 
 from __future__ import annotations
 
-import logging
 from typing import Any, Dict
 
+import structlog
 from sqlalchemy import text
-from db.engine import db_session
-from db.repositories.queue import get_ready_for_processing, mark_processing, requeue_due_failed_items
 
-logger = logging.getLogger(__name__)
+from db.engine import db_session
+from db.repositories.queue import (
+    get_ready_for_processing,
+    mark_processing,
+    requeue_due_failed_items,
+)
+
+logger = structlog.get_logger(__name__)
 
 # When a download fails 3+ times with the same method, switch to fallback.
 _METHOD_FAIL_THRESHOLD = 3
@@ -36,21 +40,17 @@ def _retry_scheduler_enabled() -> bool:
 
 
 def requeue_failed_items(limit: int = 50) -> int:
-    """Requeue failed items that are due for automatic retry.
-
-    Skips entirely when the retry scheduler is disabled in config
-    (``features.retry_scheduler.auto_start: false``).  Manual retry via the
-    Retry buttons is always available regardless of this setting.
-    """
+    """Requeue failed items that are due for automatic retry."""
     if not _retry_scheduler_enabled():
         return 0
+        
     try:
         requeued = requeue_due_failed_items(limit=limit)
         if requeued:
-            logger.info("[RETRY_SCHEDULER] Requeued %s failed item(s)", len(requeued))
+            logger.info("Requeued failed item(s) for retry", count=len(requeued))
         return len(requeued)
     except Exception as exc:
-        logger.error("[RETRY_SCHEDULER] Failed to requeue items: %s", exc)
+        logger.error("Failed to requeue items", error=str(exc))
         return 0
 
 
@@ -58,8 +58,6 @@ def requeue_failed_items(limit: int = 50) -> int:
 # RETRY MANAGER (method fallback)
 # =============================================================================
 
-# Soulseek is the only download method — any legacy source (including old
-# ``qbittorrent`` rows) normalises back to Soulseek on retry.
 _METHOD_FALLBACK: dict[str, str] = {
     "soulseek": "soulseek",
     "slskd": "soulseek",
@@ -72,28 +70,12 @@ def run_retry_manager(
     navidrome_url: str | None = None,
     navidrome_token: str | None = None,
 ) -> Dict[str, int]:
-    """
-    Requeue failed items that are due for an automatic retry.
-
-    Only the ``failed`` → ``queued`` transition happens here; the actual
-    search/download work is left to ``process_next_batch``.  This function
-    must NOT touch items that are already ``queued`` — previously it marked
-    every ready item as ``processing`` without searching, which starved the
-    queue processor and left tracks never dispatched to Soulseek.
-
-    Returns:
-        ``{"retried": int, "completed": int, "method_switched": int, "requeued": int}``
-    """
-    retried = 0
-    completed = 0
-    method_switched = 0
+    """Requeue failed items that are due for an automatic retry."""
     requeued = requeue_failed_items()
-    retried = requeued
-
     return {
-        "retried": retried,
-        "completed": completed,
-        "method_switched": method_switched,
+        "retried": requeued,
+        "completed": 0,
+        "method_switched": 0,
         "requeued": requeued,
     }
 
@@ -115,7 +97,7 @@ def _switch_method(queue_id: int, new_method: str) -> None:
                 {"source": new_method, "qid": queue_id},
             )
     except Exception as exc:
-        logger.error("Failed to switch method for queue %s: %s", queue_id, exc)
+        logger.error("Failed to switch method for queue item", queue_id=queue_id, error=str(exc))
 
 
 def retry_due_items() -> dict[str, int]:
@@ -127,11 +109,7 @@ def run_retry_manager_with_navidrome_check(
     navidrome_url: str | None = None,
     navidrome_token: str | None = None,
 ) -> Dict[str, Any]:
-    """Extended retry that checks Navidrome before re-queuing.
-
-    If a track already exists in Navidrome, it's marked as 'completed'
-    instead of being retried.
-    """
+    """Extended retry that checks Navidrome before re-queuing."""
     import requests
 
     result: Dict[str, Any] = {
@@ -155,7 +133,6 @@ def run_retry_manager_with_navidrome_check(
                 artist = str(item.get("artist") or "")
                 title = str(item.get("title") or "")
 
-                # Check Navidrome first.
                 if navidrome_url and artist and title:
                     try:
                         resp = requests.get(
@@ -186,8 +163,10 @@ def run_retry_manager_with_navidrome_check(
                                 result["already_in_navidrome"] += 1
                                 result["completed"] += 1
                                 logger.info(
-                                    "[RETRY] Queue %s (%s - %s) already in Navidrome — marked completed",
-                                    queue_id, artist, title,
+                                    "Queue item already in Navidrome — marked completed",
+                                    queue_id=queue_id,
+                                    artist=artist,
+                                    title=title,
                                 )
                                 try:
                                     from services.queue.queue_diagnostics_service import log_queue_event
@@ -196,9 +175,8 @@ def run_retry_manager_with_navidrome_check(
                                     pass
                                 continue
                     except Exception as nav_err:
-                        logger.debug("[RETRY] Navidrome check failed for %s: %s", queue_id, nav_err)
+                        logger.debug("Navidrome check failed", queue_id=queue_id, error=str(nav_err))
 
-                # Apply the standard retry logic.
                 retry_count = int(item.get("retry_count") or 0)
                 current_source = str(item.get("source") or "soulseek").strip().lower()
 
@@ -212,20 +190,20 @@ def run_retry_manager_with_navidrome_check(
                 result["retried"] += 1
 
             except Exception as item_err:
-                logger.error("[RETRY] Failed retry for %s: %s", queue_id, item_err)
+                logger.error("Failed retry for queue item", queue_id=queue_id, error=str(item_err))
                 result["errors"].append(f"Queue {queue_id}: {item_err}")
 
     except Exception as exc:
-        logger.error("[RETRY] Fatal error: %s", exc)
+        logger.error("Fatal error in retry manager", error=str(exc))
         result["errors"].append(str(exc))
 
     logger.info(
-        "[RETRY] Pass complete: retried=%s completed=%s already_in_navidrome=%s method_switched=%s errors=%s",
-        result["retried"],
-        result["completed"],
-        result["already_in_navidrome"],
-        result["method_switched"],
-        len(result["errors"]),
+        "Retry pass complete",
+        retried=result["retried"],
+        completed=result["completed"],
+        already_in_navidrome=result["already_in_navidrome"],
+        method_switched=result["method_switched"],
+        errors=len(result["errors"]),
     )
 
     return result

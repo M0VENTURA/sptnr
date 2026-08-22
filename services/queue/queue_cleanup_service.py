@@ -13,47 +13,28 @@ Architecture:
 
 from __future__ import annotations
 
-import logging
-from typing import Any, Mapping
+from typing import Any, Mapping, Tuple
 
+import structlog
 from sqlalchemy import text
 
 from db.engine import db_session
 from db.repositories import queue as queue_repository
-from helpers.response_helpers import _ok, _fail, _safe_int
+from helpers.response_helpers import _fail, _ok, _safe_int
 
-logger = logging.getLogger(__name__)
-
+logger = structlog.get_logger(__name__)
 
 # =============================================================================
-# ✅ CLEANUP OPERATIONS
+# CLEANUP OPERATIONS
 # =============================================================================
 
-# Items stuck in 'searching' for more than 300 seconds are likely hung.
-# _SLSKD_SEARCH_MAX_WAIT_SECONDS is 150s, so legitimate searches can stay in
-# 'searching' for up to ~2.5 min. 300s (5 min, 2x) gives ample margin before
-# declaring an item truly stuck (e.g. after a crash left the status unreset).
 _STUCK_SEARCH_SECONDS = 300
-
-# Items stuck in 'downloading' for longer than 6 hours are presumed dead —
-# the downloads watcher normally completes them within minutes.
 _STUCK_DOWNLOAD_SECONDS = 6 * 3600
-
-# Items stuck in 'moving' for longer than 10 minutes are presumed abandoned —
-# a move is a short-lived atomic claim (see _move_and_import), so anything
-# still 'moving' after 10 minutes was left by a crashed/restarted worker.
 _STUCK_MOVING_MINUTES = 10
 
 
 def reset_abandoned_items() -> dict[str, int]:
-    """Reset items left in 'searching'/'processing' by a previous worker.
-
-    These statuses only exist while a worker is actively processing the item,
-    so at worker startup any item still in them was abandoned by a dead or
-    restarted worker — without this they would stay invisible and unretryable
-    forever. 'downloading' items are NOT touched: the slskd transfer may still
-    be running server-side.
-    """
+    """Reset items left in 'searching'/'processing' by a previous worker."""
     reset = 0
     try:
         with db_session() as session:
@@ -67,42 +48,21 @@ def reset_abandoned_items() -> dict[str, int]:
             )
             reset = int(result.rowcount or 0)
         if reset:
-            logger.warning(
-                "Reset %s abandoned queue item(s) at worker startup",
-                reset,
-            )
+            logger.warning("Reset abandoned queue items at worker startup", count=reset)
         return {"abandoned_reset": reset}
     except Exception as exc:
-        logger.exception("reset_abandoned_items failed")
+        logger.exception("reset_abandoned_items failed", error=str(exc))
         return {"abandoned_reset": 0, "error": str(exc)}
 
 
-def cleanup_stuck_items() -> dict[str, int]:
-    """Reset queue items stuck in 'searching'/'downloading'/'moving'.
-
-    Mirrors the legacy ``cleanup_stuck_searching_items`` / ``cleanup_stuck_moving_items``:
-    - ``searching`` items older than 5 minutes are reset to ``queued`` for retry.
-    - ``processing`` items older than 5 minutes are reset to ``queued`` for retry.
-    - ``downloading`` items older than 6 hours are reset to ``failed``.
-    - ``moving`` items older than 10 minutes are reset to ``downloading`` so the
-      completion service can re-match / promote them instead of leaving them
-      stuck forever (crashed move claim).
-
-    All staleness cutoffs are evaluated against the DB clock
-    (``CURRENT_TIMESTAMP``) so the comparison stays correct regardless of the
-    app/DB session timezone — matching the legacy recovery which used SQL
-    ``CURRENT_TIMESTAMP - INTERVAL``.
-
-    Returns:
-        ``{"searching_reset": int, "processing_reset": int,
-          "downloading_reset": int, "moving_reset": int}``
-    """
+def cleanup_stuck_items() -> dict[str, Any]:
+    """Reset queue items stuck in 'searching'/'downloading'/'moving'."""
     searching_reset = 0
     downloading_reset = 0
     processing_reset = 0
     moving_reset = 0
+    
     try:
-        # Stuck 'searching' → back to 'queued' so the worker retries it.
         with db_session() as session:
             result = session.execute(
                 text("""
@@ -116,10 +76,6 @@ def cleanup_stuck_items() -> dict[str, int]:
             )
             searching_reset = int(result.rowcount or 0)
 
-        # Stuck 'processing' (mid-search, worker crashed) → back to 'queued'.
-        # The pipeline marks items 'processing' for the duration of the
-        # Soulseek search, so a crash leaves them invisible AND unretryable;
-        # the same 5-minute cutoff as 'searching' applies.
         with db_session() as session:
             result = session.execute(
                 text("""
@@ -133,7 +89,6 @@ def cleanup_stuck_items() -> dict[str, int]:
             )
             processing_reset = int(result.rowcount or 0)
 
-        # Stuck 'downloading' → failed (the watcher never confirmed it).
         with db_session() as session:
             result = session.execute(
                 text("""
@@ -148,9 +103,6 @@ def cleanup_stuck_items() -> dict[str, int]:
             )
             downloading_reset = int(result.rowcount or 0)
 
-        # Stuck 'moving' → back to 'downloading' so the next completion cycle
-        # re-matches the file (and promotes to imported when it is already in
-        # /music) instead of leaving the row stuck in a crashed move claim.
         with db_session() as session:
             result = session.execute(
                 text("""
@@ -166,9 +118,13 @@ def cleanup_stuck_items() -> dict[str, int]:
 
         if searching_reset or downloading_reset or processing_reset or moving_reset:
             logger.warning(
-                "Reset stuck queue items — searching=%s, processing=%s, downloading=%s, moving=%s",
-                searching_reset, processing_reset, downloading_reset, moving_reset,
+                "Reset stuck queue items",
+                searching=searching_reset,
+                processing=processing_reset,
+                downloading=downloading_reset,
+                moving=moving_reset,
             )
+            
         return {
             "searching_reset": searching_reset,
             "processing_reset": processing_reset,
@@ -177,7 +133,7 @@ def cleanup_stuck_items() -> dict[str, int]:
         }
 
     except Exception as exc:
-        logger.exception("cleanup_stuck_items failed")
+        logger.exception("cleanup_stuck_items failed", error=str(exc))
         return {
             "searching_reset": 0,
             "processing_reset": 0,
@@ -187,146 +143,118 @@ def cleanup_stuck_items() -> dict[str, int]:
         }
 
 
-def queue_cleanup():
+def queue_cleanup() -> Any:
     try:
         result = queue_repository.cleanup()
-
         if isinstance(result, tuple):
             return result
-
         if isinstance(result, dict):
             return result, 200 if result.get("success", True) else 500
-
         return _ok(result=result)
-
     except Exception as exc:
-        logger.exception("queue_cleanup failed")
+        logger.exception("queue_cleanup failed", error=str(exc))
         return _fail(str(exc), 500)
 
 
-def queue_reset_moving(data: Mapping[str, Any]):
+def queue_reset_moving(data: Mapping[str, Any]) -> Any:
     try:
         queue_ids = data.get("queue_ids") or []
         stale_minutes = _safe_int(data.get("stale_minutes"), 5)
 
         result = queue_repository.reset_moving(queue_ids, stale_minutes)
-
         if isinstance(result, tuple):
             return result
-
         if isinstance(result, dict):
             return result, 200 if result.get("success", True) else 500
-
         return _ok(reset=result)
-
     except Exception as exc:
-        logger.exception("queue_reset_moving failed")
+        logger.exception("queue_reset_moving failed", error=str(exc))
         return _fail(str(exc), 500)
 
 
-def queue_cleanup_copied_sources():
+def queue_cleanup_copied_sources() -> Any:
     try:
         result = queue_repository.cleanup_copied_sources()
-
         if isinstance(result, tuple):
             return result
-
         if isinstance(result, dict):
             return result, 200 if result.get("success", True) else 500
-
         return _ok(cleaned=result)
-
     except Exception as exc:
-        logger.exception("queue_cleanup_copied_sources failed")
+        logger.exception("queue_cleanup_copied_sources failed", error=str(exc))
         return _fail(str(exc), 500)
 
 
-def queue_cleanup_orphaned(data: Mapping[str, Any]):
+def queue_cleanup_orphaned(data: Mapping[str, Any]) -> Any:
     try:
         result = queue_repository.cleanup_orphaned(dict(data or {}))
-
         if isinstance(result, tuple):
             return result
-
         if isinstance(result, dict):
             return result, 200 if result.get("success", True) else 500
-
         return _ok(cleaned=result)
-
     except Exception as exc:
-        logger.exception("queue_cleanup_orphaned failed")
+        logger.exception("queue_cleanup_orphaned failed", error=str(exc))
         return _fail(str(exc), 500)
 
 
-def queue_verify_and_prune(data: Mapping[str, Any]):
+def queue_verify_and_prune(data: Mapping[str, Any]) -> Any:
     try:
         result = queue_repository.verify_and_prune(dict(data or {}))
-
         if isinstance(result, tuple):
             return result
-
         if isinstance(result, dict):
             return result, 200 if result.get("success", True) else 500
-
         return _ok(result=result)
-
     except Exception as exc:
-        logger.exception("queue_verify_and_prune failed")
+        logger.exception("queue_verify_and_prune failed", error=str(exc))
         return _fail(str(exc), 500)
 
 
-def queue_delete_folder(data: Mapping[str, Any]):
+def queue_delete_folder(data: Mapping[str, Any]) -> Any:
     try:
         result = queue_repository.delete_folder(dict(data or {}))
-
         if isinstance(result, tuple):
             return result
-
         if isinstance(result, dict):
             return result, 200 if result.get("success", True) else 500
-
         return _ok(result=result)
-
     except Exception as exc:
-        logger.exception("queue_delete_folder failed")
+        logger.exception("queue_delete_folder failed", error=str(exc))
         return _fail(str(exc), 500)
 
 
-def queue_remove_group(data: Mapping[str, Any]):
+def queue_remove_group(data: Mapping[str, Any]) -> Any:
     try:
         result = queue_repository.remove_group(dict(data or {}))
-
         if isinstance(result, tuple):
             return result
-
         if isinstance(result, dict):
             return result, 200 if result.get("success", True) else 500
-
         return _ok(result=result)
-
     except Exception as exc:
-        logger.exception("queue_remove_group failed")
+        logger.exception("queue_remove_group failed", error=str(exc))
         return _fail(str(exc), 500)
 
 
 # =============================================================================
-# ✅ COMPATIBILITY ROUTES (keep if used)
+# COMPATIBILITY ROUTES
 # =============================================================================
 
-def clear(request):
+def clear(request: Any) -> Any:
     try:
         data = request.get_json(force=True) if request else {}
         result = queue_repository.clear_queue(data)
         return result, 200 if result.get("success") else 500
     except Exception as exc:
-        logger.exception("clear failed")
+        logger.exception("clear failed", error=str(exc))
         return _fail(str(exc), 500)
 
 
-def purge_all():
+def purge_all() -> Any:
     try:
         result = queue_repository.purge_all()
         return result, 200 if result.get("success") else 500
     except Exception as exc:
-        logger.exception("purge_all failed")
+        logger.exception("purge_all failed", error=str(exc))
         return _fail(str(exc), 500)

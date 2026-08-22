@@ -20,37 +20,33 @@ Architecture rules:
 
 from __future__ import annotations
 
-import logging
 import os
 import re
 import threading
-
-from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Tuple
 
+import structlog
+from sqlalchemy import text
 
+from api_clients.musicbrainz_http import MUSICBRAINZ_UUID_RE
+from db.engine import db_session
 from db.repositories.queue import (
-    get_queue_match_targets,
     get_album_queue_tracks,
+    get_queue_match_targets,
 )
-from db.repositories.tracks import (
-    find_library_track,
-)
-
+from db.repositories.tracks import find_library_track
 from helpers.normalization_service import (
-    normalize_match_text,
-    extract_track_disc,
     edition_annotations_compatible,
+    extract_track_disc,
+    normalize_match_text,
 )
-
 from services.enrichment.musicbrainz_service import (
     MusicBrainzService,
     fetch_musicbrainz_release_metadata,
     fetch_release_metadata,
 )
-from api_clients.musicbrainz_http import MUSICBRAINZ_UUID_RE
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 def _is_valid_mbid(value: str | None) -> bool:
@@ -102,7 +98,7 @@ def match_folder_group_with_musicbrainz(
             )
         return {"success": True, "candidates": candidates}
     except Exception as exc:
-        logger.debug("MusicBrainz release-group lookup failed: %s", exc)
+        logger.debug("MusicBrainz release-group lookup failed", error=str(exc))
         return {"success": False, "error": str(exc), "candidates": []}
 
 
@@ -140,7 +136,7 @@ def search_and_update_musicbrainz(queue_id: int, artist: str, title: str, album:
 
                 cover_art_url = get_release_image_from_caa(release_mbid) or ""
             except Exception as exc:
-                logger.debug("Cover Art Archive lookup failed for queue %s: %s", queue_id, exc)
+                logger.debug("Cover Art Archive lookup failed", queue_id=queue_id, error=str(exc))
 
         from db.repositories.queue import update_queue_item
 
@@ -163,7 +159,7 @@ def search_and_update_musicbrainz(queue_id: int, artist: str, title: str, album:
             "cover_art_url": cover_art_url or None,
         }
     except Exception as exc:
-        logger.error("MusicBrainz auto-search failed for queue_id=%s: %s", queue_id, exc, exc_info=True)
+        logger.error("MusicBrainz auto-search failed", queue_id=queue_id, error=str(exc), exc_info=True)
         return {"success": False, "error": str(exc)}
 
 
@@ -173,8 +169,8 @@ def search_and_update_musicbrainz(queue_id: int, artist: str, title: str, album:
 
 try:
     from db.repositories.musicbrainz_cache import (
-        get_cached_release_metadata,
         cache_release_metadata,
+        get_cached_release_metadata,
     )
 except ImportError:
     get_cached_release_metadata = None
@@ -195,13 +191,13 @@ except ImportError:
 # Small DB/helper utilities
 # =============================================================================
 
-def _row_get(row, key: str, index: int, default=None):
-    """
-    Safely read either dict-like DB rows or tuple/list rows.
-    """
-
+def _row_get(row: Any, key: str, index: int, default: Any = None) -> Any:
+    """Safely read either dict-like DB rows or tuple/list rows."""
     if row is None:
         return default
+
+    if hasattr(row, "_mapping"):
+        return row._mapping.get(key, default)
 
     if hasattr(row, "get"):
         return row.get(key, default)
@@ -212,16 +208,12 @@ def _row_get(row, key: str, index: int, default=None):
         return default
 
 
-def _extract_release_year(raw_year) -> int | None:
-    """
-    Extract a 4-digit release year from MusicBrainz metadata.
-    """
-
+def _extract_release_year(raw_year: Any) -> int | None:
+    """Extract a 4-digit release year from MusicBrainz metadata."""
     if raw_year in (None, ""):
         return None
 
     match = re.search(r"(19|20)\d{2}", str(raw_year))
-
     if not match:
         return None
 
@@ -232,11 +224,6 @@ def _extract_release_year(raw_year) -> int | None:
 
 
 # =============================================================================
-# Route/API wrappers
-# =============================================================================
-
-
-# =============================================================================
 # MBID batch match application
 # =============================================================================
 
@@ -244,19 +231,7 @@ def _prefetch_mbid_metadata_batch(
     mbid: str,
     queue_ids: List[int],
 ) -> None:
-    """
-    Fetch MusicBrainz release metadata and enrich already matched queue rows.
-
-    Replaces old route-local dependency:
-        from folder_matching_enhancements import get_musicbrainz_release_metadata
-
-    Behaviour:
-    - fetch release artist/title/year
-    - bulk update release-level fields on queue rows
-    - if queue rows already have recording_mbid, update track artist/title
-      from release metadata where possible
-    """
-
+    """Fetch MusicBrainz release metadata and enrich already matched queue rows."""
     if not mbid or not queue_ids:
         return
 
@@ -264,10 +239,7 @@ def _prefetch_mbid_metadata_batch(
         release_meta = fetch_release_metadata(mbid) or {}
 
         if not release_meta:
-            logger.debug(
-                "[QUEUE_MATCH_BATCH] No release metadata found for MBID %s",
-                mbid,
-            )
+            logger.debug("No release metadata found for MBID", mbid=mbid)
             return
 
         release_artist = (release_meta.get("artist") or "").strip() or None
@@ -293,14 +265,8 @@ def _prefetch_mbid_metadata_batch(
         if release_year is not None:
             release_updates["release_year"] = release_year
 
-        from sqlalchemy import text as _text
-        from db.engine import db_session as _db_session
-
         try:
-            with _db_session() as session:
-                # -----------------------------------------------------------------
-                # Bulk update release-level fields
-                # -----------------------------------------------------------------
+            with db_session() as session:
                 if release_updates:
                     ids_placeholders = ", ".join(f":qid{i}" for i in range(len(queue_ids)))
                     set_clause = ", ".join(
@@ -309,7 +275,7 @@ def _prefetch_mbid_metadata_batch(
                     )
 
                     session.execute(
-                        _text(f"""
+                        text(f"""
                             UPDATE download_queue
                             SET {set_clause},
                                 updated_at = CURRENT_TIMESTAMP
@@ -321,14 +287,11 @@ def _prefetch_mbid_metadata_batch(
                         },
                     )
 
-                # -----------------------------------------------------------------
-                # Per-item track-level updates where recording_mbid is known
-                # -----------------------------------------------------------------
                 if tracks_by_rec_mbid:
                     ids_placeholders = ", ".join(f":qid{i}" for i in range(len(queue_ids)))
 
                     rows = session.execute(
-                        _text(f"""
+                        text(f"""
                             SELECT id, recording_mbid
                             FROM download_queue
                             WHERE id IN ({ids_placeholders})
@@ -346,12 +309,10 @@ def _prefetch_mbid_metadata_batch(
                             continue
 
                         track = tracks_by_rec_mbid.get(recording_mbid)
-
                         if not track:
                             continue
 
                         track_updates: Dict[str, Any] = {}
-
                         track_artist = (track.get("artist") or "").strip()
                         track_title = (
                             track.get("title")
@@ -374,7 +335,7 @@ def _prefetch_mbid_metadata_batch(
                         )
 
                         session.execute(
-                            _text(f"""
+                            text(f"""
                                 UPDATE download_queue
                                 SET {set_clause},
                                     updated_at = CURRENT_TIMESTAMP
@@ -386,24 +347,13 @@ def _prefetch_mbid_metadata_batch(
                             },
                         )
 
-                # db_session commits on exit.
-
-            logger.info(
-                "[QUEUE_MATCH_BATCH] Prefetched MB metadata for MBID %s: %s item(s), release fields=%s",
-                mbid,
-                len(queue_ids),
-                sorted(release_updates.keys()),
-            )
+            logger.info("Prefetched MB metadata for MBID", mbid=mbid, count=len(queue_ids), fields=sorted(release_updates.keys()))
 
         except Exception:
             raise
 
     except Exception as exc:
-        logger.warning(
-            "[QUEUE_MATCH_BATCH] Metadata prefetch failed for MBID %s: %s",
-            mbid,
-            exc,
-        )
+        logger.warning("Metadata prefetch failed for MBID", mbid=mbid, error=str(exc))
 
 
 def _expand_release_tracks(
@@ -411,15 +361,7 @@ def _expand_release_tracks(
     artist_name: str,
     album_name: str,
 ) -> None:
-    """
-    Expand a MusicBrainz release into queue rows.
-
-    Replaces old route-local dependency:
-        from download_queue_manager import add_to_queue
-
-    Import is intentionally inside the function to avoid circular imports.
-    """
-
+    """Expand a MusicBrainz release into queue rows."""
     if not mbid:
         return
 
@@ -440,7 +382,6 @@ def _expand_release_tracks(
 
         for track in release_tracks:
             track_title = (track.get("title") or "").strip()
-
             if not track_title:
                 continue
 
@@ -451,7 +392,6 @@ def _expand_release_tracks(
             ).strip() or artist_name
 
             track_duration = track.get("duration")
-
             if track_duration:
                 try:
                     track_duration = int(track_duration) // 1000
@@ -477,19 +417,10 @@ def _expand_release_tracks(
             if result.get("success"):
                 added_tracks += 1
 
-        logger.info(
-            "[QUEUE_MATCH_BATCH] Expanded MBID %s: added %s track(s)",
-            mbid,
-            added_tracks,
-        )
+        logger.info("Expanded MBID release tracks", mbid=mbid, added_tracks=added_tracks)
 
     except Exception as exc:
-        logger.warning(
-            "[QUEUE_MATCH_BATCH] Release expansion failed for MBID %s: %s",
-            mbid,
-            exc,
-        )
-
+        logger.warning("Release expansion failed for MBID", mbid=mbid, error=str(exc))
 
 
 # =============================================================================
@@ -499,13 +430,7 @@ def _expand_release_tracks(
 def get_musicbrainz_release_metadata(
     release_id: str,
 ) -> Optional[Dict[str, Any]]:
-    """
-    Fetch release metadata from cache first, then MusicBrainz live service.
-
-    Removes old legacy dependency:
-        from post_download_processor import fetch_musicbrainz_release_metadata
-    """
-
+    """Fetch release metadata from cache first, then MusicBrainz live service."""
     if not release_id:
         return None
 
@@ -514,16 +439,10 @@ def get_musicbrainz_release_metadata(
     if get_cached_release_metadata:
         try:
             cached_metadata = get_cached_release_metadata(release_id)
-
             if cached_metadata and cached_metadata.get("tracks"):
                 return cached_metadata
-
         except Exception as cache_err:
-            logger.debug(
-                "Could not read cached MusicBrainz metadata for %s: %s",
-                release_id,
-                cache_err,
-            )
+            logger.debug("Could not read cached MusicBrainz metadata", release_id=release_id, error=str(cache_err))
 
     try:
         live_metadata = fetch_musicbrainz_release_metadata(release_id)
@@ -532,20 +451,12 @@ def get_musicbrainz_release_metadata(
             try:
                 cache_release_metadata(release_id, live_metadata)
             except Exception as cache_write_err:
-                logger.debug(
-                    "Could not cache MusicBrainz metadata for %s: %s",
-                    release_id,
-                    cache_write_err,
-                )
+                logger.debug("Could not cache MusicBrainz metadata", release_id=release_id, error=str(cache_write_err))
 
         return live_metadata or cached_metadata
 
     except Exception as live_err:
-        logger.error(
-            "Error fetching MusicBrainz release metadata for %s: %s",
-            release_id,
-            live_err,
-        )
+        logger.error("Error fetching MusicBrainz release metadata", release_id=release_id, error=str(live_err))
         return cached_metadata
 
 
@@ -553,10 +464,7 @@ def get_release_tracks(
     release_id: str,
     source: str = "musicbrainz",
 ) -> List[Dict[str, Any]]:
-    """
-    Fetch full track listing for a MusicBrainz or Discogs release.
-    """
-
+    """Fetch full track listing for a MusicBrainz or Discogs release."""
     if not release_id:
         return []
 
@@ -569,19 +477,13 @@ def get_release_tracks(
             if not fetch_discogs_tracks:
                 logger.warning("Discogs track fetcher is not available")
                 return []
-
             return fetch_discogs_tracks(release_id)
 
-        logger.error("Unknown release source: %s", source, exc_info=True)
+        logger.error("Unknown release source", source=source)
         return []
 
     except Exception as exc:
-        logger.error(
-            "Error fetching %s release tracks for %s: %s",
-            source,
-            release_id,
-            exc,
-        )
+        logger.error("Error fetching release tracks", source=source, release_id=release_id, error=str(exc))
         return []
 
 
@@ -589,19 +491,10 @@ def get_musicbrainz_release_tracks(
     release_id: str,
     source: str = "musicbrainz",
 ) -> List[Dict[str, Any]]:
-    """
-    Backwards-compatible wrapper for legacy callers.
-    """
-
+    """Backwards-compatible wrapper for legacy callers."""
     if not release_id:
         return []
-
-    return get_release_tracks(
-        release_id=release_id,
-        source=source,
-    )
-
-
+    return get_release_tracks(release_id=release_id, source=source)
 
 
 def _find_matching_queue_item(
@@ -609,41 +502,22 @@ def _find_matching_queue_item(
     queue_items: list[dict[str, Any]],
     used_queue_ids: set[int],
 ) -> dict[str, Any] | None:
-    """
-    Match a release track against queue items.
-
-    Priority:
-        1. Track number
-        2. Title fallback
-    """
-
+    """Match a release track against queue items."""
     track_title = track.get("title") or ""
-    track_num, _ = extract_track_disc(
-        str(track.get("track_number") or "")
-    )
-
-    title_norm = normalize_match_text(
-        track_title
-    )
+    track_num, _ = extract_track_disc(str(track.get("track_number") or ""))
+    title_norm = normalize_match_text(track_title)
 
     if track_num is not None:
         for candidate in queue_items:
             if candidate.get("id") in used_queue_ids:
                 continue
 
-            # An edition-annotated queue item ("Valhalla (Epic Edition)")
-            # must never be matched against the plain "Valhalla" release track
-            # — normalize_match_text strips brackets, so the annotation is
-            # otherwise invisible.
             if not edition_annotations_compatible(
                 track_title, candidate.get("title") or ""
             ):
                 continue
 
-            candidate_num, _ = extract_track_disc(
-                str(candidate.get("track_number") or "")
-            )
-
+            candidate_num, _ = extract_track_disc(str(candidate.get("track_number") or ""))
             if candidate_num == track_num:
                 return candidate
 
@@ -656,17 +530,12 @@ def _find_matching_queue_item(
         ):
             continue
 
-        candidate_title_norm = normalize_match_text(
-            candidate.get("title") or ""
-        )
-
-        if (
-            candidate_title_norm
-            and candidate_title_norm == title_norm
-        ):
+        candidate_title_norm = normalize_match_text(candidate.get("title") or "")
+        if candidate_title_norm and candidate_title_norm == title_norm:
             return candidate
 
     return None
+
 
 def get_release_tracks_with_status(
     artist: str,
@@ -674,16 +543,7 @@ def get_release_tracks_with_status(
     release_id: str,
     current_folder_files: list[str] | None = None,
 ) -> dict[str, Any]:
-    """
-    Return release tracks with queue/library status.
-
-    Status values:
-        downloading
-        in_folder
-        other_folder
-        missing
-    """
-
+    """Return release tracks with queue/library status."""
     release_tracks = get_release_tracks(
         release_id=release_id,
         source="musicbrainz",
@@ -707,7 +567,6 @@ def get_release_tracks_with_status(
     ]
 
     used_queue_ids: set[int] = set()
-
     tracks_with_status: list[dict[str, Any]] = []
 
     for track in release_tracks:
@@ -720,74 +579,39 @@ def get_release_tracks_with_status(
             used_queue_ids,
         )
 
-        # ---------------------------------------------------------
-        # Queue match
-        # ---------------------------------------------------------
         if queue_item:
-            used_queue_ids.add(
-                int(queue_item["id"])
-            )
-
+            used_queue_ids.add(int(queue_item["id"]))
             status = "downloading"
-
             status_details = {
                 "queue_id": queue_item.get("id"),
                 "queue_status": queue_item.get("status"),
                 "queue_title": queue_item.get("title"),
-                "queue_track_number": queue_item.get(
-                    "track_number"
-                ),
+                "queue_track_number": queue_item.get("track_number"),
             }
-
-        # ---------------------------------------------------------
-        # Current folder match
-        # ---------------------------------------------------------
         elif current_folder_files:
-            track_title_norm = normalize_match_text(
-                track.get("title") or ""
-            )
-
+            track_title_norm = normalize_match_text(track.get("title") or "")
             for filename in current_folder_files:
-                filename_norm = normalize_match_text(
-                    filename
-                )
-
-                if (
-                    track_title_norm
-                    and (
-                        track_title_norm in filename_norm
-                        or filename_norm in track_title_norm
-                    )
+                filename_norm = normalize_match_text(filename)
+                if track_title_norm and (
+                    track_title_norm in filename_norm
+                    or filename_norm in track_title_norm
                 ):
                     status = "in_folder"
-
-                    status_details = {
-                        "filename": filename,
-                    }
-
+                    status_details = {"filename": filename}
                     break
 
-        # ---------------------------------------------------------
-        # Existing library match
-        # ---------------------------------------------------------
         if status == "missing":
             library_track = find_library_track(
                 artist=artist,
                 title=track.get("title") or "",
                 album=album,
             )
-
             if library_track:
                 status = "other_folder"
-
                 status_details = {
                     "track_id": library_track.get("id"),
-                    "file_path": library_track.get(
-                        "file_path"
-                    ),
-                    "album": library_track.get(
-                        "album"
-                    ),
+                    "file_path": library_track.get("file_path"),
+                    "album": library_track.get("album"),
                 }
 
         tracks_with_status.append(
@@ -798,46 +622,23 @@ def get_release_tracks_with_status(
             }
         )
 
-    statuses = [
-        track["status"]
-        for track in tracks_with_status
-    ]
+    statuses = [track["status"] for track in tracks_with_status]
 
     return {
         "success": True,
         "summary": {
             "total": len(tracks_with_status),
-            "downloading": statuses.count(
-                "downloading"
-            ),
-            "in_folder": statuses.count(
-                "in_folder"
-            ),
-            "other_folder": statuses.count(
-                "other_folder"
-            ),
-            "missing": statuses.count(
-                "missing"
-            ),
+            "downloading": statuses.count("downloading"),
+            "in_folder": statuses.count("in_folder"),
+            "other_folder": statuses.count("other_folder"),
+            "missing": statuses.count("missing"),
         },
         "tracks": tracks_with_status,
     }
 
 
 def apply_musicbrainz_match(data: dict[str, Any]) -> dict[str, Any]:
-    """Apply a MusicBrainz release group match to all queue items for an artist/album.
-
-    Called from ``/api/downloads/albums/apply-match`` when a user confirms
-    a selected MusicBrainz release match.
-
-    Expects ``data`` keys:
-        artist (str)        — Artist name.
-        album (str)         — Album name.
-        release_group_id (str) — MusicBrainz release group ID.
-
-    Returns:
-        dict with ``success``, ``processed``, ``total``.
-    """
+    """Apply a MusicBrainz release group match to all queue items for an artist/album."""
     artist = (data or {}).get("artist", "").strip()
     album = (data or {}).get("album", "").strip()
     release_group_id = (data or {}).get("release_group_id", "").strip()
@@ -846,7 +647,6 @@ def apply_musicbrainz_match(data: dict[str, Any]) -> dict[str, Any]:
         return {"success": False, "error": "artist, album, and release_group_id are required"}
 
     try:
-        from db.repositories.queue import get_album_queue_tracks
         from services.downloads.match_orchestrator import apply_mbid_match_batch
 
         queue_items = get_album_queue_tracks(artist, album)
@@ -870,24 +670,12 @@ def apply_musicbrainz_match(data: dict[str, Any]) -> dict[str, Any]:
             "error": result.get("error"),
         }
     except Exception as exc:
-        logger.error("apply_musicbrainz_match failed: %s", exc, exc_info=True)
+        logger.error("apply_musicbrainz_match failed", error=str(exc), exc_info=True)
         return {"success": False, "error": str(exc)}
 
 
 def get_release_status(data: dict[str, Any]) -> dict[str, Any]:
-    """Get release tracks with queue/library status for a given artist/album/release.
-
-    Called from ``/api/downloads/release-tracks``.
-
-    Expects ``data`` keys:
-        artist (str)           — Artist name.
-        album (str)            — Album name.
-        release_group_id (str) — MusicBrainz release group ID.
-        folder_path (str)      — Optional folder path for file matching.
-
-    Returns:
-        dict with ``success``, ``tracks``, ``summary``.
-    """
+    """Get release tracks with queue/library status for a given artist/album/release."""
     artist = (data or {}).get("artist", "").strip()
     album = (data or {}).get("album", "").strip()
     release_id = (data or {}).get("release_group_id", "").strip()
@@ -911,5 +699,5 @@ def get_release_status(data: dict[str, Any]) -> dict[str, Any]:
             current_folder_files=current_folder_files,
         )
     except Exception as exc:
-        logger.error("get_release_status failed: %s", exc, exc_info=True)
+        logger.error("get_release_status failed", error=str(exc), exc_info=True)
         return {"success": False, "tracks": [], "summary": {}, "error": str(exc)}

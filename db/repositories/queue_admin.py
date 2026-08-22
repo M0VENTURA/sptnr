@@ -1,7 +1,4 @@
-"""
-Repository helpers for queue admin/management operations.
-
-Split from ``db/repositories/queue.py`` (1008 lines → 2 files).
+"""Repository helpers for queue admin/management operations.
 
 Contains:
 - Clear, purge, and bulk cleanup
@@ -10,68 +7,54 @@ Contains:
 - Duplicate detection and merging
 - Folder-level operations
 - Diagnostics
-
-✅ All database access uses ``db_session`` from ``db.engine``.
 """
 
 from __future__ import annotations
 
-import json
-import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
+import structlog
 from sqlalchemy import text
 
 from db.engine import db_session
-from db.utils import row_get
-from helpers.config_helpers import get_config
-from services.downloads.download_scan_service import resolve_downloads_dir
-from helpers.normalization_service import normalize_match_text
-from services.queue.queue_constraints import COMPLETED_QUEUE_STATUSES
+from services.infrastructure.filesystem_service import resolve_downloads_dir
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 # =============================================================================
 # BULK / CLEANUP
 # =============================================================================
 
-def clear_queue(filters: Optional[dict] = None) -> dict:
+def clear_queue(filters: dict[str, Any] | None = None) -> dict[str, Any]:
     try:
         with db_session() as session:
             if filters and "status" in filters:
-                result = session.execute(text("DELETE FROM download_queue WHERE status = :status"), {"status": filters["status"]})
+                result = session.execute(
+                    text("DELETE FROM download_queue WHERE status = :status"),
+                    {"status": filters["status"]},
+                )
                 return {"success": True, "queue_items_deleted": result.rowcount}
-            # Legacy folder_track_matches / folder_album_matches tables were
-            # never created in the live schema — their DELETEs crashed the
-            # unfiltered clear with a runtime 500.
             session.execute(text("DELETE FROM download_queue"))
-            # Release tracking drives the monitor page's folder groups — a
-            # cleared queue must not leave orphaned groups behind.
             session.execute(text("DELETE FROM musicbrainz_releases"))
             return {"success": True}
     except Exception as e:
-        logger.error(f"[clear_queue] {e}", exc_info=True)
+        logger.error("Clear queue failed", error=str(e), exc_info=True)
         return {"success": False, "error": str(e)}
 
 
-def purge_all() -> dict:
-    """Hard purge the download pipeline (legacy parity with the old scanner).
-
-    Deletes every queue row, the release-tracking rows (monitor page folder
-    groups), match tables and search logs, then removes ALL files/folders
-    under the configured downloads directory. The filesystem-root safety
-    rail from the legacy purge is preserved.
-    """
+def purge_all() -> dict[str, Any]:
+    """Hard purge the download pipeline."""
     try:
         import shutil as _shutil
 
         downloads_dir = resolve_downloads_dir()
         downloads_abs = os.path.abspath(downloads_dir or "")
         drive_root = os.path.splitdrive(downloads_abs)[1]
+        
         if not downloads_abs or drive_root in (os.sep, "", "\\"):
-            logger.error("[purge_all] Unsafe downloads path for purge: %s", downloads_abs or downloads_dir)
+            logger.error("Unsafe downloads path for purge", path=downloads_abs or downloads_dir)
             return {"success": False, "error": f"Unsafe downloads path for purge: {downloads_abs or downloads_dir}"}
 
         queue_deleted = 0
@@ -79,11 +62,12 @@ def purge_all() -> dict:
             result = session.execute(text("DELETE FROM download_queue"))
             queue_deleted = result.rowcount or 0
             session.execute(text("DELETE FROM slskd_search_logs"))
+            
             for tbl in ("folder_track_matches", "folder_album_matches", "musicbrainz_releases"):
                 try:
                     session.execute(text(f"DELETE FROM {tbl}"))
                 except Exception as exc:
-                    logger.debug("[purge_all] %s delete skipped: %s", tbl, exc)
+                    logger.debug("Table purge skipped", table=tbl, error=str(exc))
 
         deleted_files = 0
         deleted_dirs = 0
@@ -100,11 +84,14 @@ def purge_all() -> dict:
                         os.remove(child_path)
                         deleted_files += 1
                 except Exception as fs_err:
-                    logger.warning("[purge_all] Could not remove %s: %s", child_path, fs_err)
+                    logger.warning("Could not remove path", path=child_path, error=str(fs_err))
 
         logger.info(
-            "[purge_all] Purged %s queue item(s), %s file(s), %s folder(s) from %s",
-            queue_deleted, deleted_files, deleted_dirs, downloads_abs,
+            "Purged download pipeline",
+            queue_deleted=queue_deleted,
+            files_deleted=deleted_files,
+            dirs_deleted=deleted_dirs,
+            path=downloads_abs,
         )
         return {
             "success": True,
@@ -114,29 +101,30 @@ def purge_all() -> dict:
             "downloads_dir": downloads_abs,
         }
     except Exception as e:
-        logger.error(f"[purge_all] {e}", exc_info=True)
+        logger.error("Purge all failed", error=str(e), exc_info=True)
         return {"success": False, "error": str(e)}
 
 
-def get_imported(limit: int = 50) -> List[Dict[str, Any]]:
+def get_imported(limit: int = 50) -> list[dict[str, Any]]:
     try:
         with db_session() as session:
             result = session.execute(
-                text("""SELECT *
-                       FROM download_queue
-                       WHERE status = 'imported'
-                       ORDER BY updated_at DESC
-                       LIMIT :limit"""),
+                text("""
+                    SELECT * FROM download_queue
+                    WHERE status = 'imported'
+                    ORDER BY updated_at DESC
+                    LIMIT :limit
+                """),
                 {"limit": limit},
             )
             rows = result.fetchall()
             return [dict(r._mapping) for r in rows]
     except Exception as e:
-        logger.error(f"[get_imported] {e}")
+        logger.error("Failed to get imported items", error=str(e))
         return []
 
 
-def cleanup() -> dict:
+def cleanup() -> dict[str, Any]:
     try:
         with db_session() as session:
             result = session.execute(text("""
@@ -146,11 +134,11 @@ def cleanup() -> dict:
             """))
             return {"success": True, "deleted": result.rowcount}
     except Exception as e:
-        logger.error(f"[cleanup] {e}")
+        logger.error("Queue cleanup failed", error=str(e))
         return {"success": False, "error": str(e)}
 
 
-def cleanup_copied_sources() -> dict:
+def cleanup_copied_sources() -> dict[str, Any]:
     deleted_paths: list[str] = []
     scanned_count = 0
     deleted_count = 0
@@ -176,9 +164,11 @@ def cleanup_copied_sources() -> dict:
 
             for row in items:
                 scanned_count += 1
-                queue_id = row[0]
-                file_path = row[1]
-                found_filename = row[2]
+                mapping = getattr(row, "_mapping", None)
+                queue_id = mapping.get("id") if mapping else row[0]
+                file_path = mapping.get("file_path") if mapping else row[1]
+                found_filename = mapping.get("found_filename") if mapping else row[2]
+                
                 downloads_root = os.path.abspath(resolve_downloads_dir())
                 deleted = False
 
@@ -187,13 +177,7 @@ def cleanup_copied_sources() -> dict:
                     deleted_paths.append(file_path)
 
                 if not deleted and found_filename and os.path.isdir(downloads_root):
-                    # A remote Soulseek found_filename may carry Windows
-                    # backslash separators — compare against the LAST path
-                    # segment (forward-slash normalised) so a file on disk
-                    # matches regardless of the peer's separator style.
-                    found_base = os.path.basename(
-                        str(found_filename).replace("\\", "/")
-                    )
+                    found_base = os.path.basename(str(found_filename).replace("\\", "/"))
                     for root, _dirs, files in os.walk(downloads_root):
                         if found_base and found_base in files:
                             candidate = os.path.join(root, found_base)
@@ -206,7 +190,7 @@ def cleanup_copied_sources() -> dict:
                     deleted_count += 1
                     session.execute(
                         text("UPDATE download_queue SET updated_at = CURRENT_TIMESTAMP WHERE id = :id"),
-                        {"id": queue_id}
+                        {"id": queue_id},
                     )
 
             return {
@@ -216,11 +200,11 @@ def cleanup_copied_sources() -> dict:
                 "deleted_paths": deleted_paths,
             }
     except Exception as e:
-        logger.error(f"[cleanup_copied_sources] {e}")
+        logger.error("Cleanup copied sources failed", error=str(e))
         return {"success": False, "error": str(e)}
 
 
-def cleanup_orphaned(data: dict) -> dict:
+def cleanup_orphaned(data: dict[str, Any]) -> dict[str, Any]:
     try:
         with db_session() as session:
             downloads_root = os.path.abspath(resolve_downloads_dir())
@@ -237,11 +221,12 @@ def cleanup_orphaned(data: dict) -> dict:
             deleted_files = []
 
             for row in items:
-                queue_id = row[0]
-                file_path = row[1]
-                found_filename = row[2]
-                artist = (row[3] or "").lower()
-                title = row[4]
+                mapping = getattr(row, "_mapping", None)
+                queue_id = mapping.get("id") if mapping else row[0]
+                file_path = mapping.get("file_path") if mapping else row[1]
+                found_filename = mapping.get("found_filename") if mapping else row[2]
+                artist = (mapping.get("artist") if mapping else row[3] or "").lower()
+                title = mapping.get("title") if mapping else row[4]
 
                 if filter_artist and filter_artist not in artist:
                     continue
@@ -277,25 +262,32 @@ def cleanup_orphaned(data: dict) -> dict:
                 "deleted_files": deleted_files,
             }
     except Exception as e:
-        logger.error(f"[cleanup_orphaned] {e}")
+        logger.error("Cleanup orphaned failed", error=str(e))
         return {"success": False, "error": str(e)}
 
 
 def count_pending_by_release(release_mbid: str) -> int:
-    with db_session() as session:
-        result = session.execute(text("""
-            SELECT COUNT(*)
-            FROM download_queue
-            WHERE (release_mbid = :mbid OR release_id = :mbid)
-              AND status NOT IN (
-                  'completed', 'imported', 'in_collection',
-                  'removed', 'cancelled', 'deleted'
-              )
-        """), {"mbid": release_mbid})
-        return result.scalar() or 0
+    try:
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    SELECT COUNT(*)
+                    FROM download_queue
+                    WHERE (release_mbid = :mbid OR release_id = :mbid)
+                      AND status NOT IN (
+                          'completed', 'imported', 'in_collection',
+                          'removed', 'cancelled', 'deleted'
+                      )
+                """),
+                {"mbid": release_mbid},
+            )
+            return result.scalar() or 0
+    except Exception as exc:
+        logger.error("Count pending by release failed", release_mbid=release_mbid, error=str(exc))
+        return 0
 
 
-def verify_and_prune(data: dict) -> dict:
+def verify_and_prune(data: dict[str, Any]) -> dict[str, Any]:
     try:
         with db_session() as session:
             dry_run = bool(data.get("dry_run", True))
@@ -312,11 +304,12 @@ def verify_and_prune(data: dict) -> dict:
             downloads_root = os.path.abspath(resolve_downloads_dir())
 
             for row in items:
-                queue_id = row[0]
-                file_path = row[1]
-                found_filename = row[2]
-                artist = (row[3] or "").lower()
-                title = row[4]
+                mapping = getattr(row, "_mapping", None)
+                queue_id = mapping.get("id") if mapping else row[0]
+                file_path = mapping.get("file_path") if mapping else row[1]
+                found_filename = mapping.get("found_filename") if mapping else row[2]
+                artist = (mapping.get("artist") if mapping else row[3] or "").lower()
+                title = mapping.get("title") if mapping else row[4]
 
                 if filter_artist and filter_artist not in artist:
                     continue
@@ -350,7 +343,7 @@ def verify_and_prune(data: dict) -> dict:
                 "dry_run": dry_run,
             }
     except Exception as e:
-        logger.error(f"[verify_and_prune] {e}")
+        logger.error("Verify and prune failed", error=str(e))
         return {"success": False, "error": str(e)}
 
 
@@ -358,45 +351,45 @@ def verify_and_prune(data: dict) -> dict:
 # DISCOVERY / AUTO-DISCOVER HELPERS
 # =============================================================================
 
-def find_existing_discovered_file(*, file_path: str, filename: str, rel_path: str) -> Optional[Dict[str, Any]]:
+def find_existing_discovered_file(*, file_path: str, filename: str, rel_path: str) -> dict[str, Any] | None:
     try:
         with db_session() as session:
             result = session.execute(
                 text("""
-                SELECT * FROM download_queue
-                WHERE file_path = :file_path
-                   OR found_filename = :filename
-                   OR found_filename = :rel_path
-                   OR found_filename = :file_path2
-                LIMIT 1
+                    SELECT * FROM download_queue
+                    WHERE file_path = :file_path
+                       OR found_filename = :filename
+                       OR found_filename = :rel_path
+                       OR found_filename = :file_path2
+                    LIMIT 1
                 """),
                 {"file_path": file_path, "filename": filename, "rel_path": rel_path, "file_path2": file_path},
             )
             row = result.fetchone()
             return dict(row._mapping) if row else None
     except Exception as e:
-        logger.error(f"[find_existing_discovered_file] {e}")
+        logger.error("Find existing discovered file failed", path=file_path, error=str(e))
         return None
 
 
-def find_duplicate_queue_item(*, artist: str, title: str, album: str | None) -> Optional[Dict[str, Any]]:
+def find_duplicate_queue_item(*, artist: str, title: str, album: str | None) -> dict[str, Any] | None:
     try:
         with db_session() as session:
             result = session.execute(
                 text("""
-                SELECT * FROM download_queue
-                WHERE LOWER(artist) = LOWER(:artist)
-                  AND LOWER(title) = LOWER(:title)
-                  AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(:album, ''))
-                  AND status NOT IN ('removed', 'cancelled')
-                LIMIT 1
+                    SELECT * FROM download_queue
+                    WHERE LOWER(artist) = LOWER(:artist)
+                      AND LOWER(title) = LOWER(:title)
+                      AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(:album, ''))
+                      AND status NOT IN ('removed', 'cancelled')
+                    LIMIT 1
                 """),
                 {"artist": artist, "title": title, "album": album},
             )
             row = result.fetchone()
             return dict(row._mapping) if row else None
     except Exception as e:
-        logger.error(f"[find_duplicate_queue_item] {e}")
+        logger.error("Find duplicate queue item failed", artist=artist, title=title, error=str(e))
         return None
 
 
@@ -413,7 +406,7 @@ def insert_discovered_file(
     file_path: str,
     filename: str,
     import_group: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     from db.repositories.queue import insert_queue_item
     return insert_queue_item(
         artist=artist,
@@ -438,18 +431,18 @@ def delete_duplicate_queue_entries(*, keep_id: int, artist: str, title: str, alb
         with db_session() as session:
             result = session.execute(
                 text("""
-                DELETE FROM download_queue
-                WHERE id <> :keep_id
-                  AND LOWER(artist) = LOWER(:artist)
-                  AND LOWER(title) = LOWER(:title)
-                  AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(:album, ''))
-                  AND status NOT IN ('removed', 'cancelled', 'deleted', 'imported', 'in_collection')
+                    DELETE FROM download_queue
+                    WHERE id <> :keep_id
+                      AND LOWER(artist) = LOWER(:artist)
+                      AND LOWER(title) = LOWER(:title)
+                      AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(:album, ''))
+                      AND status NOT IN ('removed', 'cancelled', 'deleted', 'imported', 'in_collection')
                 """),
                 {"keep_id": keep_id, "artist": artist, "title": title, "album": album},
             )
             return int(result.rowcount or 0)
     except Exception as e:
-        logger.error(f"[delete_duplicate_queue_entries] {e}")
+        logger.error("Delete duplicate queue entries failed", keep_id=keep_id, error=str(e))
         return 0
 
 
@@ -457,29 +450,29 @@ def delete_duplicate_queue_entries(*, keep_id: int, artist: str, title: str, alb
 # FOLDER OPERATIONS
 # =============================================================================
 
-def get_queue_items_by_folder(folder_path: str) -> List[Dict[str, Any]]:
+def get_queue_items_by_folder(folder_path: str) -> list[dict[str, Any]]:
     try:
         with db_session() as session:
             result = session.execute(
                 text("""
-                SELECT id, artist, album, title, status, track_number,
-                       found_filename, album_artist, release_mbid, release_id, import_group
-                FROM download_queue
-                WHERE import_group = :folder_path
-                ORDER BY
-                    CASE WHEN TRIM(COALESCE(track_number, '')) ~ '^\d+$'
-                        THEN TRIM(track_number)::integer ELSE 9999 END,
-                    id
+                    SELECT id, artist, album, title, status, track_number,
+                           found_filename, album_artist, release_mbid, release_id, import_group
+                    FROM download_queue
+                    WHERE import_group = :folder_path
+                    ORDER BY
+                        CASE WHEN TRIM(COALESCE(track_number, '')) ~ '^\\d+$'
+                            THEN TRIM(track_number)::integer ELSE 9999 END,
+                        id
                 """),
                 {"folder_path": folder_path},
             )
             return [dict(r._mapping) for r in result.fetchall()]
     except Exception as e:
-        logger.error(f"[get_queue_items_by_folder] {e}")
+        logger.error("Get queue items by folder failed", folder=folder_path, error=str(e))
         return []
 
 
-def slskd_eligibility_diagnostics() -> dict:
+def slskd_eligibility_diagnostics() -> dict[str, Any]:
     try:
         with db_session() as session:
             result = session.execute(text("""
@@ -494,25 +487,28 @@ def slskd_eligibility_diagnostics() -> dict:
                 "status_counts": {r[0]: r[1] for r in rows},
             }
     except Exception as e:
-        logger.error(f"[slskd_eligibility_diagnostics] {e}")
+        logger.error("Slskd eligibility diagnostics failed", error=str(e))
         return {"success": False, "error": str(e)}
 
 
-def delete_folder(data: dict) -> dict:
+def delete_folder(data: dict[str, Any]) -> dict[str, Any]:
     try:
         group_id = (data.get("group_id") or data.get("folder") or "").strip()
         if not group_id:
             return {"success": False, "error": "No group_id provided"}
 
         with db_session() as session:
-            result = session.execute(text("DELETE FROM download_queue WHERE import_group = :group_id"), {"group_id": group_id})
+            result = session.execute(
+                text("DELETE FROM download_queue WHERE import_group = :group_id"),
+                {"group_id": group_id},
+            )
             return {"success": True, "deleted": result.rowcount}
     except Exception as e:
-        logger.error(f"[delete_folder] {e}")
+        logger.error("Delete folder failed", group_id=data.get("group_id"), error=str(e))
         return {"success": False, "error": str(e)}
 
 
-def remove_group(data: dict) -> dict:
+def remove_group(data: dict[str, Any]) -> dict[str, Any]:
     try:
         group_id = (data.get("group_id") or data.get("folder") or "").strip()
         if not group_id:
@@ -525,37 +521,37 @@ def remove_group(data: dict) -> dict:
             )
             return {"success": True, "updated": result.rowcount}
     except Exception as e:
-        logger.error(f"[remove_group] {e}")
+        logger.error("Remove group failed", group_id=data.get("group_id"), error=str(e))
         return {"success": False, "error": str(e)}
 
 
-def reset_moving(queue_ids: list[int] | None, stale_minutes: int) -> dict:
+def reset_moving(queue_ids: list[int] | None, stale_minutes: int) -> dict[str, Any]:
     try:
         with db_session() as session:
             if queue_ids:
                 placeholders = ", ".join([f":id_{i}" for i in range(len(queue_ids))])
-                params = {f"id_{i}": qid for i, qid in enumerate(queue_ids)}
+                params: dict[str, Any] = {f"id_{i}": qid for i, qid in enumerate(queue_ids)}
                 result = session.execute(
                     text(f"""
-                    UPDATE download_queue
-                    SET status = 'completed', updated_at = CURRENT_TIMESTAMP
-                    WHERE id IN ({placeholders}) AND status = 'moving'
+                        UPDATE download_queue
+                        SET status = 'completed', updated_at = CURRENT_TIMESTAMP
+                        WHERE id IN ({placeholders}) AND status = 'moving'
                     """),
                     params,
                 )
             else:
                 result = session.execute(
                     text("""
-                    UPDATE download_queue
-                    SET status = 'completed', updated_at = CURRENT_TIMESTAMP
-                    WHERE status = 'moving'
-                      AND updated_at < NOW() - make_interval(mins => :stale_minutes)
+                        UPDATE download_queue
+                        SET status = 'completed', updated_at = CURRENT_TIMESTAMP
+                        WHERE status = 'moving'
+                          AND updated_at < NOW() - make_interval(mins => :stale_minutes)
                     """),
                     {"stale_minutes": stale_minutes},
                 )
             return {"success": True, "updated": result.rowcount}
     except Exception as e:
-        logger.error(f"[reset_moving] {e}")
+        logger.error("Reset moving failed", error=str(e))
         return {"success": False, "error": str(e)}
 
 
@@ -563,29 +559,29 @@ def reset_moving(queue_ids: list[int] | None, stale_minutes: int) -> dict:
 # MATCHING HELPERS
 # =============================================================================
 
-def apply_release_mbid(queue_ids: list, mbid: str, artist: str, album: str) -> int:
+def apply_release_mbid(queue_ids: list[int], mbid: str, artist: str, album: str) -> int:
     try:
         with db_session() as session:
             placeholders = ", ".join([f":id_{i}" for i in range(len(queue_ids))])
-            params = {f"id_{i}": qid for i, qid in enumerate(queue_ids)}
+            params: dict[str, Any] = {f"id_{i}": qid for i, qid in enumerate(queue_ids)}
             params["mbid"] = mbid
             params["artist"] = artist
             params["album"] = album
             result = session.execute(
                 text(f"""
-                UPDATE download_queue
-                SET release_mbid = :mbid, release_id = :mbid,
-                    release_source = 'musicbrainz',
-                    album_artist = CASE WHEN NULLIF(TRIM(album_artist), '') IS NULL THEN :artist ELSE album_artist END,
-                    album = CASE WHEN NULLIF(TRIM(album), '') IS NULL THEN :album ELSE album END,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id IN ({placeholders})
+                    UPDATE download_queue
+                    SET release_mbid = :mbid, release_id = :mbid,
+                        release_source = 'musicbrainz',
+                        album_artist = CASE WHEN NULLIF(TRIM(album_artist), '') IS NULL THEN :artist ELSE album_artist END,
+                        album = CASE WHEN NULLIF(TRIM(album), '') IS NULL THEN :album ELSE album END,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id IN ({placeholders})
                 """),
                 params,
             )
             return result.rowcount
     except Exception as e:
-        logger.error(f"[apply_release_mbid] {e}")
+        logger.error("Apply release MBID failed", error=str(e))
         return 0
 
 
@@ -596,26 +592,26 @@ def mark_in_collection(
     collection_track_id: int | None = None,
     found_filename: str | None = None,
     file_path: str | None = None,
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Mark a queue item as already present in the collection."""
     try:
         with db_session() as session:
             result = session.execute(
                 text("""
-                UPDATE download_queue
-                SET status = 'in_collection',
-                    matched_file_path = :matched_file_path,
-                    collection_track_id = :collection_track_id,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = :queue_id
-                RETURNING *
+                    UPDATE download_queue
+                    SET status = 'in_collection',
+                        matched_file_path = :matched_file_path,
+                        collection_track_id = :collection_track_id,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = :queue_id
+                    RETURNING *
                 """),
                 {"matched_file_path": matched_file_path, "collection_track_id": collection_track_id, "queue_id": queue_id},
             )
             row = result.fetchone()
             return dict(row._mapping) if row else None
     except Exception as e:
-        logger.error(f"[mark_in_collection] {e}")
+        logger.error("Mark in collection failed", queue_id=queue_id, error=str(e))
         return None
 
 
@@ -632,5 +628,5 @@ def get_active_queue_signatures() -> set[str]:
             """))
             return {row[0] for row in result.fetchall() or []}
     except Exception as e:
-        logger.error(f"[get_active_queue_signatures] {e}")
+        logger.error("Get active queue signatures failed", error=str(e))
         return set()

@@ -1,29 +1,27 @@
 """Cross-provider API rate limiter.
 
-This used to live in helpers/api_rate_limiter.py. It is infrastructure, not a
-generic helper and not an API client.
+This manages thread-safe API request throttling and state tracking
+across external providers (MusicBrainz, ListenBrainz, Last.fm, Spotify).
 """
 
 from __future__ import annotations
 
 import json
-import logging
 import os
 import threading
 import time
 from datetime import datetime
+from typing import Any, Dict
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 SPOTIFY_RATE_LIMIT_PER_30S = 250
 SPOTIFY_DAILY_LIMIT = 500000
 LASTFM_RATE_LIMIT_PER_SECOND = 1
 LASTFM_DAILY_LIMIT = 50000
 MUSICBRAINZ_MIN_INTERVAL = 1.0
-# ListenBrainz is a SEPARATE service from MusicBrainz with its own rate
-# bucket — requests to api.listenbrainz.org never count against
-# musicbrainz.org's strict 1 req/s limit, so LB gets its own limiter and can
-# run concurrently with MusicBrainz traffic.
 LISTENBRAINZ_MIN_INTERVAL = 1.0
 LISTENBRAINZ_DAILY_LIMIT = 50000
 
@@ -31,7 +29,7 @@ LISTENBRAINZ_DAILY_LIMIT = 50000
 class APIRateLimiter:
     _STATE_SAVE_INTERVAL_SECONDS = 30
 
-    def __init__(self, state_file: str | None = None):
+    def __init__(self, state_file: str | None = None) -> None:
         if state_file is None:
             from helpers.config_helpers import get_api_rate_limiter_state_file
             state_file = get_api_rate_limiter_state_file()
@@ -42,7 +40,7 @@ class APIRateLimiter:
         self._lastfm_lock = threading.Lock()
         self._listenbrainz_lock = threading.Lock()
 
-    def _load_state(self) -> dict:
+    def _load_state(self) -> dict[str, Any]:
         if os.path.exists(self.state_file):
             try:
                 with open(self.state_file, "r", encoding="utf-8") as handle:
@@ -58,16 +56,16 @@ class APIRateLimiter:
                     self._save_state(force=True)
                 return state
             except Exception as exc:
-                logger.debug("Could not load API rate limiter state: %s", exc)
+                logger.debug("Could not load API rate limiter state", error=str(exc))
         return {
             "spotify_daily_count": 0,
             "lastfm_daily_count": 0,
             "musicbrainz_daily_count": 0,
             "listenbrainz_daily_count": 0,
             "spotify_recent_requests": [],
-            "lastfm_last_request": 0,
-            "musicbrainz_last_request": 0,
-            "listenbrainz_last_request": 0,
+            "lastfm_last_request": 0.0,
+            "musicbrainz_last_request": 0.0,
+            "listenbrainz_last_request": 0.0,
             "last_reset": datetime.now().isoformat(),
         }
 
@@ -81,18 +79,12 @@ class APIRateLimiter:
                 json.dump(self.state, handle, indent=2)
             self._last_save_time = now
         except Exception as exc:
-            logger.debug("Could not save API rate limiter state: %s", exc)
+            logger.debug("Could not save API rate limiter state", error=str(exc))
 
     def throttle_musicbrainz(self) -> None:
-        # Compute the wait UNDER the lock (atomic claim of the next slot),
-        # then sleep OUTSIDE it: concurrent scan workers (4 per album) must
-        # sleep in parallel instead of serialising on the lock — a worker
-        # holding the lock while sleeping turns a 1 req/s budget into "each
-        # worker waits for every other worker's sleep", which is exactly the
-        # "N of N futures unfinished" album stall.
         with self._mb_lock:
             now = time.time()
-            last_request = self.state.get("musicbrainz_last_request", 0)
+            last_request = self.state.get("musicbrainz_last_request", 0.0)
             wait_time = MUSICBRAINZ_MIN_INTERVAL - (now - last_request)
             self.state["musicbrainz_last_request"] = time.time()
             self.state["musicbrainz_daily_count"] = self.state.get("musicbrainz_daily_count", 0) + 1
@@ -101,14 +93,10 @@ class APIRateLimiter:
             time.sleep(wait_time)
 
     def throttle_lastfm(self) -> None:
-        """Enforce a maximum of 1 Last.fm request per second across all threads.
-
-        Uses ``_lastfm_lock`` (threading lock) so that multiple concurrent scan
-        types (e.g. popularity + navidrome) do not hammer the Last.fm API.
-        """
+        """Enforce a maximum of 1 Last.fm request per second across threads."""
         with self._lastfm_lock:
             now = time.time()
-            last_request = self.state.get("lastfm_last_request", 0)
+            last_request = self.state.get("lastfm_last_request", 0.0)
             wait_time = LASTFM_RATE_LIMIT_PER_SECOND - (now - last_request)
             self.state["lastfm_last_request"] = time.time()
             self.state["lastfm_daily_count"] = self.state.get("lastfm_daily_count", 0) + 1
@@ -117,16 +105,10 @@ class APIRateLimiter:
             time.sleep(wait_time)
 
     def throttle_listenbrainz(self) -> None:
-        """Enforce ListenBrainz pacing on its OWN rate budget.
-
-        ListenBrainz and MusicBrainz are separate services with separate rate
-        buckets, so LB requests use a dedicated limiter — they never consume
-        the MusicBrainz 1 req/s budget and can overlap MB traffic when a scan
-        runs per-provider threads.
-        """
+        """Enforce ListenBrainz pacing on its own rate budget."""
         with self._listenbrainz_lock:
             now = time.time()
-            last_request = self.state.get("listenbrainz_last_request", 0)
+            last_request = self.state.get("listenbrainz_last_request", 0.0)
             wait_time = LISTENBRAINZ_MIN_INTERVAL - (now - last_request)
             self.state["listenbrainz_last_request"] = time.time()
             self.state["listenbrainz_daily_count"] = self.state.get("listenbrainz_daily_count", 0) + 1
@@ -136,7 +118,7 @@ class APIRateLimiter:
 
     def wait_if_needed_lastfm(self, max_wait_seconds: float = 2.0) -> bool:
         now = time.time()
-        wait_time = LASTFM_RATE_LIMIT_PER_SECOND - (now - self.state.get("lastfm_last_request", 0))
+        wait_time = LASTFM_RATE_LIMIT_PER_SECOND - (now - self.state.get("lastfm_last_request", 0.0))
         if wait_time <= 0:
             self.state["lastfm_last_request"] = now
             self.state["lastfm_daily_count"] = self.state.get("lastfm_daily_count", 0) + 1
@@ -150,7 +132,7 @@ class APIRateLimiter:
             return True
         return False
 
-    def get_stats(self) -> dict:
+    def get_stats(self) -> dict[str, Any]:
         now = time.time()
         recent_spotify = [ts for ts in self.state.get("spotify_recent_requests", []) if now - ts < 30]
         return {

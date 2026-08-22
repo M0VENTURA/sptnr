@@ -1,6 +1,6 @@
-"""Flask application lifecycle hooks.
+"""Flask/Quart application lifecycle hooks.
 
-Registers ``before_request`` and ``after_request`` handlers on the Flask app.
+Registers ``before_request`` and ``after_request`` handlers on the app.
 Provides:
 - Request timing (duration logged as ``X-Request-Duration`` header).
 - Basic security headers on every response.
@@ -15,15 +15,17 @@ Provides:
 Called once during app factory setup.
 """
 
-import time
-import logging
-import traceback
+from __future__ import annotations
 
-from quart import g, jsonify, redirect, request, session, url_for
+import time
+import traceback
+from typing import Any
+
+import structlog
+from quart import Response, g, jsonify, redirect, request, session, url_for
 from werkzeug.exceptions import HTTPException
 
-logger = logging.getLogger(__name__)
-
+logger = structlog.get_logger(__name__)
 
 # Endpoints reachable WITHOUT a session at all times (static assets + the
 # login/logout pages).  Everything else is gated by ``before_request``.
@@ -52,9 +54,9 @@ def _is_api_request() -> bool:
     return request.path.startswith("/api/")
 
 
-def register_app_hooks(app):
+def register_app_hooks(app: Any) -> None:
     @app.errorhandler(Exception)
-    def handle_unhandled_exception(exc):
+    def handle_unhandled_exception(exc: Exception) -> Any:
         """Return JSON for escaped exceptions instead of Quart's default HTML 500 page.
 
         Without this, API clients receive an HTML error page and report
@@ -64,18 +66,30 @@ def register_app_hooks(app):
         """
         if isinstance(exc, HTTPException):
             return exc
+            
         try:
-            request_ctx = f"{request.method} {request.path}"
-            if request.query_string:
-                request_ctx += f"?{request.query_string.decode('utf-8', 'replace')[:200]}"
+            request_method = request.method
+            request_path = request.path
+            qs = request.query_string.decode('utf-8', 'replace')
+            if qs:
+                request_path += f"?{qs[:200]}"
         except Exception:
-            request_ctx = "(no request context)"
-        logger.error("Unhandled exception [%s]: %s: %s", request_ctx, type(exc).__name__, exc)
-        logger.error(traceback.format_exc())
+            request_method = "UNKNOWN"
+            request_path = "(no request context)"
+
+        logger.error(
+            "Unhandled exception",
+            method=request_method,
+            path=request_path,
+            exc_type=type(exc).__name__,
+            error=str(exc),
+            traceback=traceback.format_exc()
+        )
+        
         return jsonify({"success": False, "error": "An internal server error occurred. Please try again."}), 500
 
     @app.before_request
-    def before_request():
+    def before_request() -> Any:
         g.start_time = time.time()
 
         endpoint = request.endpoint or ""
@@ -87,9 +101,6 @@ def register_app_hooks(app):
         from helpers.config_helpers import needs_setup
 
         # ── First run: setup wizard + its APIs are public ────────────────
-        # While Navidrome is unconfigured a brand-new user must be able to
-        # reach the setup wizard (and the login page, via _ALWAYS_PUBLIC).
-        # Everything else redirects to setup (pages) or returns 401 (APIs).
         if needs_setup():
             if endpoint in _SETUP_PUBLIC_ENDPOINTS:
                 return
@@ -106,17 +117,17 @@ def register_app_hooks(app):
         return redirect(url_for("ui.login"))
 
     @app.after_request
-    def after_request(response):
+    def after_request(response: Response) -> Response:
         # Request timing
         if hasattr(g, "start_time"):
             duration_ms = int((time.time() - g.start_time) * 1000)
             response.headers["X-Request-Duration-Ms"] = str(duration_ms)
             if duration_ms > 1000:
                 logger.info(
-                    "Slow request: %s %s (%dms)",
-                    request.method,
-                    request.path,
-                    duration_ms,
+                    "Slow request",
+                    method=request.method,
+                    path=request.path,
+                    duration_ms=duration_ms,
                 )
 
         # Security headers

@@ -24,12 +24,6 @@ Scoring Algorithm:
        - Rewards matches that preserve original track ordering
        - Penalizes shuffled or reordered tracks
     
-Usage:
-    >>> from services.downloads.match_engine import score_folder_match
-    >>> score, details = score_folder_match(folder_tracks, release_tracks)
-    >>> if score >= 0.75:
-    ...     print("High confidence match!")
-
 Architecture:
     This module is purely algorithmic - no database access or API calls.
     It receives normalized track data and returns match scores.
@@ -38,64 +32,45 @@ Architecture:
     Calls: helpers.normalization_service (for text normalization)
 """
 
-from difflib import SequenceMatcher
-from typing import List, Dict, Any, Tuple, Optional
+from __future__ import annotations
+
 import os
 import re
-from api_clients import logger
-from helpers.normalization_service import normalize_match_text, edition_annotations_compatible
+from difflib import SequenceMatcher
+from typing import Any, Dict, List, Optional, Tuple
+
+import structlog
+
+from helpers.normalization_service import edition_annotations_compatible, normalize_match_text
 from services.downloads.download_matching_service import get_release_tracks
+
+logger = structlog.get_logger(__name__)
 
 
 def _seq_ratio(a: str, b: str) -> float:
     if not a or not b:
         return 0.0
-
     return SequenceMatcher(None, a, b).ratio()
 
 
-def _tokenize_meaningful(text: str) -> List[str]:
-    """
-    Tokenize normalized text into useful comparison tokens.
-    """
-
-    if not text:
+def _tokenize_meaningful(text_val: str) -> List[str]:
+    """Tokenize normalized text into useful comparison tokens."""
+    if not text_val:
         return []
 
-    tokens = re.findall(r"[a-z0-9]+", text.lower())
+    tokens = re.findall(r"[a-z0-9]+", text_val.lower())
 
     ignored = {
-        "the",
-        "a",
-        "an",
-        "and",
-        "or",
-        "of",
-        "to",
-        "in",
-        "on",
-        "for",
-        "with",
-        "feat",
-        "ft",
-        "featuring",
-        "remaster",
-        "remastered",
-        "explicit",
-        "clean",
-        "version",
-        "edit",
-        "mix",
+        "the", "a", "an", "and", "or", "of", "to", "in", "on", "for",
+        "with", "feat", "ft", "featuring", "remaster", "remastered",
+        "explicit", "clean", "version", "edit", "mix",
     }
 
     return [token for token in tokens if token not in ignored]
 
 
 def _token_overlap_score(a: str, b: str) -> float:
-    """
-    Return token overlap score between two normalized strings.
-    """
-
+    """Return token overlap score between two normalized strings."""
     a_tokens = set(_tokenize_meaningful(a))
     b_tokens = set(_tokenize_meaningful(b))
 
@@ -109,15 +84,7 @@ def score_folder_match(
     folder_tracks: List[Dict[str, Any]],
     release_tracks: List[Dict[str, Any]],
 ) -> Tuple[float, Dict[str, Any]]:
-    """
-    Score how well a folder's tracks match a release.
-
-    Scoring:
-        - Track count match: 30%
-        - Title similarity: 50%
-        - Track order consistency: 20%
-    """
-
+    """Score how well a folder's tracks match a release."""
     if not release_tracks:
         return 0.0, {}
 
@@ -164,7 +131,6 @@ def score_folder_match(
 
             for j, release_track in enumerate(release_tracks):
                 release_title = release_track.get("title") or ""
-
                 sim = _best_title_similarity(folder_title, release_title)
 
                 if sim > best_sim:
@@ -232,7 +198,6 @@ def score_folder_match(
 
                 if expected_title and actual_title:
                     sim = _best_title_similarity(actual_title, expected_title)
-
                     if sim < 0.6:
                         mismatches += 1
 
@@ -262,25 +227,12 @@ def score_folder_match(
     return total_score, details
 
 
-
-
 def filename_matches_queue_item(
     file_path: str,
     queue_item: Dict[str, Any],
     threshold: float = 0.65,
 ) -> bool:
-    """
-    Determine whether a downloaded filename/path appears to match a queue item.
-
-    This replaces the old queue_processor._filename_matches_queue_item-style
-    dependency with a clean service function.
-
-    Used by:
-        - cleanup_engine_service
-        - duplicate sibling cleanup
-        - mismatched download handling
-    """
-
+    """Determine whether a downloaded filename/path appears to match a queue item."""
     if not file_path or not queue_item:
         return False
 
@@ -288,11 +240,6 @@ def filename_matches_queue_item(
     album_artist = queue_item.get("album_artist") or ""
     title = queue_item.get("title") or ""
 
-    # An edition-annotated track ("Valhalla (Epic Edition)") must never match
-    # the plain "Valhalla" queue item — normalize_match_text strips brackets on
-    # both sides, so the edition suffix would otherwise be invisible.  Strip the
-    # file extension so the trailing "(Epic Edition)" annotation is still
-    # extractable from the path.
     if not edition_annotations_compatible(title, os.path.splitext(file_path)[0]):
         return False
 
@@ -335,16 +282,10 @@ def filename_matches_queue_item(
 
     combined = (title_score * 0.70) + (artist_score * 0.30)
 
-    # A title-only match (artist_score 0.0) is NOT sufficient — the queue
-    # artist must appear in the path, otherwise a file for a different
-    # (unmatched) artist with the same track title would be claimed and
-    # auto-moved into the library.  This closes the hole where
-    # ``combined = 0.70 >= 0.65`` passed on title alone.
     if artist_score <= 0.0:
         return False
 
     return combined >= threshold
-
 
 
 def _best_title_similarity(folder_title: str, release_title: str) -> float:
@@ -372,10 +313,7 @@ def suggest_auto_match(
     candidates: List[Dict[str, Any]],
     folder_tracks: List[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
-    """
-    Automatically suggest the best release candidate if confidence is high enough.
-    """
-
+    """Automatically suggest the best release candidate if confidence is high enough."""
     if not candidates or not folder_tracks:
         return None
 
@@ -414,7 +352,6 @@ def suggest_auto_match(
             or ""
         )
 
-        # Small bonus if candidate artist text aligns with folder labels.
         if folder_artist_norm and candidate_artist_norm:
             artist_score = max(
                 _seq_ratio(folder_artist_norm, candidate_artist_norm),
@@ -425,7 +362,6 @@ def suggest_auto_match(
             if artist_score >= 0.8:
                 score += 0.05
 
-        # Small bonus if candidate album text aligns with folder labels.
         if folder_album_norm and candidate_album_norm:
             album_score = max(
                 _seq_ratio(folder_album_norm, candidate_album_norm),
@@ -448,13 +384,12 @@ def suggest_auto_match(
         best_candidate["match_details"] = best_details
 
         logger.info(
-            "Auto-match suggested: %s confidence=%.2f",
-            best_candidate.get("title") or best_candidate.get("album") or "Unknown",
-            best_score,
+            "Auto-match suggested",
+            title=best_candidate.get("title") or best_candidate.get("album") or "Unknown",
+            confidence=best_score,
         )
 
         return best_candidate
 
-    logger.info("No high-confidence auto-match found. best=%.2f", best_score)
-
+    logger.info("No high-confidence auto-match found", best_score=best_score)
     return None

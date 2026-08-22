@@ -9,17 +9,16 @@ library.
 
 from __future__ import annotations
 
-import logging
 import os
-import time
 from datetime import datetime, timedelta
 from typing import Any
 
+import structlog
 from sqlalchemy import text
-from db.engine import db_session
-from db.utils import row_get
 
-logger = logging.getLogger(__name__)
+from db.engine import db_session
+
+logger = structlog.get_logger(__name__)
 
 _MUSIC_ROOT = os.environ.get("MUSIC_ROOT", "/music")
 
@@ -32,16 +31,7 @@ def verify_file_in_music(
     queue_id: int,
     target_path: str,
 ) -> dict[str, Any]:
-    """Verify that a file exists and is readable at its target path in /music.
-
-    Checks:
-    - File exists on disk
-    - File is readable
-    - File has non-zero size
-
-    Updates ``verified_in_music_at`` and ``music_file_path`` on the queue
-    row when successful.
-    """
+    """Verify that a file exists and is readable at its target path in /music."""
     result: dict[str, Any] = {
         "success": False,
         "exists": False,
@@ -54,30 +44,31 @@ def verify_file_in_music(
         return result
 
     if not os.path.isfile(target_path):
-        logger.warning("Queue %s: file not found at %s", queue_id, target_path)
+        logger.warning("File not found at target path", queue_id=queue_id, target_path=target_path)
         result["error"] = f"File not found at {target_path}"
         return result
 
     if not os.access(target_path, os.R_OK):
-        logger.warning("Queue %s: file exists but is not readable: %s", queue_id, target_path)
+        logger.warning("File exists but is not readable", queue_id=queue_id, target_path=target_path)
         result["exists"] = True
         result["error"] = "File exists but is not readable"
         return result
 
     file_size = os.path.getsize(target_path)
     if file_size == 0:
-        logger.warning("Queue %s: file is empty: %s", queue_id, target_path)
+        logger.warning("File is empty (0 bytes)", queue_id=queue_id, target_path=target_path)
         result["exists"] = True
         result["error"] = "File size is 0 bytes"
         return result
 
     verified_at = datetime.utcnow().isoformat()
     logger.info(
-        "Queue %s: file verification SUCCESS — %s (%s bytes)",
-        queue_id, target_path, file_size,
+        "File verification SUCCESS",
+        queue_id=queue_id,
+        target_path=target_path,
+        file_size_bytes=file_size,
     )
 
-    # DB update best-effort — file is safe regardless.
     try:
         with db_session() as session:
             session.execute(
@@ -91,8 +82,9 @@ def verify_file_in_music(
             )
     except Exception as exc:
         logger.warning(
-            "Queue %s: file verified but DB timestamp update failed (non-fatal): %s",
-            queue_id, exc,
+            "File verified but DB timestamp update failed (non-fatal)",
+            queue_id=queue_id,
+            error=str(exc),
         )
 
     result["success"] = True
@@ -115,7 +107,7 @@ def mark_queue_item_moved(queue_id: int, target_path: str) -> None:
                 {"path": target_path, "qid": queue_id},
             )
     except Exception as exc:
-        logger.error("Failed to mark queue %s as moved: %s", queue_id, exc)
+        logger.error("Failed to mark queue item as moved", queue_id=queue_id, error=str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -123,11 +115,7 @@ def mark_queue_item_moved(queue_id: int, target_path: str) -> None:
 # ---------------------------------------------------------------------------
 
 def check_missing_moved_files(minutes_old: int = 30) -> dict[str, Any]:
-    """Check files moved to /music that have since disappeared.
-
-    Requeues missing files.  Also resets 'matched' items whose source file
-    no longer exists on disk back to 'queued' for re-download.
-    """
+    """Check files moved to /music that have since disappeared."""
     result: dict[str, Any] = {
         "checked": 0,
         "found_missing": 0,
@@ -138,7 +126,6 @@ def check_missing_moved_files(minutes_old: int = 30) -> dict[str, Any]:
 
     try:
         with db_session() as session:
-            # Check imported files with moved_at set.
             stale = session.execute(
                 text("""
                     SELECT id, music_file_path, artist, album, title
@@ -152,7 +139,6 @@ def check_missing_moved_files(minutes_old: int = 30) -> dict[str, Any]:
                 {"cutoff": cutoff},
             ).fetchall() or []
 
-            # Check matched items with a file_path to verify the source exists.
             matched = session.execute(
                 text("""
                     SELECT id, file_path, artist, album, title
@@ -169,7 +155,7 @@ def check_missing_moved_files(minutes_old: int = 30) -> dict[str, Any]:
             _check_and_requeue_matched(item, result)
 
     except Exception as exc:
-        logger.error("Error checking missing moved files: %s", exc, exc_info=True)
+        logger.error("Error checking missing moved files", error=str(exc), exc_info=True)
         result["error"] = str(exc)
 
     return result
@@ -177,17 +163,18 @@ def check_missing_moved_files(minutes_old: int = 30) -> dict[str, Any]:
 
 def _check_and_requeue(item: Any, result: dict) -> None:
     """Check a single imported item and requeue if the file is missing."""
-    qid = row_get(item, "id", 0)
-    path = row_get(item, "music_file_path", 1) or ""
-    artist = row_get(item, "artist", 2) or ""
-    title = row_get(item, "title", 4) or ""
+    mapping = item._mapping
+    qid = mapping.get("id")
+    path = mapping.get("music_file_path") or ""
+    artist = mapping.get("artist") or ""
+    title = mapping.get("title") or ""
 
     if not path or os.path.isfile(path):
         return
 
     result["checked"] += 1
     result["found_missing"] += 1
-    logger.warning("Queue %s: file missing from /music — %s - %s", qid, artist, title)
+    logger.warning("File missing from /music", queue_id=qid, artist=artist, title=title, path=path)
 
     try:
         with db_session() as session:
@@ -203,22 +190,23 @@ def _check_and_requeue(item: Any, result: dict) -> None:
             )
         result["requeued"] += 1
     except Exception as exc:
-        logger.error("Failed to requeue %s: %s", qid, exc)
+        logger.error("Failed to requeue missing file", queue_id=qid, error=str(exc))
 
 
 def _check_and_requeue_matched(item: Any, result: dict) -> None:
     """Check a matched item and reset to queued if source file is gone."""
-    qid = row_get(item, "id", 0)
-    path = row_get(item, "file_path", 1) or ""
-    artist = row_get(item, "artist", 2) or ""
-    title = row_get(item, "title", 4) or ""
+    mapping = item._mapping
+    qid = mapping.get("id")
+    path = mapping.get("file_path") or ""
+    artist = mapping.get("artist") or ""
+    title = mapping.get("title") or ""
 
     if not path or os.path.isfile(path):
         return
 
     result["checked"] += 1
     result["found_missing"] += 1
-    logger.warning("Queue %s: matched source file missing — %s - %s (%s)", qid, artist, title, path)
+    logger.warning("Matched source file missing on disk", queue_id=qid, artist=artist, title=title, path=path)
 
     try:
         with db_session() as session:
@@ -238,7 +226,7 @@ def _check_and_requeue_matched(item: Any, result: dict) -> None:
             )
         result["requeued"] += 1
     except Exception as exc:
-        logger.error("Failed to reset matched item %s: %s", qid, exc)
+        logger.error("Failed to reset matched item", queue_id=qid, error=str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -250,10 +238,7 @@ def transfer_and_verify(
     dest_path: str,
     queue_id: int | None = None,
 ) -> dict[str, Any]:
-    """Move a file from downloads to music, then verify it landed correctly.
-
-    Returns the result of the verification.
-    """
+    """Move a file from downloads to music, then verify it landed correctly."""
     from services.infrastructure.filesystem_service import transfer_download_to_music
 
     transfer_result = transfer_download_to_music(source_path, dest_path)
@@ -286,8 +271,8 @@ def cleanup_old_failed(days: int = 30) -> int:
             )
             deleted = result.rowcount or 0
             if deleted:
-                logger.info("Cleaned up %s old failed downloads", deleted)
+                logger.info("Cleaned up old failed downloads", deleted_count=deleted)
             return deleted
     except Exception as exc:
-        logger.error("Failed to clean up old failed downloads: %s", exc)
+        logger.error("Failed to clean up old failed downloads", error=str(exc))
         return 0

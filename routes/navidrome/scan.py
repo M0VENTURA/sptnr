@@ -6,6 +6,9 @@ status and stop-all routes remain under ``routes/scan_routes``.
 
 from __future__ import annotations
 
+from typing import Any
+
+import structlog
 from quart import flash, jsonify, redirect, request, url_for
 
 import services.scanning.runtime_state as runtime_state
@@ -14,33 +17,36 @@ from routes.scan_routes._common import form_bool, is_process_alive, run_async
 from services.scanning.pipelines.navidrome_pipeline import run_navidrome_import_scan
 from services.scanning.scan_state import progress_path, request_scan_stop
 
+logger = structlog.get_logger(__name__)
+
 
 @navidrome_bp.route("/api/navidrome/scan/start", methods=["POST"])
-def api_start_navidrome_scan():
+def api_start_navidrome_scan() -> Any:
     """Trigger a Navidrome server-side library rescan."""
     client = get_navidrome_client()
     if not client:
         return jsonify({"success": False, "error": "Navidrome not configured"})
+        
     success = client.start_scan()
     return jsonify({"success": success, "message": "Scan started" if success else "Failed to start scan"})
 
 
 @navidrome_bp.route("/api/navidrome/scan/status", methods=["GET"])
-def api_get_navidrome_scan_status():
+def api_get_navidrome_scan_status() -> Any:
     """Return Navidrome server-side library scan status."""
     try:
         client = get_navidrome_client()
         if not client:
             return jsonify({"scanning": False, "success": False, "error": "Navidrome not configured"})
+            
         return jsonify(client.get_scan_status())
     except Exception as exc:
-        logger = __import__('logging').getLogger(__name__)
-        logger.error("Navidrome scan status failed: %s", exc, exc_info=True)
+        logger.error("Navidrome scan status failed", error=str(exc), exc_info=True)
         return jsonify({"scanning": False, "success": False, "error": str(exc)})
 
 
 @navidrome_bp.route("/scan/navidrome", methods=["POST"])
-async def scan_navidrome():
+async def scan_navidrome() -> Any:
     """Start the local Navidrome import-only scan pipeline."""
     mode = request.args.get("mode", "all")
     restart_requested = form_bool(request.args.get("restart"))
@@ -63,10 +69,11 @@ async def scan_navidrome():
 
 
 @navidrome_bp.route("/scan/stop-navidrome", methods=["POST"])
-async def scan_stop_navidrome():
+async def scan_stop_navidrome() -> Any:
     """Request a graceful stop for the local Navidrome import scan."""
     with runtime_state.scan_lock:
         request_scan_stop(progress_path("navidrome_scan_progress.json"), "navidrome_scan")
         runtime_state.scan_process_navidrome = None
+        
     await flash("Navidrome sync scan stop requested", "info")
     return redirect(url_for("ui.dashboard"))

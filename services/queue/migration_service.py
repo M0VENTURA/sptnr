@@ -16,17 +16,15 @@ What the migration does:
 
 from __future__ import annotations
 
-import logging
 import uuid
-from datetime import datetime
-from typing import Any
+from typing import Any, Dict
 
+import structlog
 from sqlalchemy import text
-from sqlalchemy.exc import ProgrammingError
 
 from db.engine import db_session
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -53,12 +51,9 @@ def _column_exists(column: str, table: str = "download_queue") -> bool:
 
 
 def _ensure_import_group_column() -> bool:
-    """Create the ``import_group`` column if it does not exist.
-
-    Returns True if the column was added, False if it already existed.
-    """
+    """Create the ``import_group`` column if it does not exist."""
     if _column_exists(_COLUMN_IMPORT_GROUP):
-        logger.debug("[migration_service] import_group column already exists")
+        logger.debug("import_group column already exists")
         return False
 
     try:
@@ -70,10 +65,10 @@ def _ensure_import_group_column() -> bool:
                 )
             )
             session.commit()
-        logger.info("[migration_service] Added import_group column to download_queue")
+        logger.info("Added import_group column to download_queue")
         return True
     except Exception as exc:
-        logger.error("[migration_service] Failed to add import_group column: %s", exc)
+        logger.error("Failed to add import_group column", error=str(exc))
         return False
 
 
@@ -83,21 +78,9 @@ def _ensure_import_group_column() -> bool:
 
 def migrate_existing_queue_items_to_grouped_setup(
     limit: int | None = None,
-) -> dict[str, Any]:
-    """Backfill legacy queue rows into the current grouped/source conventions.
-
-    Args:
-        limit: Maximum number of rows to process in this run (None = all).
-
-    Returns:
-        A dict with keys:
-            - success: bool
-            - rows_updated: int
-            - groups_created: int
-            - columns_added: list[str]
-            - error: str (only on failure)
-    """
-    result: dict[str, Any] = {
+) -> Dict[str, Any]:
+    """Backfill legacy queue rows into the current grouped/source conventions."""
+    result: Dict[str, Any] = {
         "success": True,
         "rows_updated": 0,
         "groups_created": 0,
@@ -121,9 +104,9 @@ def migrate_existing_queue_items_to_grouped_setup(
             )
             session.commit()
             if fixed.rowcount:
-                logger.info("[migration_service] Fixed %d NULL source values", fixed.rowcount)
+                logger.info("Fixed NULL source values", count=fixed.rowcount)
     except Exception as exc:
-        logger.error("[migration_service] Failed to fix source values: %s", exc)
+        logger.error("Failed to fix source values", error=str(exc))
         result["error"] = str(exc)
         return result
 
@@ -139,14 +122,13 @@ def migrate_existing_queue_items_to_grouped_setup(
             )
             session.commit()
             if fixed_ts.rowcount:
-                logger.info("[migration_service] Fixed %d NULL status_changed_at values", fixed_ts.rowcount)
+                logger.info("Fixed NULL status_changed_at values", count=fixed_ts.rowcount)
     except Exception as exc:
-        logger.debug("[migration_service] Failed to fix status_changed_at: %s", exc)
+        logger.debug("Failed to fix status_changed_at", error=str(exc))
 
     # ---- Step 4: Group legacy rows by (artist, album) ----
     try:
         with db_session() as session:
-            # Find rows that need an import_group
             ungrouped = session.execute(
                 text(
                     "SELECT id, artist, album FROM download_queue "
@@ -157,28 +139,35 @@ def migrate_existing_queue_items_to_grouped_setup(
             rows = ungrouped.fetchall()
 
             if not rows:
-                logger.info("[migration_service] No ungrouped rows found")
+                logger.info("No ungrouped rows found")
                 return result
 
-            # Group by (artist, album) → assign a single UUID per group
             groups: dict[tuple[str, str], str] = {}
             for row in rows:
-                artist = (row[1] or "").strip().lower() if row[1] else ""
-                album = (row[2] or "").strip().lower() if row[2] else ""
+                mapping = getattr(row, "_mapping", None)
+                row_id = mapping.get("id") if mapping else row[0]
+                art = mapping.get("artist") if mapping else row[1]
+                alb = mapping.get("album") if mapping else row[2]
+
+                artist = (art or "").strip().lower() if art else ""
+                album = (alb or "").strip().lower() if alb else ""
                 key = (artist, album)
                 if key not in groups:
                     groups[key] = str(uuid.uuid4())
 
-            # Apply import_group in batches
             batch_size = 100
             total_updated = 0
             for idx in range(0, len(rows), batch_size):
                 batch = rows[idx: idx + batch_size]
                 with db_session() as update_session:
                     for row in batch:
-                        row_id = row[0]
-                        artist = (row[1] or "").strip().lower() if row[1] else ""
-                        album = (row[2] or "").strip().lower() if row[2] else ""
+                        mapping = getattr(row, "_mapping", None)
+                        row_id = mapping.get("id") if mapping else row[0]
+                        art = mapping.get("artist") if mapping else row[1]
+                        alb = mapping.get("album") if mapping else row[2]
+
+                        artist = (art or "").strip().lower() if art else ""
+                        album = (alb or "").strip().lower() if alb else ""
                         group_id = groups.get((artist, album))
                         if group_id:
                             update_session.execute(
@@ -196,13 +185,13 @@ def migrate_existing_queue_items_to_grouped_setup(
             result["groups_created"] = len(groups)
 
             logger.info(
-                "[migration_service] Grouped %d rows into %d groups",
-                total_updated,
-                len(groups),
+                "Grouped legacy rows into groups",
+                rows_updated=total_updated,
+                groups_created=len(groups),
             )
 
     except Exception as exc:
-        logger.error("[migration_service] Grouping failed: %s", exc, exc_info=True)
+        logger.error("Grouping failed", error=str(exc), exc_info=True)
         result["success"] = False
         result["error"] = str(exc)
 

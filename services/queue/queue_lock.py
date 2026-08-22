@@ -7,38 +7,20 @@ concurrently, overlapping DB writes and filesystem moves.
 
 This module provides ``queue_cycle_lock()`` — a best-effort lock that
 yields ``True`` when this process acquired the lock and may proceed, or
-``False`` when another worker/scheduler cycle already holds it (the caller
-should skip that cycle instead of piling up behind it).
-
-Backends:
-    - PostgreSQL (primary): session-scoped advisory lock
-      (``pg_try_advisory_lock``). Lock ownership is tied to the holding
-      DB connection, so a killed worker releases it automatically.
-    - File lock fallback (non-PostgreSQL engine URLs only — e.g. explicit
-      test overrides): ``fcntl.flock`` on a lock file under the temp dir.
-
-Usage::
-
-    from services.queue.queue_lock import queue_cycle_lock
-
-    with queue_cycle_lock() as acquired:
-        if not acquired:
-            return _ok(skipped=True, reason="Another queue cycle is running")
-        ...process batch...
+``False`` when another worker/scheduler cycle already holds it.
 """
 
 from __future__ import annotations
 
-import logging
 import os
 import tempfile
 import time
 from contextlib import contextmanager
 from typing import Iterator
 
-from sqlalchemy import text
+import structlog
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 _LOCK_KEY = "popularr_queue_cycle"
 
@@ -57,24 +39,7 @@ def _pg_advisory_lock(
     max_attempts: int,
     interval: float,
 ) -> Iterator[bool]:
-    """Hold a PostgreSQL advisory lock on a DEDICATED raw connection.
-
-    The lock connection must stay open for the whole critical section, so it
-    is acquired, locked and kept alive until release — never a pooled
-    SQLAlchemy session, which can be returned to the pool / recycled between
-    the lock and unlock calls (that is what logged "you don't own a lock of
-    type ExclusiveLock": the unlock ran on a different pooled connection than
-    the lock).
-
-    A raw ``psycopg2`` connection from ``db.utils.get_db_connection`` is used
-    instead:
-    - it is NOT pooled, so lock and unlock always hit the SAME connection;
-    - the session-scoped advisory lock survives a ``commit()``, so we commit
-      after acquiring to avoid ``idle_in_transaction_session_timeout``
-      (default 60 s) killing the connection mid-batch (the earlier
-      "unexpected EOF on client connection with an open transaction" log);
-    - a killed worker releases the lock automatically (connection close).
-    """
+    """Hold a PostgreSQL advisory lock on a DEDICATED raw connection."""
     from db.utils import get_db_connection
 
     conn = None
@@ -89,8 +54,6 @@ def _pg_advisory_lock(
                 (key,),
             )
             row = cursor.fetchone()
-            # RealDictCursor rows are dict-like (row["acquired"]); plain
-            # cursors return a tuple (row[0]).  Tolerate both.
             if row is not None:
                 if hasattr(row, "get"):
                     acquired_flag = bool(row.get("acquired") or row.get("pg_try_advisory_lock"))
@@ -98,18 +61,16 @@ def _pg_advisory_lock(
                     acquired_flag = bool(row[0])
             else:
                 acquired_flag = False
+
             if acquired_flag:
                 acquired = True
-                # Session-scoped lock survives the commit; ending the
-                # transaction keeps the connection out of the idle-in-
-                # transaction danger zone for the whole critical section.
                 try:
                     conn.commit()
                 except Exception:
                     conn.rollback()
                 break
         except Exception as exc:
-            logger.debug("[QUEUE_LOCK] advisory lock error: %s", exc)
+            logger.debug("Advisory lock error", error=str(exc))
             if conn is not None:
                 try:
                     conn.close()
@@ -118,7 +79,9 @@ def _pg_advisory_lock(
                 conn = None
                 cursor = None
             break
-        conn.close()
+
+        if conn is not None:
+            conn.close()
         conn = None
         cursor = None
         time.sleep(interval)
@@ -135,13 +98,12 @@ def _pg_advisory_lock(
                     (key,),
                 )
                 cursor.fetchone()
-                # Commit the unlock too — same idle-in-transaction reasoning.
                 try:
                     conn.commit()
                 except Exception:
                     conn.rollback()
             except Exception as exc:
-                logger.debug("[QUEUE_LOCK] advisory unlock error: %s", exc)
+                logger.debug("Advisory unlock error", error=str(exc))
             try:
                 conn.close()
             except Exception:
@@ -192,14 +154,11 @@ def queue_cycle_lock(
     max_attempts: int = 20,
     attempt_interval: float = 0.5,
 ) -> Iterator[bool]:
-    """Best-effort cross-process mutual exclusion for queue cycles.
-
-    Yields ``True`` when this process acquired the lock and may proceed;
-    ``False`` when another worker/scheduler cycle already holds it.
-    """
+    """Best-effort cross-process mutual exclusion for queue cycles."""
     if _using_postgres():
         with _pg_advisory_lock(key, max_attempts, attempt_interval) as acquired:
             yield acquired
         return
+        
     with _file_lock(key, max_attempts, attempt_interval) as acquired:
         yield acquired

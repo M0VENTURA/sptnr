@@ -7,11 +7,12 @@ Cleanup logic must live in services.
 
 from __future__ import annotations
 
+from typing import Any
 
+import structlog
 from quart import Blueprint, request
+
 from routes.utils import json_response as _json_response
-
-
 from services.queue.queue_cleanup_service import (
     queue_cleanup,
     queue_reset_moving,
@@ -22,45 +23,45 @@ from services.queue.queue_cleanup_service import (
     queue_remove_group,
 )
 
+logger = structlog.get_logger(__name__)
 queue_cleanup_bp = Blueprint("queue_cleanup", __name__)
 
 
-
 @queue_cleanup_bp.route("/api/queue/cleanup", methods=["POST"])
-def api_queue_cleanup():
+def api_queue_cleanup() -> Any:
     return _json_response(queue_cleanup())
 
 
 @queue_cleanup_bp.route("/api/queue/reset-moving", methods=["POST"])
-async def api_queue_reset_moving():
+async def api_queue_reset_moving() -> Any:
     payload = (await request.get_json(silent=True)) or {}
     return _json_response(queue_reset_moving(payload))
 
 
 @queue_cleanup_bp.route("/api/queue/cleanup-copied", methods=["POST"])
-def api_queue_cleanup_copied_sources():
+def api_queue_cleanup_copied_sources() -> Any:
     return _json_response(queue_cleanup_copied_sources())
 
 
 @queue_cleanup_bp.route("/api/queue/cleanup-orphaned", methods=["POST"])
-async def api_queue_cleanup_orphaned():
+async def api_queue_cleanup_orphaned() -> Any:
     payload = (await request.get_json(silent=True)) or {}
     return _json_response(queue_cleanup_orphaned(payload))
 
 
 @queue_cleanup_bp.route("/api/queue/verify-and-prune", methods=["POST"])
-async def api_queue_verify_and_prune():
+async def api_queue_verify_and_prune() -> Any:
     payload = (await request.get_json(silent=True)) or {}
     return _json_response(queue_verify_and_prune(payload))
 
 
 @queue_cleanup_bp.route("/api/queue/folder/delete", methods=["POST"])
-async def api_queue_delete_folder():
+async def api_queue_delete_folder() -> Any:
     payload = (await request.get_json(silent=True)) or {}
     return _json_response(queue_delete_folder(payload))
 
 
 @queue_cleanup_bp.route("/api/queue/group/remove", methods=["POST"])
-async def api_queue_remove_group():
+async def api_queue_remove_group() -> Any:
     payload = (await request.get_json(silent=True)) or {}
     return _json_response(queue_remove_group(payload))

@@ -6,18 +6,20 @@ import asyncio
 import json
 from typing import Any
 
-from quart import Blueprint, jsonify, request, session
 import structlog
+from quart import Blueprint, jsonify, request, session
 from sqlalchemy import text
 
 from db.engine import db_session
+from db.repositories.tracks import find_library_track
 from helpers.config_helpers import get_config
+from services.enrichment.lastfm_service import get_lastfm_recommendations
 from services.playlists.listenbrainz_sync_service import (
-    sync_rss_playlists_for_user,
     get_playlists_for_user,
     get_sync_status,
+    sync_rss_playlists_for_user,
 )
-from services.enrichment.lastfm_service import get_lastfm_recommendations
+from services.playlists.playlist_create_service import create_playlist_file
 
 logger = structlog.get_logger(__name__)
 
@@ -101,7 +103,7 @@ async def api_listenbrainz_create_playlist() -> Any:
         track_ids = [s.get("id") for s in data.get("songs", []) if isinstance(s, dict) and s.get("id")]
         if not track_ids:
             return jsonify({"error": "No matched tracks with IDs to add"}), 400
-        from services.playlists.playlist_create_service import create_playlist_file
+            
         description = (data.get("description") or "ListenBrainz recommendations").strip()
         try:
             file_path = create_playlist_file(playlist_name, description, track_ids)
@@ -119,6 +121,7 @@ async def api_listenbrainz_create_playlist() -> Any:
     await asyncio.to_thread(sync_rss_playlists_for_user, app_username, lb_username)
     playlists = (get_playlists_for_user(app_username) or {}).get("playlists", {})
     recommendations = playlists.get(rec_type) or []
+    
     if not recommendations:
         return jsonify({"error": f"No ListenBrainz recommendations for type '{rec_type}'"}), 404
 
@@ -139,20 +142,21 @@ def _match_recommendations(
     source: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Match recommendation entries against the local library."""
-    from db.repositories.tracks import find_library_track
-
     matched: list[dict[str, Any]] = []
     missing: list[dict[str, Any]] = []
 
     for rec in recommendations:
         if not isinstance(rec, dict):
             continue
+            
         if source == "listenbrainz":
             title = str(rec.get("track_name") or rec.get("title") or "").strip()
             artist = str(rec.get("artist_name") or rec.get("artist") or "").strip()
             mbid = str(rec.get("recording_mbid") or "").strip()
+            
             if not title and not artist:
                 continue
+                
             row = _match_lb_track(artist, title, mbid)
             if row:
                 matched.append({
@@ -167,6 +171,7 @@ def _match_recommendations(
         title = str(rec.get("name") or rec.get("title") or "").strip()
         artist = str(rec.get("artist") or "").strip()
         playcount = rec.get("playcount", 0)
+        
         if not artist:
             row = find_library_track(artist=title, title="", strict_album=False)
             if row:
@@ -178,8 +183,10 @@ def _match_recommendations(
             else:
                 missing.append({"artist": title, "title": "(multiple tracks)", "playcount": playcount})
             continue
+            
         if not title:
             continue
+            
         row = find_library_track(artist=artist, title=title, strict_album=False)
         if row:
             matched.append({
@@ -203,10 +210,11 @@ def _match_lb_track(artist: str, title: str, recording_mbid: str = "") -> dict[s
                     {"m": recording_mbid},
                 ).fetchone()
             if row:
-                return {"id": row[0], "artist": row[1], "title": row[2]}
+                mapping = row._mapping
+                return {"id": mapping.get("id"), "artist": mapping.get("artist"), "title": mapping.get("title")}
         except Exception:
             pass
-    from db.repositories.tracks import find_library_track
+            
     return find_library_track(artist=artist, title=title, strict_album=False)
 
 
@@ -221,8 +229,10 @@ async def api_lastfm_sync_now() -> Any:
     cfg = get_config()
     lastfm_cfg = cfg.get("api_integrations", {}).get("lastfm", {})
     api_key = lastfm_cfg.get("api_key", "")
+    
     if not api_key:
         return jsonify({"error": "Last.fm API key not configured"}), 400
+        
     username = (data.get("username") or session.get("username") or "").strip()
     if not username:
         nav_users = cfg.get("navidrome_users", [])
@@ -230,8 +240,10 @@ async def api_lastfm_sync_now() -> Any:
             if u.get("user") == session.get("username"):
                 username = u.get("lastfm_username") or u.get("user") or ""
                 break
+                
     if not username:
         return jsonify({"error": "username required"}), 400
+        
     try:
         recommendations = get_lastfm_recommendations(api_key, username=username)
         return jsonify({"success": True, "recommendations": recommendations})
@@ -246,8 +258,10 @@ def api_lastfm_recommendations() -> Any:
     cfg = get_config()
     lastfm_cfg = cfg.get("api_integrations", {}).get("lastfm", {})
     api_key = lastfm_cfg.get("api_key", "")
+    
     if not api_key:
         return jsonify({"error": "Last.fm API key not configured"}), 400
+        
     try:
         current_user = session.get("username", "default_user")
         with db_session() as session_db:
@@ -256,6 +270,7 @@ def api_lastfm_recommendations() -> Any:
                 {"user": current_user},
             )
             rows = result.fetchall()
+            
         return jsonify({"success": True, "recommendations": [json.loads(r[0]) for r in rows if r[0]]})
     except Exception as exc:
         logger.error("Failed to fetch Last.fm recommendations", error=str(exc))
@@ -272,7 +287,7 @@ async def api_lastfm_create_playlist() -> Any:
         track_ids = [s.get("id") for s in data.get("songs", []) if isinstance(s, dict) and s.get("id")]
         if not track_ids:
             return jsonify({"error": "No matched tracks with IDs to add"}), 400
-        from services.playlists.playlist_create_service import create_playlist_file
+            
         description = (data.get("description") or "Last.fm recommendations").strip()
         try:
             file_path = create_playlist_file(playlist_name, description, track_ids)
@@ -288,18 +303,21 @@ async def api_lastfm_create_playlist() -> Any:
     cfg = get_config()
     lastfm_cfg = cfg.get("api_integrations", {}).get("lastfm", {})
     api_key = lastfm_cfg.get("api_key", "")
+    
     if not api_key:
         return jsonify({"error": "Last.fm API key not configured"}), 400
 
     rec_type = (data.get("type") or "tracks").strip()
     current_user = session.get("username", "")
     username = (data.get("username") or "").strip()
+    
     if not username and current_user:
         nav_users = cfg.get("navidrome_users", [])
         for u in nav_users:
             if u.get("user") == current_user:
                 username = u.get("lastfm_username") or u.get("user") or ""
                 break
+                
     if not username:
         return jsonify({"error": "username required"}), 400
 
@@ -332,6 +350,7 @@ def api_lastfm_sync_status() -> Any:
     api_key = lastfm_cfg.get("api_key", "")
     enabled = bool(lastfm_cfg.get("enabled")) and bool(api_key)
     last_sync = None
+    
     try:
         current_user = session.get("username", "default_user")
         with db_session() as session_db:
@@ -343,6 +362,7 @@ def api_lastfm_sync_status() -> Any:
                 last_sync = row[0]
     except Exception as exc:
         logger.debug("Last.fm sync-status lookup failed", error=str(exc))
+        
     return jsonify({"success": True, "enabled": enabled, "last_sync": last_sync, "next_sync": None})
 
 

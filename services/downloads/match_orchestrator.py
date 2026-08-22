@@ -8,16 +8,24 @@ Applies a MusicBrainz release match to multiple queue items:
 Called by the UI routes when a user confirms a MusicBrainz match.
 """
 
-import logging
+from __future__ import annotations
+
 import threading
 from typing import Any, Dict, List
+
+import structlog
 from sqlalchemy import text
+
 from db.engine import db_session
-from services.downloads.download_matching_service import _expand_release_tracks, _prefetch_mbid_metadata_batch, _row_get
 from db.repositories.queue import get_album_queue_tracks
+from services.downloads.download_matching_service import (
+    _expand_release_tracks,
+    _prefetch_mbid_metadata_batch,
+    _row_get,
+)
 from services.enrichment.musicbrainz_service import fetch_release_metadata
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 def apply_mbid_match_batch(
@@ -27,22 +35,7 @@ def apply_mbid_match_batch(
     new_album: str | None = None,
     expand_tracks: bool = False,
 ) -> Dict[str, Any]:
-    """
-    Apply one MusicBrainz release match to multiple queue items.
-
-    Migrated from:
-        /api/queue/apply-mbid-match-batch
-
-    Responsibilities:
-    - validate queue IDs
-    - resolve fallback artist/album
-    - update queue rows with release MBID
-    - preserve old status transition behavior
-    - assign import_group
-    - prefetch MusicBrainz release metadata
-    - optionally expand release tracks into queue rows
-    """
-
+    """Apply one MusicBrainz release match to multiple queue items."""
     queue_ids = [
         int(qid)
         for qid in queue_ids
@@ -84,8 +77,9 @@ def apply_mbid_match_batch(
                     "error": "Queue item not found",
                 }
 
-            fallback_artist = _row_get(first_row, "artist", 0)
-            fallback_album = _row_get(first_row, "album", 1)
+            mapping = first_row._mapping
+            fallback_artist = mapping.get("artist")
+            fallback_album = mapping.get("album")
 
             target_artist = new_artist or fallback_artist
             target_album = new_album or fallback_album
@@ -125,19 +119,16 @@ def apply_mbid_match_batch(
             )
 
             updated_count = result.rowcount or 0
-            # db_session commits on exit.
 
     except Exception as exc:
-        logger.exception("[QUEUE_MATCH_BATCH] Failed applying MBID batch")
-
+        logger.error("Failed applying MBID batch match", error=str(exc), exc_info=True)
         return {
             "success": False,
             "status_code": 500,
             "error": str(exc),
         }
 
-    # Preserve old behavior:
-    # queue rows are updated immediately, then metadata enrichment happens separately.
+    # Queue rows are updated immediately, then metadata enrichment happens asynchronously.
     threading.Thread(
         target=_prefetch_mbid_metadata_batch,
         args=(new_mbid, list(queue_ids)),

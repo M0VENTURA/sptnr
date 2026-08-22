@@ -11,113 +11,131 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from typing import Any
 
-from quart import Blueprint, request, jsonify
-import logging
+import structlog
+from quart import Blueprint, jsonify, request
+from sqlalchemy import text
 
-from helpers.config_helpers import get_config
-
-from services.queue.queue_orchestrator import (
-    process_next_batch,
-)
-
-from services.downloads import (
-    cancel_folder,
-    scan_downloads,
-    get_scan_progress,
-    verify_moved_files,
-    discover_files,
-    match_folder,
-    auto_match_folder,
-    apply_musicbrainz_match,
-    get_release_status,
-    get_release_tracks,
-    check_folder_duplicates,
-    process_album_existing,
-    start_scheduler,
-    stop_scheduler,
-    scheduler_status,
-)
-
-from services.downloads.download_organize_service import (
-    organize_folder,
-    organize_track,
-    merge_folders,
-)
-
-from services.downloads.download_folder_service import (
-    cancel_folder_downloads,
-    get_folder_groups_with_musicbrainz,
-    get_folder_details,
-)
-
-from db.repositories.queue_admin import clear_queue as _clear_queue
+from api_clients.slskd_http import SlskdHttpClient
+from db.engine import db_session
 from db.repositories.queue import (
+    get_active_queue,
+    get_completed_queue,
     get_queue_status_counts,
+    insert_queue_item,
     update_queue_item,
 )
+from db.repositories.queue_admin import clear_queue as _clear_queue
+from helpers.config_helpers import get_config
+from helpers.metadata_reader import read_mp3_metadata
 
-# scan_downloads_for_queue_import/grouped not yet migrated; using scan_downloads from services.downloads above
+# Exported from services.downloads.__init__.py
+from services.downloads import (
+    apply_musicbrainz_match,
+    auto_match_folder,
+    cancel_folder,
+    check_folder_duplicates,
+    discover_files,
+    get_release_status,
+    get_release_tracks,
+    get_scan_progress,
+    match_folder,
+    process_album_existing,
+    scan_downloads,
+    scheduler_status,
+    start_scheduler,
+    stop_scheduler,
+    verify_moved_files,
+)
+from services.downloads.download_folder_service import (
+    associate_folder_to_release,
+    cancel_folder_downloads,
+    delete_download_folder,
+    delete_folder_track,
+    get_folder_details,
+    get_folder_groups_with_musicbrainz,
+    get_folder_tracks,
+    get_unmatched_folders,
+    match_folder_to_release,
+    move_folder_track_to_library,
+    refresh_folder_matches,
+)
+from services.downloads.download_organize_service import (
+    merge_folders,
+    organize_folder,
+    organize_track,
+)
+from services.downloads.download_pipeline_service import (
+    run_pipeline,
+    start_release_download,
+    sync_transfers,
+)
+from services.downloads.download_processing_service import (
+    process_albums as _process_albums_impl,
+    process_single_file as _process_single_file_impl,
+)
+from services.downloads.match_orchestrator import apply_mbid_match_batch
+from services.downloads.slskd_service import SlskdService
+from services.queue.queue_orchestrator import process_next_batch
+from services.queue.queue_signal import signal_new_item
+
+logger = structlog.get_logger(__name__)
 downloads_bp = Blueprint("downloads", __name__)
+
 
 # =============================================================================
 # ✅ FOLDER APIs
 # =============================================================================
 
 @downloads_bp.route("/api/downloads/folder-groups")
-def api_get_folder_groups():
+def api_get_folder_groups() -> Any:
     return jsonify(get_folder_groups_with_musicbrainz())
 
 
 @downloads_bp.route("/api/downloads/grouped-folders")
-def api_get_grouped_folders():
+def api_get_grouped_folders() -> Any:
     """Alias used by monitor JS — returns same data as folder-groups."""
     return jsonify(get_folder_groups_with_musicbrainz())
 
 
 @downloads_bp.route("/api/downloads/unmatched-folders")
-def api_get_unmatched_folders():
+def api_get_unmatched_folders() -> Any:
     """Folders under the downloads dir not tracked as MusicBrainz releases."""
-    from services.downloads.download_folder_service import get_unmatched_folders
     return jsonify(get_unmatched_folders())
 
 
 @downloads_bp.route("/api/downloads/folder/match", methods=["POST"])
-async def api_match_folder_to_release():
+async def api_match_folder_to_release() -> Any:
     """Copy an unmatched folder into the library as a MusicBrainz release."""
     payload = (await request.get_json(silent=True)) or {}
     folder_path = (payload.get("folder_path") or "").strip()
     mb_id = (payload.get("mb_id") or payload.get("mbid") or "").strip()
     if not folder_path or not mb_id:
         return jsonify({"success": False, "error": "folder_path and mb_id (release/release-group URL or ID) are required"}), 400
-    from services.downloads.download_folder_service import match_folder_to_release
+        
     # Filesystem + DB work — offload so the event loop stays responsive.
     return jsonify(await asyncio.to_thread(match_folder_to_release, folder_path, mb_id))
 
 
 @downloads_bp.route("/api/downloads/folder/associate", methods=["POST"])
-async def api_associate_folder_to_release():
+async def api_associate_folder_to_release() -> Any:
     """Phase 1 of the two-phase folder-match flow: record the folder → release
-    association WITHOUT moving any files.  The folder stays passive on disk;
-    the user later presses ``Confirm Match`` to run the move pipeline."""
+    association WITHOUT moving any files. The folder stays passive on disk."""
     payload = (await request.get_json(silent=True)) or {}
     folder_path = (payload.get("folder_path") or "").strip()
     mb_id = (payload.get("mb_id") or payload.get("mbid") or "").strip()
     if not folder_path or not mb_id:
         return jsonify({"success": False, "error": "folder_path and mb_id (release/release-group URL or ID) are required"}), 400
-    from services.downloads.download_folder_service import associate_folder_to_release
-    # Filesystem + DB work — offload so the event loop stays responsive.
+        
     return jsonify(await asyncio.to_thread(associate_folder_to_release, folder_path, mb_id))
 
 
 @downloads_bp.route("/api/downloads/confirm-match", methods=["POST"])
-async def api_confirm_folder_match():
+async def api_confirm_folder_match() -> Any:
     """Phase 2 of the two-phase folder-match flow: confirm an associated
     folder — write tags, format the path, move the files to /music and
-    remove the folder from the Matched Folders list.
-
-    Takes ``folder_path`` and ``release_mbid`` (or ``mb_id``).
-    """
+    remove the folder from the Matched Folders list."""
     payload = (await request.get_json(silent=True)) or {}
     folder_path = (payload.get("folder_path") or "").strip()
     release_mbid = (
@@ -126,21 +144,21 @@ async def api_confirm_folder_match():
         or payload.get("mbid")
         or ""
     ).strip()
+    
     if not folder_path or not release_mbid:
         return jsonify({"success": False, "error": "folder_path and release_mbid are required"}), 400
-    from services.downloads.download_folder_service import match_folder_to_release
-    # Filesystem + DB work — offload so the event loop stays responsive.
+        
     return jsonify(await asyncio.to_thread(match_folder_to_release, folder_path, release_mbid))
 
 
 @downloads_bp.route("/api/downloads/folder/delete", methods=["POST"])
-async def api_delete_download_folder():
+async def api_delete_download_folder() -> Any:
     """Delete a folder under the downloads directory (safety-railed)."""
     payload = (await request.get_json(silent=True)) or {}
     folder_path = (payload.get("folder_path") or "").strip()
     if not folder_path:
         return jsonify({"success": False, "error": "folder_path required"}), 400
-    from services.downloads.download_folder_service import delete_download_folder
+        
     return jsonify(await asyncio.to_thread(delete_download_folder, folder_path))
 
 
@@ -149,65 +167,58 @@ async def api_delete_download_folder():
 # =============================================================================
 
 @downloads_bp.route("/api/downloads/folder/<path:folder_path>/tracks")
-def api_folder_tracks(folder_path):
-    """List the audio tracks (files) inside a Matched-Folders folder, each
-    with embedded artist/album/title + imported state."""
-    from services.downloads.download_folder_service import get_folder_tracks
+def api_folder_tracks(folder_path: str) -> Any:
+    """List the audio tracks (files) inside a Matched-Folders folder."""
     return jsonify(get_folder_tracks(folder_path))
 
 
 @downloads_bp.route("/api/downloads/folder/<path:folder_path>/track/delete", methods=["POST"])
-async def api_delete_folder_track(folder_path):
-    """Delete ONE audio file from a Matched-Folders folder (safety-railed;
-    refuses files already imported to the library)."""
+async def api_delete_folder_track(folder_path: str) -> Any:
+    """Delete ONE audio file from a Matched-Folders folder."""
     payload = (await request.get_json(silent=True)) or {}
     file_name = (payload.get("file_name") or "").strip()
     if not file_name:
         return jsonify({"success": False, "error": "file_name required"}), 400
-    from services.downloads.download_folder_service import delete_folder_track
+        
     return jsonify(await asyncio.to_thread(delete_folder_track, folder_path, file_name))
 
 
 @downloads_bp.route("/api/downloads/folder/<path:folder_path>/track/move", methods=["POST"])
-async def api_move_folder_track(folder_path):
-    """Move ONE audio file from a Matched-Folders folder into the library
-    (per-track equivalent of the folder Confirm Match)."""
+async def api_move_folder_track(folder_path: str) -> Any:
+    """Move ONE audio file from a Matched-Folders folder into the library."""
     payload = (await request.get_json(silent=True)) or {}
     file_name = (payload.get("file_name") or "").strip()
     if not file_name:
         return jsonify({"success": False, "error": "file_name required"}), 400
-    from services.downloads.download_folder_service import move_folder_track_to_library
+        
     return jsonify(await asyncio.to_thread(move_folder_track_to_library, folder_path, file_name))
 
 
 @downloads_bp.route("/api/downloads/folder-matches/refresh", methods=["POST"])
-async def api_refresh_folder_matches():
-    """Re-sync stored folder → release associations with the current torrent
-    flattening: any association pointing at the torrent root is moved down to
-    each album subfolder directly under it."""
-    from services.downloads.download_folder_service import refresh_folder_matches
+async def api_refresh_folder_matches() -> Any:
+    """Re-sync stored folder → release associations with the current torrent flattening."""
     return jsonify(await asyncio.to_thread(refresh_folder_matches))
 
 
 @downloads_bp.route("/api/downloads/folder-status")
-def api_get_folder_status():
+def api_get_folder_status() -> Any:
     """Return folder status summary (stub for now)."""
     return jsonify({"success": True, "scanning": False, "folders": [], "total": 0})
 
 
 @downloads_bp.route("/api/downloads/folder-duplicates")
-def api_get_folder_duplicates():
+def api_get_folder_duplicates() -> Any:
     """Return folder duplicate info (stub for now)."""
     return jsonify({"success": True, "duplicates": [], "total": 0})
 
 
 @downloads_bp.route("/api/downloads/folder/<path:folder_path>")
-def api_get_folder_details(folder_path):
+def api_get_folder_details(folder_path: str) -> Any:
     return jsonify(get_folder_details(folder_path))
 
 
 @downloads_bp.route("/api/downloads/folder/<path:folder_path>/cancel", methods=["POST"])
-def api_cancel_folder(folder_path):
+def api_cancel_folder_downloads_route(folder_path: str) -> Any:
     return jsonify(cancel_folder_downloads(folder_path))
 
 
@@ -216,23 +227,22 @@ def api_cancel_folder(folder_path):
 # =============================================================================
 
 @downloads_bp.route("/api/downloads/scan")
-def api_downloads_scan():
-    from helpers.metadata_reader import read_mp3_metadata
+def api_downloads_scan() -> Any:
     return jsonify(scan_downloads(read_mp3_metadata))
 
 
 @downloads_bp.route("/api/downloads/discover", methods=["POST"])
-def api_downloads_discover():
+def api_downloads_discover() -> Any:
     return jsonify(discover_files())
 
 
 @downloads_bp.route("/api/downloads/scan-progress")
-def api_downloads_scan_progress():
+def api_downloads_scan_progress() -> Any:
     return jsonify(get_scan_progress())
 
 
 @downloads_bp.route("/api/downloads/verify-moved-files")
-def api_downloads_verify_moved():
+def api_downloads_verify_moved() -> Any:
     minutes = int(request.args.get("minutes_old", 30))
     return jsonify(verify_moved_files(minutes))
 
@@ -242,31 +252,30 @@ def api_downloads_verify_moved():
 # =============================================================================
 
 @downloads_bp.route("/api/downloads/folder/<path:folder_path>/match-musicbrainz", methods=["POST"])
-async def api_match_folder(folder_path):
+async def api_match_folder_musicbrainz(folder_path: str) -> Any:
     payload = await request.get_json()
     return jsonify(await asyncio.to_thread(match_folder, folder_path, payload))
 
 
 @downloads_bp.route("/api/downloads/folder/<path:folder_path>/auto-match", methods=["POST"])
-async def api_auto_match_folder(folder_path):
+async def api_auto_match_folder_route(folder_path: str) -> Any:
     payload = await request.get_json()
     return jsonify(await asyncio.to_thread(auto_match_folder, folder_path, payload))
 
 
 @downloads_bp.route("/api/downloads/release/<source>/<release_id>/tracks")
-def api_release_tracks(source, release_id):
+def api_release_tracks_route(source: str, release_id: str) -> Any:
     return jsonify(get_release_tracks(release_id=release_id, source=source))
 
 
 @downloads_bp.route("/api/downloads/folder/<path:folder_path>/duplicates", methods=["POST"])
-async def api_check_duplicates(folder_path):
+async def api_check_duplicates_route(folder_path: str) -> Any:
     payload = await request.get_json()
     return jsonify(await asyncio.to_thread(check_folder_duplicates, folder_path, payload))
-from services.downloads.match_orchestrator import apply_mbid_match_batch
 
 
 @downloads_bp.route("/api/queue/apply-mbid-match-batch", methods=["POST"])
-async def api_queue_apply_mbid_match_batch():
+async def api_queue_apply_mbid_match_batch() -> Any:
     try:
         data = (await request.get_json(force=True, silent=True)) or {}
 
@@ -293,30 +302,29 @@ async def api_queue_apply_mbid_match_batch():
 
         return jsonify(result)
 
-    except Exception as e:
-        logging.error("[API] apply MBID batch failed: %s", e, exc_info=True)
-        return jsonify({"success": False, "error": str(e)}), 500
+    except Exception as exc:
+        logger.error("Apply MBID batch failed", error=str(exc), exc_info=True)
+        return jsonify({"success": False, "error": str(exc)}), 500
+
 
 # =============================================================================
 # ✅ ORGANIZE / MOVE / MERGE
 # =============================================================================
 
 @downloads_bp.route("/api/downloads/folder/<path:folder_path>/organize", methods=["POST"])
-async def api_organize_folder(folder_path):
+async def api_organize_folder_route(folder_path: str) -> Any:
     payload = await request.get_json()
     return jsonify(await asyncio.to_thread(organize_folder, folder_path, payload))
 
 
-
 @downloads_bp.route("/api/downloads/track/<int:track_index>/move", methods=["POST"])
-async def api_move_track(track_index):
+async def api_move_track(track_index: int) -> Any:
     payload = await request.get_json()
     return jsonify(await asyncio.to_thread(organize_track, track_index, payload))
 
 
-
 @downloads_bp.route("/api/downloads/merge-folders", methods=["POST"])
-async def api_merge_folders():
+async def api_merge_folders() -> Any:
     payload = await request.get_json()
     return jsonify(await asyncio.to_thread(merge_folders, payload))
 
@@ -325,43 +333,41 @@ async def api_merge_folders():
 # ✅ PROCESSING
 # =============================================================================
 
-
 @downloads_bp.route("/api/downloads/process", methods=["POST"])
-def api_process():
+def api_process() -> Any:
     return jsonify(process_next_batch())
 
 
-
 @downloads_bp.route("/api/downloads/process-one", methods=["POST"])
-async def api_process_one():
+async def api_process_one() -> Any:
     payload = await request.get_json()
     return jsonify(await asyncio.to_thread(process_single_file, payload))
 
 
 @downloads_bp.route("/api/downloads/process-retry", methods=["POST"])
-def api_process_retry():
+def api_process_retry() -> Any:
     return jsonify(process_retry_queue())
 
 
 @downloads_bp.route("/api/downloads/process-albums", methods=["POST"])
-def api_process_albums():
+def api_process_albums() -> Any:
     return jsonify(process_albums())
 
 
 @downloads_bp.route("/api/downloads/albums/use-existing", methods=["POST"])
-async def api_use_existing():
+async def api_use_existing() -> Any:
     payload = await request.get_json()
     return jsonify(await asyncio.to_thread(process_album_existing, payload))
 
 
 @downloads_bp.route("/api/downloads/albums/apply-match", methods=["POST"])
-async def api_apply_match():
+async def api_apply_match() -> Any:
     payload = await request.get_json()
     return jsonify(await asyncio.to_thread(apply_musicbrainz_match, payload))
 
 
 @downloads_bp.route("/api/downloads/release-tracks", methods=["POST"])
-async def api_release_status():
+async def api_release_status_route() -> Any:
     payload = await request.get_json()
     return jsonify(await asyncio.to_thread(get_release_status, payload))
 
@@ -371,20 +377,17 @@ async def api_release_status():
 # =============================================================================
 
 @downloads_bp.route("/api/downloads/queue")
-def api_queue():
+def api_queue() -> Any:
     limit = request.args.get("limit", 100, type=int)
     offset = request.args.get("offset", 0, type=int)
     try:
-        from db.repositories.queue import get_active_queue
         status_counts = get_queue_status_counts()
-        # Return the actual queue rows (queued/searching/downloading/failed),
-        # paginated — this endpoint previously stubbed ``queue`` to [].
         items = get_active_queue(limit=max(1, min(limit + offset, 500)))
         if offset:
             items = items[offset:offset + limit]
         else:
             items = items[:limit]
-        from db.repositories.queue import get_completed_queue
+            
         completed = get_completed_queue(limit=min(limit, 50))
         return jsonify({
             "success": True,
@@ -396,6 +399,7 @@ def api_queue():
             "offset": offset,
         })
     except Exception as exc:
+        logger.error("Failed to fetch queue status", error=str(exc))
         return jsonify({
             "success": False,
             "error": str(exc),
@@ -406,13 +410,8 @@ def api_queue():
 
 
 @downloads_bp.route("/api/downloads/queue-upcoming", methods=["POST"])
-async def api_queue_upcoming():
-    """Queue an upcoming release (by ``upcoming_release_id``) for download.
-
-    Only releases whose date has passed (``release_date <= today``) can be
-    queued.  Inserts an album-typed item into ``download_queue`` (deduped by
-    artist/title) and marks the upcoming row ``status = 'queued'``.
-    """
+async def api_queue_upcoming() -> Any:
+    """Queue an upcoming release (by ``upcoming_release_id``) for download."""
     payload = await request.get_json(silent=True) or {}
     release_id = payload.get("upcoming_release_id") or payload.get("id")
     try:
@@ -421,15 +420,12 @@ async def api_queue_upcoming():
         return jsonify({"success": False, "error": "upcoming_release_id is required"}), 400
 
     try:
-        from db.engine import db_session
-        from db.repositories.queue import insert_queue_item
-        from sqlalchemy import text
-
         with db_session() as session:
             row = session.execute(
                 text("SELECT * FROM upcoming_releases WHERE id = :id"),
                 {"id": release_id},
             ).fetchone()
+            
         if row is None:
             return jsonify({"success": False, "error": "release not found"}), 404
 
@@ -437,6 +433,7 @@ async def api_queue_upcoming():
         artist = (release.get("artist_name") or "").strip()
         album = (release.get("album_name") or "").strip()
         rel_date = (release.get("release_date") or "").strip()
+        
         if not artist or not album:
             return jsonify({"success": False, "error": "release has no artist/album"}), 400
 
@@ -451,14 +448,8 @@ async def api_queue_upcoming():
         year = int(rel_date[:4]) if len(rel_date) >= 4 and rel_date[:4].isdigit() else None
         release_mbid = (release.get("release_group_mbid") or "").strip() or None
 
-        # Prefer the full MusicBrainz pipeline: resolve the release-group to a
-        # concrete release and queue one download_queue row PER TRACK (the
-        # same flow the MusicBrainz modal uses).  Falls back to a single
-        # album-typed item when no MBID is matched yet or MB data can't be
-        # fetched.
         if release_mbid:
             try:
-                from services.downloads.download_pipeline_service import start_release_download
                 result = start_release_download(
                     release_mbid,
                     album,
@@ -474,10 +465,10 @@ async def api_queue_upcoming():
                             {"id": release_id},
                         )
                     try:
-                        from services.queue.queue_signal import signal_new_item
                         signal_new_item()
                     except Exception:
                         pass
+                        
                     return jsonify({
                         "success": True,
                         "total_tracks": queued_tracks,
@@ -486,14 +477,15 @@ async def api_queue_upcoming():
                         "album": album,
                         "release_group_mbid": release_mbid,
                     })
+                    
                 logger.warning(
-                    "[QUEUE_UPCOMING] MB pipeline failed for %s (%s): %s — falling back to single item",
-                    release_id, album, result.get("error"),
+                    "MB pipeline failed, falling back to single item",
+                    release_id=release_id, album=album, error=result.get("error"),
                 )
             except Exception as exc:
                 logger.warning(
-                    "[QUEUE_UPCOMING] MB pipeline error for %s (%s): %s — falling back to single item",
-                    release_id, album, exc,
+                    "MB pipeline error, falling back to single item",
+                    release_id=release_id, album=album, error=str(exc),
                 )
 
         queued = insert_queue_item(
@@ -521,33 +513,28 @@ async def api_queue_upcoming():
             "album": album,
         })
     except Exception as exc:
-        logging.error("Failed to queue upcoming release %s: %s", release_id, exc, exc_info=True)
+        logger.error("Failed to queue upcoming release", release_id=release_id, error=str(exc), exc_info=True)
         return jsonify({"success": False, "error": str(exc)}), 500
 
 
 @downloads_bp.route("/api/downloads/clear-queue", methods=["POST"])
-def api_clear_queue():
+def api_clear_queue() -> Any:
     return jsonify(_clear_queue())
 
 
 @downloads_bp.route("/api/downloads/retry-queue")
-def api_retry_queue():
+def api_retry_queue() -> Any:
     return jsonify(get_queue_status_counts())
 
 
 @downloads_bp.route("/api/downloads/queue/grouped")
-def api_grouped_queue():
+def api_grouped_queue() -> Any:
     return jsonify(get_queue_status_counts())
 
 
 @downloads_bp.route("/api/downloads/queue/batch-group", methods=["POST"])
-async def api_batch_group():
-    """Group selected queue items into a named album group.
-
-    Port of the legacy batch-group endpoint: sets ``album`` on every item
-    and, when a group artist is supplied, only overwrites mismatched artists
-    when ``force_artist_override`` is set (prevents cross-artist corruption).
-    """
+async def api_batch_group() -> Any:
+    """Group selected queue items into a named album group."""
     data = (await request.get_json(silent=True)) or {}
     item_ids = data.get("item_ids") or []
     group_name = str(data.get("group_name") or "").strip()
@@ -559,11 +546,9 @@ async def api_batch_group():
 
     empty_artists = {"", "unknown", "various", "various artists"}
 
-    from db.engine import db_session
-    from sqlalchemy import text
-
     updated = artist_updated = artist_skipped = 0
     conflicts = []
+    
     try:
         with db_session() as session:
             for item_id in item_ids:
@@ -571,11 +556,13 @@ async def api_batch_group():
                     text("SELECT id, artist, title FROM download_queue WHERE id = :id"),
                     {"id": item_id},
                 ).fetchone()
+                
                 if row is None:
                     continue
 
-                item_artist = str(row[1] or "")
-                item_title = str(row[2] or "")
+                mapping = row._mapping
+                item_artist = str(mapping.get("artist") or "")
+                item_title = str(mapping.get("title") or "")
 
                 if group_artist:
                     current_norm = item_artist.strip().lower()
@@ -585,6 +572,7 @@ async def api_batch_group():
                         or current_norm in empty_artists
                         or current_norm == new_norm
                     )
+                    
                     if should_update:
                         session.execute(
                             text("""
@@ -622,7 +610,7 @@ async def api_batch_group():
                     )
                 updated += 1
     except Exception as exc:
-        logging.error(f"[batch-group] {exc}")
+        logger.error("Batch group failed", error=str(exc))
         return jsonify({"success": False, "error": str(exc)}), 500
 
     return jsonify({
@@ -637,7 +625,7 @@ async def api_batch_group():
 
 
 @downloads_bp.route("/api/downloads/queue/<int:queue_id>", methods=["POST"])
-async def api_manage_queue(queue_id):
+async def api_manage_queue(queue_id: int) -> Any:
     _data = (await request.get_json()) or {}
     return jsonify(update_queue_item(queue_id, **_data) or {"success": False})
 
@@ -647,63 +635,54 @@ async def api_manage_queue(queue_id):
 # =============================================================================
 
 @downloads_bp.route("/api/downloads/scheduler/start", methods=["POST"])
-def api_scheduler_start():
+def api_scheduler_start_route() -> Any:
     return jsonify(start_scheduler())
 
 
 @downloads_bp.route("/api/downloads/scheduler/stop", methods=["POST"])
-def api_scheduler_stop():
+def api_scheduler_stop_route() -> Any:
     return jsonify(stop_scheduler())
 
 
 @downloads_bp.route("/api/downloads/scheduler/status")
-def api_scheduler_status():
+def api_scheduler_status_route() -> Any:
     return jsonify(scheduler_status())
 
-@downloads_bp.route("/api/downloads/pipeline/run", methods=["POST"])
-def api_run_pipeline():
-    from services.downloads.slskd_service import SlskdService
-    from api_clients.slskd_http import SlskdHttpClient
 
+@downloads_bp.route("/api/downloads/pipeline/run", methods=["POST"])
+def api_run_pipeline() -> Any:
     cfg = get_config()
     slskd_cfg = cfg.get("slskd", {})
     web_url = slskd_cfg.get("web_url", "http://localhost:5030")
     api_key = slskd_cfg.get("api_key", "")
+    
     client = SlskdHttpClient(web_url=web_url, api_key=api_key)
     slskd = SlskdService(client)
 
-    from services.downloads.download_pipeline_service import run_pipeline
     result = run_pipeline(slskd)
-
     return jsonify(result)
 
-@downloads_bp.route("/api/downloads/pipeline/sync", methods=["POST"])
-def api_pipeline_sync():
-    from services.downloads.slskd_service import SlskdService
-    from api_clients.slskd_http import SlskdHttpClient
 
+@downloads_bp.route("/api/downloads/pipeline/sync", methods=["POST"])
+def api_pipeline_sync() -> Any:
     cfg = get_config()
     slskd_cfg = cfg.get("slskd", {})
     web_url = slskd_cfg.get("web_url", "http://localhost:5030")
     api_key = slskd_cfg.get("api_key", "")
+    
     client = SlskdHttpClient(web_url=web_url, api_key=api_key)
     slskd = SlskdService(client)
 
-    from services.downloads.download_pipeline_service import sync_transfers
     return jsonify(sync_transfers(slskd))
 
 
-def process_single_file(data=None):
-    from services.downloads.download_processing_service import (
-        process_single_file as _impl,
-    )
-    return _impl(data or {})
+def process_single_file(data: dict[str, Any] | None = None) -> Any:
+    return _process_single_file_impl(data or {})
 
-def process_retry_queue():
+
+def process_retry_queue() -> Any:
     return process_next_batch()
 
-def process_albums():
-    from services.downloads.download_processing_service import (
-        process_albums as _impl,
-    )
-    return _impl()
+
+def process_albums() -> Any:
+    return _process_albums_impl()
