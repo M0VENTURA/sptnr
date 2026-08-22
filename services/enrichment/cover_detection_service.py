@@ -15,17 +15,20 @@ Key Functions:
 
 from __future__ import annotations
 
-import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from services.enrichment.cover_detector_impl import CoverDetector
+import structlog
+from sqlalchemy import text
+
+from db.engine import db_session
 from db.utils import row_get
 from helpers.normalization_service import detect_cover_and_normalize_title
+from services.enrichment.cover_detector_impl import CoverDetector
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
-def detect_covers_for_artist(artist_name: str, conn, force: bool = False) -> int:
+def detect_covers_for_artist(artist_name: str, conn: Any = None, force: bool = False) -> int:
     """Scan all tracks for *artist_name* and mark covers in the database.
 
     Uses the full ``CoverDetector`` pipeline (ISRC, MB relations, writer
@@ -36,23 +39,25 @@ def detect_covers_for_artist(artist_name: str, conn, force: bool = False) -> int
     try:
         detector = CoverDetector(db_connection=None)
     except Exception as exc:
-        logger.warning("CoverDetector unavailable: %s", exc)
+        logger.warning("CoverDetector unavailable", error=str(exc))
         return 0
 
-    from sqlalchemy import text
-    from db.engine import db_session
-    with db_session() as session:
-        result = session.execute(
-            text("SELECT id, title, artist, album, composer, writer, isrc, mbid, "
-                 "musicbrainz_album_mbid, file_path, is_cover, genres, musicbrainz_genres, "
-                 "original_cover_artist, cover_manual_override, cover_last_checked "
-                 "FROM tracks WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)"),
-            {"artist": artist_name},
-        )
-        rows = result.fetchall() or []
+    try:
+        with db_session() as session:
+            result = session.execute(
+                text("SELECT id, title, artist, album, composer, writer, isrc, mbid, "
+                     "musicbrainz_album_mbid, file_path, is_cover, genres, musicbrainz_genres, "
+                     "original_cover_artist, cover_manual_override, cover_last_checked "
+                     "FROM tracks WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)"),
+                {"artist": artist_name},
+            )
+            rows = result.fetchall() or []
+    except Exception as exc:
+        logger.error("Failed to query tracks for artist cover scan", artist=artist_name, error=str(exc))
+        return 0
 
     # Build a pseudo-album context so per-album caching works.
-    albums: Dict[str, List[Dict]] = {}
+    albums: dict[str, list[dict[str, Any]]] = {}
     updated = 0
     for row in rows:
         track = {
@@ -76,24 +81,23 @@ def detect_covers_for_artist(artist_name: str, conn, force: bool = False) -> int
         albums.setdefault(album_key, []).append(track)
 
     for album_name, tracks in albums.items():
-        artist = tracks[0].get("artist") or artist_name
+        artist = tracks[0].get("artist") or album_name
         results = detector.detect_covers_for_album(
             album=album_name, artist=artist, tracks=tracks, force=force,
         )
         updated += len(results)
 
-    logger.info("Cover detection for '%s': %d covers found across %d album(s)",
-                artist_name, updated, len(albums))
+    logger.info("Cover detection complete for artist", artist=artist_name, updated_count=updated, album_count=len(albums))
     return updated
 
 
 def detect_covers_for_album(
     album: str,
     artist: str,
-    tracks: List[Dict[str, Any]],
-    conn=None,
+    tracks: list[dict[str, Any]],
+    conn: Any = None,
     force: bool = False,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Detect covers for a single album context (called during popularity scan).
 
     Args:
@@ -112,16 +116,16 @@ def detect_covers_for_album(
             album=album, artist=artist, tracks=tracks, force=force,
         )
     except Exception as exc:
-        logger.warning("Cover detection failed for '%s' by '%s': %s", album, artist, exc)
+        logger.warning("Cover detection failed for album", album=album, artist=artist, error=str(exc))
         return []
 
 
 def detect_cover_song(
     title: str,
     artist: str,
-    composer: Optional[str] = None,
-    writer: Optional[str] = None,
-    track_data: Optional[Dict[str, Any]] = None,
+    composer: str | None = None,
+    writer: str | None = None,
+    track_data: dict[str, Any] | None = None,
     force: bool = False,
 ) -> tuple[bool, str]:
     """Quick single-track cover check used during popularity scanning.
@@ -135,7 +139,6 @@ def detect_cover_song(
       is populated → skip unless ``force=True``.
     - Otherwise run the standard detection pipeline.
     """
-    # ── Cache check: skip if already confirmed ──────────────────────────
     if not force and track_data:
         manual = track_data.get("cover_manual_override")
         if manual:
@@ -146,7 +149,6 @@ def detect_cover_song(
         if existing_cover and existing_orig:
             return False, "already_confirmed"
 
-    # ── Standard detection ──────────────────────────────────────────────
     is_cover, normalized = detect_cover_and_normalize_title(title)
     if is_cover:
         return is_cover, normalized
@@ -157,4 +159,3 @@ def detect_cover_song(
             if c and not names_match(c, artist):
                 return True, normalized
     return False, normalized
-
