@@ -6,18 +6,35 @@ import json
 import os
 import subprocess
 import threading
+from collections import Counter
 from datetime import datetime
 from typing import Any
+from urllib.parse import unquote
 
 import httpx
+import structlog
 from quart import Blueprint, jsonify, request, Response
 from sqlalchemy import text
-import structlog
 
+from api_clients.navidrome import NavidromeClient
 from db.engine import db_session
-from helpers.config_helpers import get_config
+from db.repositories.genres import log_genre_update
+from db.repositories.scan_repository import (
+    normalize_existing_artist_rows,
+    sanitize_artist_file_paths_and_duplicates,
+)
+from db.repositories.tag_repository import get_track_tags, update_track_tags
+from helpers.config_helpers import (
+    get_all_services_status,
+    get_config,
+    get_state_directory,
+    save_partial_config,
+)
 from services.catalog.album_classification_service import classify_album_type
 from services.enrichment.musicbrainz_service import get_shared_mb_client
+from services.infrastructure.api_rate_limiter import get_rate_limiter
+from services.metadata.correction_service import fix_album_field
+from services.metadata.tag_file_service import sync_track_tags_to_file, update_file_metadata
 
 logger = structlog.get_logger(__name__)
 
@@ -344,7 +361,7 @@ async def api_search() -> Any:
             "tracks": tracks,
         })
     except Exception as exc:
-        logger.exception("Search error")
+        logger.error("Search error", error=str(exc), exc_info=True)
         return jsonify({"error": str(exc)}), 500
 
 
@@ -382,7 +399,6 @@ def api_track_count() -> Any:
 @misc_api_bp.route("/integrations/status", methods=["GET"])
 def api_integrations_status() -> Any:
     """Return health/status information for all configured integrations."""
-    from helpers.config_helpers import get_all_services_status
     status = get_all_services_status()
     return jsonify({"success": True, "integrations": status})
 
@@ -406,7 +422,6 @@ async def api_features_update() -> Any:
         return jsonify({"success": False, "error": "No supported feature flags in payload"}), 400
 
     try:
-        from helpers.config_helpers import save_partial_config
         ok = save_partial_config({"features": updates})
         if not ok:
             return jsonify({"success": False, "error": "Failed to write config.yaml"}), 500
@@ -429,7 +444,6 @@ async def api_fetch_artist_country() -> Any:
     if not artist:
         return jsonify({"error": "artist_name required"}), 400
     try:
-        # ✅ Use shared MusicBrainz client singleton
         client = get_shared_mb_client()
         country = client.get_artist_country(artist)
         if country:
@@ -491,7 +505,6 @@ async def api_apply_country_as_genre() -> Any:
 @misc_api_bp.route("/duplicate-artists/<path:artist>", methods=["GET"])
 def api_get_duplicate_artists(artist: str) -> Any:
     """Get duplicate artists for a specific artist."""
-    from urllib.parse import unquote
     artist = unquote(artist)
     try:
         with db_session() as session:
@@ -519,7 +532,6 @@ def api_get_duplicate_artists(artist: str) -> Any:
                 if len(variations_data) > 1:
                     canonical_mb = variations_data[0].get("artist") or ""
                     try:
-                        # ✅ Use shared MusicBrainz client singleton
                         mb_artist = get_shared_mb_client().get_artist(artist_mbid) or {}
                         if (mb_artist.get("name") or "").strip():
                             canonical_mb = str(mb_artist["name"]).strip()
@@ -570,7 +582,6 @@ async def api_merge_duplicate_artists() -> Any:
         sources = list(dict.fromkeys(s for s in sources if s != new_artist))
 
         if dry_run:
-            from db.repositories.scan_repository import normalize_existing_artist_rows
             estimated = normalize_existing_artist_rows(
                 canonical_artist_name=new_artist, aliases=sources,
             )
@@ -584,7 +595,6 @@ async def api_merge_duplicate_artists() -> Any:
         errors: list[str] = []
         updated_db = 0
         try:
-            from db.repositories.scan_repository import normalize_existing_artist_rows
             updated_db = int(normalize_existing_artist_rows(
                 canonical_artist_name=new_artist, aliases=sources,
             ) or 0)
@@ -594,10 +604,7 @@ async def api_merge_duplicate_artists() -> Any:
         updated_files = 0
         if updated_db and not errors:
             try:
-                from db.engine import db_session as _db_session
-                from services.metadata.tag_file_service import update_file_metadata
-                import os as _os
-                with _db_session() as session:
+                with db_session() as session:
                     rows = session.execute(
                         text("SELECT id, file_path FROM tracks "
                              "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
@@ -606,7 +613,7 @@ async def api_merge_duplicate_artists() -> Any:
                     ).fetchall() or []
                 for row in rows:
                     fp = str(row[1] or "")
-                    if not fp or not _os.path.isfile(fp):
+                    if not fp or not os.path.isfile(fp):
                         continue
                     try:
                         if update_file_metadata(fp, {"artist": new_artist, "album_artist": new_artist}):
@@ -643,28 +650,31 @@ def api_genres_track(track_id: str) -> Any:
                 FROM tracks WHERE CAST(id AS TEXT) = :id
             """), {"id": track_id})
             row = result.fetchone()
+            
         if not row:
             return jsonify({"error": "Track not found"}), 404
 
-        import json as _json
+        mapping = row._mapping
         genres: dict[str, list[dict[str, str | int]]] = {}
         source_keys = [
             "discogs_genres", "mood", "essentia_genres",
             "musicbrainz_genres", "lastfm_tags", "listenbrainz_genres", "spotify_genres",
         ]
-        for idx, output_key in enumerate(source_keys):
-            raw = row[idx]
+        
+        for output_key in source_keys:
+            raw = mapping.get(output_key)
             if not raw:
                 genres[output_key] = []
                 continue
             try:
-                parsed = _json.loads(raw) if isinstance(raw, str) else raw
+                parsed = json.loads(raw) if isinstance(raw, str) else raw
             except Exception:
                 parsed = [g.strip() for g in str(raw).split(",") if g.strip()]
             if isinstance(parsed, list):
                 genres[output_key] = [{"name": g["name"] if isinstance(g, dict) else str(g), "count": g.get("count", 1) if isinstance(g, dict) else 1} for g in parsed]
             else:
                 genres[output_key] = []
+                
         return jsonify({"success": True, "genres": genres})
     except Exception as exc:
         logger.error("Failed to get track genres", track_id=track_id, error=str(exc))
@@ -684,27 +694,27 @@ def api_genres_album(album: str, artist: str) -> Any:
             """), {"artist": artist, "album": album})
             rows = result.fetchall()
 
-        from collections import Counter
         source_keys = [
             "discogs_genres", "mood", "essentia_genres",
             "musicbrainz_genres", "lastfm_tags", "listenbrainz_genres", "spotify_genres",
         ]
         result_genres: dict[str, list[dict[str, str | int]]] = {k: [] for k in source_keys}
 
-        import json as _json
         for row in rows:
-            for idx, key in enumerate(source_keys):
-                raw = row[idx]
+            mapping = row._mapping
+            for key in source_keys:
+                raw = mapping.get(key)
                 if not raw:
                     continue
                 try:
-                    parsed = _json.loads(raw) if isinstance(raw, str) else raw
+                    parsed = json.loads(raw) if isinstance(raw, str) else raw
                 except Exception:
                     parsed = [g.strip() for g in str(raw).split(",") if g.strip()]
                 if isinstance(parsed, list):
                     for g in parsed:
                         name = g["name"] if isinstance(g, dict) else str(g)
                         result_genres[key].append(name)
+                        
         for key in source_keys:
             counter = Counter(result_genres[key])
             result_genres[key] = [{"name": name, "count": count} for name, count in counter.most_common(25)]
@@ -728,27 +738,27 @@ def api_genres_artist(artist: str) -> Any:
             """), {"artist": artist})
             rows = result.fetchall()
 
-        from collections import Counter
         source_keys = [
             "discogs_genres", "mood", "essentia_genres",
             "musicbrainz_genres", "lastfm_tags", "listenbrainz_genres", "spotify_genres",
         ]
         result_genres: dict[str, list[dict[str, str | int]]] = {k: [] for k in source_keys}
 
-        import json as _json
         for row in rows:
-            for idx, key in enumerate(source_keys):
-                raw = row[idx] if idx < len(row) else None
+            mapping = row._mapping
+            for key in source_keys:
+                raw = mapping.get(key)
                 if not raw:
                     continue
                 try:
-                    parsed = _json.loads(raw) if isinstance(raw, str) else raw
+                    parsed = json.loads(raw) if isinstance(raw, str) else raw
                 except Exception:
                     parsed = [g.strip() for g in str(raw).split(",") if g.strip()]
                 if isinstance(parsed, list):
                     for g in parsed:
                         name = g["name"] if isinstance(g, dict) else str(g)
                         result_genres[key].append(name)
+                        
         for key in source_keys:
             counter = Counter(result_genres[key])
             result_genres[key] = [{"name": name, "count": count} for name, count in counter.most_common(30)]
@@ -815,7 +825,6 @@ async def api_remove_genres() -> Any:
 
         if affected:
             try:
-                from db.repositories.genres import log_genre_update
                 log_genre_update(
                     artist_name=artist_name, album_name=album_name, track_id=None,
                     genres_before="", genres_after="",
@@ -828,7 +837,6 @@ async def api_remove_genres() -> Any:
 
         def _trigger_scan() -> None:
             try:
-                from api_clients.navidrome import NavidromeClient
                 cfg = get_config() or {}
                 users = cfg.get("navidrome_users") or []
                 if not users and cfg.get("navidrome"):
@@ -858,7 +866,6 @@ async def api_track_tags(track_id: str) -> Any:
     """Get or update a single track's metadata tags."""
     if request.method == "GET":
         try:
-            from db.repositories.tag_repository import get_track_tags
             tags = get_track_tags(track_id)
             if not tags:
                 return jsonify({"error": "Track not found"}), 404
@@ -868,9 +875,6 @@ async def api_track_tags(track_id: str) -> Any:
             return jsonify({"error": str(exc)}), 500
 
     try:
-        from db.repositories.tag_repository import update_track_tags
-        from sqlalchemy import text as _text
-
         data = (await request.get_json(silent=True)) or {}
         sync_to_file = bool(data.get("sync_to_file", False))
         tag_updates = data.get("tags") if isinstance(data.get("tags"), dict) else {}
@@ -879,7 +883,7 @@ async def api_track_tags(track_id: str) -> Any:
         if genre:
             with db_session() as session:
                 row = session.execute(
-                    _text("SELECT genres, manual_genres FROM tracks WHERE id = :id"),
+                    text("SELECT genres, manual_genres FROM tracks WHERE id = :id"),
                     {"id": track_id},
                 ).fetchone()
                 if not row:
@@ -894,7 +898,7 @@ async def api_track_tags(track_id: str) -> Any:
                 merged_genres = _merge(row[0])
                 merged_manual = _merge(row[1])
                 session.execute(
-                    _text("UPDATE tracks SET genres = :genres, manual_genres = :manual WHERE id = :id"),
+                    text("UPDATE tracks SET genres = :genres, manual_genres = :manual WHERE id = :id"),
                     {"genres": merged_genres, "manual": merged_manual, "id": track_id},
                 )
             tag_updates = {"genres": merged_genres, "manual_genres": merged_manual}
@@ -913,7 +917,6 @@ async def api_track_tags(track_id: str) -> Any:
         file_synced = False
         if sync_to_file:
             try:
-                from services.metadata.tag_file_service import sync_track_tags_to_file
                 file_synced = bool(sync_track_tags_to_file(track_id))
             except Exception as exc:
                 logger.debug("File sync failed", track_id=track_id, error=str(exc))
@@ -971,7 +974,6 @@ async def api_apply_genres() -> Any:
 
         if affected:
             try:
-                from db.repositories.genres import log_genre_update
                 log_genre_update(
                     artist_name=artist_name, track_id=None,
                     action_type="apply_to_artist", affected_count=affected,
@@ -982,7 +984,6 @@ async def api_apply_genres() -> Any:
 
         def _trigger_scan() -> None:
             try:
-                from api_clients.navidrome import NavidromeClient
                 cfg = get_config() or {}
                 users = cfg.get("navidrome_users") or []
                 if not users and cfg.get("navidrome"):
@@ -1023,7 +1024,6 @@ def api_recent_genre_updates() -> Any:
 async def api_correcting_fix_album_field() -> Any:
     """Apply a single field value to all tracks in an album."""
     try:
-        from services.metadata.correction_service import fix_album_field
         payload = (await request.get_json(silent=True)) or {}
         album_artist = (payload.get("album_artist") or "").strip()
         album = (payload.get("album") or "").strip()
@@ -1057,8 +1057,6 @@ def api_correcting_mb_suggestions() -> Any:
             return jsonify({"success": True, "suggestions": {}, "mbid": None}), 200
         mbid = str(row[0])
         
-        # ✅ Use shared MusicBrainz client singleton & rate limiter
-        from services.infrastructure.api_rate_limiter import get_rate_limiter
         mb_client = get_shared_mb_client()
         get_rate_limiter().throttle_musicbrainz()
         data = mb_client.get_release(mbid, inc="release-groups+labels", timeout=12.0)
@@ -1246,7 +1244,6 @@ _essentia_download_lock = threading.Lock()
 
 
 def _essentia_progress_file() -> str:
-    from helpers.config_helpers import get_state_directory
     return os.path.join(get_state_directory(), "essentia_download_progress.json")
 
 
@@ -1286,6 +1283,7 @@ def _do_essentia_download() -> None:
         parent_dir = os.path.dirname(clone_dir)
         if parent_dir:
             os.makedirs(parent_dir, exist_ok=True)
+            
         if os.path.isdir(os.path.join(clone_dir, ".git")):
             result = subprocess.run(
                 ["git", "-C", clone_dir, "pull", "--ff-only"],
@@ -1392,13 +1390,11 @@ def api_essentia_download_status() -> Any:
 # ===========================================================================
 
 @misc_api_bp.route("/database/cleanup-duplicates", methods=["POST"])
-def api_cleanup_duplicates() -> Any:
+async def api_cleanup_duplicates() -> Any:
     """Remove duplicate track rows that share the same file path."""
     try:
-        payload = request.get_json(silent=True) or {}
+        payload = (await request.get_json(silent=True)) or {}
         artist = str(payload.get("artist") or "").strip()
-
-        from db.repositories.scan_repository import sanitize_artist_file_paths_and_duplicates
 
         if artist:
             summary = sanitize_artist_file_paths_and_duplicates(artist)
@@ -1417,6 +1413,7 @@ def api_cleanup_duplicates() -> Any:
                      "WHERE file_path IS NOT NULL AND TRIM(file_path) != ''")
             ).fetchall() or []
             artists = [str(r[0]) for r in rows if r[0]]
+            
         for artist_name in artists:
             try:
                 s = sanitize_artist_file_paths_and_duplicates(artist_name)
@@ -1424,6 +1421,7 @@ def api_cleanup_duplicates() -> Any:
                 total["duplicates_removed"] += int(s.get("duplicates_removed") or 0)
             except Exception as exc:
                 logger.debug("Skip duplicate cleanup for artist", artist=artist_name, error=str(exc))
+                
         return jsonify({
             "success": True,
             "stats": total,
