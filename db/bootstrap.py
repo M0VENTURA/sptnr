@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
-import logging
 import threading
 import time
 from typing import Any
 
+import structlog
 from sqlalchemy import text
 
-from db.engine import db_session
+from db.engine import db_session, run_migrations_on_startup
 from db.schema import COLUMN_REGISTRY, INDEXES_TO_ENSURE, TABLES_TO_ENSURE
-from db.schema_helpers import table_exists, get_table_columns, get_postgres_column_types
+from db.schema_helpers import get_postgres_column_types, get_table_columns, table_exists
 from db.utils import get_db_connection, is_transient_pg_startup_error
+
+logger = structlog.get_logger(__name__)
 
 _SCHEMA_BOOTSTRAP_LOCK_NAME = "popularr_schema_bootstrap"
 _ALBUM_ART_DATA_LOCK_KEY = 915317411
@@ -28,44 +30,46 @@ def _ensure_table(cursor: Any, table_name: str, ddl: str) -> None:
         cursor.execute(text(ddl))
     except Exception as exc:
         cursor.execute(text("ROLLBACK TO SAVEPOINT popularr_schema_table_create"))
-        if "already exists" not in str(exc).lower() and "duplicate" not in str(exc).lower(): raise
+        if "already exists" not in str(exc).lower() and "duplicate" not in str(exc).lower():
+            raise
     finally:
         try: cursor.execute(text("RELEASE SAVEPOINT popularr_schema_table_create"))
         except Exception: pass
 
 def _ensure_columns(cursor: Any, table_name: str, columns: dict[str, str]) -> None:
-    if not table_exists(cursor, table_name): return
+    if not table_exists(cursor, table_name): 
+        return
+    
     existing = get_table_columns(cursor, table_name)
     for col_name, col_def in columns.items():
         if col_name not in existing:
             try:
                 cursor.execute(text(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {col_name} {col_def}"))
-                logging.info("Added column: %s.%s", table_name, col_name)
+                logger.info("Added column", table=table_name, column=col_name)
             except Exception as e:
-                logging.warning("Could not add %s.%s: %s", table_name, col_name, e)
+                logger.warning("Could not add column", table=table_name, column=col_name, error=str(e))
 
 def _ensure_index(cursor: Any, ddl: str) -> None:
     try: cursor.execute(text(ddl))
     except Exception as e:
-        if "already exists" not in str(e).lower() and "duplicate" not in str(e).lower(): raise
+        if "already exists" not in str(e).lower() and "duplicate" not in str(e).lower():
+            raise
 
 def _try_advisory_lock(conn_or_session: Any, key: int | str, attempts: int = 10) -> bool:
     for _ in range(max(1, attempts)):
-        result = conn_or_session.execute(
-            text("SELECT pg_try_advisory_lock(hashtext(:key))" if isinstance(key, str) else "SELECT pg_try_advisory_lock(:key)"),
-            {"key": key},
-        )
-        if bool(result.scalar()): return True
+        query = "SELECT pg_try_advisory_lock(hashtext(:key))" if isinstance(key, str) else "SELECT pg_try_advisory_lock(:key)"
+        result = conn_or_session.execute(text(query), {"key": key})
+        if bool(result.scalar()): 
+            return True
         time.sleep(0.3)
     return False
 
 def _release_advisory_lock(conn_or_session: Any, key: int | str) -> None:
     try:
-        conn_or_session.execute(
-            text("SELECT pg_advisory_unlock(hashtext(:key))" if isinstance(key, str) else "SELECT pg_advisory_unlock(:key)"),
-            {"key": key},
-        )
-    except Exception: pass
+        query = "SELECT pg_advisory_unlock(hashtext(:key))" if isinstance(key, str) else "SELECT pg_advisory_unlock(:key)"
+        conn_or_session.execute(text(query), {"key": key})
+    except Exception: 
+        pass
 
 # =============================================================================
 # DATA FIXUPS & MIGRATION LOGIC
@@ -88,12 +92,13 @@ def ensure_musicbrainz_release_unique_constraint(cursor: Any) -> None:
 def ensure_album_artist_column_data() -> bool:
     try:
         with db_session() as session:
-            if not table_exists(session, "tracks") or not _try_advisory_lock(session, _ALBUM_ART_DATA_LOCK_KEY, attempts=1): return True
+            if not table_exists(session, "tracks") or not _try_advisory_lock(session, _ALBUM_ART_DATA_LOCK_KEY, attempts=1): 
+                return True
             session.execute(text("UPDATE tracks SET album_artist = artist WHERE album_artist IS NULL"))
             _release_advisory_lock(session, _ALBUM_ART_DATA_LOCK_KEY)
         return True
     except Exception as e:
-        logging.error("Backfill failed: %s", e)
+        logger.error("Backfill failed", error=str(e))
         return False
 
 def ensure_artists_name_unique_constraint() -> bool:
@@ -104,7 +109,7 @@ def ensure_artists_name_unique_constraint() -> bool:
             session.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS idx_artists_name_unique ON artists (name)"))
         return True
     except Exception as e:
-        logging.warning("Unique constraint error: %s", e)
+        logger.warning("Unique constraint error", error=str(e))
         return False
 
 def ensure_album_art_schema() -> bool:
@@ -116,16 +121,14 @@ def ensure_album_art_schema() -> bool:
             _release_advisory_lock(session, _ALBUM_ART_SCHEMA_LOCK_KEY)
         return True
     except Exception as e:
-        logging.error("Album art schema error: %s", e)
+        logger.error("Album art schema error", error=str(e))
         return False
 
 def ensure_upcoming_releases_schema() -> bool:
-    """Migrate upcoming_releases duplicate resolution and constraints."""
     try:
         with db_session() as session:
             if not table_exists(session, "upcoming_releases"): return True
             
-            # Dedupe: drop non-MusicBrainz rows where a MusicBrainz row exists
             session.execute(text("""
                 DELETE FROM upcoming_releases a
                 USING upcoming_releases b
@@ -143,8 +146,6 @@ def ensure_upcoming_releases_schema() -> bool:
                   AND a.album_name = b.album_name
                   AND a.source = b.source
             """))
-
-            # Swap the constraint: drop the per-source unique, add per-album.
             try: session.execute(text("ALTER TABLE upcoming_releases DROP CONSTRAINT IF EXISTS uq_upcoming_artist_album_source"))
             except Exception: pass
             
@@ -152,11 +153,10 @@ def ensure_upcoming_releases_schema() -> bool:
             session.execute(text("UPDATE upcoming_releases SET last_seen_at = COALESCE(last_seen_at, updated_at, created_at, CURRENT_TIMESTAMP)"))
         return True
     except Exception as e:
-        logging.error("Upcoming releases schema error: %s", e)
+        logger.error("Upcoming releases schema error", error=str(e))
         return False
 
 def migrate_queue_source_data() -> bool:
-    """Backfill queue source from legacy source_id column."""
     try:
         with db_session() as session:
             if not table_exists(session, "download_queue"): return True
@@ -169,16 +169,14 @@ def migrate_queue_source_data() -> bool:
                 ))
         return True
     except Exception as e:
-        logging.warning("Queue source column backfill error: %s", e)
+        logger.warning("Queue source column backfill error", error=str(e))
         return False
 
 def migrate_single_confidence_type() -> bool:
-    """Normalise single_confidence from float/numeric back to TEXT."""
     try:
         with db_session() as session:
             if not table_exists(session, "tracks"): return True
-            cols = get_table_columns(session, "tracks")
-            if "single_confidence" not in cols: return True
+            if "single_confidence" not in get_table_columns(session, "tracks"): return True
             
             types = get_postgres_column_types(session, "tracks", ["single_confidence"])
             current_type = (types.get("single_confidence") or "").lower()
@@ -197,10 +195,10 @@ def migrate_single_confidence_type() -> bool:
                         END
                     )
                 """))
-                logging.info("Migrated tracks.single_confidence from %s to TEXT", current_type)
+                logger.info("Migrated tracks.single_confidence to TEXT", previous_type=current_type)
         return True
     except Exception as exc:
-        logging.warning("Could not migrate single_confidence column: %s", exc)
+        logger.warning("Could not migrate single_confidence column", error=str(exc))
         return False
 
 # =============================================================================
@@ -218,7 +216,7 @@ def ensure_full_schema() -> bool:
             for table, ddl in TABLES_TO_ENSURE.items(): 
                 _ensure_table(session, table, ddl)
             
-            # 2. Base Columns (This loop handles every column registered in db.schema)
+            # 2. Base Columns
             for table, cols in COLUMN_REGISTRY.items(): 
                 _ensure_columns(session, table, cols)
             
@@ -241,7 +239,7 @@ def ensure_full_schema() -> bool:
         return True
     except Exception as exc:
         if is_transient_pg_startup_error(exc): return False
-        logging.error("Bootstrap failed: %s", exc, exc_info=True)
+        logger.error("Bootstrap failed", exc_info=True)
         raise
     finally:
         if lock_acquired:
@@ -258,7 +256,7 @@ def _reset_stale_scan_states() -> None:
         from services.scanning.scan_state import reset_stale_scan_states
         reset_stale_scan_states()
     except Exception as exc:
-        logging.warning("Stale scan-state reset skipped: %s", exc)
+        logger.warning("Stale scan-state reset skipped", error=str(exc))
 
 def _prune_genre_playlists_at_boot() -> None:
     def _run() -> None:
@@ -266,7 +264,7 @@ def _prune_genre_playlists_at_boot() -> None:
             from services.popularity.stages.finalise_stage import prune_genre_playlists_for_deletion
             prune_genre_playlists_for_deletion()
         except Exception as exc:
-            logging.warning("Genre playlist prune skipped at boot: %s", exc)
+            logger.warning("Genre playlist prune skipped at boot", error=str(exc))
 
     threading.Thread(target=_run, daemon=True, name="boot-genre-playlist-prune").start()
 
@@ -276,16 +274,20 @@ def init_database_and_schema() -> bool:
         try:
             if ensure_full_schema():
                 verify_all_tables_exist()
+                
+                # Automatically apply any newer Alembic migrations on top of the legacy bootstrap
+                run_migrations_on_startup()
+                
                 _reset_stale_scan_states()
                 _prune_genre_playlists_at_boot()
                 return True
         except Exception as exc:
             msg = str(exc)
             if attempt < max_attempts and ("shutting down" in msg or "database system is shutting down" in msg):
-                logging.warning("Postgres not ready yet (attempt %s/%s), retrying in 5s...", attempt, max_attempts)
+                logger.warning("Postgres not ready yet, retrying...", attempt=attempt, max_attempts=max_attempts)
                 time.sleep(5)
                 continue
-            logging.warning("Schema bootstrap failed (attempt %s/%s): %s", attempt, max_attempts, exc)
+            logger.warning("Schema bootstrap failed", attempt=attempt, max_attempts=max_attempts, error=msg)
             break
         break
 
@@ -306,24 +308,24 @@ def _run_deferred_startup_migrations() -> None:
         except Exception:
             continue
     else:
-        logging.warning("PostgreSQL did not become available for deferred schema bootstrap")
+        logger.warning("PostgreSQL did not become available for deferred schema bootstrap")
         return
     try:
         ensure_full_schema()
         verify_all_tables_exist()
+        run_migrations_on_startup()
         _reset_stale_scan_states()
         _prune_genre_playlists_at_boot()
     except Exception as exc:
-        logging.error("Deferred schema bootstrap failed: %s", exc, exc_info=True)
+        logger.error("Deferred schema bootstrap failed", exc_info=True)
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
     print("")
     print("── PostgreSQL Schema Bootstrap ──────────────────────────────")
     immediate = init_database_and_schema()
     if immediate:
-        print("  ✓ Schema tables created/verified")
+        print("  ✓ Schema tables created/verified & Migrations Applied")
     else:
         print("  ⚠ Partial schema bootstrap — some tables may be deferred")
 
