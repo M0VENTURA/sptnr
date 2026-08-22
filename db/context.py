@@ -5,7 +5,11 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Any, Iterator
 
+import structlog
+
 from db.utils import get_db_connection
+
+logger = structlog.get_logger(__name__)
 
 
 @contextmanager
@@ -23,6 +27,12 @@ def db_cursor(commit: bool = False) -> Iterator[tuple[Any, Any]]:
         Tuple of (connection, cursor). Caller may commit manually when
         commit=False.
     """
+    logger.warning(
+        "Legacy database context manager used", 
+        function="db_cursor", 
+        recommendation="Migrate to db.engine.db_session or async_db_session"
+    )
+    
     conn = get_db_connection()
     cursor = conn.cursor()
     
