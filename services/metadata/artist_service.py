@@ -10,11 +10,12 @@ Scan-specific MusicBrainz comparison stays in artist_scan_service.py.
 
 from __future__ import annotations
 
-import logging
 import os
 from typing import Any
 
+import structlog
 from sqlalchemy import text
+
 from db.engine import db_session
 from db.repositories.metadata import (
     fetch_track_for_delete,
@@ -27,10 +28,10 @@ from db.repositories.metadata import (
     update_album_mbid_fields,
 )
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
-def delete_track(track_id: str, delete_file: bool = True):
+def delete_track(track_id: str, delete_file: bool = True) -> tuple[dict[str, Any], int]:
     """Delete a track DB row and optionally remove its local file."""
     row = fetch_track_for_delete(None, track_id)
     if not row:
@@ -53,21 +54,21 @@ def delete_track(track_id: str, delete_file: bool = True):
                 os.remove(file_path)
                 deleted_file = True
             except Exception as exc:
-                logger.warning("[CORRECTIONS] File delete failed: %s", exc)
+                logger.warning("File delete failed during correction", error=str(exc))
 
     delete_track_row(None, track_id)
 
     return {"success": True, "deleted_track_id": track_id, "deleted_file": deleted_file}, 200
 
 
-def merge_albums(artist: str, source_albums: list[str], canonical_name: str):
+def merge_albums(artist: str, source_albums: list[str], canonical_name: str) -> tuple[dict[str, Any], int]:
     if not source_albums:
         return {"success": False, "error": "source_albums is required"}, 400
     rows_updated = merge_album_names(None, artist, source_albums, canonical_name)
     return {"success": True, "rows_updated": rows_updated}, 200
 
 
-def clear_disc_number(artist: str, album: str, force: bool = False):
+def clear_disc_number(artist: str, album: str, force: bool = False) -> tuple[dict[str, Any], int]:
     disc_count = count_album_disc_numbers(None, artist, album)
     if disc_count > 1 and not force:
         return {"success": False, "error": "Likely multi-disc album", "needs_manual_review": True}, 409
@@ -75,12 +76,12 @@ def clear_disc_number(artist: str, album: str, force: bool = False):
     return {"success": True, "cleared": cleared}, 200
 
 
-def artist_exists(artist: str):
+def artist_exists(artist: str) -> tuple[dict[str, Any], int]:
     count = artist_track_count(None, artist)
     return {"exists": count > 0}, 200
 
 
-def get_cached_missing(artist: str):
+def get_cached_missing(artist: str) -> tuple[dict[str, Any], int]:
     rows = fetch_cached_missing_releases(None, artist)
     return {
         "artist": artist,
@@ -100,12 +101,10 @@ def apply_album_mbid(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
 
     rows_updated = update_album_mbid_fields(None, artist_name, album_name, album_mbid, release_group_mbid, None)
 
-    # File tag updates (best-effort, outside transaction)
     files_updated = 0
     if rows_updated:
         try:
             from services.metadata.tag_file_service import update_file_tags as update_tags
-            import os
             with db_session() as session:
                 result = session.execute(text("""
                     SELECT file_path FROM tracks
@@ -134,18 +133,7 @@ def apply_album_mbid(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
 
 
 def get_correction_albums(artist_name: str) -> tuple[dict[str, Any], int]:
-    """Return per-album correction data for an artist (for corrections UI).
-
-    Each album includes:
-      - disc_issues: True when tracks have missing/inconsistent disc numbers
-      - mbid_issues: True when tracks are missing MusicBrainz album MBIDs
-      - missing_tracks: True when tracks are missing file paths
-      - track_count: number of tracks in the album
-      - has_mbid: whether any track has an album MBID
-      - album_type: detected album type (album, ep, single, compilation, live_album, remix)
-      - album_year: release year from track data
-      - is_missing: whether all tracks have no file_path
-    """
+    """Return per-album correction data for an artist (for corrections UI)."""
     artist_name = str(artist_name or "").strip()
     if not artist_name:
         return {"success": False, "error": "artist required", "albums": []}, 400
@@ -174,9 +162,7 @@ def get_correction_albums(artist_name: str) -> tuple[dict[str, Any], int]:
                 ORDER BY album
             """), {"name": artist_name})
 
-            # Simple album type classification from album name only
-            # (avoids relying on spotify_album_type column which may not exist)
-            def _classify(album_row: dict) -> str:
+            def _classify(album_row: dict[str, Any]) -> str:
                 import re as _re
                 album_name = str(album_row.get("album") or "").lower()
                 if "soundtrack" in album_name:
@@ -207,28 +193,16 @@ def get_correction_albums(artist_name: str) -> tuple[dict[str, Any], int]:
                     "album_type": _classify(row_dict),
                 })
     except Exception as exc:
-        logger.error("[get_correction_albums] Query failed for '%s': %s", artist_name, exc)
+        logger.error("Query failed for correction albums", artist=artist_name, error=str(exc))
         albums = []
 
-    # Sort: missing last, then by year desc, then by name
     albums.sort(key=lambda a: (a.get("is_missing") or False, a.get("album_year") is None, -(a.get("album_year") or 0), str(a.get("album") or "").lower()))
 
     return {"success": True, "albums": albums}, 200
 
 
 def get_artist_corrections(artist_name: str) -> tuple[dict[str, Any], int]:
-    """Return the full corrections-page context for one artist.
-
-    Mirrors the legacy ``artist_corrections`` route: duplicate track groups
-    (with keep/recommend-delete scoring), missing-metadata tracks, albums
-    with inconsistent MusicBrainz album MBIDs, disc-number inconsistencies,
-    duplicate album splits, and the summary badge counts.
-
-    Returns ``{"success", artist_name, duplicates, missing_tracks, mb_albums,
-    mbid_inconsistent_albums, disc_inconsistent_albums, duplicate_albums,
-    duplicate_count, missing_count, mbid_inconsistent_count,
-    disc_inconsistent_count, duplicate_album_count}``.
-    """
+    """Return the full corrections-page context for one artist."""
     import re as _re
     from difflib import SequenceMatcher
 
@@ -238,7 +212,7 @@ def get_artist_corrections(artist_name: str) -> tuple[dict[str, Any], int]:
 
     artist_expr = "COALESCE(NULLIF(album_artist, ''), artist)"
 
-    def _duration_to_display(raw):
+    def _duration_to_display(raw: Any) -> str:
         if raw in (None, ""):
             return "—"
         try:
@@ -250,11 +224,11 @@ def get_artist_corrections(artist_name: str) -> tuple[dict[str, Any], int]:
         except Exception:
             return "—"
 
-    def _normalize_component(value):
+    def _normalize_component(value: Any) -> str:
         from helpers.normalization_service import normalize_filename
         return normalize_filename(str(value or ""))
 
-    def _safe_track_number(value):
+    def _safe_track_number(value: Any) -> str:
         try:
             num = int(str(value or "").strip() or 0)
             return f"{num:02d}" if num > 0 else "00"
@@ -268,7 +242,7 @@ def get_artist_corrections(artist_name: str) -> tuple[dict[str, Any], int]:
             "{album_artist}/{year} - {album}/{track_number}. {artist} - {title}",
         )
 
-    def _build_expected_filename(row) -> str:
+    def _build_expected_filename(row: dict[str, Any]) -> str:
         file_name_format = _read_naming_format()
         file_ext = os.path.splitext(str(row.get("file_path") or ""))[1] or ".mp3"
         year_value = str(row.get("year") or "").strip()[:4] if row.get("year") else "Unknown"
@@ -298,14 +272,12 @@ def get_artist_corrections(artist_name: str) -> tuple[dict[str, Any], int]:
             base_name = f"{base_name}{file_ext}"
         return base_name
 
-    # Version-variant keywords: tracks whose file names differ in these are
-    # distinct alternate versions, NOT duplicates.
     version_variant_keywords = [
         "instrumental", "karaoke", "a cappella", "acapella",
         "acoustic", "demo", "orchestral", "symphonic",
     ]
 
-    def file_variant_key(file_path):
+    def file_variant_key(file_path: str) -> frozenset[str]:
         name = os.path.basename(str(file_path or "")).lower()
         return frozenset(
             kw for kw in version_variant_keywords
@@ -342,7 +314,6 @@ def get_artist_corrections(artist_name: str) -> tuple[dict[str, Any], int]:
 
     try:
         with db_session() as session:
-            # ── Duplicate track groups ───────────────────────────────────
             rows = session.execute(text(f"""
                 SELECT
                     id,
@@ -363,7 +334,7 @@ def get_artist_corrections(artist_name: str) -> tuple[dict[str, Any], int]:
             """), {"artist": artist_name})
             candidate_rows = [dict(r._mapping) for r in rows.fetchall()]
 
-            grouped: dict[tuple, list[dict[str, Any]]] = {}
+            grouped: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
             for row in candidate_rows:
                 group_key = (
                     row.get("album") or "",
@@ -485,7 +456,6 @@ def get_artist_corrections(artist_name: str) -> tuple[dict[str, Any], int]:
                 )
             )
 
-            # ── Tracks missing core metadata ─────────────────────────────
             rows = session.execute(text(f"""
                 SELECT
                     id,
@@ -547,7 +517,6 @@ def get_artist_corrections(artist_name: str) -> tuple[dict[str, Any], int]:
             """), {"artist": artist_name})
             missing_tracks = [dict(r._mapping) for r in rows.fetchall()]
 
-            # ── Albums with album MBIDs (async MB checks) ────────────────
             rows = session.execute(text(f"""
                 SELECT album, COUNT(*) AS track_count, MAX(musicbrainz_album_mbid) AS mb_mbid
                 FROM tracks
@@ -564,7 +533,6 @@ def get_artist_corrections(artist_name: str) -> tuple[dict[str, Any], int]:
                     "mb_mbid": row_dict.get("mb_mbid"),
                 })
 
-            # ── Albums with mixed album MBIDs ────────────────────────────
             rows = session.execute(text(f"""
                 SELECT
                     album,
@@ -589,7 +557,6 @@ def get_artist_corrections(artist_name: str) -> tuple[dict[str, Any], int]:
                     "mbids": mbids,
                 })
 
-            # ── Disc-number inconsistencies ──────────────────────────────
             rows = session.execute(text(f"""
                 SELECT
                     album,
@@ -635,7 +602,6 @@ def get_artist_corrections(artist_name: str) -> tuple[dict[str, Any], int]:
                     "disc_value": row_dict.get("disc_value"),
                 })
 
-            # ── Duplicate album splits ───────────────────────────────────
             rows = session.execute(text(f"""
                 SELECT
                     album,
@@ -658,7 +624,7 @@ def get_artist_corrections(artist_name: str) -> tuple[dict[str, Any], int]:
                     "mb_mbid": str(row_dict.get("mb_mbid") or "").strip(),
                 })
 
-            mbid_groups: dict[str, list[dict]] = {}
+            mbid_groups: dict[str, list[dict[str, Any]]] = {}
             for album_row in all_album_rows:
                 mb = album_row["mb_mbid"]
                 if mb:
@@ -671,7 +637,7 @@ def get_artist_corrections(artist_name: str) -> tuple[dict[str, Any], int]:
                 if len(group) > 1
             }
 
-            norm_groups: dict[str, list[dict]] = {}
+            norm_groups: dict[str, list[dict[str, Any]]] = {}
             for album_row in all_album_rows:
                 if album_row["album"] in mbid_grouped_names:
                     continue
@@ -679,9 +645,9 @@ def get_artist_corrections(artist_name: str) -> tuple[dict[str, Any], int]:
                 if norm:
                     norm_groups.setdefault(norm, []).append(album_row)
 
-            seen_album_sets: set = set()
+            seen_album_sets: set[tuple[str, ...]] = set()
 
-            def _add_dup_group(albums_in_group: list[dict], signal: str) -> None:
+            def _add_dup_group(albums_in_group: list[dict[str, Any]], signal: str) -> None:
                 if len(albums_in_group) < 2:
                     return
                 key = tuple(sorted(a["album"] for a in albums_in_group))
@@ -700,7 +666,7 @@ def get_artist_corrections(artist_name: str) -> tuple[dict[str, Any], int]:
             for _norm, group in norm_groups.items():
                 _add_dup_group(group, "name")
     except Exception as exc:
-        logger.error("[get_artist_corrections] Failed for '%s': %s", artist_name, exc, exc_info=True)
+        logger.error("Failed to fetch artist corrections", artist=artist_name, error=str(exc), exc_info=True)
 
     return {
         "success": True,
