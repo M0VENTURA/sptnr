@@ -10,16 +10,16 @@ Architecture:
 
 from __future__ import annotations
 
-import logging
 import threading
 from typing import Any
 
+import structlog
 from quart import jsonify, session
 
 from db.repositories.tracks import get_all_ratings
 from routes.navidrome import get_navidrome_client, navidrome_bp
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -36,7 +36,7 @@ def _sync_ratings_worker(client: Any, username: str) -> None:
     try:
         rows = get_all_ratings()
         if not rows:
-            logger.info("Rating sync for %s: no rated tracks found", username)
+            logger.info("Rating sync skipped: no rated tracks found", username=username)
             return
 
         synced = 0
@@ -57,11 +57,14 @@ def _sync_ratings_worker(client: Any, username: str) -> None:
                 failed += 1
 
         logger.info(
-            "Rating sync complete for %s: %d synced, %d failed out of %d tracks",
-            username, synced, failed, len(rows),
+            "Rating sync complete",
+            username=username,
+            synced=synced,
+            failed=failed,
+            total=len(rows),
         )
     except Exception as exc:
-        logger.error("Rating sync failed for %s: %s", username, exc, exc_info=True)
+        logger.error("Rating sync failed", username=username, error=str(exc), exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +72,7 @@ def _sync_ratings_worker(client: Any, username: str) -> None:
 # ---------------------------------------------------------------------------
 
 @navidrome_bp.route("/api/navidrome/ratings/sync-now", methods=["POST"])
-def api_navidrome_sync_ratings_now():
+def api_navidrome_sync_ratings_now() -> Any:
     """Push local star ratings to the configured Navidrome user.
 
     Dispatches the work to a background thread and returns ``202 Accepted``
@@ -92,7 +95,7 @@ def api_navidrome_sync_ratings_now():
     )
     thread.start()
 
-    logger.info("Rating sync dispatched to background thread for %s", username)
+    logger.info("Rating sync dispatched to background thread", username=username)
 
     return jsonify({
         "success": True,
