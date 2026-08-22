@@ -7,19 +7,21 @@ Used by the download matching pipeline to avoid repeated MusicBrainz
 API calls for the same release.
 """
 
-from typing import Optional, Dict, Any, List
-import logging
+from __future__ import annotations
 
+from typing import Any
+
+import structlog
 from sqlalchemy import text
 
 from db.engine import db_session
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
-def get_cached_release_metadata(release_id: str) -> Optional[Dict[str, Any]]:
+
+def get_cached_release_metadata(release_id: str) -> dict[str, Any] | None:
     try:
         with db_session() as session:
-
             result = session.execute(
                 text("""
                     SELECT release_title, artist, release_year
@@ -68,7 +70,7 @@ def get_cached_release_metadata(release_id: str) -> Optional[Dict[str, Any]]:
             }
 
     except Exception as e:
-        logger.error(f"[get_cached_release_metadata] {e}")
+        logger.error("Failed to get cached release metadata", release_id=release_id, error=str(e))
         return None
 
 
@@ -76,12 +78,11 @@ def get_cached_release_metadata(release_id: str) -> Optional[Dict[str, Any]]:
 # CACHE WRITE
 # ============================================================
 
-def cache_release_metadata(release_id: str, metadata: Dict[str, Any]) -> None:
+def cache_release_metadata(release_id: str, metadata: dict[str, Any]) -> None:
     try:
         tracks = metadata.get("tracks") or []
 
         with db_session() as session:
-
             session.execute(
                 text("""
                     INSERT INTO musicbrainz_releases
@@ -136,9 +137,10 @@ def cache_release_metadata(release_id: str, metadata: Dict[str, Any]) -> None:
                 )
 
     except Exception as e:
-        logger.error(f"[cache_release_metadata] {e}")
+        logger.error("Failed to cache release metadata", release_id=release_id, error=str(e))
 
-def get_active_musicbrainz_releases() -> List[Dict[str, Any]]:
+
+def get_active_musicbrainz_releases() -> list[dict[str, Any]]:
     """Get all active releases with progress information."""
     try:
         with db_session() as session:
@@ -158,5 +160,5 @@ def get_active_musicbrainz_releases() -> List[Dict[str, Any]]:
             return [dict(row._mapping) for row in rows]
 
     except Exception as e:
-        logger.error(f"[GET_ACTIVE] Error fetching active releases: {e}")
+        logger.error("Error fetching active releases", error=str(e))
         return []
