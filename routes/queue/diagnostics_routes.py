@@ -4,11 +4,12 @@ Queue diagnostics routes.
 
 from __future__ import annotations
 
+from typing import Any
 
+import structlog
 from quart import Blueprint, request
+
 from routes.utils import json_response as _json_response
-
-
 from services.queue.queue_diagnostics_service import (
     queue_processor_status,
     queue_processor_restart,
@@ -18,36 +19,36 @@ from services.queue.queue_diagnostics_service import (
     queue_slskd_eligibility_diagnostics,
 )
 
+logger = structlog.get_logger(__name__)
 queue_diagnostics_bp = Blueprint("queue_diagnostics", __name__)
 
 
-
 @queue_diagnostics_bp.route("/api/queue-processor/status", methods=["GET"])
-def api_queue_processor_status():
+def api_queue_processor_status() -> Any:
     return _json_response(queue_processor_status())
 
 
 @queue_diagnostics_bp.route("/api/queue-processor/restart", methods=["POST"])
-def api_queue_processor_restart():
+def api_queue_processor_restart() -> Any:
     return _json_response(queue_processor_restart())
 
 
 @queue_diagnostics_bp.route("/api/queue/events", methods=["GET"])
-def api_queue_events():
+def api_queue_events() -> Any:
     return _json_response(queue_events(request.args))
 
 
 @queue_diagnostics_bp.route("/api/queue/search-events", methods=["GET"])
-def api_queue_search_events():
+def api_queue_search_events() -> Any:
     return _json_response(queue_search_events(request.args))
 
 
 @queue_diagnostics_bp.route("/api/queue/check-collection-batch", methods=["POST"])
-async def api_queue_check_collection_batch():
+async def api_queue_check_collection_batch() -> Any:
     payload = (await request.get_json(silent=True)) or {}
     return _json_response(queue_check_collection_batch(payload))
 
 
 @queue_diagnostics_bp.route("/api/queue/diagnostics/slskd-eligibility", methods=["GET"])
-def api_queue_slskd_eligibility_diagnostics():
+def api_queue_slskd_eligibility_diagnostics() -> Any:
     return _json_response(queue_slskd_eligibility_diagnostics())
