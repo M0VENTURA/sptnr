@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import subprocess
 import threading
@@ -13,28 +12,23 @@ from typing import Any
 import httpx
 from quart import Blueprint, jsonify, request, Response
 from sqlalchemy import text
+import structlog
 
 from db.engine import db_session
 from helpers.config_helpers import get_config
 from services.catalog.album_classification_service import classify_album_type
+from services.enrichment.musicbrainz_service import get_shared_mb_client
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 misc_api_bp = Blueprint("misc_api", __name__, url_prefix="/api")
 
 
 # ===========================================================================
-# ALGORITHM SANDBOX — read-only metrics for client-side weight simulation
+# ALGORITHM SANDBOX
 # ===========================================================================
-# The sandbox page fetches a flattened, lightweight track payload, then runs
-# the linear weight arithmetic locally so sliders stay frame-rate friendly.
-# Per-album median/MAD of the current raw blend are precomputed here so the
-# browser can mirror the album-relative re-map (50 + z*16.7 below the median,
-# logistic above) without shipping the whole library's distributions.
 
 _SANDBOX_MAX_TRACKS = 30000
-# Default blend used to compute the album reference distribution server-side;
-# mirrors the live popularity weights (config popularity.weights.*).
 _SANDBOX_REF_WEIGHTS = {"lf": 0.55, "lb": 0.35, "age": 0.10}
 
 
@@ -50,16 +44,8 @@ def _median(values: list[float]) -> float:
 
 
 @misc_api_bp.route("/sandbox/metrics")
-def api_sandbox_metrics():
-    """Flattened track metrics for the Algorithm Sandbox.
-
-    Query params: ``scope`` = ``global`` (default, capped at 30k tracks) |
-    ``recent`` (last-scanned within 14 days) | ``artist`` (requires ``artist``).
-    Each row carries the per-source raw scores, the stored final score + live
-    stars, the confirmed-single flag, and the album's median/MAD of the raw
-    blend (computed with the default weights) so the client can mirror the
-    album-relative re-map.  Nothing is written.
-    """
+def api_sandbox_metrics() -> Any:
+    """Flattened track metrics for the Algorithm Sandbox."""
     try:
         scope = str(request.args.get("scope", "global") or "global").strip().lower()
         artist = str(request.args.get("artist", "") or "").strip()
@@ -91,8 +77,6 @@ def api_sandbox_metrics():
 
         tracks = [dict(r._mapping) for r in rows or []]
 
-        # Per-album reference distribution: raw blend with the DEFAULT weights,
-        # then median + MAD of the album's valid (>0) blends.
         by_album: dict[str, list[float]] = {}
         for t in tracks:
             raw = (t.get("lf") or 0) * _SANDBOX_REF_WEIGHTS["lf"] \
@@ -119,19 +103,19 @@ def api_sandbox_metrics():
             "ref_weights": _SANDBOX_REF_WEIGHTS,
         })
     except Exception as exc:
-        logger.error("[sandbox] metrics fetch failed: %s", exc, exc_info=True)
+        logger.error("Sandbox metrics fetch failed", error=str(exc), exc_info=True)
         return jsonify({"error": str(exc)}), 500
 
 
 # ===========================================================================
 # SEARCH
 # ===========================================================================
+
 @misc_api_bp.route("/search", methods=["POST"])
-async def api_search():
+async def api_search() -> Any:
     """Search artists, albums and tracks with legacy ranking behaviour."""
     try:
         data = (await request.get_json(silent=True)) or {}
-
         query = str(data.get("query") or "").strip().lower()
 
         if not query or len(query) < 2:
@@ -142,10 +126,6 @@ async def api_search():
         contains_pattern = f"%{query}%"
 
         with db_session() as session:
-
-            # ---------------------------------------------------------
-            # Artists
-            # ---------------------------------------------------------
             artist_result = session.execute(
                 text("""
                     WITH variants AS (
@@ -202,11 +182,7 @@ async def api_search():
                 }
                 for row in artist_result.fetchall()
             ]
-            # ---------------------------------------------------------
-            # Albums — bucketed by release type (albums / compilations /
-            # live_albums / eps / singles), each with its release year so the
-            # search modal can render the artist-page discography structure.
-            # ---------------------------------------------------------
+
             album_result = session.execute(
                 text("""
                     WITH variants AS (
@@ -217,8 +193,6 @@ async def api_search():
                             COUNT(*) AS track_count,
                             AVG(stars) AS avg_stars,
                             SUM(duration) AS album_duration,
-                            -- year is stored as TEXT; extract the leading 4-digit
-                            -- year (tolerates junk like "1990-05-01" or "TBA")
                             MAX(COALESCE(
                                 NULLIF(SUBSTRING(year FROM '^[0-9]{4}'), '')::INTEGER,
                                 release_year,
@@ -274,9 +248,6 @@ async def api_search():
                 },
             )
 
-            # Map each album into the unified-search buckets (mirrors the
-            # artist page discography).  Remix albums fold into the Albums
-            # bucket per the unified-search blueprint.
             _bucket_map = {
                 "album": "albums",
                 "remix_album": "albums",
@@ -325,9 +296,6 @@ async def api_search():
                     "in_library": True,
                 })
 
-            # ---------------------------------------------------------
-            # Tracks
-            # ---------------------------------------------------------
             track_result = session.execute(
                 text("""
                     SELECT
@@ -375,18 +343,17 @@ async def api_search():
             **albums_by_bucket,
             "tracks": tracks,
         })
-
     except Exception as exc:
         logger.exception("Search error")
         return jsonify({"error": str(exc)}), 500
 
 
 # ===========================================================================
-# STATS
+# STATS & UTILS
 # ===========================================================================
 
 @misc_api_bp.route("/stats", methods=["GET"])
-def api_stats():
+def api_stats() -> Any:
     """Get library statistics."""
     try:
         with db_session() as session:
@@ -396,49 +363,33 @@ def api_stats():
             stats = dict(result.fetchone()._mapping)
         return jsonify({"success": True, **stats})
     except Exception as exc:
+        logger.error("Failed to fetch stats", error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
-# ===========================================================================
-# TRACK-COUNT
-# ===========================================================================
-
 @misc_api_bp.route("/track-count", methods=["GET"])
-def api_track_count():
+def api_track_count() -> Any:
     """Get total track count for progress calculation."""
     try:
         with db_session() as session:
             count = session.execute(text("SELECT COUNT(*) as count FROM tracks")).scalar()
         return jsonify({"count": count or 0})
     except Exception as exc:
+        logger.error("Failed to fetch track count", error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
-# ===========================================================================
-# INTEGRATIONS STATUS
-# ===========================================================================
-
 @misc_api_bp.route("/integrations/status", methods=["GET"])
-def api_integrations_status():
+def api_integrations_status() -> Any:
     """Return health/status information for all configured integrations."""
     from helpers.config_helpers import get_all_services_status
     status = get_all_services_status()
     return jsonify({"success": True, "integrations": status})
 
 
-# ===========================================================================
-# FEATURES UPDATE
-# ===========================================================================
-
 @misc_api_bp.route("/features/update", methods=["POST"])
-async def api_features_update():
-    """Update individual feature flags in config.yaml.
-
-    Whitelist-only (a malicious/accidental payload cannot write arbitrary
-    keys): only the known boolean feature flags are accepted.  Changes are
-    deep-merged into the existing YAML via ``save_partial_config`` so the
-    in-memory config cache is refreshed immediately.
-    """
+async def api_features_update() -> Any:
+    """Update individual feature flags in config.yaml."""
     try:
         data = (await request.get_json(silent=True)) or {}
     except Exception:
@@ -459,10 +410,10 @@ async def api_features_update():
         ok = save_partial_config({"features": updates})
         if not ok:
             return jsonify({"success": False, "error": "Failed to write config.yaml"}), 500
-        logger.info("[FEATURES] Updated feature flags: %s", updates)
+        logger.info("Updated feature flags", updates=updates)
         return jsonify({"success": True, **updates})
     except Exception as exc:
-        logger.error("[FEATURES] Error updating feature flags: %s", exc, exc_info=True)
+        logger.error("Error updating feature flags", error=str(exc), exc_info=True)
         return jsonify({"success": False, "error": str(exc)}), 500
 
 
@@ -471,17 +422,15 @@ async def api_features_update():
 # ===========================================================================
 
 @misc_api_bp.route("/artist/country", methods=["POST"])
-async def api_fetch_artist_country():
+async def api_fetch_artist_country() -> Any:
     """Fetch artist country from MusicBrainz and update database."""
     data = (await request.get_json()) or {}
     artist = str(data.get("artist_name") or "").strip()
     if not artist:
         return jsonify({"error": "artist_name required"}), 400
     try:
-        from api_clients.musicbrainz_http import MusicBrainzHttpClient
-        client = MusicBrainzHttpClient(enabled=True)
-        # area.name is the readable country (the raw "country" field is an
-        # ISO code and frequently absent from search results).
+        # ✅ Use shared MusicBrainz client singleton
+        client = get_shared_mb_client()
         country = client.get_artist_country(artist)
         if country:
             with db_session() as session:
@@ -489,11 +438,12 @@ async def api_fetch_artist_country():
                 session.execute(text("UPDATE tracks SET artist_country = :country WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist"), {"country": country, "artist": artist})
         return jsonify({"success": True, "country": country})
     except Exception as exc:
+        logger.error("Fetch artist country failed", artist=artist, error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
 @misc_api_bp.route("/artist/country/update", methods=["POST"])
-async def api_update_artist_country():
+async def api_update_artist_country() -> Any:
     """Manually update artist country."""
     data = (await request.get_json()) or {}
     artist = str(data.get("artist_name") or "").strip()
@@ -506,11 +456,12 @@ async def api_update_artist_country():
             session.execute(text("UPDATE tracks SET artist_country = :country WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist"), {"country": country, "artist": artist})
         return jsonify({"success": True, "country": country})
     except Exception as exc:
+        logger.error("Update artist country failed", artist=artist, error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
 @misc_api_bp.route("/artist/country/apply-as-genre", methods=["POST"])
-async def api_apply_country_as_genre():
+async def api_apply_country_as_genre() -> Any:
     """Apply artist country as genre tag to all tracks."""
     data = (await request.get_json()) or {}
     artist = str(data.get("artist_name") or "").strip()
@@ -529,6 +480,7 @@ async def api_apply_country_as_genre():
             )
         return jsonify({"success": True, "country": country})
     except Exception as exc:
+        logger.error("Apply country as genre failed", artist=artist, error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
@@ -537,19 +489,12 @@ async def api_apply_country_as_genre():
 # ===========================================================================
 
 @misc_api_bp.route("/duplicate-artists/<path:artist>", methods=["GET"])
-def api_get_duplicate_artists(artist):
-    """Get duplicate artists for a specific artist.
-
-    Returns ``{duplicates: [{mbid, canonical_mb, variations[], track_counts{}}],
-    artist_info}`` — the shape the corrections page's merge UI expects.
-    Uses the track artist (not album_artist) so compilation appearances
-    don't contaminate detection.
-    """
+def api_get_duplicate_artists(artist: str) -> Any:
+    """Get duplicate artists for a specific artist."""
     from urllib.parse import unquote
     artist = unquote(artist)
     try:
         with db_session() as session:
-            # MBID for the current artist.
             row = session.execute(text("""
                 SELECT DISTINCT musicbrainz_artistid
                 FROM tracks
@@ -562,7 +507,6 @@ def api_get_duplicate_artists(artist):
 
             duplicates = []
             if artist_mbid:
-                # All artist-name variations sharing this MBID.
                 rows = session.execute(text("""
                     SELECT artist, COUNT(*) AS track_count
                     FROM tracks
@@ -573,12 +517,10 @@ def api_get_duplicate_artists(artist):
                 variations_data = [dict(r._mapping) for r in rows]
 
                 if len(variations_data) > 1:
-                    # Canonical display name: MB artist name when resolvable,
-                    # else the most common local variation.
                     canonical_mb = variations_data[0].get("artist") or ""
                     try:
-                        from api_clients.musicbrainz_http import MusicBrainzHttpClient
-                        mb_artist = MusicBrainzHttpClient().get_artist(artist_mbid) or {}
+                        # ✅ Use shared MusicBrainz client singleton
+                        mb_artist = get_shared_mb_client().get_artist(artist_mbid) or {}
                         if (mb_artist.get("name") or "").strip():
                             canonical_mb = str(mb_artist["name"]).strip()
                     except Exception:
@@ -602,25 +544,13 @@ def api_get_duplicate_artists(artist):
             "artist_info": {"name": artist, "mbid": artist_mbid},
         })
     except Exception as exc:
+        logger.error("Get duplicate artists failed", error=str(exc))
         return jsonify({"success": False, "error": str(exc), "duplicates": []}), 500
 
 
 @misc_api_bp.route("/duplicate-artists/merge", methods=["POST"])
-async def api_merge_duplicate_artists():
-    """Merge duplicate artist variants into a canonical name.
-
-    Rewrites ``artist`` / ``album_artist`` on every matching track to the
-    canonical spelling (case-insensitive variants included), then best-effort
-    syncs the corrected names into file tags.  Physical file renames are NOT
-    performed — the library folder structure is left untouched (run the File
-    Organization rename action afterwards to reorganize paths).
-
-    Request JSON:
-        - new_artist: Canonical artist name (required)
-        - source_artists: list of variant names to merge (optional)
-        - mbid: MusicBrainz artist ID (optional, accepted for parity)
-        - dry_run: preview without executing (optional)
-    """
+async def api_merge_duplicate_artists() -> Any:
+    """Merge duplicate artist variants into a canonical name."""
     try:
         payload = (await request.get_json(silent=True)) or {}
         new_artist = str(payload.get("new_artist") or "").strip()
@@ -634,8 +564,6 @@ async def api_merge_duplicate_artists():
             source_artists = [source_artists]
         sources = [str(s).strip() for s in (source_artists or []) if str(s).strip()]
         sources = [s for s in sources if s.lower() != new_artist.lower()]
-        # Also sweep case/whitespace variants of the canonical name itself
-        # (e.g. "babymetal" / "BABYMETAL" → "Babymetal").
         sources.append(new_artist.lower())
         sources.append(new_artist.upper())
         sources.append(new_artist.title())
@@ -663,7 +591,6 @@ async def api_merge_duplicate_artists():
         except Exception as exc:
             errors.append(f"DB normalize failed: {exc}")
 
-        # Best-effort tag sync for tracks whose DB name changed.
         updated_files = 0
         if updated_db and not errors:
             try:
@@ -697,7 +624,7 @@ async def api_merge_duplicate_artists():
                         f"{updated_db} tracks updated, {updated_files} file tags synced"),
         })
     except Exception as exc:
-        logger.error("[MERGE] Duplicate artist merge failed: %s", exc, exc_info=True)
+        logger.error("Duplicate artist merge failed", error=str(exc), exc_info=True)
         return jsonify({"success": False, "error": str(exc)}), 500
 
 
@@ -706,7 +633,7 @@ async def api_merge_duplicate_artists():
 # ===========================================================================
 
 @misc_api_bp.route("/genres/track/<path:track_id>", methods=["GET"])
-def api_genres_track(track_id: str):
+def api_genres_track(track_id: str) -> Any:
     """Get all genre sources for a single track."""
     try:
         with db_session() as session:
@@ -740,11 +667,12 @@ def api_genres_track(track_id: str):
                 genres[output_key] = []
         return jsonify({"success": True, "genres": genres})
     except Exception as exc:
+        logger.error("Failed to get track genres", track_id=track_id, error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
 @misc_api_bp.route("/genres/album/<path:album>/<path:artist>", methods=["GET"])
-def api_genres_album(album: str, artist: str):
+def api_genres_album(album: str, artist: str) -> Any:
     """Get aggregated genres across all tracks in an album."""
     try:
         with db_session() as session:
@@ -761,7 +689,7 @@ def api_genres_album(album: str, artist: str):
             "discogs_genres", "mood", "essentia_genres",
             "musicbrainz_genres", "lastfm_tags", "listenbrainz_genres", "spotify_genres",
         ]
-        result: dict[str, list[dict[str, str | int]]] = {k: [] for k in source_keys}
+        result_genres: dict[str, list[dict[str, str | int]]] = {k: [] for k in source_keys}
 
         import json as _json
         for row in rows:
@@ -776,19 +704,19 @@ def api_genres_album(album: str, artist: str):
                 if isinstance(parsed, list):
                     for g in parsed:
                         name = g["name"] if isinstance(g, dict) else str(g)
-                        result[key].append(name)
-        # Deduplicate and count
+                        result_genres[key].append(name)
         for key in source_keys:
-            counter = Counter(result[key])
-            result[key] = [{"name": name, "count": count} for name, count in counter.most_common(25)]
+            counter = Counter(result_genres[key])
+            result_genres[key] = [{"name": name, "count": count} for name, count in counter.most_common(25)]
 
-        return jsonify({"success": True, "genres": result})
+        return jsonify({"success": True, "genres": result_genres})
     except Exception as exc:
+        logger.error("Failed to get album genres", artist=artist, album=album, error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
 @misc_api_bp.route("/genres/artist/<path:artist>", methods=["GET"])
-def api_genres_artist(artist: str):
+def api_genres_artist(artist: str) -> Any:
     """Get aggregated genres across all tracks by an artist."""
     try:
         with db_session() as session:
@@ -805,7 +733,7 @@ def api_genres_artist(artist: str):
             "discogs_genres", "mood", "essentia_genres",
             "musicbrainz_genres", "lastfm_tags", "listenbrainz_genres", "spotify_genres",
         ]
-        result: dict[str, list[dict[str, str | int]]] = {k: [] for k in source_keys}
+        result_genres: dict[str, list[dict[str, str | int]]] = {k: [] for k in source_keys}
 
         import json as _json
         for row in rows:
@@ -820,27 +748,21 @@ def api_genres_artist(artist: str):
                 if isinstance(parsed, list):
                     for g in parsed:
                         name = g["name"] if isinstance(g, dict) else str(g)
-                        result[key].append(name)
+                        result_genres[key].append(name)
         for key in source_keys:
-            counter = Counter(result[key])
-            result[key] = [{"name": name, "count": count} for name, count in counter.most_common(30)]
+            counter = Counter(result_genres[key])
+            result_genres[key] = [{"name": name, "count": count} for name, count in counter.most_common(30)]
 
-        return jsonify({"success": True, "genres": result})
+        return jsonify({"success": True, "genres": result_genres})
     except Exception as exc:
+        logger.error("Failed to get artist genres", artist=artist, error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
 @misc_api_bp.route("/genres/remove", methods=["POST"])
-async def api_remove_genres():
-    """Remove specific genres from artist or album's tracks (DB only).
-
-    Mirrors the legacy endpoint: updates the ``genres`` and ``manual_genres``
-    columns (comma-joined in the current schema), logs a genre-update audit
-    row, and triggers a Navidrome rescan in the background so the library
-    reflects the change.
-    """
+async def api_remove_genres() -> Any:
+    """Remove specific genres from artist or album's tracks."""
     try:
-        import threading
         payload = (await request.get_json(silent=True)) or {}
         artist_name = str(payload.get("artist_name") or "").strip()
         album_name = str(payload.get("album_name") or "").strip()
@@ -862,7 +784,7 @@ async def api_remove_genres():
                 g for g in (str(g).strip() for g in raw.replace("\\", ",").split(","))
                 if g and g.lower() not in remove_lower
             ]
-            return ", ".join(dict.fromkeys(cleaned))  # dedupe, preserve order
+            return ", ".join(dict.fromkeys(cleaned))
 
         affected = 0
         with db_session() as session:
@@ -902,11 +824,10 @@ async def api_remove_genres():
                     change_summary=f"Removed genres from {affected} tracks: {', '.join(sorted(remove_lower))}",
                 )
             except Exception as exc:
-                logger.debug("[GENRES] Audit log failed: %s", exc)
+                logger.debug("Audit log failed", error=str(exc))
 
-        def _trigger_scan():
+        def _trigger_scan() -> None:
             try:
-                from helpers.config_helpers import get_config
                 from api_clients.navidrome import NavidromeClient
                 cfg = get_config() or {}
                 users = cfg.get("navidrome_users") or []
@@ -918,7 +839,7 @@ async def api_remove_genres():
                         client.start_scan()
                         break
             except Exception as exc:
-                logger.debug("[GENRES] Navidrome scan trigger failed: %s", exc)
+                logger.debug("Navidrome scan trigger failed", error=str(exc))
 
         threading.Thread(target=_trigger_scan, daemon=True).start()
         return jsonify({
@@ -928,20 +849,13 @@ async def api_remove_genres():
             "scan_triggered": True,
         }), 200
     except Exception as exc:
-        logger.error("[GENRES] Genre removal failed: %s", exc, exc_info=True)
+        logger.error("Genre removal failed", error=str(exc), exc_info=True)
         return jsonify({"error": str(exc)}), 500
 
 
 @misc_api_bp.route("/tags/track/<track_id>", methods=["GET", "POST"])
-async def api_track_tags(track_id):
-    """Get or update a single track's metadata tags.
-
-    GET returns the track's editable tag fields.  POST accepts either the
-    generic shape ``{tags: {field: value}, sync_to_file: bool}`` or the
-    album-page quick-add shape ``{genre: "Metal", action: "add",
-    sync_to_file: true}`` which merges the genre into the track's
-    ``genres`` + ``manual_genres`` columns without overwriting.
-    """
+async def api_track_tags(track_id: str) -> Any:
+    """Get or update a single track's metadata tags."""
     if request.method == "GET":
         try:
             from db.repositories.tag_repository import get_track_tags
@@ -950,19 +864,17 @@ async def api_track_tags(track_id):
                 return jsonify({"error": "Track not found"}), 404
             return jsonify({"success": True, "track_id": track_id, "tags": tags})
         except Exception as exc:
-            logger.error("[TAGS] Error getting track tags: %s", exc, exc_info=True)
+            logger.error("Error getting track tags", track_id=track_id, error=str(exc), exc_info=True)
             return jsonify({"error": str(exc)}), 500
 
     try:
         from db.repositories.tag_repository import update_track_tags
-        from db.engine import db_session
         from sqlalchemy import text as _text
 
         data = (await request.get_json(silent=True)) or {}
         sync_to_file = bool(data.get("sync_to_file", False))
         tag_updates = data.get("tags") if isinstance(data.get("tags"), dict) else {}
 
-        # Quick-add shape: merge a single genre (case-insensitive, no overwrite).
         genre = str(data.get("genre") or "").strip()
         if genre:
             with db_session() as session:
@@ -973,7 +885,7 @@ async def api_track_tags(track_id):
                 if not row:
                     return jsonify({"error": "Track not found"}), 404
 
-                def _merge(raw):
+                def _merge(raw: str | None) -> str:
                     existing = [g.strip() for g in (raw or "").replace("\\", ",").split(",") if g.strip()]
                     if genre.lower() not in {x.lower() for x in existing}:
                         existing.append(genre)
@@ -995,7 +907,7 @@ async def api_track_tags(track_id):
             if not ok:
                 return jsonify({"error": "Failed to update tags in database"}), 500
         except Exception as exc:
-            logger.error("[TAGS] Database update failed for %s: %s", track_id, exc)
+            logger.error("Database update failed for track tags", track_id=track_id, error=str(exc))
             return jsonify({"error": f"Database error: {exc}"}), 500
 
         file_synced = False
@@ -1004,7 +916,7 @@ async def api_track_tags(track_id):
                 from services.metadata.tag_file_service import sync_track_tags_to_file
                 file_synced = bool(sync_track_tags_to_file(track_id))
             except Exception as exc:
-                logger.debug("[TAGS] File sync failed for %s: %s", track_id, exc)
+                logger.debug("File sync failed", track_id=track_id, error=str(exc))
 
         return jsonify({
             "success": True,
@@ -1013,19 +925,14 @@ async def api_track_tags(track_id):
             "message": f"Updated {len(tag_updates)} field(s) for track {track_id}",
         })
     except Exception as exc:
-        logger.error("[TAGS] Unexpected error updating track tags: %s", exc, exc_info=True)
+        logger.error("Unexpected error updating track tags", track_id=track_id, error=str(exc), exc_info=True)
         return jsonify({"error": f"Unexpected error: {exc}"}), 500
 
 
 @misc_api_bp.route("/genres/apply", methods=["POST"])
-async def api_apply_genres():
-    """Apply genres to an artist's tracks (merge into genres + manual_genres).
-
-    Called by the artist genre-management UI.  Merges the submitted genres
-    into every track by the artist without overwriting existing values.
-    """
+async def api_apply_genres() -> Any:
+    """Apply genres to an artist's tracks."""
     try:
-        import threading
         payload = (await request.get_json(silent=True)) or {}
         artist_name = str(payload.get("artist_name") or "").strip()
         genres = payload.get("genres") or []
@@ -1071,11 +978,10 @@ async def api_apply_genres():
                     change_summary=f"Applied genres to {affected} tracks: {', '.join(clean)}",
                 )
             except Exception as exc:
-                logger.debug("[GENRES] Audit log failed: %s", exc)
+                logger.debug("Audit log failed", error=str(exc))
 
-        def _trigger_scan():
+        def _trigger_scan() -> None:
             try:
-                from helpers.config_helpers import get_config
                 from api_clients.navidrome import NavidromeClient
                 cfg = get_config() or {}
                 users = cfg.get("navidrome_users") or []
@@ -1086,18 +992,18 @@ async def api_apply_genres():
                         NavidromeClient(u["base_url"], u["user"], u["pass"]).start_scan()
                         break
             except Exception as exc:
-                logger.debug("[GENRES] Navidrome scan trigger failed: %s", exc)
+                logger.debug("Navidrome scan trigger failed", error=str(exc))
 
         threading.Thread(target=_trigger_scan, daemon=True).start()
         return jsonify({"success": True, "affected_tracks": affected,
                         "message": f"Applied genres to {affected} track(s)"}), 200
     except Exception as exc:
-        logger.error("[GENRES] Genre apply failed: %s", exc, exc_info=True)
+        logger.error("Genre apply failed", error=str(exc), exc_info=True)
         return jsonify({"error": str(exc)}), 500
 
 
 @misc_api_bp.route("/genres/recent-updates", methods=["GET"])
-def api_recent_genre_updates():
+def api_recent_genre_updates() -> Any:
     """Get recent genre updates for the logs page."""
     try:
         with db_session() as session:
@@ -1105,6 +1011,7 @@ def api_recent_genre_updates():
             rows = result.fetchall()
         return jsonify({"success": True, "updates": [dict(r._mapping) for r in rows]})
     except Exception as exc:
+        logger.error("Failed to get recent genre updates", error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
@@ -1113,7 +1020,7 @@ def api_recent_genre_updates():
 # ===========================================================================
 
 @misc_api_bp.route("/correcting/fix-album-field", methods=["POST"])
-async def api_correcting_fix_album_field():
+async def api_correcting_fix_album_field() -> Any:
     """Apply a single field value to all tracks in an album."""
     try:
         from services.metadata.correction_service import fix_album_field
@@ -1127,11 +1034,12 @@ async def api_correcting_fix_album_field():
         updated, files = fix_album_field(album_artist, album, field, value)
         return jsonify({"success": True, "updated_count": updated, "files_updated": files})
     except Exception as exc:
+        logger.error("Fix album field failed", error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
 @misc_api_bp.route("/correcting/mb-suggestions")
-def api_correcting_mb_suggestions():
+def api_correcting_mb_suggestions() -> Any:
     """Fetch MusicBrainz authoritative values for an album."""
     album_artist = request.args.get("album_artist", "").strip()
     album = request.args.get("album", "").strip()
@@ -1148,13 +1056,13 @@ def api_correcting_mb_suggestions():
         if not row:
             return jsonify({"success": True, "suggestions": {}, "mbid": None}), 200
         mbid = str(row[0])
-        from api_clients.musicbrainz_http import MusicBrainzHttpClient
+        
+        # ✅ Use shared MusicBrainz client singleton & rate limiter
         from services.infrastructure.api_rate_limiter import get_rate_limiter
-        mb_client = MusicBrainzHttpClient()
-        # Use the shared MusicBrainz rate budget so manual lookups don't
-        # collide with scan traffic (raw sleep bypassed it).
+        mb_client = get_shared_mb_client()
         get_rate_limiter().throttle_musicbrainz()
         data = mb_client.get_release(mbid, inc="release-groups+labels", timeout=12.0)
+        
         if not data:
             return jsonify({"success": True, "suggestions": {}, "mbid": mbid}), 200
         suggestions = {}
@@ -1191,11 +1099,12 @@ def api_correcting_mb_suggestions():
                 suggestions["media"] = formats[0]
         return jsonify({"success": True, "suggestions": suggestions, "mbid": mbid})
     except Exception as exc:
+        logger.error("MB suggestions fetch failed", error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
 @misc_api_bp.route("/correcting/ignore", methods=["POST"])
-async def api_correcting_ignore():
+async def api_correcting_ignore() -> Any:
     """Persist an ignore rule for a specific (album_artist, album, field)."""
     try:
         payload = (await request.get_json(silent=True)) or {}
@@ -1216,11 +1125,12 @@ async def api_correcting_ignore():
             )
         return jsonify({"success": True})
     except Exception as exc:
+        logger.error("Correction ignore failed", error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
 @misc_api_bp.route("/correcting/unignore", methods=["POST"])
-async def api_correcting_unignore():
+async def api_correcting_unignore() -> Any:
     """Remove an ignore rule."""
     try:
         payload = (await request.get_json(silent=True)) or {}
@@ -1241,11 +1151,12 @@ async def api_correcting_unignore():
             )
         return jsonify({"success": True})
     except Exception as exc:
+        logger.error("Correction unignore failed", error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
 @misc_api_bp.route("/correcting/ignores")
-async def api_correcting_list_ignores():
+async def api_correcting_list_ignores() -> Any:
     """Return all active ignore rules."""
     try:
         with db_session() as session:
@@ -1261,6 +1172,7 @@ async def api_correcting_list_ignores():
                     for r in rows]
         return jsonify({"success": True, "ignores": ignores})
     except Exception as exc:
+        logger.error("List ignores failed", error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
@@ -1269,7 +1181,7 @@ async def api_correcting_list_ignores():
 # ===========================================================================
 
 @misc_api_bp.route("/bookmarks", methods=["GET", "POST"])
-async def api_bookmarks():
+async def api_bookmarks() -> Any:
     """Get all bookmarks or add a new bookmark."""
     if request.method == "GET":
         with db_session() as session:
@@ -1303,13 +1215,14 @@ async def api_bookmarks():
 
 
 @misc_api_bp.route("/bookmarks/<int:bookmark_id>", methods=["DELETE"])
-def api_delete_bookmark(bookmark_id):
+def api_delete_bookmark(bookmark_id: int) -> Any:
     """Delete a bookmark."""
     try:
         with db_session() as session:
             session.execute(text("DELETE FROM bookmarks WHERE id = :id"), {"id": bookmark_id})
         return jsonify({"success": True})
     except Exception as exc:
+        logger.error("Delete bookmark failed", bookmark_id=bookmark_id, error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
@@ -1317,8 +1230,6 @@ def api_delete_bookmark(bookmark_id):
 # ESSENTIA
 # ===========================================================================
 
-# ML model files downloaded from the official Essentia model zoo — the same
-# set the bundled Docker image ships with (mood + Discogs-400 genre models).
 _ESSENTIA_MODEL_URLS = [
     "https://essentia.upf.edu/models/music-style-classification/discogs-effnet/discogs-effnet-bs64-1.pb",
     "https://essentia.upf.edu/models/classification-heads/genre_discogs400/genre_discogs400-discogs-effnet-1.pb",
@@ -1335,13 +1246,11 @@ _essentia_download_lock = threading.Lock()
 
 
 def _essentia_progress_file() -> str:
-    """Path of the Essentia download progress file (state dir)."""
     from helpers.config_helpers import get_state_directory
     return os.path.join(get_state_directory(), "essentia_download_progress.json")
 
 
-def _write_essentia_progress(is_running: bool, **extra) -> None:
-    """Persist the Essentia download progress payload (best-effort)."""
+def _write_essentia_progress(is_running: bool, **extra: Any) -> None:
     try:
         payload = {
             "is_running": is_running,
@@ -1355,22 +1264,10 @@ def _write_essentia_progress(is_running: bool, **extra) -> None:
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(payload, fh)
     except Exception as exc:
-        logger.debug("Failed writing essentia download progress: %s", exc)
+        logger.debug("Failed writing essentia download progress", error=str(exc))
 
 
 def _do_essentia_download() -> None:
-    """Clone/update the Essentia-to-Metadata script and download the ML models.
-
-    Runs on a background thread.  Steps:
-      1. git-clone (or git-pull) the WB2024/Essentia-to-Metadata repo into the
-         directory derived from ``essentia.script_path`` (or the Docker default).
-      2. Stream-download the 5 model files from essentia.upf.edu into
-         ``essentia.models_dir`` (or /opt/essentia_models).
-
-    Progress is written to ``essentia_download_progress.json`` so
-    ``/api/essentia/download-status`` can serve it to the config page and the
-    setup wizard.
-    """
     try:
         cfg = get_config() or {}
         essentia_cfg = cfg.get("essentia", {}) if isinstance(cfg, dict) else {}
@@ -1381,7 +1278,6 @@ def _do_essentia_download() -> None:
         target_models_dir = models_dir_cfg or _ESSENTIA_MODELS_DEFAULT
         total_files = len(_ESSENTIA_MODEL_URLS)
 
-        # ── Step 1: clone or update the script repository ────────────────
         _write_essentia_progress(
             True, status="cloning_script",
             current_step=f"Cloning Essentia-to-Metadata to {clone_dir}…",
@@ -1391,13 +1287,12 @@ def _do_essentia_download() -> None:
         if parent_dir:
             os.makedirs(parent_dir, exist_ok=True)
         if os.path.isdir(os.path.join(clone_dir, ".git")):
-            # Repo already present — pull latest changes.
             result = subprocess.run(
                 ["git", "-C", clone_dir, "pull", "--ff-only"],
                 capture_output=True, text=True, timeout=120,
             )
             if result.returncode != 0:
-                logger.warning("Essentia git pull returned non-zero (non-fatal): %s", result.stderr.strip())
+                logger.warning("Essentia git pull returned non-zero", error=result.stderr.strip())
         else:
             result = subprocess.run(
                 ["git", "clone", "--depth=1", _ESSENTIA_REPO_URL, clone_dir],
@@ -1406,7 +1301,6 @@ def _do_essentia_download() -> None:
             if result.returncode != 0:
                 raise RuntimeError(f"git clone failed: {result.stderr.strip()[:300]}")
 
-        # ── Step 2: download the model files ─────────────────────────────
         os.makedirs(target_models_dir, exist_ok=True)
         for idx, url in enumerate(_ESSENTIA_MODEL_URLS):
             filename = os.path.basename(url)
@@ -1417,7 +1311,6 @@ def _do_essentia_download() -> None:
                 files_done=idx, files_total=total_files,
             )
             if os.path.isfile(dest_path):
-                logger.info("Essentia model already present, skipping: %s", dest_path)
                 continue
             tmp_path = dest_path + ".tmp"
             try:
@@ -1441,30 +1334,14 @@ def _do_essentia_download() -> None:
             files_done=total_files, files_total=total_files,
             models_dir=target_models_dir, script_dir=clone_dir,
         )
-        from helpers.logging_config import log_unified
-        log_unified(
-            f"Essentia Scan - Models and script downloaded successfully"
-            f" (models: {target_models_dir}, script: {clone_dir})"
-        )
     except Exception as exc:
-        logger.error("Essentia model download failed: %s", exc, exc_info=True)
+        logger.error("Essentia model download failed", error=str(exc), exc_info=True)
         _write_essentia_progress(False, status="error", current_step=f"Error: {exc}", error=str(exc))
 
 
 @misc_api_bp.route("/essentia/download-models", methods=["POST"])
-def api_essentia_download_models():
-    """Download the Essentia-to-Metadata script and ML model files (background).
-
-    Starts a background thread that:
-      1. git-clones (or git-pulls) https://github.com/WB2024/Essentia-to-Metadata
-         into the directory derived from the configured ``script_path``.
-      2. Downloads the 5 Essentia ML model files from essentia.upf.edu into
-         the configured ``models_dir``.
-
-    Returns JSON ``{"status": "started"}`` immediately, or 409
-    ``{"status": "already_running"}`` if a download is already in progress.
-    Poll ``/api/essentia/download-status`` for progress.
-    """
+def api_essentia_download_models() -> Any:
+    """Download the Essentia-to-Metadata script and ML model files."""
     global _essentia_download_thread
     with _essentia_download_lock:
         if _essentia_download_thread is not None and _essentia_download_thread.is_alive():
@@ -1477,16 +1354,8 @@ def api_essentia_download_models():
 
 
 @misc_api_bp.route("/essentia/download-status")
-def api_essentia_download_status():
-    """Return download status for Essentia models/script.
-
-    While a download runs, mirrors the background thread's progress file
-    (``cloning_script`` / ``downloading_models`` / ``error``).  Once idle, an
-    ``installed`` result is reported when the configured models directory
-    contains model files (``.pb`` / ``.json``) so the UI can hide the
-    download button; ``complete`` is reported only when the models dir is
-    unexpectedly empty after a successful run.
-    """
+def api_essentia_download_status() -> Any:
+    """Return download status for Essentia models/script."""
     progress = None
     try:
         with open(_essentia_progress_file(), "r", encoding="utf-8") as fh:
@@ -1494,7 +1363,7 @@ def api_essentia_download_status():
     except FileNotFoundError:
         pass
     except Exception as exc:
-        logger.debug("Essentia progress read failed: %s", exc)
+        logger.debug("Essentia progress read failed", error=str(exc))
 
     if isinstance(progress, dict) and progress.get("is_running"):
         return jsonify(progress)
@@ -1519,17 +1388,12 @@ def api_essentia_download_status():
 
 
 # ===========================================================================
-# DATABASE
+# DATABASE CLEANUP
 # ===========================================================================
-@misc_api_bp.route("/database/cleanup-duplicates", methods=["POST"])
-def api_cleanup_duplicates():
-    """Remove duplicate track rows that share the same file path.
 
-    Runs the same dedupe used by scan sanitisation: tracks pointing at the
-    same audio file are grouped, the row with an MBID / duration / freshest
-    scan is kept, and the rest are deleted.  Accepts ``{artist: name}`` to
-    scope to one artist (optional — defaults to the whole library).
-    """
+@misc_api_bp.route("/database/cleanup-duplicates", methods=["POST"])
+def api_cleanup_duplicates() -> Any:
+    """Remove duplicate track rows that share the same file path."""
     try:
         payload = request.get_json(silent=True) or {}
         artist = str(payload.get("artist") or "").strip()
@@ -1542,11 +1406,9 @@ def api_cleanup_duplicates():
                 "success": True,
                 "artist": artist,
                 "stats": summary,
-                "message": f"Removed {summary['duplicates_removed']} duplicate track(s) for '{artist}' "
-                           f"({summary['path_updates']} path(s) normalized)",
+                "message": f"Removed {summary['duplicates_removed']} duplicate track(s) for '{artist}'",
             })
 
-        # Whole-library pass: one artist at a time.
         total = {"path_updates": 0, "duplicates_removed": 0}
         artists: list[str] = []
         with db_session() as session:
@@ -1561,12 +1423,12 @@ def api_cleanup_duplicates():
                 total["path_updates"] += int(s.get("path_updates") or 0)
                 total["duplicates_removed"] += int(s.get("duplicates_removed") or 0)
             except Exception as exc:
-                logger.debug("[CLEANUP] Skip %s: %s", artist_name, exc)
+                logger.debug("Skip duplicate cleanup for artist", artist=artist_name, error=str(exc))
         return jsonify({
             "success": True,
             "stats": total,
             "message": f"Removed {total['duplicates_removed']} duplicate track(s) across {len(artists)} artist(s)",
         })
     except Exception as exc:
-        logger.error("[CLEANUP] Duplicate cleanup failed: %s", exc, exc_info=True)
+        logger.error("Duplicate cleanup failed", error=str(exc), exc_info=True)
         return jsonify({"error": str(exc)}), 500
