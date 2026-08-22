@@ -11,18 +11,24 @@ running a continuous loop.
 
 from __future__ import annotations
 
-import logging
 import os
 import time
 from typing import Any
 
+import structlog
+from sqlalchemy import text
+
+from db.engine import db_session
+from db.repositories.queue import get_queue_status_counts, update_queue_item
+from helpers.metadata_reader import read_mp3_metadata
 from services.downloads.download_scan_service import (
+    discover_audio_files,
     resolve_downloads_dir,
     resolve_torrents_dir,
-    discover_audio_files,
 )
+from services.downloads.download_verification_service import transfer_and_verify
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -39,14 +45,11 @@ def scan_downloads_folder() -> list[dict[str, Any]]:
             "target_path": str, (if success)
             "error": str (if error)}``
     """
-    from helpers.metadata_reader import read_mp3_metadata
-    from db.repositories.queue import get_queue_status_counts
-
     downloads_dir = resolve_downloads_dir()
     torrents_dir = resolve_torrents_dir()
 
     if not os.path.isdir(torrents_dir):
-        logger.info("Torrents folder not found: %s — skipping scan", torrents_dir)
+        logger.info("Torrents folder not found — skipping scan", torrents_dir=torrents_dir)
         return []
 
     results: list[dict[str, Any]] = []
@@ -64,7 +67,7 @@ def scan_downloads_folder() -> list[dict[str, Any]]:
             album = (metadata.get("album") or "").strip()
 
             if not artist or not title:
-                logger.debug("Skipping %s: no artist/title in metadata", file_info.filename)
+                logger.debug("Skipping file: no artist/title in metadata", filename=file_info.filename)
                 results.append({"status": "skipped", "filename": file_info.filename})
                 continue
 
@@ -74,11 +77,6 @@ def scan_downloads_folder() -> list[dict[str, Any]]:
                 match_result = _handle_queue_match(file_path, metadata, queue_item)
                 results.append(match_result)
             else:
-                # Strict queue vs. local-disk boundary: a file with no active
-                # queue item is an ambient disk folder — it must NEVER be
-                # injected into the active search/download queue.  It stays
-                # fully passive and is surfaced by the Matched Folders
-                # section (get_unmatched_folders scans the disk directly).
                 results.append({
                     "status": "skipped",
                     "filename": file_info.filename,
@@ -89,7 +87,7 @@ def scan_downloads_folder() -> list[dict[str, Any]]:
                 })
 
         except Exception as exc:
-            logger.error("Error processing %s: %s", file_info.filename, exc)
+            logger.error("Error processing file", filename=file_info.filename, error=str(exc))
             results.append({"status": "error", "filename": file_info.filename, "error": str(exc)})
 
     summary = {"success": 0, "queued": 0, "skipped": 0, "error": 0}
@@ -97,13 +95,14 @@ def scan_downloads_folder() -> list[dict[str, Any]]:
         key = r.get("status")
         if key in summary:
             summary[key] += 1
+            
     logger.info(
-        "Downloads scan complete: %s (success=%s queued=%s skipped=%s error=%s)",
-        downloads_dir,
-        summary["success"],
-        summary["queued"],
-        summary["skipped"],
-        summary["error"],
+        "Downloads scan complete",
+        downloads_dir=downloads_dir,
+        success=summary["success"],
+        queued=summary["queued"],
+        skipped=summary["skipped"],
+        error=summary["error"],
     )
     return results
 
@@ -115,9 +114,6 @@ def _find_queue_match(
 ) -> dict[str, Any] | None:
     """Find an active queue item matching artist/album/title."""
     try:
-        from sqlalchemy import text
-        from db.engine import db_session
-
         with db_session() as session:
             result = session.execute(
                 text("""
@@ -135,7 +131,7 @@ def _find_queue_match(
             row = result.fetchone()
             return dict(row._mapping) if row else None
     except Exception as exc:
-        logger.debug("Error finding queue match: %s", exc)
+        logger.debug("Error finding queue match", error=str(exc))
         return None
 
 
@@ -157,23 +153,28 @@ def _handle_queue_match(
 
     title_score = _similarity(file_title, queue_title)
     if title_score < 0.70:
-        return {"status": "skipped", "filename": os.path.basename(file_path),
-                "error": f"Title mismatch (score={title_score:.2f})"}
+        return {
+            "status": "skipped",
+            "filename": os.path.basename(file_path),
+            "error": f"Title mismatch (score={title_score:.2f})",
+        }
 
     if queue_artist.lower() not in file_artist.lower():
         artist_score = _similarity(file_artist, queue_artist)
         if artist_score < 0.55:
-            return {"status": "skipped", "filename": os.path.basename(file_path),
-                    "error": f"Artist mismatch (score={artist_score:.2f})"}
-
-    # Match found — copy to music dir and update queue.
-    from services.downloads.download_verification_service import transfer_and_verify
-    from db.repositories.queue import update_queue_item
+            return {
+                "status": "skipped",
+                "filename": os.path.basename(file_path),
+                "error": f"Artist mismatch (score={artist_score:.2f})",
+            }
 
     dest_dir = os.environ.get("MUSIC_ROOT", "/music")
-    dest_path = os.path.join(dest_dir, queue_artist or "Unknown",
-                             queue_item.get("album") or "Unknown",
-                             os.path.basename(file_path))
+    dest_path = os.path.join(
+        dest_dir,
+        queue_artist or "Unknown",
+        queue_item.get("album") or "Unknown",
+        os.path.basename(file_path),
+    )
 
     verify_result = transfer_and_verify(file_path, dest_path, queue_item.get("id"))
     if verify_result.get("success"):
@@ -182,9 +183,17 @@ def _handle_queue_match(
             os.remove(file_path)
         except Exception:
             pass
-        return {"status": "success", "filename": os.path.basename(file_path),
-                "artist": queue_artist, "album": queue_item.get("album"), "title": queue_title,
-                "target_path": dest_path}
+        return {
+            "status": "success",
+            "filename": os.path.basename(file_path),
+            "artist": queue_artist,
+            "album": queue_item.get("album"),
+            "title": queue_title,
+            "target_path": dest_path,
+        }
     else:
-        return {"status": "error", "filename": os.path.basename(file_path),
-                "error": verify_result.get("error", "Move failed")}
+        return {
+            "status": "error",
+            "filename": os.path.basename(file_path),
+            "error": verify_result.get("error", "Move failed"),
+        }
