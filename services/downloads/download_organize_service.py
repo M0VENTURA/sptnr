@@ -8,45 +8,48 @@ Orchestrates the complete file organisation flow:
 Path format is configurable via ``naming_format`` in ``config.yaml``.
 """
 
+from __future__ import annotations
+
 import os
 from pathlib import Path
+from typing import Any, Dict
 
-from services.infrastructure.base import get_infra
+import structlog
+
 from helpers.config_helpers import get_config
-from services.downloads.download_organize_helpers import move_track_to_library
 from helpers.normalization_service import sanitize_path
+from services.downloads.download_organize_helpers import move_track_to_library
+from services.infrastructure.base import get_infra
+
+logger = structlog.get_logger(__name__)
 
 _sanitize = lambda value: sanitize_path(value).lower()
 
+
 def _get_path_format() -> str:
-    # Logic to fetch from config
     return get_config().get("naming_format", "{album_artist}/{year} - {album}/{track_number}. {artist} - {title}")
 
-def build_target_path(metadata: dict, ext: str, music_root: Path) -> Path:
+
+def build_target_path(metadata: dict[str, Any], ext: str, music_root: Path) -> Path:
     """Generates the target path based on metadata rules."""
-    vars = {
+    vars_map = {
         "track_number": str(metadata.get("track_number", "00")).zfill(2),
         "artist": _sanitize(metadata.get("artist", "Unknown")),
         "album_artist": _sanitize(metadata.get("album_artist") or metadata.get("artist", "Unknown")),
         "title": _sanitize(metadata.get("title", "Unknown")),
         "album": _sanitize(metadata.get("album", "Unknown")),
-        "year": str(metadata.get("year", "0000"))[:4]
+        "year": str(metadata.get("year", "0000"))[:4],
     }
-    
-    relative_path = _get_path_format().format(**vars)
-    # Ensure no backslashes and strip leading/trailing slashes
+
+    relative_path = _get_path_format().format(**vars_map)
     relative_path = relative_path.replace("\\", "/").strip("/")
-    
-    # Final filename construction
-    filename = f"{vars['track_number']}. {vars['artist']} - {vars['title']}{ext}"
+
+    filename = f"{vars_map['track_number']}. {vars_map['artist']} - {vars_map['title']}{ext}"
     return music_root / relative_path / filename
 
-def organize_track(track_metadata: dict | int, payload: dict | None = None):
-    """
-    The orchestrator:
-    1. Determines where the file should go (Domain Logic)
-    2. Tells Infrastructure to move it (Infrastructure Logic)
-    """
+
+def organize_track(track_metadata: dict[str, Any] | int, payload: dict[str, Any] | None = None) -> Dict[str, Any]:
+    """The orchestrator for moving a track into the library."""
     queue_item = None
     if isinstance(track_metadata, int):
         from db.repositories.queue import get_queue_item
@@ -69,9 +72,6 @@ def organize_track(track_metadata: dict | int, payload: dict | None = None):
     if not track_metadata.get("file_path"):
         return {"success": False, "error": "Missing file_path"}
 
-    # Apply the stored (MusicBrainz-matched) metadata to the source file before
-    # moving so the copy in /music carries the corrected name and information,
-    # mirroring the old_system finalizer behaviour.
     if queue_item:
         try:
             _apply_stored_metadata(queue_item, track_metadata["file_path"])
@@ -94,11 +94,11 @@ def organize_track(track_metadata: dict | int, payload: dict | None = None):
     )
 
 
-def _apply_stored_metadata(queue_item: dict, file_path: str) -> None:
+def _apply_stored_metadata(queue_item: dict[str, Any], file_path: str) -> None:
     """Best-effort write of the queue item's stored metadata to a file."""
     if not queue_item or not file_path:
         return
-    meta: dict = {
+    meta: dict[str, Any] = {
         "title": queue_item.get("title"),
         "artist": queue_item.get("artist"),
         "album": queue_item.get("album"),
@@ -114,11 +114,12 @@ def _apply_stored_metadata(queue_item: dict, file_path: str) -> None:
         meta["release_mbid"] = queue_item.get("release_mbid") or queue_item.get("release_id")
     if not meta:
         return
+        
     from services.metadata.tag_file_service import update_file_metadata
     update_file_metadata(file_path, meta)
 
 
-def rename_and_move_file(file_path, metadata):
+def rename_and_move_file(file_path: str, metadata: dict[str, Any]) -> Dict[str, Any]:
     """Compatibility wrapper used by the download processing pipeline."""
     track = {
         "file_path": file_path,
@@ -134,17 +135,17 @@ def rename_and_move_file(file_path, metadata):
     return move_track_to_library(track, release_metadata, os.environ.get("MUSIC_ROOT", "/music"))
 
 
-def _build_target_path(*args, **kwargs):
+def _build_target_path(*args: Any, **kwargs: Any) -> Path:
     return build_target_path(*args, **kwargs)
 
 
-def organize_folder(folder_path: str, payload: dict | None = None):
+def organize_folder(folder_path: str, payload: dict[str, Any] | None = None) -> Dict[str, Any]:
     return {"success": True, "folder_path": folder_path, "processed": 0, "results": []}
 
 
-def organize_single_file(file_path: str, payload: dict | None = None):
+def organize_single_file(file_path: str, payload: dict[str, Any] | None = None) -> Dict[str, Any]:
     return organize_track({"file_path": file_path, **(payload or {})})
 
 
-def merge_folders(payload: dict | None = None):
+def merge_folders(payload: dict[str, Any] | None = None) -> Dict[str, Any]:
     return {"success": True, "merged": 0, "payload": payload or {}}
