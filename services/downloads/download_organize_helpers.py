@@ -8,16 +8,20 @@ the music library structure. Handles:
 - Cleaning up source directories.
 """
 
-import logging
+from __future__ import annotations
+
 import os
 import re
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any, Dict
+
+import structlog
 
 from helpers.config_helpers import get_config
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # ffmpeg conversion guard rail (mirrors old_system's transfer timeout).
 _TRANSFER_TIMEOUT_SECONDS = 300
@@ -27,7 +31,7 @@ _TRANSFER_TIMEOUT_SECONDS = 300
 # HELPERS
 # =============================================================================
 
-def _first_non_empty(*values):
+def _first_non_empty(*values: Any) -> Any:
     for v in values:
         if v is None:
             continue
@@ -39,7 +43,7 @@ def _first_non_empty(*values):
     return None
 
 
-def _extract_year_for_path(year) -> str:
+def _extract_year_for_path(year: Any) -> str:
     """Pull a 4-digit year out of a (possibly full-date) value."""
     if not year:
         return "Unknown"
@@ -47,14 +51,11 @@ def _extract_year_for_path(year) -> str:
     return m.group(0) if m else "Unknown"
 
 
-def _format_track_number_for_rename(track_number, disc_number=None) -> str:
+def _format_track_number_for_rename(track_number: Any, disc_number: Any = None) -> str:
     """Format a track number for use in path format strings (2-digit, disc-aware)."""
     try:
         disc_num = int(str(disc_number).split("/")[0]) if disc_number else 1
         track_num = int(str(track_number).split("/")[0]) if track_number else 0
-        # Disc "0" is a tagging artifact (many rips tag disc 0 for a single
-        # disc) — normalize it to 1 so disc-0 copies land in the SAME folder
-        # as disc-1 copies instead of splitting the album in two.
         if disc_num <= 0:
             disc_num = 1
         if disc_num > 1:
@@ -64,14 +65,18 @@ def _format_track_number_for_rename(track_number, disc_number=None) -> str:
         return "00"
 
 
-def _build_target_path(root, album_artist, year, album, artist, title, track_number, source_file, disc_number=None):
-    """Build the destination path using ``downloads.file_name_format`` from config.
-
-    The format string may contain ``/`` separators and any of the placeholders
-    ``{album_artist}``, ``{year}``, ``{album}``, ``{track_number}``, ``{artist}``,
-    ``{title}``.  Falls back to the default layout when rendering fails, and
-    sanitizes every path segment so config typos cannot escape the music root.
-    """
+def _build_target_path(
+    root: str,
+    album_artist: Any,
+    year: Any,
+    album: Any,
+    artist: Any,
+    title: Any,
+    track_number: Any,
+    source_file: str,
+    disc_number: Any = None,
+) -> str:
+    """Build the destination path using ``downloads.file_name_format`` from config."""
     ext = os.path.splitext(source_file)[1]
     file_name_format = _read_track_file_name_format()
 
@@ -95,7 +100,6 @@ def _build_target_path(root, album_artist, year, album, artist, title, track_num
             f"{format_vars['track_number']}. {format_vars['artist']} - {format_vars['title']}"
         )
 
-    # Sanitize each path segment (the config format may contain slashes).
     relative_path = relative_path.strip().replace("\\", "/").lstrip("/")
     parts = []
     for part in relative_path.split("/"):
@@ -107,31 +111,18 @@ def _build_target_path(root, album_artist, year, album, artist, title, track_num
     return os.path.join(root, f"{relative_path}{ext}")
 
 
-
-
-
-
 def _read_track_file_name_format() -> str:
-    """
-    Read configurable file naming format.
-
-    Uses central config helper instead of direct YAML access.
-    """
-
+    """Read configurable file naming format."""
     try:
         cfg = get_config() or {}
         downloads_cfg = cfg.get("downloads") or {}
-
         fmt = downloads_cfg.get("file_name_format")
 
         if isinstance(fmt, str) and fmt.strip():
             return fmt.strip()
-
     except Exception:
-        # Keep silent – fallback handles it
         pass
 
-    # ✅ Default fallback
     return "{album_artist}/{year} - {album}/{track_number}. {artist} - {title}"
 
 
@@ -161,13 +152,9 @@ def _normalize_album_artist_for_path(value: str) -> str:
     return normalized
 
 
-def _read_download_conversion_settings() -> dict:
-    """Read ``downloads.conversion`` settings from config with safe defaults.
-
-    Mirrors old_system ``download_queue_manager._read_download_conversion_settings``
-    but reads through the central config helper instead of raw YAML.
-    """
-    settings = {
+def _read_download_conversion_settings() -> dict[str, Any]:
+    """Read ``downloads.conversion`` settings from config with safe defaults."""
+    settings: dict[str, Any] = {
         "enabled": False,
         "mode": "flac_to_mp3",
         "mp3_bitrate_kbps": 320,
@@ -199,12 +186,11 @@ def _read_download_conversion_settings() -> dict:
             ).strip()
             settings["original_subfolder"] = _sanitize_path_component(subfolder) or "Original"
     except Exception as exc:
-        logger.debug("Could not read download conversion settings: %s", exc)
+        logger.debug("Could not read download conversion settings", error=str(exc))
     return settings
 
 
-def _is_under_original_subfolder(path_value, downloads_root, original_subfolder) -> bool:
-    """Return True when *path_value* is inside downloads/<original_subfolder>."""
+def _is_under_original_subfolder(path_value: Any, downloads_root: Any, original_subfolder: Any) -> bool:
     if not path_value or not downloads_root or not original_subfolder:
         return False
     try:
@@ -215,8 +201,7 @@ def _is_under_original_subfolder(path_value, downloads_root, original_subfolder)
         return False
 
 
-def _build_original_archive_path(source_path, downloads_root, original_subfolder) -> str:
-    """Build an archive destination under downloads/<original_subfolder>, preserving the relative path when possible."""
+def _build_original_archive_path(source_path: str, downloads_root: str, original_subfolder: str) -> str:
     original_root = os.path.join(downloads_root, original_subfolder)
     abs_source = os.path.abspath(source_path)
     abs_downloads = os.path.abspath(downloads_root)
@@ -240,7 +225,6 @@ def _build_original_archive_path(source_path, downloads_root, original_subfolder
 
 
 def _resolve_downloads_root() -> str:
-    """Resolve the downloads directory (used for archiving original FLACs)."""
     try:
         from services.infrastructure.filesystem_service import resolve_downloads_dir
         return resolve_downloads_dir(prefer_music_subfolder=False)
@@ -248,18 +232,8 @@ def _resolve_downloads_root() -> str:
         return os.environ.get("DOWNLOADS_DIR", "/downloads")
 
 
-def _convert_flac_and_handle_original(source_path, dest_path, settings) -> bool:
-    """Convert FLAC -> MP3 via ffmpeg into *dest_path*, then handle the original per config.
-
-    The ffmpeg command carries over source metadata (``-map_metadata 0``) so
-    tags written before the move survive the conversion.  The original FLAC is
-    either deleted or archived under downloads/<original_subfolder> per
-    ``downloads.conversion.original_handling``.  Returns True on success.
-    """
-    # A source path that still carries Windows backslashes (from a remote
-    # Soulseek filename) is not resolvable on Linux — ffmpeg would fail, or
-    # succeed on a sibling path while the archive move of the literal string
-    # hits "No such file or directory".  Normalise up front.
+def _convert_flac_and_handle_original(source_path: str, dest_path: str, settings: dict[str, Any]) -> bool:
+    """Convert FLAC -> MP3 via ffmpeg into *dest_path*, then handle the original per config."""
     source_path = str(source_path).replace("\\", "/")
     bitrate_kbps = int(settings.get("mp3_bitrate_kbps", 320) or 320)
     cmd = [
@@ -272,18 +246,18 @@ def _convert_flac_and_handle_original(source_path, dest_path, settings) -> bool:
             cmd, capture_output=True, text=True, check=False, timeout=_TRANSFER_TIMEOUT_SECONDS
         )
     except subprocess.TimeoutExpired:
-        logger.warning("FLAC→MP3 conversion timed out after %ss: %s", _TRANSFER_TIMEOUT_SECONDS, source_path)
+        logger.warning("FLAC to MP3 conversion timed out", timeout_seconds=_TRANSFER_TIMEOUT_SECONDS, source=source_path)
         return False
     except FileNotFoundError:
-        logger.warning("ffmpeg is required for FLAC→MP3 conversion but is not available in PATH")
+        logger.warning("ffmpeg is required for FLAC to MP3 conversion but is not available in PATH")
         return False
     except Exception as exc:
-        logger.warning("FLAC→MP3 conversion launch failed: %s", exc)
+        logger.warning("FLAC to MP3 conversion launch failed", error=str(exc))
         return False
 
     if proc.returncode != 0:
         stderr_tail = (proc.stderr or "").strip().splitlines()[-5:]
-        logger.warning("FLAC→MP3 conversion failed: %s", " | ".join(stderr_tail))
+        logger.warning("FLAC to MP3 conversion failed", stderr=" | ".join(stderr_tail))
         return False
 
     downloads_root = _resolve_downloads_root()
@@ -296,15 +270,15 @@ def _convert_flac_and_handle_original(source_path, dest_path, settings) -> bool:
             archive_path = _build_original_archive_path(source_path, downloads_root, subfolder)
             os.makedirs(os.path.dirname(archive_path), exist_ok=True)
             shutil.move(source_path, archive_path)
-            logger.info("Archived original FLAC to %s", archive_path)
+            logger.info("Archived original FLAC", archive_path=archive_path)
     except Exception as archive_err:
-        logger.warning("Conversion succeeded but original handling failed (%s): %s", source_path, archive_err)
+        logger.warning("Conversion succeeded but original handling failed", source=source_path, error=str(archive_err))
 
-    logger.info("Converted FLAC→MP3: %s → %s", source_path, dest_path)
+    logger.info("Converted FLAC to MP3 successfully", source=source_path, dest=dest_path)
     return True
 
 
-def is_match(path: str, item: dict) -> bool:
+def is_match(path: str, item: dict[str, Any]) -> bool:
     filename = os.path.basename(path).lower()
     artist = (item.get("artist") or "").lower()
     title = (item.get("title") or "").lower()
@@ -312,7 +286,6 @@ def is_match(path: str, item: dict) -> bool:
 
 
 def _read_file_title(file_path: str) -> str:
-    """Embedded title of an existing library file (mutagen via metadata_reader)."""
     try:
         from helpers.metadata_reader import read_mp3_metadata
         meta = read_mp3_metadata(file_path) or {}
@@ -322,33 +295,17 @@ def _read_file_title(file_path: str) -> str:
 
 
 def _titles_match(a: str, b: str) -> bool:
-    """Case-/whitespace-insensitive title comparison for duplicate detection."""
     norm = lambda v: re.sub(r"\s+", " ", str(v or "").strip().casefold())
     return bool(norm(a) and norm(a) == norm(b))
 
 
-def move_track_to_library(track, release_metadata, music_root):
-    """Move a track into the configured library structure.
-
-    Honors ``downloads.file_name_format`` for the destination name and
-    ``downloads.conversion.*`` for FLAC → MP3 conversion (the original FLAC is
-    deleted or archived to ``downloads/<original_subfolder>`` per config).
-
-    A pre-existing file at the exact target whose embedded title matches the
-    incoming track is a DUPLICATE (a re-download, or a disc-0/disc-1 copy
-    whose disc numbers normalize to the same path): the existing file is kept
-    and ``duplicate=True`` is returned so the caller imports against it and
-    the redundant download is cleaned up.  Genuine collisions (a different
-    track with the same generated name) keep the legacy PID-suffix behaviour.
-    """
+def move_track_to_library(track: dict[str, Any], release_metadata: dict[str, Any], music_root: str) -> Dict[str, Any]:
+    """Move a track into the configured library structure."""
     file_path = track.get("file_path")
 
     if not file_path:
         return {"success": False, "error": "Missing file_path"}
 
-    # Normalise Windows backslashes from a remote Soulseek filename so
-    # ``os.path.splitext`` / ``shutil.move`` / ffmpeg all operate on a path
-    # Linux understands.
     file_path = str(file_path).replace("\\", "/")
 
     conversion_settings = _read_download_conversion_settings()
@@ -375,16 +332,15 @@ def move_track_to_library(track, release_metadata, music_root):
         target_path = f"{os.path.splitext(target_path)[0]}.mp3"
 
     if os.path.exists(target_path):
-        # Same-track duplicate: the target already holds THIS track (verified
-        # by embedded title) — keep it, skip writing, and let the caller
-        # import against the existing file.  No conversion work is wasted.
         if _titles_match(_read_file_title(target_path), track.get("title")):
             logger.info(
-                "[ORGANIZE] Target '%s' already exists and matches '%s - %s' — skipping duplicate import",
-                target_path, track.get("artist"), track.get("title"),
+                "Target already exists and matches track — skipping duplicate import",
+                target_path=target_path,
+                artist=track.get("artist"),
+                title=track.get("title"),
             )
             return {"success": True, "target_path": target_path, "duplicate": True}
-        stem = Path(target_path).stem
+            
         suffix = Path(target_path).suffix
         target_path = f"{target_path[:-len(suffix)]}_{os.getpid()}{suffix}" if target_path.endswith(suffix) else f"{target_path}_{os.getpid()}"
 
@@ -392,11 +348,10 @@ def move_track_to_library(track, release_metadata, music_root):
         os.makedirs(os.path.dirname(target_path), exist_ok=True)
         if converting:
             if not _convert_flac_and_handle_original(file_path, target_path, conversion_settings):
-                return {"success": False, "error": "FLAC→MP3 conversion failed"}
+                return {"success": False, "error": "FLAC to MP3 conversion failed"}
             return {"success": True, "target_path": target_path, "converted": True}
         shutil.move(file_path, target_path)
     except Exception as exc:
         return {"success": False, "error": str(exc)}
 
     return {"success": True, "target_path": target_path}
-
