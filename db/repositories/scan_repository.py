@@ -1,6 +1,4 @@
 """
-db/repositories/scandb/repositories/scan_repository.py
-
 Design rules:
 - No API calls
 - No Navidrome logic
@@ -10,10 +8,10 @@ Design rules:
 
 from __future__ import annotations
 
-import logging
 import os
 from typing import Any
 
+import structlog
 from sqlalchemy import text
 
 from db.engine import db_session
@@ -22,18 +20,14 @@ from helpers.text_utils import (
     _resolve_navidrome_file_path_for_storage,
 )
 
+logger = structlog.get_logger(__name__)
+
 # =============================================================================
 # READ HELPERS
 # =============================================================================
 
-
 def lookup_artist_id(artist_name: str) -> str | None:
-    """Return cached Navidrome artist_id for artist_name.
-
-    Tolerates case / punctuation variants (``dArtagnan`` vs ``D'Artagnan``)
-    so a targeted artist scan resolves the stored id even when the requested
-    name differs from the cached spelling.
-    """
+    """Return cached Navidrome artist_id for artist_name."""
     if not artist_name:
         return None
 
@@ -51,34 +45,28 @@ def lookup_artist_id(artist_name: str) -> str | None:
             row = result.fetchone()
             if row and row[0]:
                 found = str(row[0])
-                # Guard against name-keyed rows: an earlier version of the
-                # popularity finalise wrote the artist NAME into artist_id,
-                # which made this return the name and broke the Navidrome
-                # import (getArtist?id=<name> returns no albums).  Only accept
-                # values that are clearly not the name.
                 if found.casefold() != artist_name.casefold():
                     return found
     except Exception as exc:
-        logging.debug("[SCAN_DB] Artist ID lookup failed for '%s': %s", artist_name, exc)
+        logger.debug("Artist ID lookup failed", artist=artist_name, error=str(exc))
 
-    # Punctuation / spacing variants ("dArtagnan" vs "D'Artagnan").
     try:
-        from helpers.text_utils import _normalize_artist_key
         target_key = _normalize_artist_key(artist_name)
         if not target_key:
             return None
+            
         with db_session() as session:
             rows = session.execute(
                 text("SELECT artist_id, artist_name FROM artist_stats WHERE artist_name IS NOT NULL")
             ).fetchall() or []
+            
         for artist_id, stored in rows:
             if stored and _normalize_artist_key(str(stored)) == target_key:
                 found = str(artist_id)
-                # Same name-keyed guard as above.
                 if found.casefold() != artist_name.casefold():
                     return found
     except Exception as exc:
-        logging.debug("[SCAN_DB] Artist ID variant lookup failed for '%s': %s", artist_name, exc)
+        logger.debug("Artist ID variant lookup failed", artist=artist_name, error=str(exc))
 
     return None
 
@@ -99,11 +87,10 @@ def lookup_track_artist_count(artist_name: str) -> int:
                 {"artist_name": artist_name},
             )
             row = result.fetchone()
-
         return int(row[0] or 0) if row else 0
 
     except Exception as exc:
-        logging.debug("[SCAN_DB] Track artist count failed for '%s': %s", artist_name, exc)
+        logger.debug("Track artist count failed", artist=artist_name, error=str(exc))
         return 0
 
 
@@ -131,7 +118,7 @@ def get_database_library_stats() -> dict[str, int]:
         }
 
     except Exception as exc:
-        logging.debug("[SCAN_DB] Failed to get DB stats: %s", exc, exc_info=True)
+        logger.debug("Failed to get DB stats", error=str(exc), exc_info=True)
         return {"total_albums": 0, "total_tracks": 0}
 
 
@@ -142,14 +129,10 @@ def get_existing_track_ids() -> set[str]:
             result = session.execute(text("SELECT id FROM tracks"))
             rows = result.fetchall() or []
 
-        return {
-            str(row[0])
-            for row in rows
-            if row[0]
-        }
+        return {str(row[0]) for row in rows if row[0]}
 
     except Exception as exc:
-        logging.debug("[SCAN_DB] Failed to fetch track IDs: %s", exc, exc_info=True)
+        logger.debug("Failed to fetch track IDs", error=str(exc), exc_info=True)
         return set()
 
 
@@ -168,18 +151,16 @@ def get_existing_artist_track_counts() -> dict[str, int]:
             rows = result.fetchall() or []
 
         result_dict: dict[str, int] = {}
-
         for row in rows:
             artist = str(row[0]) if row[0] else None
             count = int(row[1] or 0) if len(row) > 1 else 0
-
             if artist:
                 result_dict[artist] = count
 
         return result_dict
 
     except Exception as exc:
-        logging.debug("[SCAN_DB] Failed to fetch artist counts: %s", exc, exc_info=True)
+        logger.debug("Failed to fetch artist counts", error=str(exc), exc_info=True)
         return {}
 
 
@@ -187,10 +168,7 @@ def get_existing_artist_track_counts() -> dict[str, int]:
 # VALIDATION HELPERS
 # =============================================================================
 
-
-def has_valid_local_track_paths_for_mp3_import(
-    sample_size: int = 120,
-) -> tuple[bool, str]:
+def has_valid_local_track_paths_for_mp3_import(sample_size: int = 120) -> tuple[bool, str]:
     """Validate that DB file paths exist on this host."""
     try:
         with db_session() as session:
@@ -216,12 +194,10 @@ def has_valid_local_track_paths_for_mp3_import(
 
         for row in rows:
             file_path = str(row[0] or "").strip() if row else ""
-
             if not file_path:
                 continue
 
             checked += 1
-
             if os.path.exists(file_path):
                 existing += 1
 
@@ -241,22 +217,12 @@ def has_valid_local_track_paths_for_mp3_import(
 # CLEANUP HELPERS (WRITE OPERATIONS)
 # =============================================================================
 
-
 def normalize_existing_artist_rows(
     session: Any | None = None,
     canonical_artist_name: str | None = None,
     aliases: list[str] | None = None,
 ) -> int:
-    """Rewrite variant artist names to canonical value.
-    
-    Args:
-        session: Optional SQLAlchemy session. If None, creates one.
-        canonical_artist_name: The canonical name to normalize to.
-        aliases: List of variant names to normalize.
-        
-    Returns:
-        Number of rows updated.
-    """
+    """Rewrite variant artist names to canonical value."""
     if not canonical_artist_name:
         return 0
 
@@ -265,7 +231,6 @@ def normalize_existing_artist_rows(
         return 0
 
     updates = 0
-
     alias_candidates = {alias for alias in (aliases or []) if alias}
     alias_candidates.update({
         canonical_artist_name,
@@ -274,7 +239,7 @@ def normalize_existing_artist_rows(
         canonical_artist_name.title(),
     })
 
-    def _do_update(sess):
+    def _do_update(sess: Any) -> None:
         nonlocal updates
         for original in alias_candidates:
             if not original or original == canonical_artist_name:
@@ -307,19 +272,11 @@ def sanitize_artist_file_paths_and_duplicates(
     artist_name: str,
     session: Any | None = None,
 ) -> dict[str, int]:
-    """Normalize file paths and remove duplicate rows.
-    
-    Args:
-        artist_name: Name of the artist to sanitize.
-        session: Optional SQLAlchemy session. If None, creates one.
-        
-    Returns:
-        Dict with path_updates and duplicates_removed counts.
-    """
+    """Normalize file paths and remove duplicate rows."""
     if not artist_name:
         return {"path_updates": 0, "duplicates_removed": 0}
 
-    def _do_sanitize(sess):
+    def _do_sanitize(sess: Any) -> dict[str, int]:
         result = sess.execute(
             text("""
                 SELECT id, file_path, duration, mbid, last_scanned
@@ -336,7 +293,6 @@ def sanitize_artist_file_paths_and_duplicates(
             return {"path_updates": 0, "duplicates_removed": 0}
 
         music_root = os.environ.get("MUSIC_FOLDER") or os.environ.get("MUSIC_ROOT", "/music")
-
         grouped: dict[str, list[dict[str, Any]]] = {}
         path_updates = 0
 
@@ -371,7 +327,7 @@ def sanitize_artist_file_paths_and_duplicates(
             if len(rows_list) <= 1:
                 continue
 
-            def score(r):
+            def score(r: dict[str, Any]) -> tuple[int, int, str]:
                 return (
                     100 if r["mbid"] else 0,
                     10 if r["duration"] else 0,
@@ -400,4 +356,3 @@ def sanitize_artist_file_paths_and_duplicates(
     else:
         with db_session() as sess:
             return _do_sanitize(sess)
-
