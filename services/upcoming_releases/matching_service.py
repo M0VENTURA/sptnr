@@ -17,17 +17,19 @@
 
 from __future__ import annotations
 
-import logging
 import re
+import threading
 from datetime import datetime
 from typing import Any
+
+import structlog
 
 from api_clients.musicbrainz_http import (
     MusicBrainzHttpClient,
     escape_lucene_special_chars,
 )
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 try:
     from rapidfuzz import fuzz as _fuzz  # type: ignore[import-untyped]
@@ -49,13 +51,8 @@ _DATE_BONUS = 0.10
 # Text sanitization
 # ---------------------------------------------------------------------------
 
-# Glued conjunction: lowercase letter + conjunction + uppercase letter
-# (e.g. "AkinmusireandMary" → "Akinmusire and Mary").  Requires a lowercase
-# char before so proper names containing "and" ("Brandy", "Understand") and
-# genres like "R&B" are never split.
 _CONCAT_RE = re.compile(r"([a-z])([Aa]nd|[Ff]eat(?:uring)?|[Ww]ith|&)([A-Z])")
 
-# Editorial notes appended to album titles that carry no matching value.
 _PAREN_NOTES_RE = re.compile(
     r"\s*\((?:album|ep|deluxe(?:\s+edition)?|self-titled|"
     r"remaster(?:ed)?|expanded(?:\s+edition)?)\)",
@@ -66,13 +63,13 @@ _CITATION_RE = re.compile(r"\s*\[\d+\]\s*")
 
 _QUOTE_MAP = str.maketrans(
     {
-        "\u2019": "'",  # ’ right single quote
-        "\u2018": "'",  # ‘ left single quote
-        "\u201d": '"',  # ” right double quote
-        "\u201c": '"',  # “ left double quote
-        "\u2013": "-",  # – en dash
-        "\u2014": "-",  # — em dash
-        "\u00a0": " ",  # non-breaking space
+        "\u2019": "'",
+        "\u2018": "'",
+        "\u201d": '"',
+        "\u201c": '"',
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u00a0": " ",
     }
 )
 
@@ -127,7 +124,6 @@ def _date_bonus(wiki_date: str | None, mb_date: str | None) -> float:
     wiki = str(wiki_date)[:10].strip()
     mb = str(mb_date)[:10].strip()
 
-    # Year-only dates ("2026") — compare the leading year.
     if wiki[:4].isdigit() and mb[:4].isdigit() and wiki[:4] == mb[:4]:
         return _DATE_BONUS
 
@@ -190,12 +186,16 @@ def score_candidate(
 # ---------------------------------------------------------------------------
 
 _mb_client: MusicBrainzHttpClient | None = None
+_client_lock = threading.Lock()
 
 
 def _get_mb_client() -> MusicBrainzHttpClient:
+    """Return the process-wide shared MusicBrainzHttpClient singleton."""
     global _mb_client
     if _mb_client is None:
-        _mb_client = MusicBrainzHttpClient(enabled=True)
+        with _client_lock:
+            if _mb_client is None:
+                _mb_client = MusicBrainzHttpClient(enabled=True)
     return _mb_client
 
 
@@ -225,7 +225,7 @@ def _artist_mbid_from_library(artist: str) -> str | None:
             if re.fullmatch(r"[0-9a-f-]{36}", mbid2):
                 return mbid2
     except Exception as exc:
-        logger.debug("[MATCH] Local artist MBID lookup failed: %s", exc)
+        logger.debug("Local artist MBID lookup failed", error=str(exc))
     return None
 
 
@@ -233,7 +233,7 @@ def _search_release_groups(query: str, limit: int) -> list[dict[str, Any]]:
     try:
         return _get_mb_client().search_release_groups(query, limit=limit)
     except Exception as exc:
-        logger.warning("[MATCH] MusicBrainz search failed (%s): %s", query[:120], exc)
+        logger.warning("MusicBrainz search failed", query=query[:120], error=str(exc))
         return []
 
 
@@ -254,22 +254,8 @@ def match_to_musicbrainz(
     album: str,
     release_date: str | None = None,
 ) -> dict[str, Any]:
-    """Two-pass Wikipedia → MusicBrainz matching with confidence scoring.
-
-    Returns:
-        {
-            "status": "matched" | "candidate" | "unmatched",
-            "score": float,
-            "mbid": str | None,
-            "title": str | None,
-            "artist": str | None,
-            "query": str,             # last Lucene query used
-            "candidates": [scored],   # ranked, best first (capped)
-        }
-    """
+    """Two-pass Wikipedia → MusicBrainz matching with confidence scoring."""
     clean_artist, clean_album = sanitize_wiki_entry(artist, album)
-    # Configurable Search Filters: strip same-song edition markers like
-    # "(Remastered)" / "(Radio Edit)" before building Lucene queries.
     from helpers.normalization_service import strip_search_keywords
     clean_album = strip_search_keywords(clean_album)
     candidates: list[dict[str, Any]] = []
