@@ -8,18 +8,27 @@ API reference: https://slskd-api.readthedocs.io/en/latest/api.html
 
 from __future__ import annotations
 
-import logging
-from typing import Any, Optional
+import os
+from typing import Any
+
+import structlog
 
 from api_clients import session
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class SlskdHttpClient:
     """Raw slskd API wrapper."""
 
-    def __init__(self, web_url: str, api_key: str = "", http_session=None, enabled: bool = True, default_timeout: Optional[int] = 60):
+    def __init__(
+        self, 
+        web_url: str, 
+        api_key: str = "", 
+        http_session: Any = None, 
+        enabled: bool = True, 
+        default_timeout: int | None = 60
+    ):
         self.web_url = (web_url or "").rstrip("/")
         self.api_key = api_key or ""
         self.session = http_session or session
@@ -32,26 +41,26 @@ class SlskdHttpClient:
     # Core request helpers
     # ------------------------------------------------------------------
 
-    def request(self, method: str, endpoint: str, *, timeout: Optional[int] = None, **kwargs):
+    def request(self, method: str, endpoint: str, *, timeout: int | None = None, **kwargs: Any) -> Any:
         if not self.enabled:
             raise RuntimeError("slskd client is disabled")
         timeout = timeout or self.default_timeout
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         return self.session.request(method, url, headers=self.headers, timeout=timeout, **kwargs)
 
-    def get_json(self, endpoint: str, *, timeout: Optional[int] = None, default=None, **kwargs):
+    def get_json(self, endpoint: str, *, timeout: int | None = None, default: Any = None, **kwargs: Any) -> Any:
         resp = self.request("GET", endpoint, timeout=timeout, **kwargs)
         resp.raise_for_status()
         payload = resp.json()
         return payload if payload is not None else default
 
-    def post_json(self, endpoint: str, payload: Any, *, timeout: Optional[int] = None):
+    def post_json(self, endpoint: str, payload: Any, *, timeout: int | None = None) -> Any:
         return self.request("POST", endpoint, json=payload, timeout=timeout)
 
-    def delete(self, endpoint: str, *, timeout: Optional[int] = None):
+    def delete(self, endpoint: str, *, timeout: int | None = None) -> Any:
         return self.request("DELETE", endpoint, timeout=timeout)
 
-    def put(self, endpoint: str, *, timeout: Optional[int] = None):
+    def put(self, endpoint: str, *, timeout: int | None = None) -> Any:
         return self.request("PUT", endpoint, timeout=timeout)
 
     # ------------------------------------------------------------------
@@ -65,7 +74,7 @@ class SlskdHttpClient:
             data = resp.json() if hasattr(resp, "json") else resp
             return (data if isinstance(data, str) else data.get("id") or data.get("searchId")) or None
         except Exception as exc:
-            logger.debug("Failed to start search: %s", exc)
+            logger.debug("Failed to start search", query=query, error=str(exc))
             return None
 
     def list_searches(self, timeout: int = 8) -> list[dict[str, Any]]:
@@ -73,7 +82,7 @@ class SlskdHttpClient:
         try:
             return self.get_json("searches", timeout=timeout, default=[])
         except Exception as exc:
-            logger.debug("Failed to list searches: %s", exc)
+            logger.debug("Failed to list searches", error=str(exc))
             return []
 
     def get_search_results(self, search_id: str, timeout: int = 10) -> list[dict[str, Any]]:
@@ -81,7 +90,7 @@ class SlskdHttpClient:
         try:
             return self.get_json(f"searches/{search_id}/results", timeout=timeout, default=[])
         except Exception as exc:
-            logger.debug("Failed to get search results: %s", exc)
+            logger.debug("Failed to get search results", search_id=search_id, error=str(exc))
             return []
 
     def stop_search(self, search_id: str) -> bool:
@@ -90,7 +99,7 @@ class SlskdHttpClient:
             resp = self.post_json(f"searches/{search_id}/stop", {})
             return resp.status_code in (200, 204)
         except Exception as exc:
-            logger.debug("Failed to stop search %s: %s", search_id, exc)
+            logger.debug("Failed to stop search", search_id=search_id, error=str(exc))
             return False
 
     def delete_search(self, search_id: str) -> bool:
@@ -99,7 +108,7 @@ class SlskdHttpClient:
             resp = self.delete(f"searches/{search_id}")
             return resp.status_code in (200, 204)
         except Exception as exc:
-            logger.debug("Failed to delete search %s: %s", search_id, exc)
+            logger.debug("Failed to delete search", search_id=search_id, error=str(exc))
             return False
 
     # ------------------------------------------------------------------
@@ -116,7 +125,7 @@ class SlskdHttpClient:
             )
             return resp.json() if hasattr(resp, "json") else {}
         except Exception as exc:
-            logger.debug("Failed to enqueue download: %s", exc)
+            logger.debug("Failed to enqueue download", username=username, filename=filename, error=str(exc))
             return {}
 
     def get_active_downloads(self, timeout: int = 10) -> list[dict[str, Any]]:
@@ -124,7 +133,7 @@ class SlskdHttpClient:
         try:
             return self.get_json("transfers/downloads", timeout=timeout, default=[])
         except Exception as exc:
-            logger.debug("Failed to get active downloads: %s", exc)
+            logger.debug("Failed to get active downloads", error=str(exc))
             return []
 
     def retry_download(self, username: str, filename: str, timeout: int = 10) -> bool:
@@ -137,7 +146,7 @@ class SlskdHttpClient:
             )
             return resp.status_code in (200, 204) if hasattr(resp, "status_code") else True
         except Exception as exc:
-            logger.debug("Failed to retry download: %s", exc)
+            logger.debug("Failed to retry download", username=username, filename=filename, error=str(exc))
             return False
 
     def get_download(self, download_id: str) -> dict[str, Any]:
@@ -145,7 +154,7 @@ class SlskdHttpClient:
         try:
             return self.get_json(f"transfers/downloads/{download_id}", default={})
         except Exception as exc:
-            logger.debug("Failed to get download %s: %s", download_id, exc)
+            logger.debug("Failed to get download", download_id=download_id, error=str(exc))
             return {}
 
     def cancel_download(self, download_id_or_username: str, filename: str | None = None, transfer_id: str | None = None) -> bool:
@@ -162,7 +171,7 @@ class SlskdHttpClient:
                 resp = self.delete(f"transfers/downloads/{download_id_or_username}")
             return resp.status_code in (200, 204)
         except Exception as exc:
-            logger.debug("Failed to cancel download: %s", exc)
+            logger.debug("Failed to cancel download", target=download_id_or_username, filename=filename, error=str(exc))
             return False
 
     def get_events(self, timeout: int = 10) -> list[dict[str, Any]]:
@@ -170,7 +179,7 @@ class SlskdHttpClient:
         try:
             return self.get_json("events", timeout=timeout, default=[])
         except Exception as exc:
-            logger.debug("Failed to get events: %s", exc)
+            logger.debug("Failed to get events", error=str(exc))
             return []
 
     def remove_completed_downloads(self) -> bool:
@@ -179,16 +188,16 @@ class SlskdHttpClient:
             resp = self.delete("transfers/downloads/completed")
             return resp.status_code in (200, 204)
         except Exception as exc:
-            logger.debug("Failed to remove completed downloads: %s", exc)
+            logger.debug("Failed to remove completed downloads", error=str(exc))
             return False
 
-    def get_queue_position(self, download_id: str) -> Optional[int]:
+    def get_queue_position(self, download_id: str) -> int | None:
         """Get the queue position for a queued download."""
         try:
             data = self.get_json(f"transfers/downloads/{download_id}/position", default={})
             return data.get("position") if isinstance(data, dict) else None
         except Exception as exc:
-            logger.debug("Failed to get queue position for %s: %s", download_id, exc)
+            logger.debug("Failed to get queue position", download_id=download_id, error=str(exc))
             return None
 
     # ------------------------------------------------------------------
@@ -200,7 +209,7 @@ class SlskdHttpClient:
         try:
             return self.get_json(f"users/{username}/browse", default={}, timeout=30)
         except Exception as exc:
-            logger.debug("Failed to browse user %s: %s", username, exc)
+            logger.debug("Failed to browse user", username=username, error=str(exc))
             return {}
 
     def get_user_info(self, username: str) -> dict[str, Any]:
@@ -208,7 +217,7 @@ class SlskdHttpClient:
         try:
             return self.get_json(f"users/{username}/info", default={})
         except Exception as exc:
-            logger.debug("Failed to get user info for %s: %s", username, exc)
+            logger.debug("Failed to get user info", username=username, error=str(exc))
             return {}
 
     def get_user_status(self, username: str) -> dict[str, Any]:
@@ -216,7 +225,7 @@ class SlskdHttpClient:
         try:
             return self.get_json(f"users/{username}/status", default={})
         except Exception as exc:
-            logger.debug("Failed to get user status for %s: %s", username, exc)
+            logger.debug("Failed to get user status", username=username, error=str(exc))
             return {}
 
     # ------------------------------------------------------------------
@@ -228,7 +237,7 @@ class SlskdHttpClient:
         try:
             return self.get_json("application/state", default={})
         except Exception as exc:
-            logger.debug("Failed to get application state: %s", exc)
+            logger.debug("Failed to get application state", error=str(exc))
             return {}
 
     def is_connected(self) -> bool:
@@ -252,10 +261,9 @@ _slskd_client_cache_mtime: float | None = None
 def _config_file_mtime() -> float | None:
     """Return the config.yaml mtime, or None when the file is missing."""
     try:
-        import os as _os
-        cfg_path = _os.environ.get("CONFIG_PATH", "/config/config.yaml")
-        if _os.path.exists(cfg_path):
-            return _os.path.getmtime(cfg_path)
+        cfg_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+        if os.path.exists(cfg_path):
+            return os.path.getmtime(cfg_path)
     except Exception:
         pass
     return None
@@ -272,9 +280,9 @@ def get_slskd_client() -> SlskdHttpClient | None:
     can treat it as "Soulseek unavailable" without raising.
     """
     global _slskd_client_cache, _slskd_client_cache_mtime
+    
     if _slskd_client_cache is not None:
-        # Rebuild when the config file changed since the client was built —
-        # otherwise the stale URL from the first-ever call is used forever.
+        # Rebuild when the config file changed since the client was built
         if _config_file_mtime() != _slskd_client_cache_mtime:
             _slskd_client_cache = None
             _slskd_client_cache_mtime = None
@@ -308,6 +316,7 @@ def get_slskd_client() -> SlskdHttpClient | None:
         )
         _slskd_client_cache_mtime = _config_file_mtime()
         return _slskd_client_cache
+        
     except Exception as exc:
-        logger.error("Error getting SlskdHttpClient: %s", exc)
+        logger.error("Error getting SlskdHttpClient", error=str(exc))
         return None
