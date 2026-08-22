@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
+import stat
+import tempfile
 from pathlib import Path
 from typing import Dict, Any, TYPE_CHECKING, cast
 
@@ -190,10 +193,8 @@ def write_tags_to_file(file_path: str, tags: Dict[str, Any]) -> bool:
 
     suffix = Path(file_path).suffix.lower()
 
-    if suffix == ".mp3":
-        ok = write_id3_tags(file_path, tags)
-    elif suffix == ".flac":
-        ok = write_flac_tags(file_path, tags)
+    if suffix in (".mp3", ".flac"):
+        ok = _write_tags_atomic(file_path, tags)
     else:
         logger.warning("Unsupported file format: %s", suffix)
         ok = False
@@ -204,6 +205,63 @@ def write_tags_to_file(file_path: str, tags: Dict[str, Any]) -> bool:
         except OSError:
             pass
     return ok
+
+
+def _write_tags_atomic(file_path: str, tags: Dict[str, Any]) -> bool:
+    """Write tags to *file_path* ATOMICALLY: write to a temp sibling, then
+    ``os.replace()`` over the original.
+
+    Mutagen rewrites the file in place; if a browser/player is streaming the
+    file (or the process is killed mid-write) the original can be left
+    partially written/corrupt.  Writing a temp copy in the SAME directory
+    and atomically renaming it means readers either see the old file or the
+    new one — never a torn write.  ``os.replace`` is atomic on POSIX and
+    Windows when source and target share a filesystem (same directory
+    guarantees this).
+
+    Returns True on success.  On failure the original file is left untouched.
+    """
+    directory = os.path.dirname(os.path.abspath(file_path)) or "."
+    suffix = Path(file_path).suffix.lower()
+
+    tmp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=directory, prefix=".populartag_", suffix=suffix, delete=False,
+        ) as tmpf:
+            tmp_path = tmpf.name
+
+        # Copy the original bytes so the tag writer mutates a full copy.
+        shutil.copy2(file_path, tmp_path)
+
+        if suffix == ".mp3":
+            ok = write_id3_tags(tmp_path, tags)
+        else:
+            ok = write_flac_tags(tmp_path, tags)
+
+        if not ok:
+            return False
+
+        # Preserve the original's permissions on the replacement.
+        try:
+            st = os.stat(file_path)
+            os.chmod(tmp_path, stat.S_IMODE(st.st_mode))
+        except OSError:
+            pass
+
+        # Atomic swap: readers see old or new, never partial.
+        os.replace(tmp_path, file_path)
+        tmp_path = ""
+        return True
+    except Exception as exc:
+        logger.error("Failed to write tags atomically to %s: %s", file_path, exc, exc_info=True)
+        return False
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 def write_rating_to_file(file_path: str, stars: int) -> bool:

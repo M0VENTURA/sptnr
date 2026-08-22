@@ -1,4 +1,4 @@
----
+```yaml
 name: RatingAgent
 description: >
   Builds and maintains Popularr (formerly sptnr), Aaron's Navidrome-linked music
@@ -40,9 +40,8 @@ You maintain **Popularr** (formerly **sptnr**), a full music management solution
 ## 2) How to interact with this project — architecture, config, testing, run & migrations
 
 > Read this section before writing any code. The numbered domain sections below
-> (popularity, singles, ratings, endpoints, config keys) document *what* the app
-> does; this section is the *how* — where logic lives and how to change it safely
-> in the current codebase.
+> document *what* the app does; this section is the *how* — where logic lives,
+> coding standards, and how to change it safely.
 
 > 🚧 **`old_system/` is REFERENCE-ONLY — NEVER update it.** This folder is a frozen
 > snapshot of how the ORIGINAL system was built and used. Read it ONLY to understand
@@ -59,35 +58,31 @@ the architecture, call it out explicitly and recommend the correct structure.
 
 ### 2.2 Architecture layering (do not violate)
 
+
 ```
-routes/                      → Quart blueprints (UI + API) — registered in helpers/app_bootstrap.py
-services/                    → application layer: scanning/, popularity/, enrichment/,
-                               metadata/, downloads/, queue/, playlists/, upcoming_releases/
-api_clients/                 → HTTP-only clients (Navidrome, Last.fm, ListenBrainz,
-                               MusicBrainz, Discogs, AudioDB, Cover Art Archive, slskd…)
-db/repositories/             → the ONLY layer that writes to PostgreSQL
+
+routes/                     → Quart blueprints (UI + API) — registered in helpers/app_bootstrap.py
+services/                   → application layer: scanning/, popularity/, enrichment/,
+metadata/, downloads/, queue/, playlists/, upcoming_releases/
+api_clients/                → HTTP-only clients (Navidrome, Last.fm, ListenBrainz,
+MusicBrainz, Discogs, AudioDB, Cover Art Archive, slskd…)
+db/repositories/            → the ONLY layer that writes to PostgreSQL
 PostgreSQL
+
 ```
 
 - **`api_clients/`** — HTTP, rate limits, retries, circuit breakers only. No business
-  logic, no scoring, no DB writes.
+  logic, no scoring, no DB writes. Network calls should leverage process-wide shared 
+  client singletons (e.g., `get_shared_mb_client()`) to respect global rate budgets.
 - **`services/`** — business logic, decision-making, fallbacks, scoring, matching,
   single detection, cover detection.
-- **`db/repositories/`** — all persistence. Reuse existing repositories (`tracks.py`,
-  `popularity_repository.py`, `queue.py`, …). Never open a session and write from a
-  service or route.
+- **`db/repositories/` & `db/engine.py`** — all persistence. Reuse existing repositories (`tracks.py`,
+  `popularity_repository.py`, `queue.py`, …). Always use short-lived transaction context managers (`with db_session() as session:`) to protect connection pools. Never open raw sessions and write directly from an unmanaged service or route.
 - **`app.py`** is intentionally minimal (orchestration only). Business logic lives in
   `db/`, `helpers/`, `services/`. Background services are started in
   `helpers/task_manager.py` (scheduler, queue processor, retry scheduler).
 - **New route modules** must be registered in `helpers/app_bootstrap.py`
   (`register_all_blueprints`).
-- **Legacy shims** exist for backward compatibility (e.g. `routes/scans.py`,
-  `services/popularity/scoring.py`). Keep them delegating to the canonical module;
-  write no new logic in them.
-- **`old_system/`** is **reference-only**: a frozen snapshot of how the ORIGINAL system
-  worked. Read it to understand original behaviour/decisions, but **NEVER update, edit,
-  refactor, migrate code from, or delete anything inside it.** The current codebase is
-  the only source of truth.
 
 ### 2.2.1 Authentication gate (do not bypass)
 
@@ -95,86 +90,37 @@ PostgreSQL
   route requires a session EXCEPT a public allow-list.
 - **Always public:** static assets, `ui.login`, `ui.logout`.
 - **First-run public** (only while `helpers/config_helpers.needs_setup()` is true —
-  Navidrome unconfigured): the setup wizard page + its APIs
-  (`ui.api_test_navidrome_connection`, `ui.api_setup_save`,
-  `ui.api_setup_save_partial`, `misc_api.api_essentia_download_status`,
-  `misc_api.api_essentia_download_models`, `scans.api_navidrome_import`).
-- First-run: any other page redirects to `/setup`; any other API returns 401.
-- Configured: unauthenticated pages redirect to `/login`; unauthenticated APIs return
-  401 JSON.
-- `needs_setup()` recognises `navidrome_users`, legacy `navidrome`, or flat
-  `nav_url`/`nav_user`/`nav_pass` settings keys. `routes/ui_routes.py::_needs_setup`
-  delegates to it.
-- When adding new routes, they are protected by default. Only add a new endpoint to
-  the allow-lists in `app_hooks.py` if it must be reachable pre-login (and never
-  expose config-mutating endpoints this way).
+  Navidrome unconfigured): the setup wizard page + its APIs.
+- When adding new routes, they are protected by default.
 
-### 2.3 Config & docs conventions
+### 2.3 Coding & typing standards (Mandatory)
 
-- Settings live in `helpers/settings.py` (Pydantic, `POPULARLR_*` env vars) plus
-  `helpers/config_helpers.py` (typed getters backed by `config.yaml`).
-- Prefer importing `settings` or a config getter. **Never hardcode** values that
-  belong in config (weights, thresholds, timeouts, URLs, rescan windows).
-- The **Config page (web UI) is the source of truth for user-editable settings** and
-  writes `config.yaml`; surface any new user-facing option there.
-- **Module docstrings are required** for all public services (purpose, usage, call chain).
-- Keep `documentation/` current: `documentation/README.md` is the index,
-  `documentation/POPULARR_ARCHITECTURE.md` for design, `documentation/Services/`
-  (e.g. `CONFIGURATION_GUIDE.md`, `QUICK_REFERENCE.md`) for service/config reference.
-  Add a Change Log entry under `documentation/Change Logs/Main/` for user-visible changes.
+- **Python 3.10+ Type Hints:** All new or refactored modules must use `from __future__ import annotations` and modern built-in container syntax (`list[dict[str, Any]]`, `str | None`). Avoid legacy typing imports (`List`, `Dict`, `Optional`).
+- **Structured Logging (`structlog`):** Use `structlog` for all logging (`logger = structlog.get_logger(__name__)`) with key-value pairs (`logger.error("Failed to fetch", track_id=id, error=str(exc))`) instead of standard string formatting.
+- **Settings & Config:** Prefer importing `settings` or a config getter. **Never hardcode** values that belong in config (weights, thresholds, timeouts, URLs).
+- **Documentation:** Keep `documentation/` current and include module docstrings for public services.
 
 ### 2.4 Testing
 
 - Suite: **pytest** (`pytest.ini` — `asyncio_mode = auto`, `testpaths = tests`,
-  files `test_*.py`; async tests need no explicit marker).
-- Shared fixtures in `tests/conftest.py`: `app`, `client`, `db_session`, `sample_track`.
-  Unit tests run against in-memory SQLite (`DATABASE_URL=sqlite:///:memory:`,
-  `CONFIG_PATH=/dev/null`).
-- Run: `pytest` (or `pytest tests/test_x.py -k pattern` for a subset).
+  files `test_*.py`). Unit tests run against in-memory SQLite (`DATABASE_URL=sqlite:///:memory:`).
 - Add a test for every new behaviour/bug fix; keep the existing suite green.
 
 ### 2.5 Docker / run workflow
 
 - Start: `docker compose up -d` · Logs: `docker compose logs -f app` · Stop: `docker compose down`
 - Rebuild after code changes: `docker compose build --no-cache && docker compose up -d`
-- Config: copy `.env.example` → `.env`; adjust `MUSIC_ROOT`, `DOWNLOADS_DIR`, ports.
-- UI: `http://localhost:5000`.
 - `entrypoint.sh` orchestrates: wait for PostgreSQL → Alembic migrations → schema
-  bootstrap → queue worker → web server (hypercorn). Do not duplicate migration logic
-  in `app.py`.
-- Frontend is server-rendered Jinja2 + Bootstrap (dark); `npm run build` (esbuild) is
-  only for bundled `dist` assets — not required for most changes.
+  bootstrap → queue worker → web server (hypercorn).
 
 ### 2.6 Migrations (schema changes)
 
-- Schema changes go through **Alembic**: revisions live in `migrations/versions/`
-  (numbered `001_…`, `002_…`, `003_…`). Create the next revision, e.g.
-  `python -m alembic revision -m "<name>"` (`prepend_sys_path` is already `.`), then
-  write `upgrade()`/`downgrade()`.
-- The app supports both migration-built and `db/bootstrap.py`-built schemas
-  (`entrypoint.sh` runs `alembic upgrade head`, falling back to `stamp head`). New
-  tables/columns must exist in **both** the migration and `db/schema.py`/bootstrap so
-  fresh and existing installs stay in sync.
-- Re-run migrations and the test suite after any schema change.
-
-### 2.7 Approach
-
-1. **Orient** — read the relevant module(s) and docs first (`documentation/README.md`
-   index → `POPULARR_ARCHITECTURE.md` → `documentation/Services/`).
-2. **Plan** — choose the architecturally-correct place, even if it touches more files.
-3. **Implement** — follow existing patterns: module docstrings,
-   `from __future__ import annotations`, `logger = logging.getLogger(__name__)`,
-   typed signatures, `db_session()` context manager in repositories.
-4. **Config** — externalise behaviour to `helpers/settings.py` /
-   `helpers/config_helpers.py` and surface it in the Config page when user-facing.
-5. **Tests** — add/update tests, run `pytest`.
-6. **Docs** — update affected documentation and the Change Log.
-7. **Verify** — boot via Docker Compose when feasible.
-8. **Commit** — to `develop`, following the commit conventions below.
+- Schema changes go through **Alembic**: revisions live in `migrations/versions/`.
+- New tables/columns must exist in **both** the migration and `db/schema.py`/bootstrap.
 
 ---
 
-## 2) Repo + VS Code workflow (MANDATORY)
+## 3) Repo + VS Code workflow (MANDATORY)
 
 You always work in VS Code.
 
@@ -182,1376 +128,102 @@ You always work in VS Code.
 
 - Commit **only to `/develop`**.
 - Never commit to `main`/`master`.
-- If working tree is on a different branch, switch to `develop` before making changes.
-  - If `develop` doesn't exist locally: `git fetch origin && git checkout develop`
-- Each logical change produces at least one commit with a clear message.
 - Split multi-area changes into separate commits where sensible.
 
 ### Commit conventions (conventional-style)
 
+
 ```
+
 feat(api): add /api/artist/bio endpoint
 fix(popularity): correct z-score gate for compilation albums
 refactor(db): centralize track update queries in database_abstraction
 chore(config): add listenbrainz weight to config.yaml
-docs(agents): update RatingAgent with current popularity algorithm
+
 ```
 
 Include affected area (`api` / `ui` / `db` / `config` / `popularity` / `single`) in the subject.
 
 ---
 
-## 3) Non-negotiable product requirements
+## 4) Non-negotiable product requirements
 
-### 3.1 Config UX contract: `templates/pages/config.html` → `config.yaml`
+### 4.1 Config UX contract: `templates/pages/config.html` → `config.yaml`
 
 - **The Config page (`templates/pages/config.html`) is the source of truth** for all user-editable settings.
 - Saving the Config page must write to `config.yaml`.
 - Every new configurable option must appear in the Config page first.
-- Validate inputs and provide safe defaults.
-- Keep the UI mobile-friendly (responsive layout, accessible input sizing).
 
-### 3.2 Mobile web UI compatibility
-
-- Responsive layout; no hover-only interactions.
-- Touch-friendly controls, readable font sizes.
-- Avoid fixed-width tables; use stacked cards where needed.
-
-### 3.3 Metadata update fan-out (album → tracks)
+### 4.2 Metadata update fan-out (album → tracks)
 
 Any feature that updates track data must update **both**:
 1. The database record(s)
 2. The physical music file tags (via the `/track` file path)
 
-If an album-level update occurs, **all tracks in that album** must be updated individually — never only the album entity.
+If an album-level update occurs, **all tracks in that album** must be updated individually.
 
-### 3.4 Matching strategy: MBID-first
+### 4.3 Matching strategy: MBID-first
 
 - If an MBID exists in the DB → use it for lookup.
 - Only fall back to name/artist text search when MBID is missing or invalid.
-- Cache MBID-based lookups where appropriate.
 
-### 3.5 Database strategy: Postgres only
+### 4.4 Database strategy: Postgres only
 
-- All DB I/O goes through `db/engine.py` (`db_session`) and `db/repositories/` (the ONLY writer layer). Do not open raw sessions and write from services/routes.
-- Never scatter raw SQL across unrelated modules.
-- Use PostgreSQL-style placeholders (`%s`) and PostgreSQL-safe SQL only.
-- Do not add or retain SQLite-specific query branches (`?` placeholders, `PRAGMA`, `INSERT OR REPLACE`, sqlite3-specific SQL).
-- If PostgreSQL is unavailable, fail fast and log a clear error; do not redirect reads/writes to SQLite.
+- All DB I/O goes through short-lived context-manager transactions (`with db_session() as session:`) via `db/engine.py` and `db/repositories/`. 
+- Never scatter raw SQL across unrelated modules. Use PostgreSQL-safe SQL and `%s` or named parameters.
 
 ---
 
-## 4) Popularity scanning — exact implementation
+## 5) Popularity scanning & Single detection implementation
 
-**Entry point**: `services/popularity/scanner.py::popularity_scan()` (canonical scanner; the root-level `popularity.py` referenced in older notes no longer exists — it lives under `services/popularity/` now, e.g. `popularity_math.py`, `popularity_stats_service.py`, `popularity_zscore.py`).
-
-### 4.1 Weighted multi-source scoring
-
-Popularity is a **0–100 normalized weighted score** combining four sources:
-
-| Source | Default weight | Signal used | Normalization |
-|--------|---------------|-------------|---------------|
-| Last.fm | **30%** | `scrobbles × 0.7 + listeners × 0.3` | min-max to 0–100 |
-| ListenBrainz | **35%** | `listen_count × 0.6 + user_count × 0.4` | min-max to 0–100 |
-| Age/recency | **25%** | Track age bonus: <1 yr → +50, 1–3 yr → +40, 3+ yr → +5–10 | 0–100 |
-| Spotify *(deprecated)* | 10% | `track.popularity` (direct 0–100) | already 0–100 |
-
-```python
-# Final calculation (services/popularity/popularity_math.py::calculate_combined_popularity_score)
-weighted_popularity = sum(score * weight for score, weight in zip(scores, weights)) / sum(weights)
-# Clamped to [0, 100]
-```
-
-Weights are configurable in `config.yaml` under the `weights:` key.
-
-### 4.2 Dynamic weight adjustment
-
-Dynamic weight adjustment (`services/popularity/`) adjusts weights per-track based on the track's z-score relative to the artist catalog:
-
-- **z-score > artist_median + stddev** → boost Last.fm weight (community signal takes precedence)
-- **z-score < artist_median − stddev** → boost Spotify weight (catches breakthrough hits)
-
-### 4.3 Artist-level statistics
-
-`calculate_artist_popularity_stats()` (in `services/popularity/popularity_stats_service.py`) computes per-artist:
-
-| Stat | Purpose |
-|------|---------|
-| `mean_popularity` | Average score across artist catalog |
-| `median_popularity` | Robust central tendency |
-| `stddev_popularity` | Standard deviation |
-| `mad_popularity` | Median Absolute Deviation — used for outlier-robust z-scores |
-
-`should_exclude_track_from_stats()` (in `services/catalog/album_classification_service.py`) removes live, remix, and alternate versions before computing these stats.
-
-### 4.4 Mean popularity adjustment (artist-context scoring)
-
-When artist statistics are available, apply mean-adjusted scoring (artist-context z-score normalization):
-
-- Normalize by artist context using z-score:
-  - `z = (track_score - artist_mean) / artist_stddev`
-- Convert to normalized 0-100 style confidence score:
-  - `adjusted = 50 + (z * 16.7)`
-- Apply pre-2005 time-confidence decay:
-  - Reduce confidence by 4% per year before 2005
-  - Floor multiplier at `0.2`
-- First scan can use weighted score only; subsequent scans should use adjusted score once `artist_stats` exists.
-- If artist stats are missing or invalid, gracefully fall back to the weighted score.
+- Popularity is a **0–100 normalized weighted score** combining Last.fm, ListenBrainz, and Age (Spotify deprecated).
+- Single detection follows an **8-stage algorithm** managed under `services/enrichment/single_detection_service.py` and `services/popularity/`.
+- Star ratings (1–5) combine **popularity z-scores** with **single detection metadata**.
 
 ---
 
-## 5) Single detection — exact implementation
-
-**Primary entry point**: `services/enrichment/single_detection_service.py::detect_single_for_track()`  
-(Related legacy names — `single_detection_enhanced.py`, `single_detector.py`, `popularity.py::detect_single_for_track()` — are from the old layout and are now legacy shims or gone; the canonical implementation lives under `services/enrichment/`.)
-
-### 5.1 Eight-stage detection algorithm
-
-| Stage | Logic |
-|-------|-------|
-| **1 — Pre-filter** | Exclude titles containing: `live`, `acoustic`, `remix`, `demo`, `karaoke`, `instrumental`, `unplugged`. **"remastered" is NOT excluded** — remastered versions are same performances. |
-| **2 — Album popularity gate** | Track must be in top-3 OR above `album_median − 0.5×stddev`. Skipped for compilations/greatest hits. |
-| **3 — Metadata APIs** | Query enabled sources: Discogs (video track / dedicated single release), MusicBrainz (release type = single), Last.fm (single flag), Spotify *(deprecated)*. |
-| **4 — Version count** | 1–2 global versions → likely single. 3+ versions → likely album track with variants. |
-| **5 — Z-score gate** | Medium confidence: z-score ≥ 0.6. High confidence: z-score ≥ 1.0. Remastered-only: bypass z-score, use metadata only. |
-| **6 — ISRC matching** | Match track across databases via ISRC. Detects different versions of same performance. |
-| **7 — Title/duration matching** | Fuzzy title match ≥ 92% similarity + duration ±2 seconds. Filters alternate versions. |
-| **8 — Compilation handling** | Greatest hits / compilations: bypass negative z-score requirement, use metadata sources instead. |
-
-### 5.2 Confidence levels
-
-| Level | Z-score | Source requirement |
-|-------|---------|-------------------|
-| `high` | ≥ 1.0 | 1+ Discogs **or** 2+ medium sources |
-| `medium` | ≥ 0.6 | 1–2 sources (Spotify/MB/Last.fm) or score-only |
-| `low` | < 0.6 | No metadata confirmation |
-| `user` | any | User manually toggled — highest priority, never overridden |
-
-### 5.3 Key single detection functions (CURRENT locations)
-
-| Function | File | Purpose |
-|----------|------|---------|
-| `detect_single_for_track()` | `services/enrichment/single_detection_service.py` | Canonical entry point |
-| Single-detection stages | `services/popularity/stages/` + `services/enrichment/` | Stage-wise algorithm (8-stage flow) |
-| Result persistence | `db/repositories/` + track update helpers | Persist to DB |
-
-### 5.4 DB fields written per track
-
-- `is_single` (bool)
-- `single_confidence` (`'user'`, `'high'`, `'medium'`, `'low'`)
-- `single_sources` (JSON list of confirming sources)
-- `is_canonical_title` (bool — not a live/remix title)
-- `title_similarity_to_base` (float 0–1)
-
-### 5.5 Compilation and greatest-hits treatment
-
-For compilations/greatest-hits albums, single detection and star assignment use special logic:
-
-- Do not exclude tracks solely for negative z-score in compilation contexts.
-- Prefer metadata-backed evidence (Discogs, MusicBrainz, Last.fm) over album-relative popularity.
-- Discogs confirmation remains highest confidence.
-- Compilation tracks may bypass normal album-median gating when metadata confirms single status.
-- In live album contexts, keep stricter z-score gating for star promotion even when metadata is present.
-
----
-
-## 6) Star rating algorithm — exact implementation
-
-**Location**: `services/popularity/` (star-band assignment + z-score gating; the root-level `popularity.py` no longer exists).  
-Star ratings (1–5) combine **popularity z-scores** with **single detection metadata**.
-
-### 6.1 Baseline assignment
-
-Albums are split into bands (quartiles / thirds / halves based on track count). Each band gets a baseline:
-
-- Top band → 4 stars
-- 2nd band → 3 stars
-- 3rd band → 2 stars
-- Bottom band → 1 star
-
-### 6.2 Five-star assignment rules (applied in priority order)
-
-```python
-# Priority 1: User-confirmed single
-if single_confidence == "user":
-    stars = 5
-
-# Priority 2: High-confidence detected single
-elif is_single and single_confidence == "high":
-    stars = 5
-
-# Priority 3: Z-score + metadata evidence gate
-elif medium_conf_count >= 2 or high_conf_source_count >= 1:
-    stars = 5  # Applies for z-score >= 0 or compilation bypass
-
-# Priority 4: Popularity outlier (no metadata, but extreme z-score)
-elif (stars < 5
-      and no_high_confidence_metadata
-      and track_zscore >= popularity_5star_z_threshold  # ~2.2
-      and not album_is_live):
-    stars = 5  # Recomputed each scan, NOT persisted
-
-# Fallback
-else:
-    stars = baseline_stars
-```
-
-**Eligible sources for counting**:
-- Medium confidence: MusicBrainz, Last.fm, Discogs
-- High confidence: **Discogs only** (most reliable single marker)
-
----
-
-## 7) API clients reference
+## 6) API clients & External service reference
 
 **Directory**: `api_clients/`
 
-| Module | Service | Key methods in this repo | Notes |
-|--------|---------|--------------------------|-------|
-| `lastfm.py` | Last.fm | `get_track_info()`, `search_track()`, `check_track_as_single()`, `get_track_temporal_data()`, `get_similar_artists()`, `get_track_tags()`, `get_artist_info()`, `get_artist_top_tags()`, `get_album_top_tags()`, `get_recommendations()` | API key required |
-| `musicbrainz.py` | MusicBrainz | `is_single()`, `is_single_by_artist_mbid()`, `get_genres()`, `get_suggested_mbid()`, `get_artist_country()`, `get_artist_members()`, `has_video_relationship()`, `appears_on_various_artists()`, `get_composers_for_track()`, `lookup_and_save_artist_mbid()` | MBID-first strategy |
-| `audiodb_and_listenbrainz.py` | ListenBrainz + AudioDB | `get_listen_count()`, `_get_user_listen_count()`, `get_recording_popularity_batch()`, `get_recording_tags()`, `get_artist_tags()`, `get_recommendations()`, `get_weekly_jams()`, `get_weekly_exploration()`, `get_similar_artists()`, `love_track()`, `unlove_track()`, `get_loved_tracks()`, `get_artist_genres()` | ListenBrainz + AudioDB client wrappers |
-| `discogs.py` | Discogs | `get_comprehensive_metadata()`, `search_releases()`, `is_single()`, `has_official_video()`, `get_genres()`, `get_release()`, `get_release_genres_by_id()`, `get_artist_biography()`, `get_artist_biography_by_id()` | Token required; 0.35 s/req rate limit |
-| `navidrome.py` | Navidrome/Subsonic | `fetch_all_playlists()`, `fetch_playlist()`, `fetch_artist_albums()`, `fetch_album_tracks()`, `get_song()`, `get_starred_items()`, `star_track()`, `unstar_track()`, `build_artist_index()`, `start_scan()`, `get_scan_status()`, `get_library_stats()` | Subsonic-compatible API |
-| `slskd.py` | Soulseek (slskd) | `search()`, `get_results()`, `download_file()`, `download_files_batch()`, `get_active_downloads()`, `cancel_search()`, `cancel_download()`, `clear_completed_downloads()` | Policy-gated in config |
-| `coverartarchive.py` | Cover Art Archive | `get_album_art()` style helpers | No key required |
-
-**Shared HTTP infrastructure** (`api_clients/__init__.py`):
-- `session` — global session with retry + timeout handling
-- `timeout_safe_session` — strict timeout variant
-- MusicBrainz: respects `Retry-After` header, requires `User-Agent`
-- Discogs: enforces 0.35 s minimum between requests
-
-### 7.1 External API command catalog (use as authoritative method families)
-
-When implementing or extending integrations, use these official API method families and endpoints.
-
-#### Last.fm (`ws.audioscrobbler.com/2.0`)
-
-- `track.getInfo`
-- `track.search`
-- `track.getTopTags`
-- `album.getInfo`
-- `album.getTopTags`
-- `artist.getInfo`
-- `artist.getTopTags`
-- `artist.getSimilar`
-- `artist.getTopTracks`
-- `user.getLovedTracks`
-- `user.getTopTracks`
-- `user.getTopArtists`
-- `tag.getTopTracks`
-- `tag.getTopArtists`
-- `chart.getTopTracks`
-
-#### MusicBrainz WS2 (`musicbrainz.org/ws/2`)
-
-- Core entities: `/artist`, `/recording`, `/release`, `/release-group`, `/work`, `/label`, `/area`, `/genre`, `/tag`, `/url`, `/isrc`, `/collection`, `/event`, `/place`, `/series`
-- Common includes: `inc=artist-credits+recordings+releases+release-groups+isrcs+tags+genres+aliases+relations`
-- Search syntax: Lucene query params (`query=`) with MBID-first lookup whenever MBID exists.
-
-#### ListenBrainz (`api.listenbrainz.org/1`)
-
-- `/validate-token`
-- `/submit-listens`
-- `/delete-listen`
-- `/feedback/recording-feedback`
-- `/recording/{mbid}/feedback`
-- `/user/{user}/listens`
-- `/user/{user}/playing-now`
-- `/user/{user}/recommendations`
-- `/stats/user/{user}/recordings`
-- `/stats/user/{user}/artists`
-- `/stats/user/{user}/releases`
-- `/popularity/recording`
-- `/explore/artist/{mbid}`
-
-#### Discogs (`api.discogs.com`)
-
-- `/database/search`
-- `/releases/{id}`
-- `/masters/{id}`
-- `/artists/{id}`
-- `/labels/{id}`
-- `/users/{username}/collection/folders`
-- `/users/{username}/collection/folders/{folder_id}/releases`
-- `/marketplace/listings`
-- `/marketplace/price_suggestions/{release_id}`
-
-#### slskd API
-
-- `/searches` (create search)
-- `/searches/{search_id}` (poll status)
-- `/searches/{search_id}/responses` (search results)
-- `/transfers/downloads`
-- `/transfers/downloads/{username}`
-- `/transfers/downloads/{username}/{transfer_id}`
-- `/transfers/downloads/all/completed`
-
-### 7.2 Queue match UX rules
-
-- Folder queue matching must follow the same flow as single-item matching.
-- Show `Current Queue Releases` first, with optional online MusicBrainz search collapsed below.
-- Folder apply action must use one batch API call and merge all folder queue rows to the selected release.
-- Batch merge must keep queue rows under a shared `import_group` (`mbid_<release_mbid>`).
-
-### 7.3 Soulseek reliability rules
-
-- For cancel/retry, use slskd transfer identifiers (`username + transfer_id`), not filename URLs.
-- If only filename is known, resolve `transfer_id` from `get_active_downloads()` before cancel.
-- Polling loops must exit as soon as search state is complete, even when zero results are returned.
-- Keep Soulseek format policy consistent across automatic queue flows (`.mp3`/`.flac` only unless explicitly configured otherwise).
-- Prefer shared helper logic for candidate scoring/filtering across queue and managed download paths.
-
-#### Navidrome / Subsonic REST (supported command families)
-
-- `ping`
-- `getMusicFolders`
-- `getIndexes`
-- `getArtists`
-- `getArtist`
-- `getAlbum`
-- `getSong`
-- `stream`
-- `download`
-- `getCoverArt`
-- `search3`
-- `getPlaylists`
-- `getPlaylist`
-- `createPlaylist`
-- `updatePlaylist`
-- `star`
-- `unstar`
-- `setRating`
-- `scrobble`
-- `startScan`
-- `getScanStatus`
-
-Rule: if a needed command exists in an official API, prefer implementing a dedicated wrapper in `api_clients/` before calling it from routes/services.
+| Module | Service | Key methods | Notes |
+|--------|---------|-------------|-------|
+| `lastfm.py` | Last.fm | `get_track_info()`, `search_track()`, etc. | API key required |
+| `musicbrainz.py` / `musicbrainz_http.py` | MusicBrainz | `search_recordings()`, `get_release()`, etc. | Use `get_shared_mb_client()` singleton |
+| `audiodb_and_listenbrainz.py` | ListenBrainz + AudioDB | `get_listen_count()`, `get_recommendations()`, etc. | Client wrappers |
+| `discogs.py` / `discogs_http.py` | Discogs | `get_comprehensive_metadata()`, etc. | Token required; 0.35 s/req rate limit |
+| `navidrome.py` | Navidrome/Subsonic | `fetch_all_playlists()`, `start_scan()`, etc. | Subsonic-compatible API |
+| `slskd.py` / `slskd_http.py` | Soulseek (slskd) | `search()`, `enqueue_download()`, etc. | Policy-gated in config |
 
 ---
 
-## 8) Full API endpoint reference
+## 7) Full API endpoint reference
 
-All routes are defined in `app.py`. Group them as follows when working on related features:
+All routes are defined across modular blueprints in `routes/` (registered via `helpers/app_bootstrap.py`). 
 
-### Pages (HTML)
-| Route | Purpose |
-|-------|---------|
-| `GET /` | Dashboard |
-| `GET /dashboard` | Dashboard (alias) |
-| `GET /artists` | Artist browser |
-| `GET /artist/<name>` | Artist detail page |
-| `GET /artist/<name>/corrections` | Artist metadata corrections |
-| `GET /album/<artist>/<album>` | Album detail |
-| `GET /album/<artist>/<album>/edit` | Album edit |
-| `GET /album/<artist>/<album>/rescan` | Trigger album rescan |
-| `GET /track/<track_id>` | Track detail |
-| `GET /track/<track_id>/edit` | Track edit |
-| `GET /search` | Search UI |
-| `GET /downloads` | Downloads page |
-| `GET /downloads/monitor` | Download monitor |
-| `GET /downloads-manager` | Downloads manager |
-| `GET /downloads-monitor` | Downloads monitor (alias) |
-| `GET /smart-playlists` | Smart playlists |
-| `GET /playlist-manager` | Playlist manager |
-| `GET /playlists/browse` | Browse playlists |
-| `GET /playlists/create/<playlist_type>` | Create playlist |
-| `GET /playlists/import` | Import playlist |
-| `GET /metadata-compare` | Metadata comparison tool |
-| `GET /config` | Config UI |
-| `GET /help` | Help page |
-| `GET /help/<doc_name>` | Help topic |
-| `GET /logs` | Log viewer |
-| `GET /logs/view` | Log file viewer |
-| `GET /bookmarks` | Bookmarks page |
-| `GET /login` | Login |
-| `GET /logout` | Logout |
-| `GET /setup` | Setup wizard |
-
-### Scan & status
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/scan/start` | GET | Start full scan |
-| `/scan/unified` | GET | Start unified scan |
-| `/scan/popularity` | GET | Start popularity scan |
-| `/scan/singles` | GET | Start singles scan |
-| `/scan/mp3-import` | GET | Start MP3 import scan |
-| `/scan/navidrome` | GET | Trigger Navidrome sync |
-| `/scan/combined` | GET | Start combined scan |
-| `/scan/stop` | GET | Stop active scan |
-| `/scan/stop-navidrome` | GET | Stop Navidrome sync |
-| `/scan/stop-popularity` | GET | Stop popularity scan |
-| `/scan/stop-singles` | GET | Stop singles scan |
-| `/scan/stop-mp3-import` | GET | Stop MP3 import |
-| `/scan/stop-combined` | GET | Stop combined scan |
-| `/scan/stop-all` | GET | Stop all scans |
-| `/scan/clear-stuck` | GET | Clear stuck scan state |
-| `/scan/status` | GET | Current scan status |
-| `/api/scan/artist` | GET/POST | Scan single artist |
-| `/api/scan/from-artist` | GET/POST | Scan from artist |
-| `/api/scan-status` | GET | Full scan status |
-| `/api/scan-progress` | GET | Scan progress |
-| `/api/scan-logs` | GET | Scan log entries |
-| `/api/recent-scans` | GET | Recent scan history |
-| `/api/navidrome/scan/start` | POST | Trigger Navidrome library scan |
-| `/api/navidrome/scan/status` | GET | Navidrome scan status |
-
-### Artist API
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/api/search` | GET | Search artists/albums/tracks |
-| `/api/artist/exists` | GET | Check if artist exists |
-| `/api/artist/missing-releases` | GET | Get missing releases list |
-| `/api/artist/cached-missing-releases` | GET | Get cached missing releases |
-| `/api/artist/import-release` | POST | Import a release |
-| `/api/artist/scan-all-missing-releases` | POST | Scan all missing releases |
-| `/api/artist/cleanup-false-positive-missing` | POST | Remove false positive missing |
-| `/api/artist/country` | GET | Get artist country |
-| `/api/artist/country/update` | POST | Update artist country |
-| `/api/artist/country/apply-as-genre` | POST | Set country as genre |
-| `/api/artist/bio` | GET | Get artist biography |
-| `/api/artist/singles-count` | GET | Singles count for artist |
-| `/api/artist/covered-by` | GET | Artists covered-by info |
-| `/api/artist/favourite` | POST | Toggle artist favourite |
-| `/api/artist/image` | GET | Get artist image |
-| `/api/artist/search-images` | GET | Search artist images |
-| `/api/artist/set-image` | POST | Set artist image |
-| `/api/artist/update-ids` | POST | Update artist IDs (MBID, etc.) |
-| `/api/artist/compilations` | GET | Get artist compilations |
-| `/api/artist/main-tracks` | GET | Get artist main tracks |
-| `/api/artist/stats` | GET | Artist statistics |
-| `/api/artist/<artist>/similar` | GET | Similar artists |
-| `/api/artist/add` | POST | Add new artist |
-| `/api/artist/apply-genres` | POST | Apply genres to artist |
-| `/api/duplicate-artists/<artist>` | GET | Find duplicate artists |
-| `/api/duplicate-artists/merge` | POST | Merge duplicate artists |
-| `/api/library/artists/similar` | GET | Library-wide similar artists |
-
-### Album API
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/api/album/update-ids` | POST | Update album IDs |
-| `/api/album/bulk-delete` | POST | Bulk delete albums |
-| `/api/album/bulk-tag` | POST | Bulk tag albums |
-| `/api/album/search-art` | GET | Search album art |
-| `/api/album/set-art` | POST | Set album art |
-| `/api/album/tracklist` | GET | Get album tracklist |
-| `/api/album/tracklist/match` | POST | Match tracklist |
-| `/api/album/musicbrainz` | GET | Get album MusicBrainz data |
-| `/api/album/discogs` | GET | Get album Discogs data |
-| `/api/album/spotify-genres` | GET | Get Spotify genres for album |
-| `/api/album/apply-mbid` | POST | Apply MBID to album |
-| `/api/album/apply-discogs-id` | POST | Apply Discogs ID |
-| `/api/album/majority-artist` | GET/POST | Majority artist for compilation |
-| `/api/album/apply-genres` | POST | Apply genres to album |
-| `/api/album/add-to-missing-releases` | POST | Flag album as missing release |
-| `/api/album/<artist>/<album>/rename-files` | POST | Rename album files |
-| `/api/album-art-placeholder` | GET | Placeholder art |
-| `/api/album-art/<artist>/<album>` | GET | Get album art |
-| `/api/album/favourite` | POST | Toggle album favourite |
-
-### Track API
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/api/track/<track_id>` | GET | Get track details |
-| `/api/track/<track_id>` | POST | Update track |
-| `/api/track/<track_id>/toggle-manual-single` | POST | Toggle manual single flag |
-| `/api/track/<track_id>/rename-file` | POST | Rename track file |
-| `/api/track/favourite` | POST | Toggle track favourite |
-| `/api/track/discogs` | GET | Get Discogs data for track |
-| `/api/track/musicbrainz` | GET | Get MusicBrainz data for track |
-| `/api/track/genre-recommendations` | GET | Genre recommendations for track |
-| `/api/track/update-metadata` | POST | Update track metadata |
-| `/track/<artist>/<album>/<track_id>/rescan` | GET | Rescan individual track |
-
-### Tags & genres
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/api/tags/track/<track_id>` | GET | Get track tags |
-| `/api/tags/track/<track_id>` | POST | Update track tags |
-| `/api/tags/album/<album>/<artist>` | GET | Get album tags |
-| `/api/tags/album/<album>/<artist>` | POST | Update album tags |
-| `/api/tags/album/<album>/<artist>/conflicts` | GET | Tag conflict detection |
-| `/api/tags/sync/<track_id>` | POST | Sync tags to file |
-| `/api/genres/track/<track_id>` | GET | Get track genres |
-| `/api/genres/album/<album>/<artist>` | GET | Get album genres |
-| `/api/genres/artist/<artist>` | GET | Get artist genres |
-| `/api/genres/remove` | POST | Remove genre |
-| `/api/genres/recent-updates` | GET | Recently updated genres |
-| `/api/debug/genres/<album>/<artist>` | GET | Debug genre data |
-
-### MusicBrainz API
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/api/musicbrainz/tags/track` | GET | Get MB tags for track |
-| `/api/musicbrainz/tags/album` | GET | Get MB tags for album |
-| `/api/musicbrainz/import/track` | POST | Import track from MB |
-| `/api/musicbrainz/import/album` | POST | Import album from MB |
-| `/api/musicbrainz/import/artist` | POST | Import artist from MB |
-| `/api/musicbrainz/tag/update` | POST | Update tags from MB |
-| `/api/musicbrainz/tag/write-to-mp3` | POST | Write MB tags to MP3 file |
-| `/api/musicbrainz/tags/batch-update` | POST | Batch update from MB |
-| `/api/musicbrainz/search` | GET | Search MusicBrainz |
-| `/api/musicbrainz/search/releases` | GET | Search MB releases |
-| `/api/musicbrainz/download` | POST | Queue MB release for download |
-| `/api/musicbrainz/downloads` | GET | List MB downloads |
-| `/api/musicbrainz/download/<id>/retry` | POST | Retry MB download |
-| `/api/musicbrainz/download/<id>` | DELETE | Delete MB download |
-| `/api/musicbrainz/release/<id>/start` | POST | Start MB release download |
-| `/api/musicbrainz/releases/active` | GET | Active MB release downloads |
-| `/api/musicbrainz/release/<id>` | GET | Get MB release |
-| `/api/musicbrainz/release/<id>/retry-match` | POST | Retry MB release match |
-| `/api/musicbrainz/release/<id>/finalize` | POST | Finalize MB release import |
-| `/api/musicbrainz/release/<id>/finalization-progress` | GET | Finalization progress |
-| `/api/musicbrainz/check-files` | GET | Check MB file status |
-| `/api/musicbrainz/check-finalization` | GET | Check finalization status |
-| `/api/metadata-compare/search-musicbrainz` | GET | Compare search via MB |
-| `/api/metadata-compare/accept-navidrome` | POST | Accept Navidrome metadata |
-| `/api/metadata-compare/apply-musicbrainz` | POST | Apply MB metadata |
-
-### Last.fm & ListenBrainz
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/api/lastfm/sync/now` | POST | Force Last.fm sync |
-| `/api/lastfm/recommendations` | GET | Last.fm recommendations |
-| `/api/lastfm/create-playlist` | POST | Create playlist from Last.fm recs |
-| `/api/listenbrainz/sync/now` | POST | Force ListenBrainz sync |
-| `/api/listenbrainz/recommendations` | GET | ListenBrainz recommendations |
-| `/api/listenbrainz/recommendations/<rec_type>` | GET | Typed recommendations |
-| `/api/listenbrainz/create-playlist` | POST | Create playlist from LB recs |
-| `/api/listenbrainz/rss/sync` | POST | Sync ListenBrainz RSS |
-| `/api/listenbrainz/rss/playlists` | GET | LB RSS playlists |
-| `/api/listenbrainz/rss/sync-status` | GET | RSS sync status |
-| `/api/recommended-playlists` | GET | All recommended playlists |
-
-### Downloads & queue
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/api/queue/add` | POST | Add item to download queue |
-| `/api/queue/add-batch` | POST | Batch add to queue |
-| `/api/queue/status` | GET | Queue status |
-| `/api/queue/imported` | GET | Imported items |
-| `/api/queue/<id>/update` | POST | Update queue item |
-| `/api/queue/<id>/delete` | DELETE | Delete queue item |
-| `/api/queue/<id>/organize` | POST | Organize queue item |
-| `/api/queue/<id>/send` | POST | Send item to processor |
-| `/api/queue/<id>/apply-mbid-match` | POST | Apply MBID match to queue item |
-| `/api/queue/<id>/reset-match` | POST | Reset queue item match |
-| `/api/queue/<id>/requeue` | POST | Re-queue failed item |
-| `/api/queue/requeue-all-unmatched` | POST | Re-queue all unmatched |
-| `/api/queue/update-album-mbid` | POST | Update album MBID for queue |
-| `/api/queue/release/<release_id>` | GET | Queue items for release |
-| `/api/queue/releases/status` | GET | Release queue status |
-| `/api/queue/organize-group` | POST | Organize queue group |
-| `/api/queue/cleanup-copied` | POST | Cleanup copied items |
-| `/api/queue/folder/delete` | POST | Delete queue folder |
-| `/api/queue/clear` | POST | Clear queue |
-| `/api/queue/retry-all-failed` | POST | Retry all failed items |
-| `/api/queue/cleanup` | POST | Run queue cleanup |
-| `/api/queue/move-to-music/<id>` | POST | Move item to music library |
-| `/api/queue/events` | GET | Queue event log |
-| `/api/queue-processor/status` | GET | Queue processor status |
-| `/api/queue-processor/restart` | POST | Restart queue processor |
-
-### Soulseek (slskd) — policy-gated
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/api/slskd/search` | POST | Search Soulseek |
-| `/api/slskd/search/<search_id>` | GET | Get search results |
-| `/api/slskd/search-results/<download_id>` | GET | Search results for download |
-| `/api/slskd/search-again` | POST | Re-run search |
-| `/api/slskd/search-again/<download_id>` | POST | Re-run search for download |
-| `/api/slskd/download` | POST | Start download |
-| `/api/slskd/download-single` | POST | Download single file |
-| `/api/slskd/download-file` | POST | Download specific file |
-| `/api/slskd/cancel` | POST | Cancel download |
-| `/api/slskd/retry` | POST | Retry download |
-| `/api/slskd/status` | GET | slskd connection status |
-| `/downloads/search/<source>` | GET | Browse download search page |
-| `/downloads/discover/<category>` | GET | Browse discover page |
-
-### qBittorrent — policy-gated
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/api/qbittorrent/search` | POST | Search via qBittorrent |
-| `/api/qbittorrent/add` | POST | Add torrent |
-| `/api/qbittorrent/force-start` | POST | Force start torrent |
-| `/api/qbittorrent/stop` | POST | Stop torrent |
-| `/api/qbittorrent/status` | GET | qBittorrent status |
-
-### Downloads folder management
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/api/downloads/scan` | GET/POST | Scan downloads folder |
-| `/api/downloads/scan-progress` | GET | Scan progress |
-| `/api/downloads/folder-groups` | GET | List folder groups |
-| `/api/downloads/grouped-folders` | GET | Grouped folder view |
-| `/api/downloads/unmatched-folders` | GET | Passive disk folders (Matched Folders section) |
-| `/api/downloads/folder/<path>` | GET | Folder details |
-| `/api/downloads/folder/<path>/cancel` | POST | Cancel folder |
-| `/api/downloads/folder/<path>/match-musicbrainz` | POST | Match folder to MB |
-| `/api/downloads/folder/<path>/auto-match` | POST | Auto-match folder |
-| `/api/downloads/folder/<path>/duplicates` | GET | Folder duplicates |
-| `/api/downloads/folder/<path>/organize` | POST | Organize folder |
-| `/api/downloads/folder/match` | POST | Phase 2 (confirm) — tag/format/move folder to library |
-| `/api/downloads/folder/associate` | POST | Phase 1 — record folder→release MBID, NO file movement |
-| `/api/downloads/confirm-match` | POST | Phase 2 alias — confirm an associated folder (tag → path → move → cleanup) |
-| `/api/downloads/folder/delete` | POST | Delete a disk folder (safety-railed) |
-| `/api/downloads/folder-status` | GET | Folder status overview |
-| `/api/downloads/folder-duplicates` | GET | All folder duplicates |
-| `/api/downloads/folder-merge` | POST | Merge duplicate folders |
-| `/api/downloads/track/<idx>/move` | POST | Move specific track |
-| `/api/downloads/process-albums` | POST | Process album downloads |
-| `/api/downloads/albums/use-existing` | POST | Use existing album match |
-| `/api/downloads/albums/apply-match` | POST | Apply album match |
-| `/api/downloads/release-tracks` | GET | Get release tracks |
-| `/api/downloads/release/<source>/<id>/tracks` | GET | Release tracks by source |
-| `/api/downloads/merge-folders` | POST | Merge folders |
-| `/api/downloads/process` | POST | Process all downloads |
-| `/api/downloads/process-one` | POST | Process single download |
-| `/api/downloads/process-retry` | POST | Retry processing |
-| `/api/downloads/queue` | GET | Downloads queue (active search/download items ONLY — disk folders excluded) |
-| `/api/downloads/queue/grouped` | GET | Grouped queue view |
-| `/api/downloads/queue/batch-group` | POST | Batch group queue items |
-| `/api/downloads/queue/<id>` | GET/DELETE | Get/delete queue item |
-| `/api/downloads/clear-queue` | POST | Clear downloads queue |
-| `/api/downloads/retry-queue` | POST | Retry queue items |
-| `/api/downloads/verify-moved-files` | POST | Verify moved files |
-| `/api/downloads/discover` | GET | Discover new content |
-| `/api/downloads/scheduler/start` | POST | Start download scheduler |
-| `/api/downloads/scheduler/stop` | POST | Stop download scheduler |
-| `/api/downloads/scheduler/status` | GET | Scheduler status |
-| `/api/debug/downloads/queue-stats` | GET | Debug: queue statistics |
-
-### Playlists
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/api/navidrome/playlists` | GET | List Navidrome playlists |
-| `/api/navidrome/playlist/<id>` | GET | Get Navidrome playlist |
-| `/api/playlist/session` | GET | Current playlist session |
-| `/api/playlist/list` | GET | List all playlists |
-| `/api/playlist/load` | GET | Load playlist |
-| `/api/playlist/search-songs` | GET | Search songs for playlist |
-| `/api/playlist/create-custom` | POST | Create custom playlist |
-| `/api/playlist/import` | POST | Import playlist |
-| `/api/playlist/create` | POST | Create new playlist |
-| `/playlist/import` | GET | Playlist import page |
-| `/api/smartplaylist/create` | POST | Create smart playlist |
-| `/api/album/<artist>/<album>/track-recommendations` | GET | Track recommendations for album |
-
-### Compilations & corrections
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/api/compilations/import/track` | POST | Import track as compilation |
-| `/api/compilations/import/album` | POST | Import album as compilation |
-
-### Config, logs, system
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/config/env` | GET | Get environment config |
-| `/config/env` | POST | Update environment config |
-| `/config/save-json` | POST | Save config as JSON |
-| `/config/migrate_postgres` | POST | Migrate to Postgres |
-| `/api/stats` | GET | App-wide statistics |
-| `/api/track-count` | GET | Total track count |
-| `/api/unified-log` | GET | Unified log stream |
-| `/api/download-log/<log_type>` | GET | Download-specific log |
-| `/logs/stream` | GET | Server-sent event log stream |
-| `/api/scan-logs` | GET | Scan log entries |
-| `/api/database/cleanup-duplicates` | POST | Remove duplicate DB entries |
-| `/api/navidrome/import/pre-sync-artists` | POST | Pre-sync artists to Navidrome |
-| `/api/metadata` | GET | General metadata lookup |
-| `/api/album-art-placeholder` | GET | Default art placeholder |
-| `/debug/static` | GET | Debug static files |
-
-### Upcoming releases
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/api/upcoming-releases` | GET | List upcoming releases |
-| `/api/upcoming-releases/scrape` | POST | Scrape upcoming releases |
-| `/api/upcoming-releases/clear` | POST | Clear upcoming releases |
-| `/api/upcoming-releases/search-musicbrainz` | POST | Search MB for upcoming |
-| `/api/upcoming-releases/search-discogs` | POST | Search Discogs for upcoming |
-| `/api/upcoming-releases/search` | GET | Search upcoming releases |
-
-### Bookmarks
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/api/bookmarks` | GET | List bookmarks |
-| `/api/bookmarks` | POST | Create bookmark |
-| `/api/bookmarks/<id>` | DELETE | Delete bookmark |
-
-### Playlist downloads
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/api/playlist-downloads/create` | POST | Create playlist download session |
-| `/api/playlist-downloads/<id>` | GET | Get session status |
-| `/api/playlist-downloads/<id>/cancel` | POST | Cancel session |
-| `/api/playlist-downloads` | GET | List all sessions |
+### Core Blueprint Routing Areas
+- **`ui_routes.py`**: Web UI pages (Dashboard, Artists, Albums, Tracks, Downloads, Config, Logs, Setup)
+- **`routes/artist_routes.py`**: Artist management, corrections, and missing releases (`/api/artist/...`)
+- **`routes/album_routes.py`**: Album tracklists, artwork, bulk tags, and MB/Discogs lookups (`/api/album/...`)
+- **`routes/track_routes.py`**: Track CRUD, audio streaming, tagging, lyrics, and credits (`/api/track/...`)
+- **`routes/musicbrainz_routes.py`**: Search, import, downloads, and MBID linking (`/api/musicbrainz/...`)
+- **`routes/metadata_routes.py`**: Shadow table conflict resolution and release lookups (`/api/conflicts/...`)
+- **`routes/listenbrainz_routes.py`**: Last.fm, ListenBrainz, and weekly sync playlists (`/api/listenbrainz/...`, `/api/lastfm/...`)
+- **`routes/slskd_routes.py`**: Soulseek proxy search and download management (`/api/slskd/...`)
+- **`routes/misc_routes.py`**: Sandbox metrics, search, stats, artist country, duplicate cleanup, and Essentia models (`/api/...`)
 
 ---
 
-## 9) Database schema key tables
-
-| Table | Key fields | Purpose |
-|-------|-----------|---------|
-| `download_queue` | id, artist, title, status, source, priority, retry_count | Download queue items |
-| `queue_events` | queue_id, event_type, timestamp, details | Download audit trail |
-| `folder_tracking` | folder_path, group_id, status | Downloads folder groups |
-| `folder_matches` | folder_path, release_mbid, release_title, artist, release_year, status | Two-phase folder-match association (phase 1 = Match, phase 2 = Confirm Match) |
-| `downloaded_files` | file_path, hash, artist, album, import_status | Completed downloads |
-| `musicbrainz_releases` | release_id, release_title, artist, monitoring_folder_path, status | Active MB releases with progress (drives the queue's folder groups) |
-
-Queue item `status` values: `queued` → `searching` → `downloading` → `moving` → `imported` / `failed`
-
-> ⚠️ **Strict queue vs. local-disk boundary**: `unmatched` / `discovered` are
-> PASSIVE local-disk states (the Matched Folders section). They must never be
-> treated as active queue statuses — `ACTIVE_QUEUE_STATUSES` excludes
-> `unmatched`, and `get_active_queue` also hard-filters `source IN
-> ('local','discovered')` so ambient disk folders can never bleed into the
-> active search/download queue.
-
-Queue processor similarity thresholds:
-- `_NAV_TITLE_SIMILARITY_THRESHOLD = 0.85` (85%)
-- `_NAV_ARTIST_SIMILARITY_THRESHOLD = 0.75` (75%)
-
----
-
-## 10) Configuration reference (`config.yaml`)
-
-```yaml
-navidrome:
-  base_url: "http://localhost:4533"
-  user: "admin"
-  pass: "password"
-
-weights:
-  spotify: 0.10       # DEPRECATED — redistribute to lastfm/listenbrainz
-  lastfm: 0.30
-  listenbrainz: 0.35
-  age: 0.25
-
-single_detection:
-  zscore_medium_threshold: 0.6
-  zscore_high_threshold: 1.0
-  standout_gap_z: 0.75
-
-features:
-  album_skip_days: 7
-  clamp_min: 0.75
-  clamp_max: 1.25
-  title_sim_threshold: 0.92
-  strict_spotify_matching: true
-  spotify_duration_tolerance: 2
-  use_lastfm_single: true
-  median_gate_strategy: "hard"
-
-api_integrations:
-  lastfm:
-    enabled: true
-    api_key: "..."
-  listenbrainz:
-    enabled: true
-  discogs:
-    enabled: true
-    token: "..."       # Required for single detection
-  musicbrainz:
-    enabled: true
-  audiodb:
-    enabled: true
-    api_key: "195003"  # Free public key
-
-downloads:
-  # User-configurable in the Config page (templates/pages/config.html, Downloads section);
-  # saving UI writes to config.yaml
-  folder: "/downloads/Music"
-  quality_filter:
-    enabled: true
-    reject_others: true
-    bitrate_tolerance: 5
-    priorities:
-      - format: "mp3"
-        bitrate_kbps: 320
-      - format: "flac"
-        bitrate_kbps: null
-
-watcher:
-  scan_interval: 30
-  navidrome_sync_wait: 600
-  auto_import_enabled: true
-  auto_popularity_scan: true
-
-slskd:
-  enabled: true
-  web_url: "http://localhost:5030"
-  api_key: ""
-
-qbittorrent:
-  enabled: false
-  web_url: "http://localhost:8080"
-  username: ""
-  password: ""
-
-database:
-  path: "/database/sptnr.db"
-  vacuum_on_start: false
-
-logging:
-  level: "INFO"
-  file: "/config/app.log"
-  console: true
-
-tags:
-  writer:
-    aliases: ["TWRT", "TOLY", "TXXX:WRITER", "WRITER", "LYRICIST", "©wrt"]
-```
-
----
-
-## 11) Code quality guardrails
-
-- Prefer small, testable functions.
-- Add/adjust tests where the repo supports it (`test_*.py` files).
-- Keep endpoints backward compatible unless explicitly asked for breaking changes.
-- Update documentation/comments when behavior changes.
-- Respect rate limits: MusicBrainz (`Retry-After`), Discogs (0.35 s/req).
-- Only store data needed for app features — avoid duplicating large payloads.
-
-### Compliance / download policy
-
-Download integrations (slskd, qBittorrent) are **policy-gated** — only enabled via explicit `enabled: true` in `config.yaml`. Features must:
-- Only support workflows for content the user has rights to access.
-- Never implement features intended to facilitate copyright infringement.
-- Keep download logic modular and gated.
-
----
-
-## 12) What to do when given a task
-
-1. Inspect the relevant modules using the codebase structure above.
-2. Implement in the smallest coherent steps.
-3. Run available checks/tests (`test_*.py`).
-4. Commit to `/develop` with a clear conventional message.
-
-### Key module locations (CURRENT layout — matches the refactored codebase)
-
-| Concern | Files |
-|---------|-------|
-| Popularity scoring | `services/popularity/` (`popularity_math.py`, `popularity_stats_service.py`, `popularity_zscore.py`, `scoring.py` legacy shim) |
-| Single detection | `services/enrichment/single_detection_service.py` (canonical `detect_single_for_track`); `single_detection_enhanced.py` / `single_detector.py` are legacy shims |
-| Compilation handling | `services/library/compilation_manager.py` (or `artist_identity.py`), `merge_duplicate_artists.py` |
-| Download queue orchestration | `services/queue/queue_orchestrator.py`, `queue_processing_service.py`, `queue_scoring.py`, `queue_matching_service.py`, `queue_worker.py` |
-| Download queue state | `services/downloads/download_queue_service.py`, `download_processing_service.py`, `download_retry_service.py` |
-| Download organization | `services/downloads/download_organize_service.py`, `download_organize_helpers.py`, `download_verification_service.py` |
-| Download folder matching | `services/downloads/download_folder_service.py` (`associate_folder_to_release`, `match_folder_to_release` = confirm), `download_matching_service.py`, `match_engine.py`, `match_orchestrator.py` |
-| Folder-match association (two-phase) | `db/repositories/folder_match_repository.py` (upsert/get/all/delete on `folder_matches`) |
-| Download monitoring/watcher | `services/downloads/download_watcher_service.py`, `download_completion_service.py`, `download_scan_service.py`, `download_scheduler_service.py` |
-| API clients | `api_clients/` (HTTP only) |
-| DB abstraction | `db/engine.py` (`db_session`, engine), `db/repositories/` (writes), `db/schema.py`, `db/bootstrap.py` |
-| Database implementation | `db/`, `migrations/` |
-| App bootstrap/routes | `app.py` (minimal), `helpers/app_bootstrap.py` (registers all blueprints) |
-| Config UI + templates | `templates/pages/config.html`, `helpers/config_helpers.py`, `helpers/settings.py` |
-| Static/UI assets | `static/` (`js/`, `css/`) |
-| Queue/downloads routes | `routes/downloads.py`, `routes/queue/` (`matching_routes.py`, `processing_routes.py`, `cleanup_routes.py`, `diagnostics_routes.py`) |
-| MusicBrainz flow | `routes/musicbrainz_routes.py`, `helpers/musicbrainz_helpers.py`, `api_clients/musicbrainz.py` + `musicbrainz_http.py` |
-| Config | `config.yaml` (via `helpers/config_helpers.py` getters / `helpers/settings.py`), Config page `templates/pages/config.html` |
-| Tag writing | `services/metadata/tag_file_service.py` (`update_file_metadata`) |
-| Watcher | `services/downloads/download_watcher_service.py`, `downloads_watcher` legacy in `old_system/` |
-
-> ⚠️ **Template layout is namespaced, NOT flat.** Templates live under `templates/pages/` (one file per route, e.g. `templates/pages/downloads/manager.html`, `monitor.html`, `queue.html`), `templates/components/` (reusable partials), `templates/layouts/` and `templates/components/modals/`. Do NOT look for `templates/downloads.html` — it is `templates/pages/downloads/monitor.html`. Frontend JS is split by page under `static/js/` (`downloads.js`, `downloads_page.js`, `monitor.js`, `musicbrainz-folder-groups.js`, `upcoming_releases.js`).
-
----
-
-## 13) MusicBrainz search modal — canonical reference
-
-The MB release search is reused across artist, album, track, and downloads pages. Understanding its structure prevents regressions when touching any of those templates.
-
-### Shared component (preferred for new pages)
-
-| File | Purpose |
-|------|---------|
-| `templates/components/_musicbrainz_search_component.html` | **Canonical unified component** (search form + results container + selected-release panel + inline JS) — works inline or inside a modal. Exposes `performMbSearch()`, `clearMbSearch()`, `confirmReleaseSelection()`, `window.escapeHtml`. Uses `GET /api/musicbrainz/search-releases?q=…&type=…&limit=…` (free-text query). |
-| `templates/components/_musicbrainz_search_modal.html` | Legacy canonical modal HTML — include with `{% include %}` |
-| `templates/components/_musicbrainz_search_functions.html` | Legacy canonical JS (`searchMusicBrainzRelease`, `displayMusicBrainzResults`) — used by artist/album/track pages |
-
-### Legacy copy (downloads pages)
-
-`static/js/downloads.js` contains an older copy of `searchMusicBrainzRelease()` shared by the downloads pages. The downloads frontend is now split across `static/js/downloads.js`, `downloads_page.js`, `monitor.js` and `musicbrainz-folder-groups.js`. Do not duplicate the search function; fix it in place.
-
-### Required element IDs (legacy modal contract)
-
-Every page that opens the legacy modal must have **all** of these in its DOM:
-
-| Element ID | Type | Purpose |
-|------------|------|---------|
-| `musicBrainzModal` | `div.modal` | Bootstrap modal root |
-| `mbSearchInfo` | `div.alert` | Info banner shown while searching |
-| `mbSearchArtist` | `strong` (child of `mbSearchInfo`) | Artist name text |
-| `mbSearchAlbum` | `strong` (child of `mbSearchInfo`) | Album / query text |
-| `mbSearchStatus` | `div` | Spinner / loading message |
-| `mbSearchError` | `div.alert-danger` | Error display |
-| `mbSearchResults` | `div` | Results injected here |
-
-> ⚠️ Missing `mbSearchArtist` / `mbSearchAlbum` inside `mbSearchInfo` causes the info banner to silently not render. The canonical structure inside `mbSearchInfo` is:
-> ```html
-> Searching <strong id="mbSearchArtist"></strong> — <strong id="mbSearchAlbum"></strong>
-> ```
-
-### Per-page notes (CURRENT paths)
-
-| Template | Modal source | JS source |
-|----------|-------------|-----------|
-| `templates/pages/downloads/queue.html` | Search component or inline | `downloads.js`, `downloads_page.js` |
-| `templates/pages/downloads/monitor.html` | Inline modal | `monitor.js`, `downloads.js`, `upcoming_releases.js` |
-| `templates/pages/downloads/manager.html` | Inline modal | `downloads.js`, `musicbrainz-folder-groups.js` |
-| Artist pages | `_musicbrainz_search_functions.html` logic | Inline `<script>` |
-| Other pages | `{% include '_musicbrainz_search_modal.html' %}` | `{% include '_musicbrainz_search_functions.html' %}` |
-
-### `searchMusicBrainzRelease()` signature (downloads.js variant)
-
-```js
-async function searchMusicBrainzRelease(event, artist, album, upcomingReleaseId)
-```
-
-- `event` — may be `null` (safe, null-guarded)
-- `upcomingReleaseId` — when set, stores context in `window.currentUpcomingReleaseContext` for post-search actions
-- Calls `POST /api/upcoming-releases/search-musicbrainz` then Discogs fallback
-- `displayMusicBrainzResults()` injects result cards into `mbSearchResults`
-
----
-
-## 14) Download queue — full lifecycle reference
-
-### 14.0 Strict queue vs. matched-folders separation (DO NOT BREAK)
-
-There are TWO completely separate surfaces in the downloads UI:
-
-- **Search / Download Queue (top)** — contains ONLY active search requests,
-  pending download tasks and live transfers. Scanning the local disk must
-  NEVER inject ambient folders into this queue.
-- **Matched Folders (bottom)** — the passive list of audio folders detected
-  on disk in the staging/downloads directory. These folders are passive:
-  they must NEVER auto-transfer or auto-move; all movement to `/music`
-  requires explicit manual confirmation.
-
-**Enforcement points (verified):**
-- `ACTIVE_QUEUE_STATUSES` (`services/queue/queue_constraints.py`) excludes
-  `unmatched`/`discovered` — they are passive disk states, not active queue
-  statuses.
-- `db/repositories/queue.py::get_active_queue` additionally hard-filters
-  `source IN ('local','discovered')` regardless of status (belt-and-suspenders).
-- `download_watcher_service.py` does NOT enqueue unmatched local files
-  (the `_queue_unmatched` injection was removed); ambient disk folders are
-  surfaced only by `get_unmatched_folders()`.
-
-#### Two-phase folder match (Match → Confirm Match)
-
-| Phase | Endpoint | What happens |
-|-------|----------|--------------|
-| **1 — Match / Change Match** | `POST /api/downloads/folder/associate` | Resolves the MB release, writes a row to `folder_matches` (folder_path + release_mbid + title/artist/year). **NO files are moved.** The folder stays fully passive on disk. |
-| **2 — Confirm Match** | `POST /api/downloads/confirm-match` (alias `folder/match`) | Runs the full migration pipeline: write MusicBrainz tags (`move_track_to_library`) → format path from config template → move to `/music` → delete staging folder → remove the `folder_matches` row. |
-
-- `get_unmatched_folders()` returns `match` + `release_mbid` per folder so the
-  UI renders two states: unmatched → `[Match] [Delete]`; associated →
-  `[Change Match] [Confirm Match] [Delete]`.
-- Frontend: `static/js/monitor.js` `openFolderMbSearch()` wires the shared MB
-  search modal (`_mbSearchCallback` + `populateMusicBrainzSearch`) to the
-  associate endpoint. `Confirm Match` calls the confirm endpoint.
-- Backend: `associate_folder_to_release()` (phase 1) + `match_folder_to_release()`
-  (phase 2/confirm) live in `services/downloads/download_folder_service.py`;
-  persistence in `db/repositories/folder_match_repository.py`.
-
-### 14.1 Queue flow phases (CURRENT)
-
-```
-add_to_queue()                          (db/repositories/queue.py / download_queue_service.py)
-  ↓ status = 'queued'
-queue worker / orchestrator picks up    (services/queue/queue_worker.py → queue_orchestrator.py)
-  ↓ status = 'searching'
-slskd search (api_clients/slskd.py / slskd_http.py)
-  ↓ results scored → best candidate selected (queue_scoring.py / queue_matching_service.py)
-  ↓ status = 'downloading'
-slskd download (file lands in staging folder)
-  ↓ status = 'downloading' → verified by download_completion_service.check_completed_downloads
-download_organize_helpers.move_track_to_library()
-  ↓ moves file to music library, writes tags
-  ↓ status = 'imported' / 'failed'
-```
-
-MusicBrainz direct import uses a parallel flow:
-`services/` MusicBrainz release manager / finalizer services.
-
-### 14.2 Module ownership (CURRENT)
-
-| Module | Owns |
-|--------|------|
-| `services/queue/queue_worker.py` | Standalone queue worker process (signal-driven wakeups) |
-| `services/queue/queue_orchestrator.py` | Main processing loop; search + download orchestration (`process_cycle`) |
-| `services/queue/queue_processing_service.py` | Per-item processing stages |
-| `services/queue/queue_scoring.py`, `queue_matching_service.py` | Candidate scoring + matching |
-| `services/downloads/download_queue_service.py` | Queue state + high-level orchestration (`run_auto_discovery_cycle`) |
-| `db/repositories/queue.py` | Queue CRUD: `add_to_queue`, `update_queue_item`, `mark_failed`, `get_queue_items` |
-| `services/downloads/download_retry_service.py` | Retry logic; manages `retry_count` and backoff |
-| `services/downloads/download_organize_service.py` / `download_organize_helpers.py` | Organizes staged files into library; writes ID3/Vorbis tags (`move_track_to_library`) |
-| `services/downloads/download_verification_service.py` | Hash verification before/after move |
-| `services/downloads/download_folder_service.py` | Groups download folder contents into logical releases; matched/unmatched folder listing; `associate_folder_to_release` + `match_folder_to_release` (two-phase match) |
-| `db/repositories/folder_match_repository.py` | `folder_matches` CRUD: `upsert_folder_match`, `get_folder_match`, `get_all_folder_matches`, `delete_folder_match` |
-| `services/downloads/download_completion_service.py` | Reconciles completed slskd transfers to files on disk and imports them (`check_completed_downloads`) |
-| `services/downloads/download_watcher_service.py` | Downloads-folder watcher (`scan_downloads_folder`) + auto-discovery cycle |
-
-### 14.3 `queue_events` event types
-
-Events are appended to the `queue_events` table; never modified in place. Consumers read them to reconstruct history.
-
-| `event_type` value | When emitted |
-|--------------------|-------------|
-| `search_started` | Slskd search request sent |
-| `search_completed` | Search returned results |
-| `search_failed` | Search timed out or errored |
-| `download_started` | File download initiated via slskd |
-| `download_completed` | File appears in staging area |
-| `download_failed` | Download error or timeout |
-| `import_started` | `organize_file()` called |
-| `import_completed` | File moved to library, DB updated |
-| `import_failed` | Organization/tagging error |
-| `retry_queued` | Item re-queued after failure |
-| `cancelled` | User or processor cancelled item |
-
-### 14.4 Candidate scoring / format priority
-
-`services/queue/queue_scoring.py` / `queue_processing_service.py` score slskd search results and select the best candidate using:
-
-- **Format priority**: FLAC > MP3 320 kbps > MP3 VBR/lower
-- **Similarity thresholds** (against Navidrome metadata):
-  - Title: `_NAV_TITLE_SIMILARITY_THRESHOLD = 0.85` (85 %)
-  - Artist: `_NAV_ARTIST_SIMILARITY_THRESHOLD = 0.75` (75 %)
-- **Duplicate guard**: `downloaded_files` hash lookup prevents re-downloading identical files
-- **`import_group`**: Field on `download_queue` rows — links items from the same folder/release batch (value: `mbid_<release_mbid>` when MB-matched, else a folder path hash)
-
-### 14.5 Queue API tracing endpoints
-
-| Route | Use |
-|-------|-----|
-| `GET /api/queue/status` | Current counts by status |
-| `GET /api/queue/events` | Full audit trail from `queue_events` |
-| `GET /api/queue-processor/status` | Whether processor loop is running |
-| `POST /api/queue-processor/restart` | Restart a stuck processor |
-| `GET /api/scan-logs` | Combined scan + queue log stream |
-
----
-
-## 15) Recent code adjustments (March 2026)
-
-These are implemented behaviors the agent must preserve in follow-up work.
-
-### 15.1 Postgres-only enforcement
-
-- Treat Postgres as the only supported runtime DB target for new work.
-- Do not introduce new SQLite fallback code paths in routes/services.
-- If touching legacy mixed-dialect sections, prefer tightening toward PostgreSQL-safe SQL and `%s` placeholders.
-
-### 15.2 Missing-release categorization hardening
-
-- Artist-page missing-release bucketing now uses normalized category/type derivation.
-- Preserve helper-based routing logic (`_normalize_release_category`, `_derive_release_bucket`) so albums are not misfiled as singles.
-
-### 15.3 Auto-queue rules for missing singles
-
-- Missing singles may be auto-queued for album artists when discovered by missing-release scans.
-- Auto-queue must skip any single already matched in collection by normalized title.
-- Keep release-type guardrails (single-only for this path) and duplicate-safe queue insertion semantics.
-
-### 15.4 Dashboard upcoming-release filter UX
-
-- Dashboard banner supports `All` / `Collection` / `Recommended` filtering.
-- Keep filter state wired to `/api/upcoming-releases` query params and preserve session-persisted selection.
-
----
-
-## 16) Tag & Genre Aggregation System (March 2026 implementation)
-
-**Location**: `services/enrichment/genre_aggregation_service.py` (`aggregate_genres`), collected during the popularity scan (`services/popularity/stages/track_stage.py`).
-
-### 16.1 Five-source genre/tag collection
-
-During popularity scan, the system collects tags from five sources:
-
-| Source | Collection method | Tag field | Notes |
-|--------|---|---|---|
-| **Spotify** | `popularity.py` → artist data | `spotify_genres` | Uses artist profile genres (deprecated API, legacy) |
-| **Last.fm** | `api_clients/lastfm.py::get_track_tags()` | `lastfm_tags` | User-contributed tags + top tags for track |
-| **ListenBrainz** | `api_clients/audiodb_and_listenbrainz.py::get_recording_tags()` | `listenbrainz_genres` | MB-based genre tags, user-contributed |
-| **Discogs** | `api_clients/discogs.py::get_genres()` | `discogs_genres` | Style and genre fields from release |
-| **MusicBrainz** | `api_clients/musicbrainz.py::get_genres()` | `musicbrainz_genres` | Genre and tag relationships from MB |
-
-### 16.2 Per-track storage and cache invalidation
-
-**Database columns added to `tracks` table**:
-- `spotify_genres` (JSON array)
-- `lastfm_tags` (JSON array)
-- `listenbrainz_genres` (JSON array)
-- `discogs_genres` (JSON array)
-- `musicbrainz_genres` (JSON array)
-- `tags_last_updated` (timestamp) — trigger rescan if older than configurable interval
-
-**Cache strategy**: 
-- First scan collects all source data
-- Subsequent scans only update if timestamp expired OR album changed
-- Tracks from new releases always re-collect (may have been tagged since last scan)
-
-### 16.3 Aggregation endpoints & display strategy
-
-| Endpoint | Purpose | Aggregation |
-|---|---|---|
-| `/api/genres/track/<track_id>` | Single track genres | Union of 5 sources with source attribution |
-| `/api/genres/album/<album>/<artist>` | Album-level genres | Top 25 genres per source, weighted by frequency |
-| `/api/genres/artist/<artist>` | Artist-level genres | Top 30 genres per source across entire catalog |
-
-**Display logic**:
-- Show source icons (Spotify, Last.fm, LB, Discogs, MB) for each genre
-- Click source icon to highlight only that source's genres
-- Use color coding: preferred source is primary color, others are muted
-- Genre frequency: show number of sources confirming each genre
-
-### 16.4 Special handling by album type
-
-- **Compilations/Various Artists**: Aggregate per-track genres only (don't aggregate across unrelated artists)
-- **Live albums**: De-weight studio genre tags from MusicBrainz, prioritize "live" tag detection
-- **Soundtracks**: Highlight composer tags from MusicBrainz, separate from main artist genres
-- **Remixes/Covers**: Flag source indicator (Discogs video track field preferred marker)
-
----
-
-## 17) Artist Identity System (March 2026 formalization)
-
-**Core files**: `artist_identity.py`, `merge_duplicate_artists.py`, `compilation_manager.py`
-
-### 17.1 Canonical artist resolution
-
-The system maintains multiple artist identity facets:
-
-| Field | Purpose | Priority order |
-|---|---|---|
-| `artist_mbid` | MusicBrainz ID for artist | 1st: use if available |
-| `artist_name` | Canonical name | Fallback to fuzzy match |
-| `album_artist` | Album-level artist credit | Can differ from track artist |
-| `compilation_artist` | Track artist on compilations | May be "Various Artists" |
-
-**Resolution algorithm**:
-1. If MBID exists → lookup canonical name from MB cache
-2. If name fuzzy-matches existing artist (>= 90%) → use existing record
-3. Otherwise → create new artist record with pending MBID lookup
-
-### 17.2 Main vs featured artist distinction
-
-**Main artist**: Primary artist name on release OR album artist field  
-**Featured artist**: Artist appearing in `feat. Artist Name` parenthetical
-
-**Signal sources**:
-- Navidrome `album_artist` field (main)
-- MusicBrainz `artist-credits` (main vs guest relationship type)
-- Discogs artist credits section
-- Last.fm artist tag
-
-**Storage**: Separate `is_main` boolean on artist identity records
-
-**Impact on processing**:
-- Auto-queue for missing singles: **album artists ONLY** (not featured-only artists)
-- Genre aggregation: Per artist (featured artists contribute genres to their own catalog)
-- Star ratings: Context applies to primary artist catalog only
-
-### 17.3 Compilation artist special handling
-
-For tracks on compilations (`album_type = 'compilation'`):
-
-| Field | Value | Behavior |
-|---|---|---|
-| `artist` | "Various Artists" | Album-level grouping |
-| `track_artist` | Actual artist | Per-track artist |
-| `compilation_artist` | "Various Artists" \| actual | Disambiguator for multiple releases with same artist |
-
-**Query optimization**: Separate index on `(compilation_artist, album)` for fast compilation aggregation
-
-### 17.4 Merge operations and impact
-
-`merge_duplicate_artists()` combines two artist records:
-
-1. **Pre-merge**:
-   - Validate: Both records same MBID OR fuzzy match >= 95%
-   - Count affected tracks/albums
-   - Log merge event
-
-2. **Merge execution**:
-   - Update all `tracks.artist` from old → new
-   - Update all `albums.album_artist` from old → new
-   - Copy MBID/metadata from higher-confidence source
-   - Preserve both artist names in alias field (if applicable)
-
-3. **Post-merge**:
-   - Recalculate `artist_stats` for merged artist (union of both catalogs)
-   - Re-trigger popularity scan for all affected tracks
-   - Emit event: `artist_merged` with before/after counts
-
----
-
-## 18) MusicBrainz Release Group Discovery & Auto-Queue (March 2026)
-
-**Entry point**: Daily background task + `/api/artist/missing-releases` endpoint
-
-### 18.1 Release group fetch workflow
-
-**Frequency**: Daily (configured via `navidrome.sync_wait` in config)  
-**Target**: Fetch recent releases for all collection artists (album artists only)
-
-**Process**:
-```
-For each album artist in collection:
-  → Query MB: all release groups for artist (last 2 years)
-  → For each release group:
-     ├─ Fetch full release data
-     ├─ Categorize: _normalize_release_category() → _derive_release_bucket()
-     ├─ Check local: Album MBID match + title similarity threshold
-     ├─ If missing: Save to missing_releases cache table
-     └─ If new single + auto-queue enabled:
-        ├─ Check if album artist in collection (not featured-only)
-        ├─ Load collection track titles
-        ├─ Try to match release title against existing
-        ├─ If NEW: add_to_queue() with auto-queue=true flag
-        └─ Emit event: autoqueue_initiated | autoqueue_skipped_exists
-```
-
-### 18.2 Release categorization system
-
-**Normalize category** (from MB API response):
-- Input: `primary_type` (Album, Single, EP, Other) + `secondary_types` array
-- Output: Canonical category (single | ep | album | compilation | live | soundtrack)
-
-**Derive bucket** (routing logic):
-- If primary_type == "Single" → **SINGLE** (highest confidence)
-- If secondary contains "Live" or title contains "Live" → **LIVE**
-- If secondary contains "Compilation" → **COMPILATION**
-- If secondary contains "Soundtrack" → **SOUNDTRACK**
-- If "EP" tag present → **EP**
-- Otherwise → **ALBUM**
-
-**Never misfile**: An album should not be routed to singles bucket if `primary_type == "Album"`
-
-### 18.3 Caching & deduplication
-
-**Table**: `missing_releases` (in-memory cache, reset daily)
-
-**Fields**:
-- `artist`, `release_mbid`, `title`
-- `release_type` (bucket)
-- `release_date`
-- `last_checked` (timestamp)
-- `auto_queue_eligible` (bool - album artist not featured-only)
-
-**Dedup logic**: Before adding to missing:
-- Check: Does MBID already exist in our collection?
-  - By album MBID → direct hit
-  - By fuzzy title match >= 90% → probable hit
-  - Otherwise → genuinely missing
-
----
-
-## 19) Playlist Download & Import System
-
-**Core files**: `playlist_matcher.py`, `playlist_recommendations.py`
-
-### 19.1 Source detection and track matching
-
-**Supported sources**:
-- **Spotify playlists** (via OAuth or URL parse)
-- **Last.fm playlists** (user top tracks, loved tracks)
-- **ListenBrainz playlists** (saved lists)
-- **M3U files** (local playlist files)
-- **Navidrome playlists** (existing playlists in library)
-
-**Track matching strategy**:
-1. Extract track metadata from source (artist, title, duration)
-2. Lookup in Navidrome library: fuzzy match (>= 85% title, >= 75% artist)
-3. If Navidrome match: use that track ID
-4. If no match: add_to_queue() for automated download
-5. Store match confidence + source in queue_match table
-
-### 19.2 Batch download queueing
-
-**Workflow**:
-1. User selects playlist source
-2. Extract track list (paginate for large playlists)
-3. For each track:
-   - Try Navidrome match (fast path)
-   - If miss: create queue item with `import_group = playlist_<source>_<id>`
-4. Return summary:
-   - X tracks already in library
-   - Y tracks queued for download
-   - Z tracks not found in any source (user skip recommendation)
-
-**Deduplication**: Check `downloaded_files` hash table to prevent re-importing same performance
-
-### 19.3 Import group handling
-
-All playlist items share `import_group = playlist_<source>_<date>`:
-- Groups items for batch processing
-- Organize all downloaded files to single destination initially
-- Apply post-import tagging (playlist genre, mood tags from source)
-- Supports partial re-download if some items fail
-
----
-
-## 20) Configuration & Customization Contract
-
-**File**: `config.yaml` (user-editable, persisted via the Config page UI at `templates/pages/config.html`)
-
-**Key customizable sections**:
-
-### Weights (popularity algorithm)
-```yaml
-weights:
-  lastfm: 0.30        # Last.fm scrobbles + listeners
-  listenbrainz: 0.35  # ListenBrainz user count
-  age: 0.25           # Release age recency bonus
-  spotify: 0.10       # DEPRECATED - will be removed March 2027
-```
-
-### Single Detection Thresholds
-```yaml
-single_detection:
-  zscore_medium_threshold: 0.6  # Medium confidence gate
-  zscore_high_threshold: 1.0    # High confidence gate
-  standout_gap_z: 0.75          # Outlier detection threshold
-```
-
-### API Integration Enables/Keys
-```yaml
-api_integrations:
-  lastfm:
-    enabled: true
-    api_key: "YOUR_KEY_HERE"
-  discogs:
-    enabled: true
-    token: "YOUR_TOKEN"  # REQUIRED for single detection accuracy
-  # etc for each API
-```
-
-### Quality Filtering for Downloads
-```yaml
-downloads:
-  quality_filter:
-    enabled: true
-    reject_others: true
-    bitrate_tolerance: 5  # +/- kbps allowed
-    priorities:
-      - format: "flac"
-        bitrate_kbps: null  # Accept any bitrate
-      - format: "mp3"
-        bitrate_kbps: 320   # Prefer 320 kbps
-```
-
-**Config validation**: All config changes validated via `config_helpers.py::validate_config()` before persistence
+## 8) Code quality guardrails & Best Practices
+
+- **Strict Session Management:** Always wrap DB queries/mutations inside `with db_session() as session:` to guarantee connection cleanup and transaction safety under concurrent worker loads.
+- **Shared Singletons:** Access external API clients via process-wide factories (e.g., `get_shared_mb_client()`) to ensure rate limiting and connection pooling apply globally.
+- **Structured Logs (`structlog`):** Write contextual logs with key-value attributes (`logger.info("Task finished", count=x, duration=d)`) rather than string interpolation.
+- **Type Safety:** Ensure every function signature is strictly typed using Python 3.10+ syntax (`-> tuple[dict[str, Any], int]`, etc.).
+- **Compliance / Download Download Policy:** Download integrations are policy-gated and must only support workflows for authorized user content.
 
 ---
 
 **End of RatingAgent Operational Manual**
+
+```

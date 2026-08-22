@@ -14,6 +14,9 @@ Three behaviours are pinned:
 3. ``resolve_music_file_path`` is the single shared resolver used by the
    album service paths (``apply_genres_to_album``, ``bulk_tag_tracks``,
    ``update_album_ids``) so file writes never fail on a stored path.
+4. ``_write_tags_atomic`` — tag writes go to a temp sibling + ``os.replace``
+   so a reader/streamer never sees a torn write, and a failed write leaves
+   the original file byte-for-byte untouched.
 """
 
 from __future__ import annotations
@@ -28,6 +31,85 @@ import pytest
 @contextmanager
 def _session_cm(session):
     yield session
+
+
+class TestAtomicTagWrites:
+    """Tag writes must be atomic: temp sibling + os.replace, original
+    preserved on failure."""
+
+    def test_success_replaces_original_and_cleans_temp(self, tmp_path, monkeypatch):
+        """A successful write lands on the original path and leaves no temp
+        sibling behind."""
+        from services.metadata import tag_file_service as tfs
+        import helpers.config_helpers as ch
+
+        mp3 = tmp_path / "track.mp3"
+        mp3.write_bytes(b"\xff\xfb\x90\x00" + b"\x00" * 500)
+        monkeypatch.setattr(ch, "get_tagging_config", lambda: {"write_tags_to_file": True})
+
+        written = {}
+
+        class _FakeAudio:
+            def __init__(self, path):
+                self._path = str(path)
+                self._tags = {}
+
+            def __contains__(self, field):
+                return field in self._tags
+
+            def __setitem__(self, field, values):
+                self._tags[field] = list(values)
+
+            def __delitem__(self, field):
+                self._tags.pop(field, None)
+
+            def add_tags(self):
+                pass
+
+            def save(self, **kw):
+                written["path"] = self._path
+
+        monkeypatch.setattr(tfs, "MP3", _FakeAudio)
+        monkeypatch.setattr(tfs, "ID3", _FakeAudio)
+        ok = tfs.update_file_tags(str(mp3), {"title": "Atomic"})
+        assert ok is True
+        # The writer mutated a TEMP sibling, not the original path.
+        assert written.get("path", "").endswith(".mp3")
+        assert written["path"] != str(mp3)
+        # os.replace moved the temp over the original.
+        assert mp3.exists()
+        # No .populartag_* temp files remain.
+        leftovers = [p.name for p in tmp_path.iterdir() if p.name.startswith(".populartag_")]
+        assert leftovers == []
+
+    def test_failed_write_preserves_original(self, tmp_path, monkeypatch):
+        """If the tag writer fails, the original file is untouched."""
+        from services.metadata import tag_file_service as tfs
+
+        mp3 = tmp_path / "track.mp3"
+        orig_bytes = b"\xff\xfb\x90\x00" + b"\x00" * 500
+        mp3.write_bytes(orig_bytes)
+
+        def _boom(*a, **kw):
+            return False
+
+        monkeypatch.setattr(tfs, "write_id3_tags", _boom)
+        ok = tfs.update_file_tags(str(mp3), {"title": "X"})
+        assert ok is False
+        assert mp3.read_bytes() == orig_bytes
+        leftovers = [p.name for p in tmp_path.iterdir() if p.name.startswith(".populartag_")]
+        assert leftovers == []
+
+    def test_unsupported_extension_returns_false(self, tmp_path, monkeypatch):
+        from services.metadata import tag_file_service as tfs
+        import helpers.config_helpers as ch
+
+        f = tmp_path / "track.wav"
+        f.write_bytes(b"data")
+        # Bypass the tagging-config gate so the format check is what's tested.
+        monkeypatch.setattr(ch, "get_tagging_config", lambda: {"write_tags_to_file": True})
+        ok = tfs.update_file_tags(str(f), {"title": "X"})
+        assert ok is False
 
 
 # ---------------------------------------------------------------------------
