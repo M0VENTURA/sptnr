@@ -7,12 +7,36 @@ Handles:
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
-from api_clients.listenbrainz import ListenBrainzClient, score_by_age
-from services.popularity.popularity_sources import get_aggregated_listenbrainz_popularity
-from services.popularity.popularity_matching import normalize_for_aggregation
+import structlog
 
+from api_clients.listenbrainz import ListenBrainzClient, score_by_age
+
+logger = structlog.get_logger(__name__)
+
+# =============================================================================
+# THREAD-SAFE CLIENT SINGLETON
+# =============================================================================
+
+_SHARED_LB_CLIENT: ListenBrainzClient | None = None
+_INIT_LOCK = threading.Lock()
+
+
+def get_shared_lb_client(enabled: bool = True) -> ListenBrainzClient:
+    """Return the process-wide shared ListenBrainzClient singleton."""
+    global _SHARED_LB_CLIENT
+    if _SHARED_LB_CLIENT is None:
+        with _INIT_LOCK:
+            if _SHARED_LB_CLIENT is None:
+                _SHARED_LB_CLIENT = ListenBrainzClient(enabled=enabled)
+    return _SHARED_LB_CLIENT
+
+
+# =============================================================================
+# MAIN SERVICE
+# =============================================================================
 
 def get_listenbrainz_score_for_recording(
     mbid: str,
@@ -21,7 +45,6 @@ def get_listenbrainz_score_for_recording(
     enabled: bool = True,
 ) -> dict[str, Any]:
     """Return ListenBrainz popularity with optional age weighting."""
-
     if not mbid:
         return {
             "recording_mbid": mbid,
@@ -31,9 +54,14 @@ def get_listenbrainz_score_for_recording(
             "days_since_release": None,
         }
 
-    client = ListenBrainzClient(enabled=enabled)
+    # ✅ Use the shared client to respect connection pooling and global rate limits
+    client = get_shared_lb_client(enabled=enabled)
 
-    data = client.get_recording_popularity(mbid)
+    try:
+        data = client.get_recording_popularity(mbid)
+    except Exception as exc:
+        logger.debug("ListenBrainz popularity fetch failed", recording_mbid=mbid, error=str(exc))
+        data = {}
 
     listen_count = int(data.get("total_listen_count") or 0)
 
@@ -49,5 +77,3 @@ def get_listenbrainz_score_for_recording(
         "age_score": age_score,
         "days_since_release": days_since,
     }
-
-    
