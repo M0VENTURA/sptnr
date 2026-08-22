@@ -9,25 +9,20 @@ Implements:
 5. EP handling and weighting
 6. Context-aware popularity weighting
 7. Normalisation order (7-step pipeline)
-
-All popularity and star rating calculations MUST follow this order:
-1. Resolve identity
-2. Merge relevant popularity data
-3. Apply EP and guest weighting
-4. Compute album medians
-5. Compute artist means and standard deviations
-6. Calculate z-scores and star ratings
-7. Store results
 """
 
 from __future__ import annotations
 
-import logging
-from dataclasses import dataclass, field
-from statistics import mean, median, stdev
+from dataclasses import dataclass
+from statistics import median
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+from sqlalchemy import text
+
+from db.engine import db_session
+
+logger = structlog.get_logger(__name__)
 
 # ── Common artist aliases for normalisation ───────────────────────────────
 
@@ -71,10 +66,8 @@ class ArtistIdentityResolver:
         if not name:
             return ""
         name = name.lower().strip()
-        # Strip featured-artist suffixes for comparison
         for sep in (" feat.", " featuring ", " ft.", " ft "):
             name = name.split(sep)[0].strip()
-        # Remove parenthetical disambiguation
         name = name.split(" (")[0].strip()
         return name
 
@@ -86,14 +79,7 @@ class ArtistIdentityResolver:
         track_count: int = 0,
         is_compilation: bool = False,
     ) -> ArtistIdentity:
-        """Resolve artist identity following cumulative rules (not mutually exclusive).
-
-        Rule 1 (Canonical): Artist == Album Artist → normal treatment.
-        Rule 2 (Alias): >80% of tracks share an Artist differing from Album Artist → alias.
-        Rule 3 (Guest): Varying artists under consistent Album Artist → guest.
-        Rule 4 (Compilation): Various Artists → independent per-track evaluation.
-        """
-        # Rule 4
+        """Resolve artist identity following cumulative rules."""
         if is_compilation or self._is_various(album_artist):
             return ArtistIdentity(
                 canonical_artist=artist,
@@ -105,7 +91,6 @@ class ArtistIdentityResolver:
         norm_artist = self._normalise(artist)
         norm_aa = self._normalise(album_artist)
 
-        # Rule 1
         if norm_artist == norm_aa:
             return ArtistIdentity(
                 canonical_artist=album_artist,
@@ -113,7 +98,6 @@ class ArtistIdentityResolver:
                 track_artist=artist,
             )
 
-        # Rule 2 — check for historical alias before treating as guest
         if self._is_alias(artist, album_artist, album, track_count):
             return ArtistIdentity(
                 canonical_artist=album_artist,
@@ -122,7 +106,6 @@ class ArtistIdentityResolver:
                 is_alias=True,
             )
 
-        # Rule 3
         return ArtistIdentity(
             canonical_artist=album_artist,
             album_artist=album_artist,
@@ -140,8 +123,6 @@ class ArtistIdentityResolver:
         if track_count < 3 or not album:
             return False
         try:
-            from sqlalchemy import text
-            from db.engine import db_session
             with db_session() as session:
                 row = session.execute(
                     text(
@@ -180,9 +161,14 @@ class PopularityCalculator:
             return True
         return self.EP_TRACK_RANGE[0] <= track_count <= self.EP_TRACK_RANGE[1]
 
-    def get_context(self, album: str = "", album_type: str | None = None,
-                    track_count: int = 0, is_live: bool = False,
-                    is_alternate: bool = False) -> PopularityContext:
+    def get_context(
+        self, 
+        album: str = "", 
+        album_type: str | None = None,
+        track_count: int = 0, 
+        is_live: bool = False,
+        is_alternate: bool = False
+    ) -> PopularityContext:
         return PopularityContext(
             is_ep=self.classify_ep(album_type, track_count),
             is_live=is_live,
@@ -191,8 +177,12 @@ class PopularityCalculator:
             track_count=track_count,
         )
 
-    def weight_popularity(self, popularity: float, identity: ArtistIdentity,
-                          context: PopularityContext) -> float:
+    def weight_popularity(
+        self, 
+        popularity: float, 
+        identity: ArtistIdentity,
+        context: PopularityContext
+    ) -> float:
         """Apply context-aware weighting. Reduces influence of guests, EPs, etc."""
         w = float(popularity)
         if identity.is_guest:
@@ -219,18 +209,8 @@ class PopularityCalculator:
 
 # ── 7-step normalisation pipeline ─────────────────────────────────────────
 
-def apply_normalization_order(conn: Any, tracks: list[dict]) -> list[dict]:
-    """Apply the 7-step normalisation order to a batch of tracks.
-
-    Steps:
-    1. Resolve identity
-    2. Merge popularity data
-    3. Apply EP/guest weighting
-    4. Compute album medians
-    5. Compute artist means & stddevs
-    6. Calculate z-scores
-    7. Store results
-    """
+def apply_normalization_order(conn: Any, tracks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Apply the 7-step normalisation order to a batch of tracks."""
     resolver = ArtistIdentityResolver(conn)
     calc = PopularityCalculator(conn)
     result = []
@@ -266,7 +246,7 @@ def apply_normalization_order(conn: Any, tracks: list[dict]) -> list[dict]:
                 "popularity_weighted": weighted,
             })
         except Exception as exc:
-            logger.warning("Normalisation failed for %s: %s", track.get("title", "?"), exc)
+            logger.warning("Normalisation failed", title=track.get("title", "?"), error=str(exc))
             result.append(track)
 
     return result
