@@ -1,7 +1,4 @@
-"""
-Repository helpers for queue admin/management operations.
-
-Split from ``db/repositories/queue.py`` (1008 lines → 2 files).
+"""Repository helpers for queue admin/management operations.
 
 Contains:
 - Clear, purge, and bulk cleanup
@@ -10,25 +7,18 @@ Contains:
 - Duplicate detection and merging
 - Folder-level operations
 - Diagnostics
-
-✅ All database access uses ``db_session`` from ``db.engine``.
 """
 
 from __future__ import annotations
 
-import json
 import os
-from typing import Any
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import structlog
 from sqlalchemy import text
 
 from db.engine import db_session
-from db.utils import row_get
-from helpers.config_helpers import get_config
-from services.downloads.download_scan_service import resolve_downloads_dir
-from helpers.normalization_service import normalize_match_text
-from services.queue.queue_constraints import COMPLETED_QUEUE_STATUSES
+from services.infrastructure.filesystem_service import resolve_downloads_dir
 
 logger = structlog.get_logger(__name__)
 
@@ -41,7 +31,10 @@ def clear_queue(filters: dict[str, Any] | None = None) -> dict[str, Any]:
     try:
         with db_session() as session:
             if filters and "status" in filters:
-                result = session.execute(text("DELETE FROM download_queue WHERE status = :status"), {"status": filters["status"]})
+                result = session.execute(
+                    text("DELETE FROM download_queue WHERE status = :status"),
+                    {"status": filters["status"]},
+                )
                 return {"success": True, "queue_items_deleted": result.rowcount}
             session.execute(text("DELETE FROM download_queue"))
             session.execute(text("DELETE FROM musicbrainz_releases"))
@@ -52,7 +45,7 @@ def clear_queue(filters: dict[str, Any] | None = None) -> dict[str, Any]:
 
 
 def purge_all() -> dict[str, Any]:
-    """Hard purge the download pipeline (legacy parity with the old scanner)."""
+    """Hard purge the download pipeline."""
     try:
         import shutil as _shutil
 
@@ -116,11 +109,12 @@ def get_imported(limit: int = 50) -> list[dict[str, Any]]:
     try:
         with db_session() as session:
             result = session.execute(
-                text("""SELECT *
-                       FROM download_queue
-                       WHERE status = 'imported'
-                       ORDER BY updated_at DESC
-                       LIMIT :limit"""),
+                text("""
+                    SELECT * FROM download_queue
+                    WHERE status = 'imported'
+                    ORDER BY updated_at DESC
+                    LIMIT :limit
+                """),
                 {"limit": limit},
             )
             rows = result.fetchall()
@@ -170,9 +164,11 @@ def cleanup_copied_sources() -> dict[str, Any]:
 
             for row in items:
                 scanned_count += 1
-                queue_id = row[0]
-                file_path = row[1]
-                found_filename = row[2]
+                mapping = getattr(row, "_mapping", None)
+                queue_id = mapping.get("id") if mapping else row[0]
+                file_path = mapping.get("file_path") if mapping else row[1]
+                found_filename = mapping.get("found_filename") if mapping else row[2]
+                
                 downloads_root = os.path.abspath(resolve_downloads_dir())
                 deleted = False
 
@@ -194,7 +190,7 @@ def cleanup_copied_sources() -> dict[str, Any]:
                     deleted_count += 1
                     session.execute(
                         text("UPDATE download_queue SET updated_at = CURRENT_TIMESTAMP WHERE id = :id"),
-                        {"id": queue_id}
+                        {"id": queue_id},
                     )
 
             return {
@@ -225,11 +221,12 @@ def cleanup_orphaned(data: dict[str, Any]) -> dict[str, Any]:
             deleted_files = []
 
             for row in items:
-                queue_id = row[0]
-                file_path = row[1]
-                found_filename = row[2]
-                artist = (row[3] or "").lower()
-                title = row[4]
+                mapping = getattr(row, "_mapping", None)
+                queue_id = mapping.get("id") if mapping else row[0]
+                file_path = mapping.get("file_path") if mapping else row[1]
+                found_filename = mapping.get("found_filename") if mapping else row[2]
+                artist = (mapping.get("artist") if mapping else row[3] or "").lower()
+                title = mapping.get("title") if mapping else row[4]
 
                 if filter_artist and filter_artist not in artist:
                     continue
@@ -272,15 +269,18 @@ def cleanup_orphaned(data: dict[str, Any]) -> dict[str, Any]:
 def count_pending_by_release(release_mbid: str) -> int:
     try:
         with db_session() as session:
-            result = session.execute(text("""
-                SELECT COUNT(*)
-                FROM download_queue
-                WHERE (release_mbid = :mbid OR release_id = :mbid)
-                  AND status NOT IN (
-                      'completed', 'imported', 'in_collection',
-                      'removed', 'cancelled', 'deleted'
-                  )
-            """), {"mbid": release_mbid})
+            result = session.execute(
+                text("""
+                    SELECT COUNT(*)
+                    FROM download_queue
+                    WHERE (release_mbid = :mbid OR release_id = :mbid)
+                      AND status NOT IN (
+                          'completed', 'imported', 'in_collection',
+                          'removed', 'cancelled', 'deleted'
+                      )
+                """),
+                {"mbid": release_mbid},
+            )
             return result.scalar() or 0
     except Exception as exc:
         logger.error("Count pending by release failed", release_mbid=release_mbid, error=str(exc))
@@ -304,11 +304,12 @@ def verify_and_prune(data: dict[str, Any]) -> dict[str, Any]:
             downloads_root = os.path.abspath(resolve_downloads_dir())
 
             for row in items:
-                queue_id = row[0]
-                file_path = row[1]
-                found_filename = row[2]
-                artist = (row[3] or "").lower()
-                title = row[4]
+                mapping = getattr(row, "_mapping", None)
+                queue_id = mapping.get("id") if mapping else row[0]
+                file_path = mapping.get("file_path") if mapping else row[1]
+                found_filename = mapping.get("found_filename") if mapping else row[2]
+                artist = (mapping.get("artist") if mapping else row[3] or "").lower()
+                title = mapping.get("title") if mapping else row[4]
 
                 if filter_artist and filter_artist not in artist:
                     continue
@@ -355,12 +356,12 @@ def find_existing_discovered_file(*, file_path: str, filename: str, rel_path: st
         with db_session() as session:
             result = session.execute(
                 text("""
-                SELECT * FROM download_queue
-                WHERE file_path = :file_path
-                   OR found_filename = :filename
-                   OR found_filename = :rel_path
-                   OR found_filename = :file_path2
-                LIMIT 1
+                    SELECT * FROM download_queue
+                    WHERE file_path = :file_path
+                       OR found_filename = :filename
+                       OR found_filename = :rel_path
+                       OR found_filename = :file_path2
+                    LIMIT 1
                 """),
                 {"file_path": file_path, "filename": filename, "rel_path": rel_path, "file_path2": file_path},
             )
@@ -376,12 +377,12 @@ def find_duplicate_queue_item(*, artist: str, title: str, album: str | None) -> 
         with db_session() as session:
             result = session.execute(
                 text("""
-                SELECT * FROM download_queue
-                WHERE LOWER(artist) = LOWER(:artist)
-                  AND LOWER(title) = LOWER(:title)
-                  AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(:album, ''))
-                  AND status NOT IN ('removed', 'cancelled')
-                LIMIT 1
+                    SELECT * FROM download_queue
+                    WHERE LOWER(artist) = LOWER(:artist)
+                      AND LOWER(title) = LOWER(:title)
+                      AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(:album, ''))
+                      AND status NOT IN ('removed', 'cancelled')
+                    LIMIT 1
                 """),
                 {"artist": artist, "title": title, "album": album},
             )
@@ -430,12 +431,12 @@ def delete_duplicate_queue_entries(*, keep_id: int, artist: str, title: str, alb
         with db_session() as session:
             result = session.execute(
                 text("""
-                DELETE FROM download_queue
-                WHERE id <> :keep_id
-                  AND LOWER(artist) = LOWER(:artist)
-                  AND LOWER(title) = LOWER(:title)
-                  AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(:album, ''))
-                  AND status NOT IN ('removed', 'cancelled', 'deleted', 'imported', 'in_collection')
+                    DELETE FROM download_queue
+                    WHERE id <> :keep_id
+                      AND LOWER(artist) = LOWER(:artist)
+                      AND LOWER(title) = LOWER(:title)
+                      AND LOWER(COALESCE(album, '')) = LOWER(COALESCE(:album, ''))
+                      AND status NOT IN ('removed', 'cancelled', 'deleted', 'imported', 'in_collection')
                 """),
                 {"keep_id": keep_id, "artist": artist, "title": title, "album": album},
             )
@@ -454,14 +455,14 @@ def get_queue_items_by_folder(folder_path: str) -> list[dict[str, Any]]:
         with db_session() as session:
             result = session.execute(
                 text("""
-                SELECT id, artist, album, title, status, track_number,
-                       found_filename, album_artist, release_mbid, release_id, import_group
-                FROM download_queue
-                WHERE import_group = :folder_path
-                ORDER BY
-                    CASE WHEN TRIM(COALESCE(track_number, '')) ~ '^\d+$'
-                        THEN TRIM(track_number)::integer ELSE 9999 END,
-                    id
+                    SELECT id, artist, album, title, status, track_number,
+                           found_filename, album_artist, release_mbid, release_id, import_group
+                    FROM download_queue
+                    WHERE import_group = :folder_path
+                    ORDER BY
+                        CASE WHEN TRIM(COALESCE(track_number, '')) ~ '^\\d+$'
+                            THEN TRIM(track_number)::integer ELSE 9999 END,
+                        id
                 """),
                 {"folder_path": folder_path},
             )
@@ -497,7 +498,10 @@ def delete_folder(data: dict[str, Any]) -> dict[str, Any]:
             return {"success": False, "error": "No group_id provided"}
 
         with db_session() as session:
-            result = session.execute(text("DELETE FROM download_queue WHERE import_group = :group_id"), {"group_id": group_id})
+            result = session.execute(
+                text("DELETE FROM download_queue WHERE import_group = :group_id"),
+                {"group_id": group_id},
+            )
             return {"success": True, "deleted": result.rowcount}
     except Exception as e:
         logger.error("Delete folder failed", group_id=data.get("group_id"), error=str(e))
@@ -529,19 +533,19 @@ def reset_moving(queue_ids: list[int] | None, stale_minutes: int) -> dict[str, A
                 params: dict[str, Any] = {f"id_{i}": qid for i, qid in enumerate(queue_ids)}
                 result = session.execute(
                     text(f"""
-                    UPDATE download_queue
-                    SET status = 'completed', updated_at = CURRENT_TIMESTAMP
-                    WHERE id IN ({placeholders}) AND status = 'moving'
+                        UPDATE download_queue
+                        SET status = 'completed', updated_at = CURRENT_TIMESTAMP
+                        WHERE id IN ({placeholders}) AND status = 'moving'
                     """),
                     params,
                 )
             else:
                 result = session.execute(
                     text("""
-                    UPDATE download_queue
-                    SET status = 'completed', updated_at = CURRENT_TIMESTAMP
-                    WHERE status = 'moving'
-                      AND updated_at < NOW() - make_interval(mins => :stale_minutes)
+                        UPDATE download_queue
+                        SET status = 'completed', updated_at = CURRENT_TIMESTAMP
+                        WHERE status = 'moving'
+                          AND updated_at < NOW() - make_interval(mins => :stale_minutes)
                     """),
                     {"stale_minutes": stale_minutes},
                 )
@@ -565,13 +569,13 @@ def apply_release_mbid(queue_ids: list[int], mbid: str, artist: str, album: str)
             params["album"] = album
             result = session.execute(
                 text(f"""
-                UPDATE download_queue
-                SET release_mbid = :mbid, release_id = :mbid,
-                    release_source = 'musicbrainz',
-                    album_artist = CASE WHEN NULLIF(TRIM(album_artist), '') IS NULL THEN :artist ELSE album_artist END,
-                    album = CASE WHEN NULLIF(TRIM(album), '') IS NULL THEN :album ELSE album END,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id IN ({placeholders})
+                    UPDATE download_queue
+                    SET release_mbid = :mbid, release_id = :mbid,
+                        release_source = 'musicbrainz',
+                        album_artist = CASE WHEN NULLIF(TRIM(album_artist), '') IS NULL THEN :artist ELSE album_artist END,
+                        album = CASE WHEN NULLIF(TRIM(album), '') IS NULL THEN :album ELSE album END,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id IN ({placeholders})
                 """),
                 params,
             )
@@ -594,13 +598,13 @@ def mark_in_collection(
         with db_session() as session:
             result = session.execute(
                 text("""
-                UPDATE download_queue
-                SET status = 'in_collection',
-                    matched_file_path = :matched_file_path,
-                    collection_track_id = :collection_track_id,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = :queue_id
-                RETURNING *
+                    UPDATE download_queue
+                    SET status = 'in_collection',
+                        matched_file_path = :matched_file_path,
+                        collection_track_id = :collection_track_id,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = :queue_id
+                    RETURNING *
                 """),
                 {"matched_file_path": matched_file_path, "collection_track_id": collection_track_id, "queue_id": queue_id},
             )
