@@ -5,18 +5,12 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any, Iterable
+from typing import Any
 
 from sqlalchemy import text
 
 from db.engine import db_session
-from db.schema import (
-    COLUMN_REGISTRY,
-    INDEXES_TO_ENSURE,
-    TABLES_TO_ENSURE,
-    DOWNLOAD_QUEUE_COLUMNS_TO_ENSURE,
-    TRACK_COLUMNS_TO_ENSURE,
-)
+from db.schema import COLUMN_REGISTRY, INDEXES_TO_ENSURE, TABLES_TO_ENSURE
 from db.schema_helpers import table_exists, get_table_columns, get_postgres_column_types
 from db.utils import get_db_connection, is_transient_pg_startup_error
 
@@ -74,7 +68,7 @@ def _release_advisory_lock(conn_or_session: Any, key: int | str) -> None:
     except Exception: pass
 
 # =============================================================================
-# COMPATIBILITY SHIMS & MIGRATION LOGIC
+# DATA FIXUPS & MIGRATION LOGIC
 # =============================================================================
 
 def ensure_status_changed_trigger(cursor: Any) -> None:
@@ -126,30 +120,12 @@ def ensure_album_art_schema() -> bool:
         return False
 
 def ensure_upcoming_releases_schema() -> bool:
-    """Migrate ``upcoming_releases`` to per-album identity + lifecycle columns.
-
-    - Adds ``status`` (discovered/bookmarked/queued/imported) and ``last_seen_at``.
-    - Collapses the per-source unique constraint ``(artist_name, album_name,
-      source)`` into a per-album unique index ``(artist_name, album_name)`` so
-      Wikipedia and MusicBrainz rows for the same album merge instead of
-      duplicating.  Duplicate rows are resolved first: the MusicBrainz row
-      wins (it carries the authoritative MBID), older duplicates of the same
-      source are dropped, and surviving older rows are backfilled.
-    """
+    """Migrate upcoming_releases duplicate resolution and constraints."""
     try:
         with db_session() as session:
-            if not table_exists(session, "upcoming_releases"):
-                return True
-            _ensure_columns(session, "upcoming_releases", {
-                "status": "TEXT NOT NULL DEFAULT 'discovered'",
-                "last_seen_at": "TIMESTAMP",
-                "source_key": "TEXT",
-                "candidate_release_group_mbid": "TEXT",
-            })
-
+            if not table_exists(session, "upcoming_releases"): return True
+            
             # Dedupe: drop non-MusicBrainz rows where a MusicBrainz row exists
-            # for the same album (MBID data must win), then older duplicates
-            # within the same source.
             session.execute(text("""
                 DELETE FROM upcoming_releases a
                 USING upcoming_releases b
@@ -169,98 +145,45 @@ def ensure_upcoming_releases_schema() -> bool:
             """))
 
             # Swap the constraint: drop the per-source unique, add per-album.
-            try:
-                session.execute(text("ALTER TABLE upcoming_releases DROP CONSTRAINT IF EXISTS uq_upcoming_artist_album_source"))
-            except Exception:
-                pass
+            try: session.execute(text("ALTER TABLE upcoming_releases DROP CONSTRAINT IF EXISTS uq_upcoming_artist_album_source"))
+            except Exception: pass
+            
             session.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_upcoming_artist_album ON upcoming_releases (artist_name, album_name)"))
-
-            # Backfill last_seen_at for rows we have no visibility into.
             session.execute(text("UPDATE upcoming_releases SET last_seen_at = COALESCE(last_seen_at, updated_at, created_at, CURRENT_TIMESTAMP)"))
         return True
     except Exception as e:
         logging.error("Upcoming releases schema error: %s", e)
         return False
 
-def _ensure_subset(table: str, keys: Iterable[str], registry: dict[str, str]) -> bool:
+def migrate_queue_source_data() -> bool:
+    """Backfill queue source from legacy source_id column."""
     try:
         with db_session() as session:
-            if table_exists(session, table):
-                _ensure_columns(session, table, {k: registry[k] for k in keys if k in registry})
+            if not table_exists(session, "download_queue"): return True
+            cols = get_table_columns(session, "download_queue")
+            if "source" in cols and "source_id" in cols:
+                session.execute(text(
+                    "UPDATE download_queue SET source = source_id "
+                    "WHERE (source IS NULL OR source = '') "
+                    "AND source_id IS NOT NULL AND source_id != ''"
+                ))
         return True
     except Exception as e:
-        logging.warning("Schema sync error for %s: %s", table, e)
+        logging.warning("Queue source column backfill error: %s", e)
         return False
 
-def ensure_album_artist_column() -> bool: return _ensure_subset("tracks", ["album_artist"], TRACK_COLUMNS_TO_ENSURE) and ensure_album_artist_column_data()
-def ensure_queue_mbid_columns() -> bool: return _ensure_subset("download_queue", ("release_id", "release_source", "release_mbid", "recording_mbid", "release_year", "release_date", "matched_file_path", "music_file_path", "match_confidence", "match_method", "metadata", "slskd_username", "slskd_transfer_id", "slskd_state", "slskd_queue_position", "slskd_last_sync_at"), DOWNLOAD_QUEUE_COLUMNS_TO_ENSURE)
-
-def ensure_queue_source_column() -> bool:
-    """Ensure ``download_queue.source`` exists and backfill from legacy ``source_id``.
-
-    Databases created by the old system store the download source in
-    ``source_id`` (TEXT); the rewritten pipeline queries ``source``. Without
-    this migration every queue insert/duplicate-check fails with
-    ``column "source" does not exist``.
-    """
-    try:
-        ok = _ensure_subset("download_queue", ("source",), DOWNLOAD_QUEUE_COLUMNS_TO_ENSURE)
-        if ok:
-            with db_session() as session:
-                if table_exists(session, "download_queue"):
-                    session.execute(text(
-                        "UPDATE download_queue SET source = source_id "
-                        "WHERE (source IS NULL OR source = '') "
-                        "AND source_id IS NOT NULL AND source_id != ''"
-                    ))
-        return ok
-    except Exception as e:
-        logging.warning("Queue source column sync error: %s", e)
-        return False
-
-def ensure_track_release_year_column() -> bool: return _ensure_subset("tracks", ["release_year"], TRACK_COLUMNS_TO_ENSURE)
-def ensure_musicbrainz_album_mbid_column() -> bool: return _ensure_subset("tracks", ["musicbrainz_album_mbid"], TRACK_COLUMNS_TO_ENSURE)
-def ensure_writer_column() -> bool: return _ensure_subset("tracks", ["writer"], TRACK_COLUMNS_TO_ENSURE)
-def ensure_cover_columns() -> bool: return _ensure_subset("tracks", ("is_cover", "is_cover_reason", "original_cover_artist", "cover_manual_override", "cover_last_checked", "is_live", "is_acoustic", "is_remix"), TRACK_COLUMNS_TO_ENSURE)
-def ensure_mood_columns() -> bool: return _ensure_subset("tracks", ("mood", "mood_confidence", "mood_source", "mood_last_updated"), TRACK_COLUMNS_TO_ENSURE)
-def ensure_essentia_feature_columns() -> bool: return _ensure_subset("tracks", ("danceability", "essentia_last_updated", "essentia_model_version", "essentia_scan_version", "bpm", "musical_key", "loudness_lufs", "replaygain"), TRACK_COLUMNS_TO_ENSURE)
-def ensure_popularity_freeze_columns() -> bool: return _ensure_subset("tracks", ("popularity_frozen", "popularity_frozen_at"), TRACK_COLUMNS_TO_ENSURE)
-
-def ensure_single_detection_columns() -> bool:
-    """Add single-detection persistence columns and normalise ``single_confidence`` to TEXT.
-
-    The legacy pipeline stored ``single_confidence`` as a TEXT label
-    (``'high'`` / ``'medium'`` / ``'low'`` / ``'user'``) which every UI
-    template, star-rating consumer and the edit modal expects. The staged
-    pipeline briefly declared it as DOUBLE PRECISION and wrote floats
-    (1.0 / 0.67 / 0.0), which made every string comparison fail. This
-    migration adds the missing single-detection columns and converts an
-    existing numeric column to TEXT, mapping stored floats back to labels.
-    """
-    ok = _ensure_subset(
-        "tracks",
-        (
-            "single_confidence", "single_confidence_score", "single_status",
-            "single_sources", "single_sources_used", "single_detection_last_updated",
-            "single_manual_override", "alternate_take", "base_track_id",
-            "is_compilation", "releasecountry", "discogs_artist_id",
-        ),
-        TRACK_COLUMNS_TO_ENSURE,
-    )
-    ok = _ensure_subset("artists", ["lastfm_artist_tags"], COLUMN_REGISTRY["artists"]) and ok
-
-    # If single_confidence exists as a numeric column, convert it to TEXT and
-    # map stored floats back to the labels consumers expect.
+def migrate_single_confidence_type() -> bool:
+    """Normalise single_confidence from float/numeric back to TEXT."""
     try:
         with db_session() as session:
-            if not table_exists(session, "tracks"):
-                return ok
+            if not table_exists(session, "tracks"): return True
             cols = get_table_columns(session, "tracks")
-            if "single_confidence" not in cols:
-                return ok
+            if "single_confidence" not in cols: return True
+            
             types = get_postgres_column_types(session, "tracks", ["single_confidence"])
             current_type = (types.get("single_confidence") or "").lower()
             numeric_types = {"smallint", "integer", "bigint", "real", "double precision", "numeric", "decimal"}
+            
             if current_type in numeric_types:
                 session.execute(text("""
                     ALTER TABLE tracks
@@ -275,15 +198,10 @@ def ensure_single_detection_columns() -> bool:
                     )
                 """))
                 logging.info("Migrated tracks.single_confidence from %s to TEXT", current_type)
+        return True
     except Exception as exc:
         logging.warning("Could not migrate single_confidence column: %s", exc)
-    return ok
-
-def ensure_manual_genres_column() -> bool: return _ensure_subset("tracks", ["manual_genres"], TRACK_COLUMNS_TO_ENSURE)
-def ensure_verification_columns() -> bool: return _ensure_subset("tracks", ("verification_status", "verification_checked_at", "verification_error"), TRACK_COLUMNS_TO_ENSURE)
-def ensure_pending_mb_updates_column() -> bool: return _ensure_subset("tracks", ["pending_mb_updates"], TRACK_COLUMNS_TO_ENSURE)
-def ensure_mb_ignored_fields_column() -> bool: return _ensure_subset("tracks", ["mb_ignored_fields"], TRACK_COLUMNS_TO_ENSURE)
-def ensure_album_context_columns() -> bool: return _ensure_subset("tracks", ["album_context_live"], TRACK_COLUMNS_TO_ENSURE)
+        return False
 
 # =============================================================================
 # MAIN BOOTSTRAP & ENTRY
@@ -295,22 +213,31 @@ def ensure_full_schema() -> bool:
         with db_session() as session:
             lock_acquired = _try_advisory_lock(session, _SCHEMA_BOOTSTRAP_LOCK_NAME)
             if not lock_acquired: return False
-            for table, ddl in TABLES_TO_ENSURE.items(): _ensure_table(session, table, ddl)
-            for table, cols in COLUMN_REGISTRY.items(): _ensure_columns(session, table, cols)
+            
+            # 1. Base Tables
+            for table, ddl in TABLES_TO_ENSURE.items(): 
+                _ensure_table(session, table, ddl)
+            
+            # 2. Base Columns (This loop handles every column registered in db.schema)
+            for table, cols in COLUMN_REGISTRY.items(): 
+                _ensure_columns(session, table, cols)
+            
+            # 3. Triggers, Constraints & Indexes
             ensure_status_changed_trigger(session)
             ensure_musicbrainz_release_unique_constraint(session)
-            for ddl in INDEXES_TO_ENSURE: _ensure_index(session, ddl)
+            for ddl in INDEXES_TO_ENSURE: 
+                _ensure_index(session, ddl)
+                
+        # 4. Independent Data Fixups & Migrations
         ensure_album_artist_column_data()
         ensure_artists_name_unique_constraint()
         ensure_album_art_schema()
         ensure_upcoming_releases_schema()
-        ensure_single_detection_columns()
-        ensure_queue_source_column()
-        ensure_album_context_columns()
-        # Essentia feature columns (danceability, essentia_* , bpm) — kept as an
-        # explicit call so installs that skipped the COLUMN_REGISTRY loop still
-        # get the columns the Essentia scanner writes.
-        ensure_essentia_feature_columns()
+        
+        # Type alterations and data backfills
+        migrate_single_confidence_type()
+        migrate_queue_source_data()
+        
         return True
     except Exception as exc:
         if is_transient_pg_startup_error(exc): return False
@@ -327,29 +254,13 @@ def verify_all_tables_exist() -> dict[str, Any]:
     return {"ok": expected.issubset(present), "missing": list(expected - present)}
 
 def _reset_stale_scan_states() -> None:
-    """Clear scan-state rows left ``running`` by a crash/reboot (boot hygiene).
-
-    Runs after the schema is ensured and BEFORE any worker can start a scan:
-    a hard kill mid-scan leaves ``scan_states.is_running=True`` (the normal
-    completion path never runs), which makes the scheduler/dashboard think a
-    scan is still active.  Single-process here (entrypoint runs bootstrap
-    before hypercorn spawns) so there is no race with a scan start.
-    """
     try:
         from services.scanning.scan_state import reset_stale_scan_states
         reset_stale_scan_states()
     except Exception as exc:
         logging.warning("Stale scan-state reset skipped: %s", exc)
 
-
 def _prune_genre_playlists_at_boot() -> None:
-    """Delete genre playlists whose qualifying pool dropped below the delete
-    threshold (boot hygiene — mirrors the scan-end finalise check).
-
-    Runs in a daemon thread so startup is not blocked by the library-wide
-    aggregation query.  Best-effort; deletion is gated by
-    ``playlists.genre_playlists_delete_enabled``.
-    """
     def _run() -> None:
         try:
             from services.popularity.stages.finalise_stage import prune_genre_playlists_for_deletion
@@ -359,11 +270,7 @@ def _prune_genre_playlists_at_boot() -> None:
 
     threading.Thread(target=_run, daemon=True, name="boot-genre-playlist-prune").start()
 
-
 def init_database_and_schema() -> bool:
-    # Retry a few times — Postgres may be restarting (schema bootstrap runs
-    # immediately after wait_for_db, but Postgres can still be in shutdown
-    # from a concurrent restart).
     max_attempts = 4
     for attempt in range(1, max_attempts + 1):
         try:
@@ -382,12 +289,10 @@ def init_database_and_schema() -> bool:
             break
         break
 
-    # Fall back to deferred background retry
     threading.Thread(target=_run_deferred_startup_migrations, daemon=True, name="deferred-startup-migrations").start()
     return False
 
 def _run_deferred_startup_migrations() -> None:
-    """Retry full schema bootstrap after PostgreSQL becomes available."""
     max_wait_seconds = 300
     poll_interval_seconds = 15
     elapsed = 0
