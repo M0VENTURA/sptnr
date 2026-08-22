@@ -4,50 +4,49 @@ Unified access point for infrastructure-level services:
 - ``FileSystemManager`` – Filesystem operations.
 - ``APIRateLimiter`` – Cross-provider rate limiting.
 
-Initialised once via ``init_infrastructure()`` and accessed via
+Initialised once via singleton pattern and accessed via
 ``get_infra()`` throughout the application.
 """
 
-import logging
+from __future__ import annotations
+
 import threading
 from typing import Optional
 
-from helpers.config_helpers import get_config
-from services.infrastructure.fs_manager import FileSystemManager
-from services.infrastructure.api_rate_limiter import APIRateLimiter
+import structlog
 
-# Setup standard logger for the infrastructure layer
-logger = logging.getLogger(__name__)
+from helpers.config_helpers import get_config
+from services.infrastructure.api_rate_limiter import APIRateLimiter
+from services.infrastructure.fs_manager import FileSystemManager
+
+logger = structlog.get_logger(__name__)
+
 
 class Infrastructure:
-    """
-    A unified access point (Singleton) for infrastructure services.
-    Ensures that managers are initialized exactly once.
-    """
-    _instance: Optional['Infrastructure'] = None
+    """A unified access point (Singleton) for infrastructure services."""
+    _instance: Optional[Infrastructure] = None
     _lock = threading.Lock()
 
-    def __init__(self):
-        cfg = get_config()
-        
-        # Extract paths from config
+    def __init__(self) -> None:
+        cfg = get_config() or {}
+
         downloads = cfg.get("downloads", {}).get("monitor_folder", "/downloads")
         music = cfg.get("navidrome", {}).get("music_folder", "/music")
-        
-        # Initialize sub-services
+
         self.fs = FileSystemManager(downloads, music)
         self.api = APIRateLimiter()
-        
-        logger.info("Infrastructure services initialized.")
+
+        logger.info("Infrastructure services initialized successfully.")
 
     @classmethod
-    def get_instance(cls) -> 'Infrastructure':
+    def get_instance(cls) -> Infrastructure:
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
                     cls._instance = cls()
         return cls._instance
 
-# Helper for easy access throughout the app
+
 def get_infra() -> Infrastructure:
+    """Convenience helper to access the infrastructure singleton."""
     return Infrastructure.get_instance()
