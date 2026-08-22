@@ -14,29 +14,29 @@ Quality Thresholds:
     - Lossless formats (FLAC, WAV, ALAC) are always accepted.
     - Sample rate must be >= 44100 Hz.
 
-Downlaoded low-quality tracks are re-queued for upgrade retry.
+Downloaded low-quality tracks are re-queued for upgrade retry.
 """
+
+from __future__ import annotations
 
 from enum import Enum
 
 
 class QualityGrade(Enum):
     """Quality classification for downloaded audio files."""
-    LOSSless = "lossless"
+    LOSSLESS = "lossless"
     HIGH = "high"
     STANDARD = "standard"
     LOW = "low"
 
 
 # Minimum acceptable bitrates by format (kbps)
-MIN_BITRATE_MP3 = 192
-MIN_BITRATE_AAC = 128
-MIN_BITRATE_OGG = 128
+MIN_BITRATE_MP3: int = 192
+MIN_BITRATE_AAC: int = 128
+MIN_BITRATE_OGG: int = 128
 
 # Lossless format extensions
-LOSSLESS_EXTENSIONS = {".flac", ".wav", ".alac", ".aiff", ".dsf", ".dff"}
+LOSSLESS_EXTENSIONS: set[str] = {".flac", ".wav", ".alac", ".aiff", ".dsf", ".dff"}
 
 # Always-acceptable sample rates
-MIN_SAMPLE_RATE = 44100
-
-
+MIN_SAMPLE_RATE: int = 44100
