@@ -3,18 +3,19 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import re
 import time
 import threading
+from typing import Any
 
 from quart import Blueprint, jsonify, request, session
+import structlog
 
 from helpers.config_helpers import get_config
 from helpers.response_helpers import _ok, _fail
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 slskd_bp = Blueprint("slskd_api", __name__, url_prefix="/api/slskd")
 slsk_bp = Blueprint("slsk_api", __name__, url_prefix="/api/slsk")
@@ -24,9 +25,7 @@ slsk_bp = Blueprint("slsk_api", __name__, url_prefix="/api/slsk")
 # MANUAL SEARCH LOGGING
 # =============================================================================
 
-# Tracks the most recently reported result count per search so the manual
-# search log does not spam a line for every poll of the same search.
-_manual_search_state: dict = {}
+_manual_search_state: dict[str, dict[str, Any]] = {}
 _manual_search_lock = threading.Lock()
 
 
@@ -37,13 +36,9 @@ def _log_manual_search_event(
     result_count: int = 0,
     duration_seconds: float | None = None,
     notes: str | None = None,
-    selected_result: dict | None = None,
+    selected_result: dict[str, Any] | None = None,
 ) -> None:
-    """Record a manual Soulseek search to ``search.log`` and the search DB.
-
-    Keeps manual searches visible in the monitor's Soulseek Search Log and
-    the /logs page alongside automatic pipeline searches.
-    """
+    """Record a manual Soulseek search to ``search.log`` and the search DB."""
     try:
         from helpers.logging_config import log_search
         suffix = f" ({notes})" if notes else ""
@@ -69,21 +64,21 @@ def _log_manual_search_event(
 
 
 def _normalize_slskd_query(value: str) -> str:
-    text = str(value or "")
-    text = text.replace("\\u0026", " ").replace("&amp;", " ").replace("&", " ")
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
+    text_val = str(value or "")
+    text_val = text_val.replace("\\u0026", " ").replace("&amp;", " ").replace("&", " ")
+    text_val = re.sub(r"\s+", " ", text_val)
+    return text_val.strip()
 
 
-def _coerce_optional_int(value, allow_prefix=False):
+def _coerce_optional_int(value: Any, allow_prefix: bool = False) -> int | None:
     if value is None:
         return None
-    text = str(value).strip()
-    if not text:
+    text_val = str(value).strip()
+    if not text_val:
         return None
-    candidate = text
-    if allow_prefix and "/" in text:
-        candidate = text.split("/", 1)[0].strip()
+    candidate = text_val
+    if allow_prefix and "/" in text_val:
+        candidate = text_val.split("/", 1)[0].strip()
     if not candidate:
         return None
     signless = candidate[1:] if candidate.startswith("-") else candidate
@@ -99,9 +94,8 @@ def _coerce_optional_int(value, allow_prefix=False):
 # SLSKD ROUTES
 # ===========================================================================
 
-
 @slskd_bp.route("/search", methods=["POST"])
-async def slskd_search():
+async def slskd_search() -> Any:
     """Proxy endpoint for slskd search API."""
     cfg = get_config()
     slskd_config = cfg.get("slskd", {})
@@ -117,17 +111,12 @@ async def slskd_search():
         from services.downloads.slskd_service import SlskdService
         client = SlskdHttpClient(web_url, api_key)
         slskd_service = SlskdService(http_client=client)
-        # Free the single search slot before starting a manual search so a
-        # leftover completed/stuck search cannot force an HTTP 429 (legacy
-        # parity: _clear_stale_slskd_searches).
+        
         try:
             await asyncio.to_thread(slskd_service.clear_stale_searches, budget_seconds=6)
         except Exception:
             pass
-        # Search-slot check FIRST so a busy slot is surfaced as slotBusy
-        # (the frontend shows a "slot busy — auto-retry" banner), matching
-        # the legacy contract.  start_search blocks up to 20s on slskd HTTP
-        # — offload so the event loop keeps serving other requests.
+
         try:
             active = await asyncio.to_thread(slskd_service.list_searches, 8)
             active_states = {"None", "Queued", "Requested", "InProgress", "Initializing", "In Progress"}
@@ -142,6 +131,7 @@ async def slskd_search():
                 }), 202
         except Exception:
             pass
+
         started = time.time()
         search_id = await asyncio.to_thread(slskd_service.start_search, query, 20)
         if search_id:
@@ -157,17 +147,15 @@ async def slskd_search():
                 duration_seconds=round(time.time() - started, 1),
                 notes="search_started",
             )
-            # Legacy contract: the frontend reads ``searchId`` (camelCase) —
-            # the migration renamed it to ``search_id`` and the manual-search
-            # modal started throwing "Search did not return a search ID".
             return jsonify({"searchId": search_id, "status": "searching"})
         return jsonify({"error": "Failed to start search — slskd search slot may be busy. Try again in a moment."}), 500
     except Exception as exc:
+        logger.error("Slskd search failed", error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
 @slskd_bp.route("/search-slot", methods=["GET"])
-def slskd_search_slot():
+def slskd_search_slot() -> Any:
     """Return whether the slskd search slot is free."""
     cfg = get_config()
     slskd_config = cfg.get("slskd", {})
@@ -193,7 +181,7 @@ def slskd_search_slot():
 
 
 @slskd_bp.route("/search/<search_id>", methods=["GET"])
-def slskd_search_results(search_id):
+def slskd_search_results(search_id: str) -> Any:
     """Poll for Soulseek search results."""
     cfg = get_config()
     slskd_config = cfg.get("slskd", {})
@@ -204,11 +192,6 @@ def slskd_search_results(search_id):
         from services.downloads.slskd_service import SlskdService
         client = SlskdHttpClient(slskd_config["web_url"], slskd_config.get("api_key", ""))
         slskd_service = SlskdService(http_client=client)
-        # Rich poll result: (responses, state, is_complete) — the legacy
-        # contract the frontend polls against (``results`` / ``state`` /
-        # ``responseCount`` / ``isComplete``).  The plain client
-        # ``get_search_results`` returns a flat list with NO state/completion
-        # signal, so the modal polled forever and always showed "searching".
         responses, state, is_complete = slskd_service.get_search_results(search_id, timeout=10)
 
         results = []
@@ -229,8 +212,6 @@ def slskd_search_results(search_id):
         count = len(results or [])
         response_count = len(responses or [])
 
-        # Log manual search results when the count first settles, without
-        # spamming a line for every 1s poll of the same search.
         with _manual_search_lock:
             state_entry = _manual_search_state.get(search_id)
             if state_entry is not None and count != state_entry.get("last_result_count", -1):
@@ -256,7 +237,7 @@ def slskd_search_results(search_id):
 
 
 @slskd_bp.route("/download", methods=["POST"])
-async def slskd_download():
+async def slskd_download() -> Any:
     """Proxy endpoint to download from slskd."""
     cfg = get_config()
     slskd_config = cfg.get("slskd", {})
@@ -284,7 +265,7 @@ async def slskd_download():
 
 
 @slskd_bp.route("/cancel", methods=["POST"])
-async def slskd_cancel():
+async def slskd_cancel() -> Any:
     """Cancel a Soulseek download."""
     cfg = get_config()
     slskd_config = cfg.get("slskd", {})
@@ -306,7 +287,7 @@ async def slskd_cancel():
 
 
 @slskd_bp.route("/status", methods=["GET"])
-def slskd_status():
+def slskd_status() -> Any:
     """Get slskd download status."""
     cfg = get_config()
     slskd_config = cfg.get("slskd", {})
@@ -322,7 +303,7 @@ def slskd_status():
 
 
 @slskd_bp.route("/retry", methods=["POST"])
-async def slskd_retry():
+async def slskd_retry() -> Any:
     """Retry a failed Soulseek download."""
     cfg = get_config()
     slskd_config = cfg.get("slskd", {})
@@ -343,7 +324,7 @@ async def slskd_retry():
 
 
 @slskd_bp.route("/queue-download", methods=["POST"])
-async def slskd_queue_download():
+async def slskd_queue_download() -> Any:
     """Initiate a Soulseek download linked to a specific queue item."""
     cfg = get_config()
     slskd_config = cfg.get("slskd", {})
@@ -357,7 +338,7 @@ async def slskd_queue_download():
         return jsonify({"error": "queue_id, username, and filename required"}), 400
     try:
         from api_clients.slskd_http import SlskdHttpClient
-        from db.repositories.queue import get_queue_item, update_queue_item
+        from db.repositories.queue import update_queue_item
         from services.downloads.slskd_service import SlskdService
 
         client = SlskdHttpClient(slskd_config["web_url"], slskd_config.get("api_key", ""))
@@ -365,17 +346,8 @@ async def slskd_queue_download():
         result = await asyncio.to_thread(slskd.download_file, username, filename)
 
         if not result:
-            # slskd may accept the enqueue but report failure; fall back to the
-            # raw enqueue for parity with /api/slskd/download.
             await asyncio.to_thread(client.enqueue_download, username, filename)
 
-        # Link the transfer to the queue row so the completion service can
-        # match the downloaded file back to this song and promote it to
-        # 'downloading' → 'imported'.  Without found_filename + status the
-        # file would land on disk orphaned and the queue item would stay
-        # queued forever (the reported "selecting a file doesn't match it to
-        # the song" bug).  Normalise Windows backslash separators so Linux
-        # path handling works (same rule as the automatic pipeline).
         _stored_filename = str(filename).replace("\\", "/").strip()
         try:
             update_queue_item(
@@ -386,7 +358,7 @@ async def slskd_queue_download():
                 is_manual_download=True,
             )
         except Exception as db_err:
-            logger.warning("[SLSKD] Could not link queue %s to download: %s", queue_id, db_err)
+            logger.warning("Could not link queue to download", queue_id=queue_id, error=str(db_err))
 
         try:
             from helpers.logging_config import log_queue
@@ -402,7 +374,7 @@ async def slskd_queue_download():
 
 
 @slskd_bp.route("/events", methods=["GET"])
-def slskd_events():
+def slskd_events() -> Any:
     """Get recent slskd events."""
     cfg = get_config()
     slskd_config = cfg.get("slskd", {})
@@ -421,18 +393,18 @@ def slskd_events():
 # /api/slsk/ routes
 # ===========================================================================
 
-_slsk_banned_words: dict = {}
+_slsk_banned_words: dict[str, bool] = {}
 _slsk_banned_words_lock = threading.Lock()
 
 
 @slsk_bp.route("/banned-words", methods=["GET"])
-def api_get_banned_words():
+def api_get_banned_words() -> Any:
     """Get banned words and suggested words."""
     return jsonify({"words": list(_slsk_banned_words.keys())})
 
 
 @slsk_bp.route("/banned-words", methods=["POST"])
-async def api_add_banned_word():
+async def api_add_banned_word() -> Any:
     """Add or update a banned word."""
     data = (await request.get_json()) or {}
     word = str(data.get("word") or "").strip().lower()
@@ -444,7 +416,7 @@ async def api_add_banned_word():
 
 
 @slsk_bp.route("/banned-words/<path:word>", methods=["DELETE"])
-def api_delete_banned_word(word):
+def api_delete_banned_word(word: str) -> Any:
     """Remove a word from the banned words list."""
     with _slsk_banned_words_lock:
         _slsk_banned_words.pop(word.strip().lower(), None)
@@ -452,8 +424,6 @@ def api_delete_banned_word(word):
 
 
 @slsk_bp.route("/banned-words/dismiss-all", methods=["POST"])
-def api_dismiss_all_suggested_words():
+def api_dismiss_all_suggested_words() -> Any:
     """Move all suggested words into dismissed."""
-    # Dismiss by clearing (suggested words would be regenerated on next analysis)
     return jsonify({"success": True})
-
