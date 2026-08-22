@@ -67,7 +67,7 @@ def cleanup_stale_downloads() -> dict[str, int]:
 
     auto_deleted = 0
     try:
-        from services.downloads.download_folder_monitor_service import auto_delete_imported_folders
+        from services.downloads.download_folder_service import auto_delete_imported_folders
         auto_deleted = auto_delete_imported_folders()
     except Exception as exc:
         logger.debug("Auto-delete imported folders failed", error=str(exc))

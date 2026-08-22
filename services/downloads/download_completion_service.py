@@ -924,7 +924,7 @@ def check_completed_downloads() -> dict[str, Any]:
                     WHERE found_filename IS NOT NULL
                       AND found_filename <> ''
                       AND status NOT IN ('downloading', 'queued', 'failed', 'searching')
-                })).fetchall() or []
+                """)).fetchall() or []
             for row in rows:
                 fn = (row[0] or "") if not hasattr(row, "_mapping") else (row._mapping.get("found_filename") or "")
                 if fn:

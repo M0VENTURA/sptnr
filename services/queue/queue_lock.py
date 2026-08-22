@@ -40,14 +40,14 @@ def _pg_advisory_lock(
     interval: float,
 ) -> Iterator[bool]:
     """Hold a PostgreSQL advisory lock on a DEDICATED raw connection."""
-    from db.utils import get_db_connection
+    from db.utils import get_db_connection_raw
 
     conn = None
     cursor = None
     acquired = False
     for _ in range(max(1, max_attempts)):
         try:
-            conn = get_db_connection()
+            conn = get_db_connection_raw(reason="advisory_lock")
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT pg_try_advisory_lock(hashtext(%s)) AS acquired",

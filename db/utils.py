@@ -54,13 +54,32 @@ def is_postgres_configured() -> bool:
 
 
 def get_db_connection() -> Any:
-    """Get a raw DBAPI (psycopg2/sqlite) connection from the SQLAlchemy pool."""
+    """Get a raw DBAPI (psycopg2/sqlite) connection from the SQLAlchemy pool.
+
+    Prefer ``db.engine.db_session`` / ``async_db_session`` for new code.
+    This legacy path exists for the few callers that genuinely need a raw
+    cursor (DDL migrations, long-running scans with per-row commits).  Use
+    ``get_db_connection_raw(reason=...)`` to signal an intentional use so the
+    deprecation warning is not logged for known-good callers.
+    """
     logger.warning(
-        "Legacy raw database connection requested", 
-        function="get_db_connection", 
-        recommendation="Use db.engine.get_engine() or db.engine.db_session() instead"
+        "Legacy raw database connection requested",
+        function="get_db_connection",
+        recommendation="Use db.engine.get_engine() or db.engine.db_session() instead",
     )
-    
+
+    from db.engine import get_engine
+    return get_engine().raw_connection()
+
+
+def get_db_connection_raw(reason: str = "") -> Any:
+    """Get a raw DBAPI connection for an INTENTIONAL raw-cursor use.
+
+    Same as ``get_db_connection`` but marks the caller as a known good use
+    (advisory locks that must hold a dedicated connection, long-running scans
+    with per-row commits), so the legacy-deprecation warning is not logged
+    for every queue cycle.
+    """
     from db.engine import get_engine
     return get_engine().raw_connection()
 
