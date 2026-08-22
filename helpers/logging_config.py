@@ -138,19 +138,58 @@ class SafePrefixFormatter(logging.Formatter):
 
 
 def setup_logging(service_name: str = "popularr") -> None:
-    """Configures centralized logging system."""
+    """Configures centralized logging system.
+
+    The structlog → stdlib bridge is ALWAYS configured (both modes), so
+    ``structlog.get_logger(__name__)`` calls from service modules flow into
+    the log files (info.log / debug.log / error.log / unified_scan.log) no
+    matter what ``STRUCTLOG`` is set to.  ``STRUCTLOG`` only selects the
+    on-disk rendering:
+
+    - ``STRUCTLOG=1`` → JSON (or ConsoleRenderer with ``STRUCTLOG_CONSOLE``)
+    - unset/``0``     → plain ``2026-08-23 09:00:00 [INFO] message`` lines
+    """
     log_dir = resolve_log_dir()
     use_structlog = os.environ.get("STRUCTLOG", "").strip() in ("1", "true", "yes")
 
-    if use_structlog:
-        _setup_structlog(service_name, log_dir)
-    else:
-        _setup_standard_logging(service_name, log_dir, use_structlog=False)
+    _configure_structlog_bridge()
+    _setup_standard_logging(service_name, log_dir, use_structlog=use_structlog)
 
 
-def _setup_structlog(service_name: str, log_dir: str) -> None:
-    """Configure structlog for JSON/Console output bridging to stdlib."""
-    
+def _plain_renderer(_logger: Any, _method: str, event_dict: dict[str, Any]) -> str:
+    """Render a structlog event dict as a plain log line.
+
+    Produces ``2026-08-23 09:00:00 [INFO] [module] message key=value`` — the
+    same shape the old stdlib formatter emitted, so the /logs page's
+    timestamp/level parsing keeps working.  Called by the plain (non-JSON)
+    ``ProcessorFormatter``; ``foreign_pre_chain`` has already populated
+    ``level`` / ``logger`` / ``timestamp`` before this runs.
+    """
+    ts = event_dict.get("timestamp", "")
+    level = str(event_dict.get("level", "info")).upper()
+    name = event_dict.get("logger", "")
+    event = event_dict.pop("event", "")
+    parts = [f"{ts} [{level}]" if ts else f"[{level}]"]
+    if name:
+        parts.append(f"[{name}]")
+    if event:
+        parts.append(str(event))
+    for key, value in event_dict.items():
+        if key in ("logger", "level", "timestamp"):
+            continue
+        parts.append(f"{key}={value!r}")
+    return " ".join(parts)
+
+
+def _configure_structlog_bridge() -> None:
+    """Wire structlog so its loggers flow into stdlib handlers.
+
+    Without this, ``structlog.get_logger(__name__).info(...)`` from the
+    structlog-converted service modules prints to stdout ONLY — nothing
+    reaches info.log / debug.log / error.log / unified_scan.log.  With the
+    bridge (``wrap_for_formatter``) every structlog call becomes a stdlib
+    record handled by the dictConfig handlers below.
+    """
     shared_processors = [
         structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,
@@ -170,8 +209,6 @@ def _setup_structlog(service_name: str, log_dir: str) -> None:
         logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,
     )
-
-    _setup_standard_logging(service_name, log_dir, use_structlog=True)
 
 
 def _setup_standard_logging(service_name: str, log_dir: str, use_structlog: bool = False) -> None:
@@ -197,10 +234,24 @@ def _setup_standard_logging(service_name: str, log_dir: str, use_structlog: bool
         }
         verbose_formatter = unified_formatter
     else:
-        unified_formatter = {"format": fmt, "datefmt": date_fmt}
+        # Plain mode: still use ProcessorFormatter so the structlog bridge
+        # records render cleanly (message + key=value) instead of dumping the
+        # event dict.  The processor adds its own "event" text; the stdlib
+        # formatter adds timestamp + level + logger name.
+        _pf_foreign_chain = [
+            structlog.stdlib.add_log_level,
+            structlog.stdlib.add_logger_name,
+            structlog.processors.TimeStamper(fmt="%Y-%m-%d %H:%M:%S", utc=False),
+        ]
+        unified_formatter = {
+            "()": structlog.stdlib.ProcessorFormatter,
+            "processor": _plain_renderer,
+            "foreign_pre_chain": _pf_foreign_chain,
+        }
         verbose_formatter = {
-            "format": "%(asctime)s.%(msecs)03d [%(levelname)s] [%(name)s] %(message)s",
-            "datefmt": date_fmt,
+            "()": structlog.stdlib.ProcessorFormatter,
+            "processor": _plain_renderer,
+            "foreign_pre_chain": _pf_foreign_chain,
         }
 
     config: dict[str, Any] = {
