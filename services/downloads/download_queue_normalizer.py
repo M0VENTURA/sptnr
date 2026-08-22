@@ -11,11 +11,14 @@ Called by:
 - manual maintenance
 """
 
-import logging
+from __future__ import annotations
+
+import structlog
 from sqlalchemy import text
+
 from db.engine import db_session
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 # ============================================================
@@ -23,16 +26,13 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 def normalize_download_queue() -> None:
-    """
-    Run all normalization steps.
-    """
-
-    logger.info("[QUEUE] Running normalization")
+    """Run all normalization steps."""
+    logger.info("Running queue normalization")
 
     normalize_invalid_status()
     normalize_stuck_items()
 
-    logger.info("[QUEUE] Normalization complete")
+    logger.info("Queue normalization complete")
 
 
 # ============================================================
@@ -40,15 +40,7 @@ def normalize_download_queue() -> None:
 # ============================================================
 
 def normalize_invalid_status() -> None:
-    """
-    Ensure all statuses are valid.
-
-    Uses the canonical ``ALL_QUEUE_STATUSES`` set from queue_constraints so
-    this can never silently reset legitimate statuses (e.g. ``processing``
-    or ``moving``) back to ``queued``.  The statuses are inlined into the
-    SQL — psycopg2 cannot adapt a Python set/list for ``NOT IN (:statuses)``.
-    """
-
+    """Ensure all statuses are valid."""
     from services.queue.queue_constraints import ALL_QUEUE_STATUSES
 
     status_sql = ", ".join(f"'{s}'" for s in sorted(ALL_QUEUE_STATUSES))
@@ -63,7 +55,7 @@ def normalize_invalid_status() -> None:
         count = result.rowcount or 0
 
     if count:
-        logger.warning("[QUEUE] Fixed %s invalid statuses", count)
+        logger.warning("Fixed invalid statuses", count=count)
 
 
 # ============================================================
@@ -71,10 +63,7 @@ def normalize_invalid_status() -> None:
 # ============================================================
 
 def normalize_stuck_items() -> None:
-    """
-    Reset items stuck in transient states.
-    """
-
+    """Reset items stuck in transient states."""
     with db_session() as session:
         result = session.execute(text("""
             UPDATE download_queue
@@ -86,7 +75,7 @@ def normalize_stuck_items() -> None:
         count = result.rowcount or 0
 
     if count:
-        logger.warning("[QUEUE] Reset %s stuck items", count)
+        logger.warning("Reset stuck items", count=count)
 
 
 # ============================================================
@@ -94,10 +83,7 @@ def normalize_stuck_items() -> None:
 # ============================================================
 
 def cleanup_failed_retries() -> None:
-    """
-    Reset retry counts or stale failures if needed.
-    """
-
+    """Reset retry counts or stale failures if needed."""
     with db_session() as session:
         result = session.execute(text("""
             UPDATE download_queue
@@ -108,4 +94,4 @@ def cleanup_failed_retries() -> None:
         count = result.rowcount or 0
 
     if count:
-        logger.info("[QUEUE] Reset retry count on %s items", count)
+        logger.info("Reset retry count on items", count=count)
