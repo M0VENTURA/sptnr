@@ -42,6 +42,9 @@ from services.scanning.pipelines.popularity_pipeline import (
     run_popularity_artist_scan,
 )
 
+from helpers.logging_config import log_unified
+from routes.scan_routes._common import is_process_alive
+
 
 def _start_targeted_popularity_scan(
     runner,
@@ -60,10 +63,45 @@ def _start_targeted_popularity_scan(
         # running.  Without this check two scans can overlap and clobber each
         # other's progress rows — which shows as a scan that "started" with
         # no log output (the other worker owns the popularity_scan row).
-        from services.scanning.pipelines.popularity_pipeline import is_popularity_scan_active
-
-        if is_runtime_running("popularity") or is_popularity_scan_active():
+        if is_runtime_running("popularity"):
             return False
+
+        # Cross-process: if the DB says a scan is running but no LIVE worker
+        # in THIS process owns it, the row is stale (a worker crashed before
+        # its finally, or a previous process was killed mid-scan) — self-heal
+        # it so targeted scans are never permanently blocked by a phantom
+        # "already running" (mirrors the dashboard API path).
+        from services.scanning.pipelines.popularity_pipeline import is_popularity_scan_active
+        from services.scanning.runtime_state import get_runtime
+        from services.scanning.scan_state import (
+            clear_progress_file,
+            get_scan_progress_path,
+            read_progress_file,
+        )
+
+        if is_popularity_scan_active():
+            _live_owner = False
+            for _scan_type in ("popularity_scan", "full_scan"):
+                _state = read_progress_file(get_scan_progress_path(_scan_type))
+                if _state.get("is_running"):
+                    _rt = get_runtime(_scan_type.replace("_scan", ""))
+                    if _rt is not None:
+                        _owner_thread = _rt.get("thread") if isinstance(_rt, dict) else _rt
+                        if is_process_alive(_owner_thread):
+                            _live_owner = True
+                            break
+            if _live_owner:
+                return False
+            # No live owner — the DB row is stale.  Reset it so THIS scan
+            # starts cleanly instead of being permanently blocked.
+            try:
+                for _scan_type in ("popularity_scan", "full_scan"):
+                    _state = read_progress_file(get_scan_progress_path(_scan_type))
+                    if _state.get("is_running"):
+                        clear_progress_file(get_scan_progress_path(_scan_type))
+                log_unified("Cleared stale scan-state rows (phantom 'already running') before starting targeted scan")
+            except Exception:
+                pass
 
         def _worker():
             try:
@@ -76,7 +114,6 @@ def _start_targeted_popularity_scan(
                 # failure is diagnosable (mirrors the dashboard API worker).
                 import traceback
 
-                from helpers.logging_config import log_unified
                 log_unified(f"[POPULARITY] Targeted worker failed: {exc}")
                 logger.error(
                     "[POPULARITY] Targeted worker failed: %s\n%s",
