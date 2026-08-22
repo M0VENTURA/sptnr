@@ -1,53 +1,47 @@
-"""MusicBrainz tag import/search/download routes — migrated from old app.py."""
+"""MusicBrainz tag import/search/download routes."""
 
 from __future__ import annotations
 
-import logging
-import os
-import time
 import re
+import threading
 from typing import Any
 
-from quart import Blueprint, jsonify, request, session
-
+from quart import Blueprint, jsonify, request
 from sqlalchemy import text
+
+from api_clients.musicbrainz_http import MusicBrainzHttpClient, MUSICBRAINZ_UUID_RE
 from db.engine import async_db_session, db_session
 from helpers.config_helpers import get_config
-from helpers.response_helpers import _ok, _fail
-from api_clients.musicbrainz_http import MusicBrainzHttpClient, MUSICBRAINZ_UUID_RE
-
 from services.downloads.download_pipeline_service import start_release_download
 from services.downloads.download_processing_service import queue_add
+import structlog
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 mb_bp = Blueprint("musicbrainz", __name__, url_prefix="/api/musicbrainz")
+
 _mb_client: MusicBrainzHttpClient | None = None
+_client_lock = threading.Lock()
 
 
 def _quote_ident(identifier: str, bind: Any) -> str:
-    """Safely quote a database identifier for a dynamic SQL clause.
-
-    Request-supplied column names are quoted with the dialect's identifier
-    preparer (double-quoted + escaped), so an attacker-supplied value can
-    never break out of the identifier position and inject SQL.
-    """
+    """Safely quote a database identifier for a dynamic SQL clause."""
     try:
         dialect = getattr(bind, "dialect", None)
         return dialect.identifier_preparer.quote(str(identifier))
     except Exception:
-        # Fall back to a conservative allow-list when the dialect is
-        # unavailable: reject anything that is not a plain identifier.
-        import re as _re
-        if _re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(identifier)):
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(identifier)):
             return f'"{identifier}"'
         raise ValueError(f"Invalid identifier: {identifier!r}")
 
 
 def _get_mb_client() -> MusicBrainzHttpClient:
+    """Return the process-wide shared MusicBrainzHttpClient singleton."""
     global _mb_client
     if _mb_client is None:
-        _mb_client = MusicBrainzHttpClient(enabled=True)
+        with _client_lock:
+            if _mb_client is None:
+                _mb_client = MusicBrainzHttpClient(enabled=True)
     return _mb_client
 
 
@@ -57,11 +51,7 @@ def _normalize_download_method(
     default_method: str = "slskd",
     context: str = "download request",
 ) -> tuple[str | None, str | None]:
-    """Resolve the effective download transport based on enabled integrations.
-
-    Soulseek (slskd) is the only download transport; a requested Soulseek
-    alias is normalised and the method is refused when slskd is disabled.
-    """
+    """Resolve the effective download transport based on enabled integrations."""
     method = str(requested_method or default_method).strip().lower()
     if method == "soulseek":
         method = "slskd"
@@ -78,8 +68,7 @@ def _normalize_download_method(
 
 
 def _frontend_status(db_status: Any) -> str:
-    """Map musicbrainz_releases.status to the status vocabulary the downloads
-    page badge/action logic understands (queued/downloading/completed/failed)."""
+    """Map musicbrainz_releases.status to frontend status vocabulary."""
     s = str(db_status or "").strip().lower()
     mapping = {
         "active": "queued",
@@ -94,13 +83,12 @@ def _frontend_status(db_status: Any) -> str:
     return mapping.get(s, s or "queued")
 
 
-
 # ---------------------------------------------------------------------------
 # GET /api/musicbrainz/tags/track
 # ---------------------------------------------------------------------------
 
 @mb_bp.route("/tags/track", methods=["GET"])
-def api_musicbrainz_tags_track():
+def api_musicbrainz_tags_track() -> Any:
     """Get MusicBrainz tags for a single track."""
     artist = request.args.get("artist", "").strip()
     title = request.args.get("title", "").strip()
@@ -114,6 +102,7 @@ def api_musicbrainz_tags_track():
         )
         return jsonify({"success": True, "recordings": recordings})
     except Exception as exc:
+        logger.error("Failed to fetch track tags", error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
@@ -122,7 +111,7 @@ def api_musicbrainz_tags_track():
 # ---------------------------------------------------------------------------
 
 @mb_bp.route("/tags/album", methods=["GET"])
-def api_musicbrainz_tags_album():
+def api_musicbrainz_tags_album() -> Any:
     """Get MusicBrainz tags for all tracks in an album."""
     artist = request.args.get("artist", "").strip()
     album = request.args.get("album", "").strip()
@@ -137,6 +126,7 @@ def api_musicbrainz_tags_album():
             rows = result.fetchall()
         return jsonify({"success": True, "tracks": [dict(r._mapping) for r in rows]})
     except Exception as exc:
+        logger.error("Failed to fetch album tags", artist=artist, album=album, error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
@@ -145,8 +135,7 @@ def api_musicbrainz_tags_album():
 # ---------------------------------------------------------------------------
 
 @mb_bp.route("/import/track", methods=["POST"])
-def api_musicbrainz_import_track():
-    """Import MusicBrainz tags from MP3 for a single track."""
+def api_musicbrainz_import_track() -> Any:
     return jsonify({"success": True, "message": "Track import queued"}), 200
 
 
@@ -155,8 +144,7 @@ def api_musicbrainz_import_track():
 # ---------------------------------------------------------------------------
 
 @mb_bp.route("/import/album", methods=["POST"])
-def api_musicbrainz_import_album():
-    """Import MusicBrainz tags from MP3s for all tracks in an album."""
+def api_musicbrainz_import_album() -> Any:
     return jsonify({"success": True, "message": "Album import queued"}), 200
 
 
@@ -165,8 +153,7 @@ def api_musicbrainz_import_album():
 # ---------------------------------------------------------------------------
 
 @mb_bp.route("/import/artist", methods=["POST"])
-def api_musicbrainz_import_artist():
-    """Import MusicBrainz tags from MP3s for all tracks by an artist."""
+def api_musicbrainz_import_artist() -> Any:
     return jsonify({"success": True, "message": "Artist import queued"}), 200
 
 
@@ -175,28 +162,25 @@ def api_musicbrainz_import_artist():
 # ---------------------------------------------------------------------------
 
 @mb_bp.route("/tag/update", methods=["POST"])
-async def api_musicbrainz_tag_update():
-    """Update a MusicBrainz tag in the database and optionally write to MP3."""
+async def api_musicbrainz_tag_update() -> Any:
+    """Update a MusicBrainz tag in the database."""
     data = (await request.get_json()) or {}
     artist = data.get("artist", "").strip()
     album = data.get("album", "").strip()
     title = data.get("title", "").strip()
     field_name = data.get("field", "").strip()
     field_value = data.get("value", "").strip()
-    write_to_mp3 = data.get("write_to_mp3", False)
     if not (artist and album and title and field_name):
         return jsonify({"error": "Missing required fields"}), 400
     try:
         async with async_db_session() as session:
-            # ``field_name`` comes from the request body — quote the identifier
-            # via the dialect so an attacker-supplied column can never inject
-            # SQL (previously interpolated raw into the SET clause).
             result = await session.execute(
                 text(f"UPDATE tracks SET {_quote_ident(field_name, session.get_bind())} = :value WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album AND title = :title"),
                 {"value": field_value, "artist": artist, "album": album, "title": title},
             )
         return jsonify({"success": True, "updated": result.rowcount})
     except Exception as exc:
+        logger.error("Tag update failed", field=field_name, error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
@@ -205,8 +189,7 @@ async def api_musicbrainz_tag_update():
 # ---------------------------------------------------------------------------
 
 @mb_bp.route("/tag/write-to-mp3", methods=["POST"])
-def api_musicbrainz_tag_write_mp3():
-    """Write MusicBrainz tags to MP3 file (without database update)."""
+def api_musicbrainz_tag_write_mp3() -> Any:
     return jsonify({"success": True, "message": "Tag write not yet implemented"}), 200
 
 
@@ -215,7 +198,7 @@ def api_musicbrainz_tag_write_mp3():
 # ---------------------------------------------------------------------------
 
 @mb_bp.route("/tags/batch-update", methods=["POST"])
-async def api_musicbrainz_batch_update():
+async def api_musicbrainz_batch_update() -> Any:
     """Update multiple MusicBrainz tags at once."""
     data = (await request.get_json()) or {}
     artist = data.get("artist", "").strip()
@@ -226,9 +209,6 @@ async def api_musicbrainz_batch_update():
         return jsonify({"error": "Missing required fields"}), 400
     try:
         async with async_db_session() as session:
-            # Column names AND values both come from the request body: quote
-            # every identifier via the dialect and use generated bind names so
-            # neither the SET clause nor the parameter names can inject SQL.
             set_parts: list[str] = []
             params: dict[str, Any] = {"artist": artist, "album": album, "title": title}
             for _i, (_k, _v) in enumerate(tags.items()):
@@ -241,26 +221,20 @@ async def api_musicbrainz_batch_update():
             )
         return jsonify({"success": True, "updated": result.rowcount})
     except Exception as exc:
+        logger.error("Batch update failed", error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
 # ---------------------------------------------------------------------------
-# POST /api/musicbrainz/search
+# SEARCH & DEDUPE HELPERS
 # ---------------------------------------------------------------------------
 
 def _normalise_search_key(value: str) -> str:
-    """Lowercase + strip non-alphanumerics for library cross-referencing."""
     return re.sub(r"[^a-zA-Z0-9]+", "", (value or "").lower())
 
 
 def _dedupe_owned_releases(releases: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Strip MusicBrainz release-groups the user already owns.
-
-    A release-group is considered owned when its release-group MBID, or its
-    normalised (artist, album) title pair, already exists in the local
-    ``tracks`` table.  Local ``missing_releases`` rows (source "local") are
-    never touched.  Best-effort: any DB failure leaves the list unchanged.
-    """
+    """Strip MusicBrainz release-groups the user already owns."""
     try:
         from sqlalchemy import text as _lib_text
         from db.engine import db_session as _lib_db_session
@@ -327,29 +301,17 @@ def _dedupe_owned_releases(releases: list[dict[str, Any]]) -> list[dict[str, Any
 
         return [r for r in releases if r.get("source") != "musicbrainz" or not _is_owned(r)]
     except Exception as exc:
-        logger.debug("[MB_SEARCH] Library dedupe failed: %s", exc)
+        logger.debug("Library dedupe failed", error=str(exc))
         return releases
 
 
+# ---------------------------------------------------------------------------
+# POST /api/musicbrainz/search
+# ---------------------------------------------------------------------------
+
 @mb_bp.route("/search", methods=["POST"])
-async def api_musicbrainz_search():
-    """Search MusicBrainz for releases + local cached missing releases.
-
-    Accepts structured fields so each search-form entry maps to the correct
-    MusicBrainz Lucene index:
-
-        artist  → artist:"<name>"
-        album   → releasegroup:"<title>"
-        track   → recording:"<title>"   (searched on the release index)
-        year    → date:<year>
-
-    Legacy callers may still send ``query`` (+ optional ``artist_only``); those
-    are routed to ``artist`` / ``releasegroup`` respectively.
-
-    Results mirror the legacy behaviour: local ``missing_releases`` are merged
-    in first, and every release is enriched with ``category``, ``cover_art_url``
-    (Cover Art Archive) and ``source`` (local | musicbrainz).
-    """
+async def api_musicbrainz_search() -> Any:
+    """Search MusicBrainz for releases + local cached missing releases."""
     payload = (await request.get_json(silent=True)) or {}
     artist = str(payload.get("artist", "")).strip()
     album = str(payload.get("album", "")).strip()
@@ -358,22 +320,12 @@ async def api_musicbrainz_search():
     query = str(payload.get("query", "")).strip()
     artist_only = bool(payload.get("artist_only", False))
     release_type = str(payload.get("type") or payload.get("release_type") or "").strip().lower()
-    # Folder-match / re-match searches want the release even when it already
-    # exists in the library — the library-dedupe step below is skipped so the
-    # user can pick the owned release and associate the folder with it.
     include_owned = bool(payload.get("include_owned", False))
 
     def _esc(value: str) -> str:
         return value.replace('"', "")
 
-    def _type_query_term(release_type: str) -> str | None:
-        """Map a UI dropdown type to a MusicBrainz Lucene term.
-
-        ``primary_type`` only supports album / single / ep / broadcast / other.
-        Live / Remix / Compilation / Soundtrack are ``secondary-type`` values,
-        so they must use ``secondarytype:`` instead of ``primarytype:``.
-        """
-        rt = (release_type or "").lower()
+    def _type_query_term(rt: str) -> str | None:
         if not rt or rt in ("", "all"):
             return None
         primary_types = {"album": "album", "single": "single", "ep": "ep",
@@ -398,23 +350,13 @@ async def api_musicbrainz_search():
             return "Album"
         return primary_type or "Other"
 
-    def _category_from_types(primary_type: str, secondary_types) -> str:
-        """Derive a display category combining primary + secondary types.
-
-        MusicBrainz ``primary_type`` is only ever Album / Single / EP /
-        Broadcast / Other.  Live, Remix, Compilation and Soundtrack are
-        ``secondary-types`` on the release-group — without this they all get
-        lumped under "Album".
-        """
+    def _category_from_types(primary_type: str, secondary_types: Any) -> str:
         pt = _normalise_category(primary_type)
-
         secondary = secondary_types or []
         if isinstance(secondary, str):
             secondary = [secondary]
         sec = [str(s).strip().lower() for s in secondary if str(s).strip()]
 
-        # Secondary types take precedence for display grouping so Live /
-        # Remix / Compilation / Soundtrack get their own sections.
         for label, keys in (
             ("Live", ("live",)),
             ("Remix", ("remix",)),
@@ -437,11 +379,7 @@ async def api_musicbrainz_search():
         primary_type = rg.get("primary-type") or rg.get("type") or "Other"
         secondary_types = rg.get("secondary-types") or rg.get("secondary_type") or []
         artist_credit = rg.get("artist-credit") or []
-        # Primary artist = the FIRST credit name only.  A collab release
-        # credits multiple artists ("Weezer & Rivers Cuomo"); the joined
-        # string must never become the album artist (Navidrome splits the
-        # album).  The full joined credit is kept in ``artist_credit`` for
-        # per-track use.
+        
         artist_name = ""
         if artist_credit and isinstance(artist_credit, list):
             first = artist_credit[0]
@@ -454,7 +392,6 @@ async def api_musicbrainz_search():
 
         raw_date = rg.get("first-release-date")
         first_release_date = str(raw_date) if raw_date else ""
-
         cover_art_url = f"https://coverartarchive.org/release-group/{rgid}/front-250" if rgid else ""
 
         return {
@@ -471,20 +408,6 @@ async def api_musicbrainz_search():
         }
 
     def _attach_concrete_releases(rg: dict[str, Any]) -> dict[str, Any]:
-        """Enrich a release-group result with its concrete releases.
-
-        The MusicBrainz release-group search returns ONE row per group, but a
-        group (e.g. a deluxe reissue with multiple editions / formats /
-        countries) has MANY concrete releases.  Browsing the group's releases
-        lets the album-page flow ask "which specific release do you mean?"
-        instead of silently auto-applying a guessed one.
-
-        Each concrete release is normalised to the album-page release-picker
-        contract (``id``, ``title``, ``date``, ``country``, ``status``,
-        ``disambiguation``, ``track_count``, ``disc_count``, ``formats``,
-        ``cover_art_url``).  Best-effort: on any failure the group is
-        returned unchanged (no ``releases`` key).
-        """
         rgid = str(rg.get("id") or "")
         if not rgid:
             return rg
@@ -515,17 +438,14 @@ async def api_musicbrainz_search():
                     "track_count": total_tracks,
                     "disc_count": len(media),
                     "formats": [f for f in formats if f],
-                    "cover_art_url": (
-                        f"https://coverartarchive.org/release/{rid}/front-250"
-                    ),
+                    "cover_art_url": f"https://coverartarchive.org/release/{rid}/front-250",
                 })
-            # Sort chronologically (blank dates last) for a stable picker.
             releases.sort(key=lambda x: (x.get("date") == "", x.get("date") or ""))
             if releases:
                 rg = dict(rg)
                 rg["releases"] = releases
         except Exception as exc:
-            logger.debug("[MB_SEARCH] Concrete-release enrich skipped for %s: %s", rgid, exc)
+            logger.debug("Concrete-release enrich skipped", release_group_id=rgid, error=str(exc))
         return rg
 
     def _enrich_release_group_with_releases(rg: dict[str, Any], source: str) -> dict[str, Any]:
@@ -533,18 +453,14 @@ async def api_musicbrainz_search():
 
     try:
         client = _get_mb_client()
-
         releases: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
 
-        # ── 1. Local missing_releases merge (legacy parity) ──────────────
         try:
-            from sqlalchemy import text as _text
-            from db.engine import db_session as _db_session
-            with _db_session() as session:
+            with db_session() as session:
                 if artist_only:
                     result = session.execute(
-                        _text("""
+                        text("""
                             SELECT artist, release_id, title, primary_type, first_release_date, cover_art_url, category
                             FROM missing_releases
                             WHERE LOWER(artist) = LOWER(:q)
@@ -556,7 +472,7 @@ async def api_musicbrainz_search():
                 else:
                     term = f"%{(artist or album or track or query)}%"
                     result = session.execute(
-                        _text("""
+                        text("""
                             SELECT artist, release_id, title, primary_type, first_release_date, cover_art_url, category
                             FROM missing_releases
                             WHERE artist ILIKE :term OR title ILIKE :term
@@ -566,8 +482,6 @@ async def api_musicbrainz_search():
                         {"term": term},
                     )
                 for row in result.fetchall() or []:
-                    # SQLAlchemy 2.0 Row objects do not support string indexing
-                    # (``row["col"]`` raises TypeError) — read via ``_mapping``.
                     _m = row._mapping
                     artist_name = str(_m["artist"] or "")
                     release_id = str(_m["release_id"] or "")
@@ -577,13 +491,6 @@ async def api_musicbrainz_search():
                     seen_ids.add(result_id)
                     pt = str(_m["primary_type"] or "")
                     row_cat = str(_m["category"] or "")
-                    # Apply the UI type filter to local results too, so cached
-                    # entries of other types don't leak in when a type is
-                    # selected. Filter on the stored category when present
-                    # (the derived column), falling back to the derived type —
-                    # stale primary_type columns (e.g. singles persisted with
-                    # a default primary type of "Album") must not leak
-                    # through when a type is chosen.
                     if release_type and release_type not in ("", "all"):
                         local_cat = (row_cat or _category_from_types(pt or "Other", [])).lower()
                         if local_cat != release_type:
@@ -593,10 +500,6 @@ async def api_musicbrainz_search():
                         "title": str(_m["title"] or ""),
                         "primary_type": pt or row_cat,
                         "secondary_types": [],
-                        # Use the stored derived category when present — the
-                        # primary_type column is often stale (e.g. remixes
-                        # persisted with a default "Album"), and normalising
-                        # it would override the correct "Remix"/"Live" label.
                         "category": row_cat or _normalise_category(pt or "Other"),
                         "first_release_date": str(_m["first_release_date"] or ""),
                         "artist": artist_name,
@@ -605,12 +508,8 @@ async def api_musicbrainz_search():
                         "source": "local",
                     })
         except Exception as exc:
-            logger.debug("[MB_SEARCH] Local missing-releases merge failed: %s", exc)
+            logger.debug("Local missing-releases merge failed", error=str(exc))
 
-        # ── 2. MusicBrainz search ────────────────────────────────────────
-        # Track term present → search the RELEASE index (release-group index
-        # has no ``recording`` field). Otherwise → release-group index with
-        # field-aware Lucene query.
         if track:
             track_parts = [f'recording:"{_esc(track)}"']
             if artist:
@@ -664,10 +563,6 @@ async def api_musicbrainz_search():
                 parts.append(type_term)
 
             if not parts:
-                # Legacy free-text query path.  The old system sent the raw
-                # free-text query (no field prefix) so MusicBrainz matches it
-                # across title AND artist — "Mudvayne" finds releases BY
-                # Mudvayne, not just releases whose title contains "Mudvayne".
                 if not query:
                     return jsonify({"error": "query required"}), 400
                 parts.append(
@@ -675,7 +570,6 @@ async def api_musicbrainz_search():
                 )
 
             mb_query = " AND ".join(parts)
-
             if not mb_query.strip():
                 return jsonify({"error": "query required"}), 400
 
@@ -686,13 +580,6 @@ async def api_musicbrainz_search():
             })
             raw_groups = raw.get("release-groups", []) if isinstance(raw.get("release-groups"), list) else []
 
-            # ── Punctuation-free releasegroup fallback ────────────────────
-            # The quoted ``releasegroup:"…"`` phrase fails for punctuation-heavy
-            # titles — MusicBrainz's index tokenises "GOLDEN HOUR: Part.4"
-            # differently from the stored "GOLDEN HOUR : Part.4" (colon/spacing),
-            # so the phrase returns zero even though the release-group exists.
-            # Retry with an UNQUOTED term query (all terms ANDed), which ranks
-            # the exact group first, before the broader artist-only fallback.
             if not raw_groups and album and not artist_only:
                 try:
                     from helpers.normalization_service import normalize_title_for_lucene_query
@@ -708,23 +595,9 @@ async def api_musicbrainz_search():
                             if isinstance(_rg_fallback.get("release-groups"), list)
                             else []
                         )
-                        if raw_groups:
-                            logger.info(
-                                "[MB_SEARCH] Quoted phrase '%s' returned 0 — falling back to unquoted releasegroup terms for '%s'",
-                                mb_query, album,
-                            )
                 except Exception as exc:
-                    logger.debug("[MB_SEARCH] Unquoted releasegroup fallback failed: %s", exc)
+                    logger.debug("Unquoted releasegroup fallback failed", error=str(exc))
 
-            # ── Artist+album fallback (legacy parity) ─────────────────────
-            # MusicBrainz's release-group index applies strict phrase matching
-            # on quoted ``artist:"…" AND releasegroup:"…"`` queries, so a
-            # multi-word artist + a generic album title ("spice girls" +
-            # "greatest hits") can return zero hits even when the release
-            # exists (e.g. the group is titled "Greatest Hits (Deluxe)" or
-            # the artist credit differs slightly).  When a structured artist
-            # search comes up empty, retry with artist-only so the user always
-            # sees the artist's releases (old_system did the same).
             if not raw_groups and artist and not artist_only:
                 try:
                     artist_only_query = f'artist:"{_esc(artist)}"'
@@ -735,16 +608,11 @@ async def api_musicbrainz_search():
                     })
                     raw_groups = (
                         raw_fallback.get("release-groups", [])
-                        if isinstance(raw_fallback.get("release-groups"), list)
+                        if isinstance(_rg_fallback.get("release-groups"), list)
                         else []
                     )
-                    if raw_groups:
-                        logger.info(
-                            "[MB_SEARCH] Combined query '%s' returned 0 — falling back to artist-only for '%s'",
-                            mb_query, artist,
-                        )
                 except Exception as exc:
-                    logger.debug("[MB_SEARCH] Artist-only fallback failed: %s", exc)
+                    logger.debug("Artist-only fallback failed", error=str(exc))
 
             for rg in raw_groups:
                 rgid = str(rg.get("id") or "")
@@ -760,44 +628,15 @@ async def api_musicbrainz_search():
                 seen_ids.add(result_id)
                 releases.append(_enrich_release_group_with_releases(rg, "musicbrainz"))
 
-        # ── 2b. Unified type post-filter (defence in depth) ─────────────
-        # The Lucene ``primarytype:`` / ``secondarytype:`` terms narrow the
-        # MusicBrainz query, but local rows and edge-case MB data can still
-        # slip through. Re-filter the combined list so the UI type dropdown
-        # is authoritative: primary types (album/single/ep/...) match on the
-        # release-group's primary type; secondary types (compilation/live/
-        # remix/...) match on the derived display category.
         if release_type and release_type not in ("", "all"):
-            # Match on the derived display category (primary + secondary
-            # types): "Album" must exclude remix/live/compilation/soundtrack
-            # release-groups (primary type Album + a secondary type) and any
-            # stale rows whose primary_type alone would match.
             releases = [
                 r for r in releases
                 if str(r.get("category") or r.get("primary_type") or "").lower() == release_type
             ]
 
-        # ── 2c. Library dedupe (discovery accuracy) ─────────────────────
-        # Release-groups the user already owns are useless in the discovery
-        # list.  Strip any MusicBrainz result whose release-group MBID or
-        # normalised (artist, album) title already exists in the local
-        # library, so the MusicBrainz tab count reflects only missing albums.
-        # Local ``missing_releases`` rows (source "local") are untouched.
-        #
-        # The dedupe only applies to DISCOVERY-style searches: artist-only
-        # browsing or free-text queries, where owned groups are just noise.
-        # When the caller searches for a SPECIFIC release (an explicit
-        # ``album`` or ``track`` term) the intent is to locate/match that
-        # release — the album page lookup, folder-match and re-match flows
-        # all search this way — so hiding the owned release-group makes the
-        # search look broken ("no results for albums I already own", the
-        # old_system's album lookup never deduped).  ``include_owned``
-        # remains an explicit opt-out for the shared modal callers that want
-        # discovery semantics restored on a targeted search.
         if not include_owned and not album and not track:
             releases = _dedupe_owned_releases(releases)
 
-        # ── 3. Sort (legacy parity): artist asc, then first release date desc
         if artist_only:
             releases.sort(key=lambda x: str(x.get("first_release_date") or ""), reverse=True)
         else:
@@ -806,20 +645,13 @@ async def api_musicbrainz_search():
                 reverse=True,
             )
 
-        # ── 4. Best-effort cached track counts ──────────────────────────
-        # The release-group search API exposes no track count; surface the
-        # cached total when this release was already queued/downloaded
-        # (musicbrainz_releases.total_tracks) so users can spot 4-track
-        # promos vs full albums before queueing.  No extra MB API calls.
         try:
-            from sqlalchemy import text as _mb_text
-            from db.engine import db_session as _mb_db_session
             _ids = [str(r.get("id") or "") for r in releases if r.get("id")]
             _counts: dict[str, int] = {}
             if _ids:
-                with _mb_db_session() as session:
+                with db_session() as session:
                     for row in session.execute(
-                        _mb_text("SELECT release_id, total_tracks FROM musicbrainz_releases WHERE release_id IN :ids"),
+                        text("SELECT release_id, total_tracks FROM musicbrainz_releases WHERE release_id IN :ids"),
                         {"ids": tuple(_ids)},
                     ).fetchall():
                         if row[1]:
@@ -831,6 +663,7 @@ async def api_musicbrainz_search():
 
         return jsonify({"success": True, "releases": releases})
     except Exception as exc:
+        logger.error("MusicBrainz search failed", error=str(exc), exc_info=True)
         return jsonify({"error": str(exc)}), 500
 
 
@@ -839,8 +672,7 @@ async def api_musicbrainz_search():
 # ---------------------------------------------------------------------------
 
 @mb_bp.route("/search/releases", methods=["GET"])
-def api_musicbrainz_search_releases():
-    """Search MusicBrainz for releases by artist and album."""
+def api_musicbrainz_search_releases() -> Any:
     artist = request.args.get("artist", "").strip()
     album = request.args.get("album", "").strip()
     if not artist or not album:
@@ -853,22 +685,17 @@ def api_musicbrainz_search_releases():
         )
         return jsonify({"success": True, "releases": releases})
     except Exception as exc:
+        logger.error("Search releases failed", error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
 # ---------------------------------------------------------------------------
-# GET /api/musicbrainz/search-releases  (hyphen — used by the modal JS)
+# GET /api/musicbrainz/search-releases
 # ---------------------------------------------------------------------------
 
 @mb_bp.route("/search-releases", methods=["GET"])
-def api_musicbrainz_search_releases_modal():
-    """Search MusicBrainz release-groups for the search modal.
-
-    Query params:
-        q (str): Free-text search query.
-        type (str, optional): Release type filter (album, single, ep, etc.).
-        limit (int, optional): Max results (default 25, max 50).
-    """
+def api_musicbrainz_search_releases_modal() -> Any:
+    """Search MusicBrainz release-groups for the search modal."""
     query = request.args.get("q", "").strip()
     release_type = request.args.get("type", "").strip().lower()
     limit = min(int(request.args.get("limit", 25)), 50)
@@ -878,14 +705,11 @@ def api_musicbrainz_search_releases_modal():
 
     try:
         client = _get_mb_client()
-
-        # Build MusicBrainz query
         mb_query_parts = [f'releasegroup:"{query.replace(chr(34), "")}"']
         if release_type and release_type not in ("", "all"):
             mb_query_parts.append(f'primarytype:{release_type}')
         mb_query = " AND ".join(mb_query_parts)
 
-        # Search release-groups with genres and release data
         payload = client.get("release-group/", params={
             "query": mb_query,
             "fmt": "json",
@@ -896,7 +720,6 @@ def api_musicbrainz_search_releases_modal():
 
         releases = []
         for rg in groups:
-            # Extract artist credit
             artist_credit = rg.get("artist-credit", [])
             artist_name = ""
             if artist_credit and isinstance(artist_credit, list):
@@ -916,11 +739,7 @@ def api_musicbrainz_search_releases_modal():
             rg_mbid = rg.get("id", "") or ""
             raw_date = rg.get("first-release-date")
             first_release_date = str(raw_date) if raw_date else ""
-
-            # Build cover art URL from Cover Art Archive using release-group MBID
-            cover_art_url = ""
-            if rg_mbid:
-                cover_art_url = f"https://coverartarchive.org/release-group/{rg_mbid}/front-250"
+            cover_art_url = f"https://coverartarchive.org/release-group/{rg_mbid}/front-250" if rg_mbid else ""
 
             release = {
                 "id": rg_mbid,
@@ -935,7 +754,6 @@ def api_musicbrainz_search_releases_modal():
                 "releases": [],
             }
 
-            # Include contained releases for the "Choose Release" dropdown
             contained = rg.get("releases", [])
             if isinstance(contained, list):
                 for rel in contained:
@@ -953,23 +771,20 @@ def api_musicbrainz_search_releases_modal():
             releases.append(release)
 
         return jsonify({"releases": releases})
-
     except Exception as exc:
-        logger.error("MusicBrainz search-releases failed: %s", exc, exc_info=True)
+        logger.error("Modal search-releases failed", error=str(exc), exc_info=True)
         return jsonify({"releases": [], "error": str(exc)})
 
 
 # ---------------------------------------------------------------------------
-# GET /api/musicbrainz/release-picker  (slide-over Release Picker flyout)
+# GET /api/musicbrainz/release-picker
 # ---------------------------------------------------------------------------
 
 def _picker_total_tracks(release: dict[str, Any]) -> int:
-    """Sum track counts across all media (CDs/discs)."""
     return sum(int((m.get("track-count") or 0)) for m in (release.get("media") or []))
 
 
 def _picker_formats(release: dict[str, Any]) -> str:
-    """Unique media formats, deduped, preserving order."""
     formats = [
         str(m.get("format") or "").strip()
         for m in (release.get("media") or [])
@@ -978,14 +793,12 @@ def _picker_formats(release: dict[str, Any]) -> str:
     return ", ".join(dict.fromkeys(formats)) or "Digital/CD"
 
 
-def _picker_tracklist_html(client, release_id: str) -> str:
-    """HTML fragment for the per-release 'Preview Tracks' toggle."""
+def _picker_tracklist_html(client: MusicBrainzHttpClient, release_id: str) -> str:
     import html as _html
-
     try:
         release = client.get_release(release_id, inc="media+recordings")
     except Exception as exc:
-        logger.error("[MB_PICKER] tracklist failed for %s: %s", release_id, exc)
+        logger.error("Tracklist fetch failed in release picker", release_id=release_id, error=str(exc))
         return "<div class='text-danger small'>Failed to load tracklist.</div>"
     if not release:
         return "<div class='text-muted small'>No tracklist available.</div>"
@@ -1009,21 +822,11 @@ def _picker_tracklist_html(client, release_id: str) -> str:
 
 
 @mb_bp.route("/release-picker", methods=["GET"])
-async def api_musicbrainz_release_picker():
-    """Slide-over release picker for a MusicBrainz release group.
-
-    Modes:
-      ``?rg_id=...&artist=...&album=...`` → HTML cards for every release
-          under the release group, sorted official-first then by track count
-          desc (mirrors ``resolve_release_id`` so the default view matches
-          what blind queueing would have picked).
-      ``?release_id=<mbid>`` → HTML tracklist fragment for one release
-          (used by the "Preview Tracks" toggle).
-    """
+async def api_musicbrainz_release_picker() -> Any:
+    """Slide-over release picker for a MusicBrainz release group."""
     from quart import render_template_string as _render
 
     client = _get_mb_client()
-
     release_id = (request.args.get("release_id") or "").strip()
     if release_id:
         return _picker_tracklist_html(client, release_id)
@@ -1037,13 +840,12 @@ async def api_musicbrainz_release_picker():
     try:
         releases = client.browse_releases_for_group(rg_id, inc="media", limit=100)
         if not releases:
-            # The id may already be a concrete release — hop to its group.
             release = client.get_release(rg_id, inc="release-groups")
             group_id = ((release or {}).get("release-group") or {}).get("id")
             if group_id:
                 releases = client.browse_releases_for_group(group_id, inc="media", limit=100)
     except Exception as exc:
-        logger.error("[MB_PICKER] browse failed for %s: %s", rg_id, exc)
+        logger.error("Release picker browse failed", release_group_id=rg_id, error=str(exc))
         return "<div class='alert alert-danger m-3'>Failed to fetch releases from MusicBrainz.</div>", 500
 
     processed = []
@@ -1060,14 +862,10 @@ async def api_musicbrainz_release_picker():
             "artist": artist,
         })
 
-    # Official editions first, then most tracks — the same ranking the smart
-    # resolver uses, so the top card equals what a blind queue would get.
     processed.sort(
         key=lambda r: (str(r["status"]).lower() != "official", -r["track_count"])
     )
 
-    # JSON mode: the release-picker flyout probes the group first and
-    # auto-queues when it contains exactly ONE release (no flyout needed).
     if request.args.get("format", "").strip().lower() == "json":
         return jsonify({
             "releases": processed,
@@ -1130,14 +928,14 @@ async def api_musicbrainz_release_picker():
 # ---------------------------------------------------------------------------
 
 @mb_bp.route("/releases/active", methods=["GET"])
-def api_get_active_releases():
-    """Get all active MusicBrainz releases with download progress."""
+def api_get_active_releases() -> Any:
     try:
         with db_session() as session:
             result = session.execute(text("SELECT * FROM musicbrainz_releases WHERE status != 'finalized' ORDER BY created_at DESC LIMIT 50"))
             rows = result.fetchall()
         return jsonify({"success": True, "releases": [dict(r._mapping) for r in rows]})
     except Exception as exc:
+        logger.error("Failed to get active releases", error=str(exc))
         return jsonify({"error": str(exc)}), 500
 
 
@@ -1146,19 +944,15 @@ def api_get_active_releases():
 # ---------------------------------------------------------------------------
 
 @mb_bp.route("/download", methods=["POST"])
-async def api_musicbrainz_download():
-    """Initiate a managed download from a MusicBrainz release with full track integration."""
+async def api_musicbrainz_download() -> Any:
+    """Initiate a managed download from a MusicBrainz release."""
     data = (await request.get_json(silent=True)) or {}
     release_id = str(data.get("release_id") or "").strip()
     release_title = str(data.get("release_title") or "").strip()
     artist = str(data.get("artist") or "").strip()
     method = str(data.get("method") or "").strip().lower()
     persistent_search = bool(data.get("persistent_search", False))
-    max_retries = data.get("max_retries", 3)
     session_id = data.get("session_id")
-    # When set, the album is added as plain queue items grouped by
-    # import_group (a "queue item folder") instead of being tracked as a
-    # MusicBrainz monitoring release ("folder group").
     queue_items_only = bool(data.get("queue_items_only", False))
 
     if not all([release_id, release_title, artist]):
@@ -1182,11 +976,9 @@ async def api_musicbrainz_download():
         )
 
         if not result.get("success"):
-            # Fall back to a simple single-item download when MusicBrainz data is unavailable.
             logger.warning(
-                "[MB_DOWNLOAD] start_release_download failed for %s: %s — falling back to simple queue add",
-                release_id,
-                result.get("error"),
+                "start_release_download failed — falling back to simple queue add",
+                release_id=release_id, error=result.get("error"),
             )
             add_result = queue_add({
                 "artist": artist,
@@ -1201,7 +993,7 @@ async def api_musicbrainz_download():
             return jsonify({
                 "success": True,
                 "tracking_id": queue_id,
-                "message": f"Download queued for {release_title} (MusicBrainz data not available, using simple search)",
+                "message": f"Download queued for {release_title} (Fallback search)",
                 "persistent_search": persistent_search,
                 "session_id": session_id,
             }), 201
@@ -1209,14 +1001,9 @@ async def api_musicbrainz_download():
         tracking_id = result.get("mb_release_db_id")
         queued_tracks = int(result.get("queue_items_created") or 0)
 
-        # When no monitoring folder group is created (queue_items_only), expose
-        # the first queue item id as a tracking handle so the UI has something
-        # concrete to report.
         if not tracking_id and result.get("queue_ids"):
             tracking_id = result.get("queue_ids")[0]
 
-        # Wake the queue worker immediately (add_release_tracks_to_queue
-        # inserts directly without signalling).
         try:
             from services.queue.queue_signal import signal_new_item
             signal_new_item()
@@ -1234,16 +1021,15 @@ async def api_musicbrainz_download():
         }), 201
 
     except Exception as exc:
-        logger.error("[MB_DOWNLOAD] Error: %s", exc, exc_info=True)
+        logger.error("Download endpoint error", error=str(exc), exc_info=True)
         return jsonify({"error": str(exc)}), 500
 
 
 # ---------------------------------------------------------------------------
-# POST /api/musicbrainz/link-album-mbids
+# LINKING HELPERS & ROUTE
 # ---------------------------------------------------------------------------
 
 def _normalise_track_key(value: Any) -> str:
-    """Normalise a track title for fuzzy matching (lowercase, non-alphanumerics stripped)."""
     return re.sub(r"[^a-z0-9]+", "", (str(value or "").lower()))
 
 
@@ -1251,14 +1037,6 @@ def _match_release_tracklist(
     local_tracks: list[dict[str, Any]],
     mb_tracks: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Match local tracks (missing Recording IDs) to MusicBrainz release tracks.
-
-    ``local_tracks`` entries carry ``id``/``title``/``track_number``/
-    ``disc_number``.  ``mb_tracks`` entries carry ``position``/``number``/
-    ``title``/``recording_mbid``.  Matching is by (disc, position) first, then
-    by normalised title.  Returns a list of ``{"track_id", "title",
-    "recording_mbid"}`` for every local track that resolved.
-    """
     by_position: dict[tuple[int, int], dict[str, Any]] = {}
     by_title: dict[str, list[dict[str, Any]]] = {}
     for track in mb_tracks:
@@ -1303,15 +1081,8 @@ def _match_release_tracklist(
 
 
 @mb_bp.route("/link-album-mbids", methods=["POST"])
-async def api_link_album_mbids():
-    """Auto-link local tracks missing Recording MBIDs.
-
-    Accepts ``{artist, album, release_id?}``.  When a MusicBrainz ``release_id``
-    is provided the official release tracklist is fetched (recordings inc) and
-    matched to local tracks by disc/position first, then by normalised title.
-    Every linked Recording ID is written to both ``musicbrainz_trackid`` and
-    ``recording_mbid``.
-    """
+async def api_link_album_mbids() -> Any:
+    """Auto-link local tracks missing Recording MBIDs."""
     data = (await request.get_json(silent=True)) or {}
     artist = str(data.get("artist") or "").strip()
     album = str(data.get("album") or "").strip()
@@ -1320,14 +1091,13 @@ async def api_link_album_mbids():
     if not artist or not album:
         return jsonify({"success": False, "error": "artist and album are required"}), 400
 
-    # ── Fetch the official MusicBrainz release tracklist (recordings) ──────
     mb_tracks: list[dict[str, Any]] = []
     release_title = album
     if release_id and re.fullmatch(MUSICBRAINZ_UUID_RE, release_id):
         try:
             release = _get_mb_client().get_release(release_id, inc="recordings", timeout=15)
         except Exception as exc:
-            logger.warning("[LINK_MBIDS] Could not fetch release %s: %s", release_id, exc)
+            logger.warning("Could not fetch release for MBID linking", release_id=release_id, error=str(exc))
             release = {}
         release_title = str(release.get("title") or album)
         for medium in release.get("media") or []:
@@ -1341,7 +1111,6 @@ async def api_link_album_mbids():
                     "recording_mbid": str(recording.get("id") or "").strip(),
                 })
 
-    # ── Load local tracks missing a Recording ID ───────────────────────────
     try:
         with db_session() as session:
             rows = session.execute(
@@ -1357,7 +1126,7 @@ async def api_link_album_mbids():
             ).fetchall()
             local_tracks = [dict(r._mapping) for r in rows]
     except Exception as exc:
-        logger.error("[LINK_MBIDS] Failed to load local tracks: %s", exc)
+        logger.error("Failed to load local tracks for linking", error=str(exc))
         return jsonify({"success": False, "error": str(exc)}), 500
 
     unlinked = [
@@ -1375,10 +1144,9 @@ async def api_link_album_mbids():
     if not mb_tracks:
         return jsonify({
             "success": False,
-            "error": "No MusicBrainz release tracklist available — select a release first (Lookup → Apply).",
+            "error": "No MusicBrainz release tracklist available — select a release first.",
         })
 
-    # ── Match by (disc, position) then by normalised title ─────────────────
     matched: list[dict[str, Any]] = []
     linked = 0
     try:
@@ -1395,7 +1163,7 @@ async def api_link_album_mbids():
                 matched.append(track)
                 linked += 1
     except Exception as exc:
-        logger.error("[LINK_MBIDS] Failed to link MBIDs: %s", exc)
+        logger.error("Failed to link MBIDs", error=str(exc))
         return jsonify({"success": False, "error": str(exc)}), 500
 
     return jsonify({
@@ -1412,8 +1180,8 @@ async def api_link_album_mbids():
 # ---------------------------------------------------------------------------
 
 @mb_bp.route("/downloads", methods=["GET"])
-def api_musicbrainz_downloads():
-    """List MusicBrainz release downloads with per-track progress counts."""
+def api_musicbrainz_downloads() -> Any:
+    """List MusicBrainz release downloads with progress."""
     try:
         with db_session() as session:
             result = session.execute(text("""
@@ -1461,9 +1229,8 @@ def api_musicbrainz_downloads():
                 })
 
         return jsonify({"downloads": downloads})
-
     except Exception as exc:
-        logger.error("[MB_DOWNLOADS] Error: %s", exc, exc_info=True)
+        logger.error("Failed to list downloads", error=str(exc), exc_info=True)
         return jsonify({"error": str(exc)}), 500
 
 
@@ -1472,7 +1239,7 @@ def api_musicbrainz_downloads():
 # ---------------------------------------------------------------------------
 
 @mb_bp.route("/download/<int:download_id>/retry", methods=["POST"])
-def api_musicbrainz_retry(download_id: int):
+def api_musicbrainz_retry(download_id: int) -> Any:
     """Retry a failed MusicBrainz release download."""
     try:
         with db_session() as session:
@@ -1504,9 +1271,8 @@ def api_musicbrainz_retry(download_id: int):
             pass
 
         return jsonify({"success": True, "message": "Download retry initiated"})
-
     except Exception as exc:
-        logger.error("[MB_RETRY] Error: %s", exc, exc_info=True)
+        logger.error("Failed to retry download", download_id=download_id, error=str(exc), exc_info=True)
         return jsonify({"error": str(exc)}), 500
 
 
@@ -1515,8 +1281,8 @@ def api_musicbrainz_retry(download_id: int):
 # ---------------------------------------------------------------------------
 
 @mb_bp.route("/download/<int:download_id>", methods=["DELETE"])
-def api_musicbrainz_remove(download_id: int):
-    """Remove a MusicBrainz release download from the tracking list."""
+def api_musicbrainz_remove(download_id: int) -> Any:
+    """Remove a MusicBrainz release download from tracking."""
     try:
         with db_session() as session:
             session.execute(text("""
@@ -1526,7 +1292,6 @@ def api_musicbrainz_remove(download_id: int):
             """), {"id": download_id})
 
         return jsonify({"success": True})
-
     except Exception as exc:
-        logger.error("[MB_REMOVE] Error: %s", exc, exc_info=True)
+        logger.error("Failed to remove download", download_id=download_id, error=str(exc), exc_info=True)
         return jsonify({"error": str(exc)}), 500
