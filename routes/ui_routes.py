@@ -37,7 +37,6 @@ from services.enrichment.genre_tag_aggregator import (
     get_album_genre_sources,
     get_artist_genre_sources,
     get_track_genre_sources,
-    get_track_genres_summary,
 )
 from services.enrichment.musicbrainz_service import MusicBrainzService
 from services.favourites_service import is_favourite as _user_is_favourite
@@ -2157,11 +2156,8 @@ async def track_detail(track_id: str) -> Any:
         genre_sources = {}
         try:
             genre_sources = get_track_genre_sources(track)
-        except Exception:
-            try:
-                genre_sources = get_track_genres_summary(track)
-            except Exception as ge_err:
-                logger.debug("Could not get genre sources", track_id=track_id, error=str(ge_err))
+        except Exception as ge_err:
+            logger.debug("Could not get genre sources", track_id=track_id, error=str(ge_err))
 
         return await render_template(
             "pages/track_detail.html",
