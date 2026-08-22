@@ -84,7 +84,7 @@ def _strict_throttle() -> None:
     """A thread-locked turnstile guaranteeing <= 1 request per second globally.
     
     This acts as a failsafe even if the external _rate_limiter is bypassed,
-    preventing 11 track workers from bursting MusicBrainz simultaneously.
+    preventing track workers from bursting MusicBrainz simultaneously.
     """
     global _LAST_MB_REQUEST_TIME
     
@@ -171,7 +171,6 @@ class MusicBrainzHttpClient:
             return {}
 
     def search_release_groups(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
-        # MB Limit max is 100
         payload = self.get("release-group/", params={"query": query, "fmt": "json", "limit": max(1, min(limit, 100))})
         return payload.get("release-groups", []) if isinstance(payload.get("release-groups"), list) else []
 
@@ -325,14 +324,22 @@ class MusicBrainzHttpClient:
     def lookup_by_isrc(self, isrc: str, inc: str = "") -> list[dict[str, Any]]:
         if not isrc:
             return []
-        cache_key = isrc.strip().upper()
+            
+        # Clean up braces/brackets often found in raw audio file tags
+        clean_isrc = str(isrc).strip().strip("{}[]").upper()
+        if not clean_isrc:
+            return []
+
+        cache_key = clean_isrc
         with _CACHE_LOCK:
             cached = _ISRC_LOOKUP_CACHE.get(cache_key)
         if cached is not None:
             return cached
 
         params = {"fmt": "json", "inc": _ISRC_INC_SUPERSET}
-        payload = self.get(f"isrc/{isrc}", params=params)
+        
+        # Use clean_isrc so the URL path never contains encoded curly braces
+        payload = self.get(f"isrc/{clean_isrc}", params=params)
         recordings = payload.get("recordings", []) if isinstance(payload.get("recordings"), list) else []
         
         _safe_cache_set(_ISRC_LOOKUP_CACHE, cache_key, recordings, _ISRC_LOOKUP_CACHE_MAX)
