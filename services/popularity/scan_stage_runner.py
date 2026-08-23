@@ -99,6 +99,47 @@ def _bounded_call(fn, seconds: float, label: str) -> None:
         logger.warning("Bounded call failed", task=label, error=str(_error["exc"]))
 
 
+def _bounded_call_result(fn, seconds: float, label: str, default: Any = None) -> Any:
+    """Run ``fn()`` with a hard time budget, returning its result or ``default``.
+
+    Unlike ``_bounded_call`` (fire-and-forget), this captures the call's
+    return value so callers can fall back gracefully when a hung operation
+    (e.g. album enrichment making network calls) exceeds the budget — the
+    scan continues with ``default`` instead of freezing on that album.
+    """
+    import threading
+
+    if seconds is None or seconds <= 0:
+        try:
+            return fn()
+        except BaseException:  # noqa: BLE001
+            return default
+
+    _done = threading.Event()
+    _box: dict[str, Any] = {"result": default, "exc": None}
+
+    def _runner() -> None:
+        try:
+            _box["result"] = fn()
+        except BaseException as exc:  # noqa: BLE001
+            _box["exc"] = exc
+        finally:
+            _done.set()
+
+    _thread = threading.Thread(target=_runner, name=f"bounded-{label[:40]}", daemon=True)
+    _thread.start()
+    if not _done.wait(seconds):
+        logger.warning(
+            "Budget exceeded — abandoned, using default",
+            task=label,
+            budget_seconds=seconds,
+        )
+        return default
+    if _box["exc"] is not None:
+        logger.warning("Bounded call failed", task=label, error=str(_box["exc"]))
+    return _box["result"]
+
+
 def _duration_seconds(value: Any) -> float | None:
     """Best-effort track duration in seconds (None when unknown/zero)."""
     try:
@@ -1410,12 +1451,17 @@ def run_scan(
                 options["defer_full_enrichment"] = True
 
             log_unified(f"[POPULARITY] Enriching album: {artist} - {album}")
-            album_result = enrich_album(
-                album_row=album_row,
-                album_context=album_context,
-                stat_eligible_tracks=stat_eligible_tracks,
-                options=options,
-            )
+            album_result = _bounded_call_result(
+                lambda: enrich_album(
+                    album_row=album_row,
+                    album_context=album_context,
+                    stat_eligible_tracks=stat_eligible_tracks,
+                    options=options,
+                ),
+                seconds=_prefetch_budget_seconds,
+                label=f"album enrichment '{artist} - {album}'",
+                default=None,
+            ) or {}
             log_unified(f"[POPULARITY] Album enriched: {artist} - {album} (type={album_result.get('detected_album_type')})")
 
             _refresh_album_live_context(

@@ -98,6 +98,10 @@ _SESSION_FACTORY: sessionmaker[Session] | None = None
 _ASYNC_ENGINE: AsyncEngine | None = None
 _ASYNC_SESSION_FACTORY: async_sessionmaker[AsyncSession] | None = None
 
+# Postgres advisory-lock key that serialises concurrent ``alembic upgrade``
+# calls across hypercorn workers at boot (see ``run_migrations_on_startup``).
+_MIGRATION_ADVISORY_LOCK_KEY = 0x504F50524C52  # "POPRLR" as an int
+
 
 def _configure_sqlite_pragmas(engine: Engine) -> None:
     @event.listens_for(engine, "connect")
@@ -292,7 +296,17 @@ def get_base_metadata():
 
 
 def run_migrations_on_startup() -> bool:
-    """Run `alembic upgrade head` to apply any pending migrations."""
+    """Run `alembic upgrade head` to apply any pending migrations.
+
+    Multiple hypercorn workers (4 by default) each call this at boot; without
+    a lock they race — worker A creates a table while worker B runs the same
+    migration and dies with "relation already exists" (observed on
+    ``missing_album_tracks`` in migration 009).  A failed Alembic run can
+    leave ``alembic_version`` at the old revision, so every later boot retries
+    and fails again.  A Postgres advisory lock serialises the workers: the
+    first acquires it and migrates, the rest block until it commits and then
+    see ``alembic_version`` already at head (no-op).
+    """
     if not db_settings.auto_migrate:
         logger.info("AUTO_MIGRATE=False — skipping database migrations")
         return True
@@ -309,9 +323,32 @@ def run_migrations_on_startup() -> bool:
             return True
 
         alembic_cfg = Config(alembic_cfg_path)
-        command.upgrade(alembic_cfg, "head")
 
-        logger.info("Database migrations applied successfully (up to head)")
+        # Serialise concurrent boot migrations across workers with an advisory
+        # lock.  The lock session is separate from the migration connection:
+        # ``pg_advisory_lock`` blocks until acquired (not xact-scoped), and it
+        # is released here only after the migration completes.
+        from sqlalchemy import text as _text
+
+        _lock_conn = get_engine().connect()
+        try:
+            _lock_conn.execute(_text("SELECT pg_advisory_lock(:k)"), {"k": _MIGRATION_ADVISORY_LOCK_KEY})
+        except Exception as _lk_exc:
+            logger.warning("Migration advisory lock unavailable — proceeding without it", error=str(_lk_exc))
+            _lock_conn.close()
+            _lock_conn = None
+
+        try:
+            command.upgrade(alembic_cfg, "head")
+            logger.info("Database migrations applied successfully (up to head)")
+        finally:
+            if _lock_conn is not None:
+                try:
+                    _lock_conn.execute(_text("SELECT pg_advisory_unlock(:k)"), {"k": _MIGRATION_ADVISORY_LOCK_KEY})
+                except Exception:
+                    pass
+                _lock_conn.close()
+
         return True
 
     except Exception as exc:
