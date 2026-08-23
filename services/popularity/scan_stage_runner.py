@@ -1130,7 +1130,7 @@ def run_scan(
         log_unified(f"[{album_index}/{total_albums}] Processing: \"{str(album or '').strip()}\" ({len(tracks or [])} Tracks)")
 
         _is_compilation_artist = _is_comp_artist(artist)
-        
+
         if artist and artist not in artist_mb_singles_cache and not _is_compilation_artist:
             artist_mb_singles_cache[artist] = _load_mb_single_titles(artist)
         mb_cached_singles = artist_mb_singles_cache.get(artist) or set()
@@ -1409,12 +1409,14 @@ def run_scan(
             if _full_pass:
                 options["defer_full_enrichment"] = True
 
+            log_unified(f"[POPULARITY] Enriching album: {artist} - {album}")
             album_result = enrich_album(
                 album_row=album_row,
                 album_context=album_context,
                 stat_eligible_tracks=stat_eligible_tracks,
                 options=options,
             )
+            log_unified(f"[POPULARITY] Album enriched: {artist} - {album} (type={album_result.get('detected_album_type')})")
 
             _refresh_album_live_context(
                 album,

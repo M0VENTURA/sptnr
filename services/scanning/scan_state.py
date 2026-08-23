@@ -170,6 +170,19 @@ def reset_stale_scan_states() -> int:
                 state.stop_requested = False
                 # current_artist is kept so the dashboard can show where the
                 # interrupted scan stopped (resume uses it as a hint).
+            # A stopped row (is_running=False) can still carry a stale
+            # stop_requested flag from a previous session's "Stop" click.
+            # After a reboot that flag must not abort the next scan the
+            # instant it starts — clear it too.  The count only includes the
+            # is_running rows (the interrupted ones), matching the log line.
+            stopped_stale = session.query(ScanState).filter(
+                ScanState.is_running.is_(False),
+                ScanState.stop_requested.is_(True),
+            ).all()
+            for state in stopped_stale:
+                state.stop_requested = False
+                if state.status == "stop_requested":
+                    state.status = "idle"
             session.commit()
             return len(stale)
     except Exception as exc:

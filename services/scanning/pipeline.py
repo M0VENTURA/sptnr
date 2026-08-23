@@ -155,6 +155,24 @@ def _run_artist_scan_pipeline_inner(
         # Navidrome import — scoped to THIS artist.  The artist_id is
         # required: scan_artist_to_db silently no-ops when it is None.
         # progress_file wires dashboard stop requests into the import loop.
+        #
+        # A stop flag left behind by a PREVIOUS session (a "Stop" click on
+        # the dashboard, a crashed worker, a reboot before the stale-state
+        # reset ran) must not abort THIS import the instant it starts — the
+        # old halt would skip the import, leaving the popularity phase to
+        # scan stale/partial track data.  Clear the flag for the scan types
+        # this pipeline touches before importing.
+        try:
+            from services.scanning.scan_state import clear_stop_request
+            for _st in ("navidrome_scan", "popularity_scan"):
+                clear_stop_request(_st)
+        except Exception as _clear_exc:
+            logger.debug(
+                "[SCAN_PIPELINE] Stop-flag clear failed",
+                artist=artist_name,
+                error=str(_clear_exc),
+            )
+
         from db.repositories.scan_repository import lookup_artist_id
         artist_id = lookup_artist_id(artist_name)
         if not artist_id:
