@@ -16,25 +16,20 @@ logger = structlog.get_logger(__name__)
 def run_artist_pipeline(artist_name: str, force: bool = False) -> None:
     """Run the complete scan pipeline for one artist.
 
-    The preferred implementation is ``services.scanning.pipeline``. A legacy
-    fallback is kept so the refactor can be introduced without breaking older
-    deployments that still expose ``helpers.scan_tasks``.
+    Delegates to ``services.scanning.pipeline.run_artist_scan_pipeline``,
+    which swallows most per-artist errors internally (a single artist must
+    never abort a full library scan).  Any exception that DOES escape is a
+    genuine bug — surface it with context instead of silently swallowing it.
     """
     try:
         from services.scanning.pipeline import run_artist_scan_pipeline
         run_artist_scan_pipeline(artist_name, force=force)
-        return
     except Exception as exc:
-        logger.debug(
-            "Primary artist pipeline unavailable, trying legacy fallback",
+        log_unified(f"❌ Artist scan failed for {artist_name}: {exc}")
+        logger.error(
+            "Artist pipeline crashed",
             artist=artist_name,
             error=str(exc),
+            exc_info=True,
         )
-
-    try:
-        from helpers.scan_tasks import run_artist_scan_pipeline
-        run_artist_scan_pipeline(artist_name, force=force)
-        return
-    except Exception:
-        log_unified(f"❌ Artist scan failed for {artist_name}")
         raise
