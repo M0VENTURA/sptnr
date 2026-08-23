@@ -30,7 +30,7 @@ from services.scanning.metadata_extractor import extract_track_metadata
 LOCAL_TZ = os.environ.get("TIMEZONE") or os.environ.get("TZ") or "UTC"
 JSON_EMPTY_LIST = json.dumps([])
 
-NAVIDROME_SCORE_DEFAULTS = {
+NAVIDROME_SCORE_DEFAULTS: dict[str, Any] = {
     "score": 0.0,
     "spotify_score": 0,
     "lastfm_score": 0,
