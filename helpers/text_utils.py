@@ -44,6 +44,10 @@ def _normalize_artist_key(value: str) -> str:
     return text.strip()
 
 
+# Public alias for cross-module callers (avoids protected-member linters).
+normalize_artist_key = _normalize_artist_key
+
+
 def _resolve_navidrome_file_path_for_storage(
     file_path: str | None,
     music_folder: str | None = None,

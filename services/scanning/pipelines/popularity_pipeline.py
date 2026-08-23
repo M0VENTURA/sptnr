@@ -312,7 +312,17 @@ def _run_full_scan_as_artist_pipeline(
                 try:
                     si = _STAGE_IDX.get(stage, 0)
                     frac = min(1.0, (int(idx) + 1) / float(t)) if t else 1.0
-                    overall = max(0, min(100, int(_base + si * _sw + frac * _sw)))
+                    overall = int(_base + si * _sw + frac * _sw)
+                    # The final callback for the last artist's last stage must
+                    # land exactly on 100% — float truncation (e.g. 99.97 → 99)
+                    # would otherwise leave the footer at 99% after completion.
+                    if (
+                        _i == total - 1
+                        and si == len(_STAGE_IDX) - 1
+                        and frac >= 1.0
+                    ):
+                        overall = 100
+                    overall = max(0, min(100, overall))
                     write_progress_with_current_artist(
                         progress_file,
                         "full_scan",

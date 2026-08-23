@@ -50,7 +50,7 @@ import threading
 
 import structlog
 
-from typing import Any
+from typing import Any, Callable
 from services.popularity.pipeline import run_popularity_scan
 from helpers.logging_config import log_unified
 from services.scanning.scan_history_service import record_scan
@@ -114,7 +114,11 @@ def _release_artist(artist_name: str) -> None:
 # Artist pipeline
 # -------------------------------------------------------------------------
 
-def run_artist_scan_pipeline(artist_name: str, force: bool = False, progress_callback=None):
+def run_artist_scan_pipeline(
+    artist_name: str,
+    force: bool = False,
+    progress_callback: Callable[[str, int, int, str | None], None] | None = None,
+) -> None:
     if not _try_claim_artist(artist_name):
         log_unified(f"⏭️ Artist scan already running for: {artist_name} — skipping duplicate trigger")
         return
@@ -124,12 +128,16 @@ def run_artist_scan_pipeline(artist_name: str, force: bool = False, progress_cal
         _release_artist(artist_name)
 
 
-def _run_artist_scan_pipeline_inner(artist_name: str, force: bool = False, progress_callback=None):
+def _run_artist_scan_pipeline_inner(
+    artist_name: str,
+    force: bool = False,
+    progress_callback: Callable[[str, int, int, str | None], None] | None = None,
+) -> None:
     # Optional per-album progress hook (stage, album_index, total_albums,
     # item).  The dashboard full-scan orchestration uses it to report a
     # stage-aware, monotonic overall percentage; standalone artist scans
     # (artist page) call without it and keep their per-pipeline progress rows.
-    def _cb(stage, idx, total, item=None):
+    def _cb(stage: str, idx: int, total: int, item: str | None = None) -> None:
         if callable(progress_callback):
             try:
                 progress_callback(stage, idx, total, item or artist_name)
@@ -156,7 +164,7 @@ def _run_artist_scan_pipeline_inner(artist_name: str, force: bool = False, progr
             # forced artist scan silently imports nothing and the popularity
             # scan then reports "No tracks found".
             try:
-                from helpers.text_utils import _normalize_artist_key as _norm_key
+                from helpers.text_utils import normalize_artist_key as _norm_key
                 index = build_artist_index() or {}
                 target_key = _norm_key(artist_name)
                 for _name, _info in index.items():
@@ -197,23 +205,29 @@ def _run_artist_scan_pipeline_inner(artist_name: str, force: bool = False, progr
         # resolution → popularity → singles in that order, so the first
         # quarter of albums map to "Metadata", the last quarter to "Singles
         # Detection" and the middle half to "Popularity".
+        def _stage_band_cb(album_index: int, total_albums: int, current_item: str | None = None) -> None:
+            """Map the runner's (idx, total, item) callback to (stage, ...).
+
+            The dashboard's 4-stage progress model (Metadata / Popularity /
+            Singles Detection) is derived from the album loop position: the
+            first quarter of albums map to "Metadata", the last quarter to
+            "Singles Detection", and the middle half to "Popularity".
+            """
+            band = max(1, (total_albums + 3) // 4)
+            if album_index < band:
+                stage = "metadata"
+            elif album_index >= (total_albums or 1) - band:
+                stage = "singles"
+            else:
+                stage = "popularity"
+            _cb(stage, album_index, total_albums, current_item)
+
         run_popularity_scan(
             verbose=True,
             force=force,
             artist_filter=artist_name,
             progress_file="popularity_scan",
-            progress_callback=(lambda _i, _t, _it=None, _cb=_cb: _cb(
-                (
-                    "metadata"
-                    if _i < max(1, ((_t or 1) + 3) // 4)
-                    else (
-                        "singles"
-                        if _i >= (_t or 1) - max(1, ((_t or 1) + 3) // 4)
-                        else "popularity"
-                    )
-                ),
-                _i, _t, _it,
-            )),
+            progress_callback=_stage_band_cb,
         )
 
         # optional essentia
@@ -249,7 +263,7 @@ def start_library_scan(
     artist_filter: str | None = None,
     resume: bool = True,
     force: bool = False,
-) -> dict:
+) -> dict[str, Any]:
     """Start a full library scan with optional filtering and resume.
 
     This is the route-facing entry point called by ``control.py``.
@@ -345,7 +359,7 @@ def run_full_library_scan(force: bool = False):
 
         resume_mode = bool(resume_from)
 
-        for name, data in artists:
+        for name, _data in artists:
             if resume_mode:
                 if name == resume_from:
                     resume_mode = False
