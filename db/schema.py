@@ -220,6 +220,24 @@ TABLES_TO_ENSURE: dict[str, str] = {
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """,
+    "missing_album_tracks": """
+        CREATE TABLE IF NOT EXISTS missing_album_tracks (
+            id BIGSERIAL PRIMARY KEY,
+            artist_name TEXT NOT NULL,
+            album_name  TEXT NOT NULL,
+            title       TEXT NOT NULL,
+            track_number TEXT,
+            disc_number  INTEGER DEFAULT 1,
+            track_artist TEXT,
+            year         TEXT,
+            release_id   TEXT,
+            recording_mbid TEXT,
+            duration     INTEGER,
+            ignored      BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT uq_missing_album_tracks UNIQUE (artist_name, album_name, title, disc_number)
+        )
+    """,
 }
 
 # =============================================================================
@@ -391,6 +409,7 @@ INDEXES_TO_ENSURE: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_slskd_search_logs_created_at ON slskd_search_logs (created_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_missing_releases_artist ON missing_releases (artist)",
     "CREATE INDEX IF NOT EXISTS idx_missing_releases_release_id ON missing_releases (release_id)",
+    "CREATE INDEX IF NOT EXISTS idx_missing_album_tracks_scope ON missing_album_tracks (LOWER(artist_name), LOWER(album_name), ignored)",
     "CREATE INDEX IF NOT EXISTS idx_scan_history_scope ON scan_history (scan_type, artist, album, status, started_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_tracks_album_scope ON tracks (LOWER(COALESCE(NULLIF(album_artist, ''), artist)), LOWER(COALESCE(album, '')))",
     "CREATE INDEX IF NOT EXISTS idx_tracks_artist_norm ON tracks (LOWER(COALESCE(NULLIF(album_artist, ''), artist)))",

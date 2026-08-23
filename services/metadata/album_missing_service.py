@@ -44,7 +44,13 @@ def get_library_tracks(artist: str, album: str) -> list[dict[str, Any]]:
 
 
 def get_missing_tracks(artist: str, album: str) -> dict[str, Any]:
-    """Check which tracks are in the MusicBrainz release but missing from the library."""
+    """Check which tracks are in the MusicBrainz release but missing from the library.
+
+    Computes the missing set from the MusicBrainz release tracklist, persists
+    each missing track to ``missing_album_tracks`` (so the list survives page
+    refreshes until the track is downloaded or rejected), and returns only the
+    tracks that are still missing AND not rejected (``ignored = FALSE``).
+    """
     with db_session() as session:
         row = session.execute(
             text(
@@ -62,7 +68,7 @@ def get_missing_tracks(artist: str, album: str) -> dict[str, Any]:
                 f"WHERE {_ALBUM_SCOPE_WHERE}"
             ),
             {"artist": artist, "album": album},
-        ).fetchall()
+        ).mappings().all()
         library_count = len(library_rows)
 
     if not mb_mbid:
@@ -95,7 +101,7 @@ def get_missing_tracks(artist: str, album: str) -> dict[str, Any]:
     lib_norm = set()
     lib_by_position: dict[tuple[int, str], str] = {}
     for r in library_rows:
-        title = r.get("title") if hasattr(r, "get") else r[1]
+        title = r.get("title") or ""
         if title:
             norm = unicodedata.normalize("NFKD", title).lower()
             norm = re.sub(r"[^a-z0-9]+", " ", norm).strip()
@@ -124,9 +130,124 @@ def get_missing_tracks(artist: str, album: str) -> dict[str, Any]:
             "track_number": mt.get("track_number"),
             "disc_number": mt.get("disc_number", 1),
             "recording_mbid": mt.get("recording_mbid"),
+            "track_artist": mt.get("artist") or artist,
+            "year": mb_release.get("release_year") or mb_release.get("year"),
+            "release_id": mb_mbid,
+            "duration": mt.get("duration"),
         })
 
-    return {"missing_tracks": missing, "missing_count": len(missing), "mb_total": mb_total, "library_count": library_count}
+    # Persist missing tracks so they survive refreshes.  A track already
+    # present (by title + disc position) is skipped; a track previously
+    # rejected (ignored=TRUE) is deleted so it can be re-detected if the
+    # user re-runs the comparison (reject is a soft dismiss, not permanent).
+    try:
+        _persist_missing_tracks(artist, album, missing)
+    except Exception as exc:
+        logger.debug("Failed to persist missing tracks", artist=artist, album=album, error=str(exc))
+
+    # Return only tracks that are still missing AND not rejected.
+    rejected_titles = _rejected_missing_titles(artist, album)
+    visible = [
+        m for m in missing
+        if (m["track_number"], m["disc_number"], m["title"]) not in rejected_titles
+    ]
+
+    return {
+        "missing_tracks": visible,
+        "missing_count": len(visible),
+        "mb_total": mb_total,
+        "library_count": library_count,
+    }
+
+
+def _persist_missing_tracks(artist: str, album: str, missing: list[dict[str, Any]]) -> None:
+    """Upsert the computed missing tracks into ``missing_album_tracks``.
+
+    Any previously-persisted row for this artist/album that is NOT in the
+    current missing set (e.g. the track has since been downloaded, or the
+    release changed) is removed so stale rows never linger.  Rows that were
+    rejected (``ignored = TRUE``) are preserved.
+    """
+    with db_session() as session:
+        existing = session.execute(
+            text(
+                "SELECT id, title, track_number, disc_number, ignored "
+                "FROM missing_album_tracks "
+                "WHERE LOWER(artist_name) = LOWER(:artist) "
+                "  AND LOWER(album_name) = LOWER(:album)"
+            ),
+            {"artist": artist, "album": album},
+        ).mappings().all()
+
+        current_keys = {
+            (str(m.get("track_number") or ""), int(m.get("disc_number") or 1), str(m.get("title") or ""))
+            for m in missing
+        }
+
+        for row in existing:
+            row_key = (
+                str(row.get("track_number") or ""),
+                int(row.get("disc_number") or 1),
+                str(row.get("title") or ""),
+            )
+            if row_key not in current_keys and not row.get("ignored"):
+                session.execute(
+                    text("DELETE FROM missing_album_tracks WHERE id = :id"),
+                    {"id": row.get("id")},
+                )
+
+        for m in missing:
+            tn = str(m.get("track_number") or "").strip()
+            disc = int(m.get("disc_number") or 1)
+            title = str(m.get("title") or "").strip()
+            if not title:
+                continue
+            session.execute(
+                text("""
+                    INSERT INTO missing_album_tracks
+                        (artist_name, album_name, title, track_number, disc_number,
+                         track_artist, year, release_id, recording_mbid, duration)
+                    VALUES
+                        (:artist, :album, :title, :track_number, :disc_number,
+                         :track_artist, :year, :release_id, :recording_mbid, :duration)
+                    ON CONFLICT DO NOTHING
+                """),
+                {
+                    "artist": artist,
+                    "album": album,
+                    "title": title,
+                    "track_number": tn or None,
+                    "disc_number": disc,
+                    "track_artist": m.get("track_artist"),
+                    "year": str(m.get("year") or "") or None,
+                    "release_id": m.get("release_id"),
+                    "recording_mbid": m.get("recording_mbid"),
+                    "duration": m.get("duration"),
+                },
+            )
+        session.commit()
+
+
+def _rejected_missing_titles(artist: str, album: str) -> set[tuple[str, int, str]]:
+    """Return the set of ``(track_number, disc_number, title)`` rejected rows."""
+    try:
+        with db_session() as session:
+            rows = session.execute(
+                text("""
+                    SELECT title, track_number, disc_number
+                    FROM missing_album_tracks
+                    WHERE LOWER(artist_name) = LOWER(:artist)
+                      AND LOWER(album_name) = LOWER(:album)
+                      AND ignored = TRUE
+                """),
+                {"artist": artist, "album": album},
+            ).mappings().all()
+        return {
+            (str(r.get("track_number") or ""), int(r.get("disc_number") or 1), str(r.get("title") or ""))
+            for r in rows
+        }
+    except Exception:
+        return set()
 
 
 def get_title_mismatches(artist: str, album: str) -> dict[str, Any]:
@@ -148,7 +269,7 @@ def get_title_mismatches(artist: str, album: str) -> dict[str, Any]:
                 f"WHERE {_ALBUM_SCOPE_WHERE}"
             ),
             {"artist": artist, "album": album},
-        ).fetchall()
+        ).mappings().all()
 
     if not mb_mbid:
         return {"mismatches": [], "mismatch_count": 0, "library_count": len(library_rows)}
@@ -159,30 +280,17 @@ def get_title_mismatches(artist: str, album: str) -> dict[str, Any]:
 
     lib_by_tracknum: dict[tuple[Any, Any], dict[str, Any]] = {}
     for r in library_rows:
-        if hasattr(r, "get"):
-            tn = r.get("track_number")
-            dn = r.get("disc_number") or 1
-            try:
-                tn_int = int(str(tn).split("/")[0].strip()) if tn else None
-            except (ValueError, TypeError):
-                tn_int = None
-            lib_by_tracknum[(int(dn or 1), tn_int)] = {
-                "id": r.get("id"),
-                "title": r.get("title"),
-                "duration": r.get("duration"),
-            }
-        else:
-            tn = r[2]
-            dn = r[3] or 1
-            try:
-                tn_int = int(str(tn).split("/")[0].strip()) if tn else None
-            except (ValueError, TypeError):
-                tn_int = None
-            lib_by_tracknum[(int(dn or 1), tn_int)] = {
-                "id": r[0],
-                "title": r[1],
-                "duration": r[4],
-            }
+        tn = r.get("track_number")
+        dn = r.get("disc_number") or 1
+        try:
+            tn_int = int(str(tn).split("/")[0].strip()) if tn else None
+        except (ValueError, TypeError):
+            tn_int = None
+        lib_by_tracknum[(int(dn or 1), tn_int)] = {
+            "id": r.get("id"),
+            "title": r.get("title"),
+            "duration": r.get("duration"),
+        }
 
     mismatches = []
     for mt in mb_release.get("tracks", []):

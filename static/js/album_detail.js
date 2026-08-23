@@ -1025,7 +1025,7 @@ var _pageData = window._pageData || {};
         const title = btn.dataset.title || '';
         const discNumber = parseInt(btn.dataset.discNumber || '1', 10);
 
-        if (!confirm(`Hide "${title}" from the missing tracks list?\n\nYou can restore it by running a new MusicBrainz comparison.`)) return;
+        if (!confirm(`Reject "${title}" from the missing tracks list?\n\nIt will stay hidden until the track is downloaded or you run a new MusicBrainz comparison.`)) return;
 
         const row = btn.closest('tr');
 
@@ -1045,7 +1045,7 @@ var _pageData = window._pageData || {};
             if (data.success) {
                 if (row) row.remove();
             } else {
-                alert('❌ Error: ' + (data.error || 'Failed to ignore track'));
+                alert('❌ Error: ' + (data.error || 'Failed to reject track'));
             }
         })
         .catch(err => {
@@ -3156,7 +3156,7 @@ var _pageData = window._pageData || {};
         const matchBtn = '<button class="btn btn-outline-primary" title="Match to an existing song in the library" ' +
             'data-title="' + sTitle + '" data-track-number="' + sNum + '" data-artist="' + sArtist + '" ' +
             'data-album="' + sAlbum + '" onclick="openAlbumMatchModal(this)"><i class="bi bi-link-45deg"></i></button>';
-        const ignoreBtn = '<button class="btn btn-outline-secondary" title="Ignore – hide this track from the missing list" ' +
+        const rejectBtn = '<button class="btn btn-outline-secondary" title="Reject – permanently hide this track from the missing list" ' +
             'data-title="' + sTitle + '" data-disc-number="' + disc + '" onclick="ignoreMissingTrack(this)"><i class="bi bi-x-lg"></i></button>';
 
         const row = document.createElement('tr');
@@ -3171,7 +3171,7 @@ var _pageData = window._pageData || {};
                     '<span class="fst-italic flex-grow-1 text-truncate" style="min-width: 0;">' + title + '</span>' +
                     '<span class="badge bg-warning text-dark text-nowrap flex-shrink-0"><i class="bi bi-exclamation-triangle me-1"></i>Missing</span>' +
                 '</div>' +
-                '<div class="d-flex align-items-center gap-1 mt-1 ps-2">' + queueBtn + matchBtn + ignoreBtn + '</div>' +
+                '<div class="d-flex align-items-center gap-1 mt-1 ps-2">' + queueBtn + matchBtn + rejectBtn + '</div>' +
             '</td>' +
             '<td class="d-none d-md-table-cell"></td>' +
             '<td class="d-none d-md-table-cell fst-italic">' + num + '</td>' +
@@ -3179,7 +3179,7 @@ var _pageData = window._pageData || {};
             '<td class="d-none d-md-table-cell text-center text-muted small">--:--</td>' +
             '<td class="d-none d-md-table-cell text-center text-muted">—</td>' +
             '<td class="d-none d-md-table-cell"><span class="badge bg-warning text-dark"><i class="bi bi-exclamation-triangle me-1"></i>Missing</span></td>' +
-            '<td class="d-none d-md-table-cell text-end"><div class="btn-group btn-group-sm">' + queueBtn + matchBtn + ignoreBtn + '</div></td>';
+            '<td class="d-none d-md-table-cell text-end"><div class="btn-group btn-group-sm">' + queueBtn + matchBtn + rejectBtn + '</div></td>';
         return row;
     }
 
