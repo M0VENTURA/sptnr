@@ -59,6 +59,11 @@ def _is_connection_error(exc: BaseException) -> bool:
     every queue cycle while slskd is down, so they log at error with just the
     message; everything else keeps exc_info for debuggability.
     """
+    # Any transient network error (timeout / read error / connection reset)
+    # is a connectivity failure — slskd being down or restarting surfaces as
+    # these every poll cycle, so they must not spam full tracebacks.
+    if _is_transient_error(exc):
+        return True
     if type(exc).__name__ in ("ConnectError", "ConnectTimeout", "ConnectionRefusedError", "OSError"):
         return True
     if any(base.__name__ in ("ConnectError", "ConnectTimeout") for base in type(exc).__mro__):

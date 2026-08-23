@@ -157,6 +157,11 @@ class NavidromeClient:
                     response.raise_for_status()
                     
                 response.raise_for_status()
+                # Some Subsonic servers (Navidrome included) return HTTP 200 with
+                # an EMPTY body for some endpoints (e.g. updatePlaylist).  Treat
+                # an empty body as a successful empty response, not an error.
+                if not response.content or not response.text.strip():
+                    return {}
                 result = response.json().get("subsonic-response", {}) or {}
                 
                 if not result:
@@ -181,6 +186,11 @@ class NavidromeClient:
         try:
             response = self.session.post(url, data=_body, timeout=timeout)
             response.raise_for_status()
+            # Some Subsonic servers (Navidrome included) return HTTP 200 with an
+            # EMPTY body for mutation endpoints like updatePlaylist — an empty
+            # body is the success response, not an error.  Treat it as ok.
+            if not response.content or not response.text.strip():
+                return {"status": "ok"}
             return response.json().get("subsonic-response", {}) or {}
         except Exception as exc:
             _log_throttled_error(endpoint, exc, prefix=f"Navidrome {endpoint} POST failed")
