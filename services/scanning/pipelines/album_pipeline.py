@@ -49,10 +49,44 @@ def _release(artist_name: str, album_name: str) -> None:
 
 
 def _maybe_auto_detect_album_type(artist_name: str, album_name: str) -> None:
-    """Run album type detection if the legacy helper is available."""
+    """Run album type detection via the current stage service.
+
+    The legacy root ``album_type_detector`` module no longer exists; album
+    type detection now lives in ``services.popularity.stages.album_stage``
+    (``ensure_album_type``).  The popularity scan (step 2) already detects
+    and persists the type for processed albums, so this is a lightweight
+    safety net for albums that were skipped (timestamp/no-change skips).
+    """
     try:
-        from album_type_detector import auto_detect_album_type
-        auto_detect_album_type(artist_name, album_name)
+        from db.repositories.library import get_tracks_for_album
+        from services.popularity.stages.album_stage import ensure_album_type
+
+        tracks = get_tracks_for_album(artist_name, album_name) or []
+        if not tracks:
+            return
+        _mb_types = {
+            str(t.get("musicbrainz_albumtype") or "").strip()
+            for t in tracks
+            if str(t.get("musicbrainz_albumtype") or "").strip()
+        }
+        _sp_types = {
+            str(t.get("spotify_album_type") or "").strip()
+            for t in tracks
+            if str(t.get("spotify_album_type") or "").strip()
+        }
+        album_row = {
+            "artist": artist_name,
+            "album": album_name,
+            "album_artist": artist_name,
+            "spotify_album_type": next(iter(_sp_types)) if len(_sp_types) == 1 else None,
+            "musicbrainz_album_type": next(iter(_mb_types)) if len(_mb_types) == 1 else None,
+            "tracks": tracks,
+        }
+        detected = ensure_album_type(album_row)
+        if detected:
+            log_unified(
+                f"💿 Album type detected for '{artist_name} - {album_name}': {detected}"
+            )
     except Exception as exc:
         logger.debug(
             "Album type detection skipped",
