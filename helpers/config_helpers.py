@@ -1600,6 +1600,28 @@ def get_search_quality_config() -> dict[str, Any]:
     }
 
 
+def get_search_fuzzy_config() -> dict[str, Any]:
+    """Get library-search fuzzy matching configuration.
+
+    Config section: ``search.fuzzy`` in config.yaml
+
+    Returns:
+        Dict with keys ``enabled`` (default True).
+
+    When enabled (default), ``POST /api/search`` ranks results with
+    ``pg_trgm`` similarity as a tiebreaker after the exact/prefix/contains
+    tiers, so typo'd queries ("Sipce Girls") still surface "Spice Girls".
+    Requires the ``pg_trgm`` extension + GIN trigram indexes (migration 010);
+    when the extension is absent the endpoint transparently falls back to
+    the legacy ranking.
+    """
+    cfg = get_config()
+    fuzzy = cfg.get("search", {}).get("fuzzy", {})
+    return {
+        "enabled": bool(fuzzy.get("enabled", True)),
+    }
+
+
 # =============================================================================
 # Queue Worker Configuration
 # =============================================================================
