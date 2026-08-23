@@ -192,7 +192,7 @@ def get_cached_artist_release_rows(artist: str, source: str = "discogs") -> list
                 """),
                 {"artist": artist, "source": source},
             )
-            return [dict(r) for r in result.fetchall() or []]
+            return [dict(r) for r in result.mappings().all()]
     except Exception as exc:
         logger.debug(
             "[RELEASE_CACHE] Row read failed",
@@ -538,7 +538,7 @@ def refresh_missing_releases_for_artist(artist: str) -> dict[str, Any]:
                 """),
                 {"artist": artist},
             )
-            cached = [dict(r) for r in result.fetchall() or []]
+            cached = [dict(r) for r in result.mappings().all()]
     except Exception as exc:
         logger.debug(
             "[RELEASE_CACHE] Missing-releases read failed",
@@ -708,7 +708,7 @@ def populate_missing_release_tracklists(artist: str, limit: int = 5) -> dict[str
                 """),
                 {"artist": artist, "limit": limit},
             )
-            missing = [dict(r) for r in result.fetchall() or []]
+            missing = [dict(r) for r in result.mappings().all()]
     except Exception as exc:
         logger.debug(
             "[RELEASE_CACHE] Missing-releases query failed",
