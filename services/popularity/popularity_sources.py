@@ -97,9 +97,9 @@ def resolve_isrc_recording(
             
     try:
         if mb_client is None:
-            from api_clients.musicbrainz_http import MusicBrainzHttpClient
-            mb_client = MusicBrainzHttpClient(enabled=True)
-            
+            from services.enrichment.musicbrainz_service import get_shared_mb_client
+            mb_client = get_shared_mb_client()
+
         recordings = mb_client.lookup_by_isrc(isrc) or []
         if not recordings:
             return None
@@ -195,10 +195,11 @@ def _resolve_release_mbid(artist: str, album: str, tracks: list[dict[str, Any]])
         mbid = str(t.get("musicbrainz_albumid") or t.get("musicbrainz_album_mbid") or "").strip()
         if mbid:
             return mbid
-            
+
     try:
-        from api_clients.musicbrainz_http import MusicBrainzHttpClient, escape_lucene_special_chars
-        client = MusicBrainzHttpClient(enabled=True)
+        from api_clients.musicbrainz_http import escape_lucene_special_chars
+        from services.enrichment.musicbrainz_service import get_shared_mb_client
+        client = get_shared_mb_client()
         query = (
             f'artist:"{escape_lucene_special_chars(artist)}" '
             f'AND release:"{escape_lucene_special_chars(album)}"'
@@ -327,8 +328,8 @@ def get_listenbrainz_album_tracklist_with_release(
         
     if not recording_mbids:
         try:
-            from api_clients.musicbrainz_http import MusicBrainzHttpClient
-            mb = MusicBrainzHttpClient(enabled=True)
+            from services.enrichment.musicbrainz_service import get_shared_mb_client
+            mb = get_shared_mb_client()
             release = mb.get_release(release_mbid, inc="recordings")
             _index_release_tracklist(release.get("media") or [], titles_to_mbids, position_index, recording_mbids)
             _tracklist_source = "musicbrainz"
@@ -842,8 +843,8 @@ def get_aggregated_listenbrainz_popularity(
             
     if mb_client is None:
         try:
-            from api_clients.musicbrainz_http import MusicBrainzHttpClient
-            mb_client = MusicBrainzHttpClient()
+            from services.enrichment.musicbrainz_service import get_shared_mb_client
+            mb_client = get_shared_mb_client()
         except Exception:
             mb_client = None
             
@@ -957,8 +958,8 @@ def get_work_level_listenbrainz_popularity(
     logger.debug("Fetching Work-level aggregated ListenBrainz popularity")
     if mb_client is None:
         try:
-            from api_clients.musicbrainz_http import MusicBrainzHttpClient
-            mb_client = MusicBrainzHttpClient(enabled=True)
+            from services.enrichment.musicbrainz_service import get_shared_mb_client
+            mb_client = get_shared_mb_client()
         except Exception:
             mb_client = None
             
