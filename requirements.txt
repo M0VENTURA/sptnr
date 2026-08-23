@@ -2,6 +2,10 @@ quart>=0.19,<1.0
 hypercorn>=0.17,<1.0
 psycopg2-binary>=2.9,<3.0
 httpx>=0.28,<1.0
+# TLS root CA bundle — httpx uses certifi's bundle when the system store is
+# empty (e.g. python:3.11-slim without ca-certificates), preventing
+# CERTIFICATE_VERIFY_FAILED on MusicBrainz/Discogs/Last.fm calls.
+certifi>=2024.0.0
 PyYAML>=6.0,<7.0
 mutagen>=1.47,<2.0
 beautifulsoup4>=4.12,<5.0

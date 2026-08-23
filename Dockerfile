@@ -9,11 +9,15 @@ ENV ESSENTIA_MODELS_DIR=/opt/essentia_models
 
 # System deps + tzdata + ffmpeg + git + wget for Essentia
 # psycopg2-binary is pre-compiled so we no longer need build-essential/libpq-dev/gcc
+# ca-certificates is REQUIRED — without it the container has no trusted root CA
+# bundle, so every HTTPS call (MusicBrainz, Discogs, Last.fm, Cover Art Archive…)
+# fails TLS verification with CERTIFICATE_VERIFY_FAILED.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tzdata \
     ffmpeg \
     git \
     wget \
+    ca-certificates \
     && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*
 
