@@ -277,41 +277,45 @@ class TestLookupArtistIdSkipsNameKeyedRows:
 class TestResolveNavidromeArtistId:
     """finalise_stage must reuse a real id instead of writing the name."""
 
+    def _patch_db_session(self, monkeypatch, rows_by_execute):
+        from services.popularity.stages import finalise_stage as finalise_mod
+
+        # The module imported ``db_session`` at top level (from db.engine), so
+        # patching ``db.engine.db_session`` would NOT affect it — patch the
+        # name inside the finalise_stage module instead.
+        monkeypatch.setattr(finalise_mod, "db_session", _session_factory(rows_by_execute))
+
     def test_returns_existing_real_id_from_artist_stats(self, monkeypatch):
         from services.popularity.stages.finalise_stage import _resolve_navidrome_artist_id
-        import db.engine as db_engine
 
         rows = _make_rows([("nC8zJIGaf8CEiq8PT5L5cu",)], single_col="artist_id")
-        monkeypatch.setattr(db_engine, "db_session", _session_factory([rows]))
+        self._patch_db_session(monkeypatch, [rows])
 
         assert _resolve_navidrome_artist_id("Ad Infinitum") == "nC8zJIGaf8CEiq8PT5L5cu"
 
     def test_skips_name_keyed_artist_stats_row(self, monkeypatch):
         from services.popularity.stages.finalise_stage import _resolve_navidrome_artist_id
-        import db.engine as db_engine
 
         # artist_stats only has the corrupted name-keyed row — must NOT return it.
         name_rows = _make_rows([("Ad Infinitum",)], single_col="artist_id")
         real_rows = _make_rows([("nC8zJIGaf8CEiq8PT5L5cu",)], single_col="artist_id")
-        monkeypatch.setattr(db_engine, "db_session", _session_factory([name_rows, real_rows]))
+        self._patch_db_session(monkeypatch, [name_rows, real_rows])
 
         assert _resolve_navidrome_artist_id("Ad Infinitum") == "nC8zJIGaf8CEiq8PT5L5cu"
 
     def test_returns_none_when_no_real_id_anywhere(self, monkeypatch):
         from services.popularity.stages.finalise_stage import _resolve_navidrome_artist_id
-        import db.engine as db_engine
 
         empty = _make_rows([], single_col="artist_id")
-        monkeypatch.setattr(db_engine, "db_session", _session_factory([empty, empty]))
+        self._patch_db_session(monkeypatch, [empty, empty])
 
         assert _resolve_navidrome_artist_id("Ad Infinitum") is None
 
     def test_ignores_name_in_tracks_fallback(self, monkeypatch):
         from services.popularity.stages.finalise_stage import _resolve_navidrome_artist_id
-        import db.engine as db_engine
 
         empty = _make_rows([], single_col="artist_id")
         name_rows = _make_rows([("Ad Infinitum",)], single_col="artist_id")
-        monkeypatch.setattr(db_engine, "db_session", _session_factory([empty, name_rows]))
+        self._patch_db_session(monkeypatch, [empty, name_rows])
 
         assert _resolve_navidrome_artist_id("Ad Infinitum") is None
