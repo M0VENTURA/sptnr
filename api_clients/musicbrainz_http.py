@@ -118,6 +118,13 @@ def _safe_cache_set(cache: dict[str, Any], key: str, value: Any, max_size: int) 
 
 def _is_retryable_mb_error(exc: BaseException) -> bool:
     """Retry on transient network drops or temporary rate-limiting (429/503/504)."""
+    from api_clients.http_utils import is_ssl_cert_error
+
+    if is_ssl_cert_error(exc):
+        # Certificate verification failure is a deterministic config error
+        # (missing CA bundle / expired cert) — retrying just burns ~40s per
+        # call with no chance of success, which makes scans look stalled.
+        return False
     if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
         return True
     if isinstance(exc, httpx.HTTPStatusError):

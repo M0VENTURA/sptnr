@@ -76,6 +76,44 @@ def _build_pool_limits() -> httpx.Limits:
 logger = logging.getLogger(__name__)
 
 
+def is_ssl_cert_error(exc: BaseException) -> bool:
+    """True when the exception chain contains an SSL certificate failure.
+
+    A certificate-verification failure is a DETERMINISTIC configuration
+    error (missing CA bundle, expired cert, wrong host) — retrying it never
+    helps, it only burns the retry budget (observed: ~40s per failed
+    MusicBrainz call = 4 retries × exponential backoff + 10s timeout each).
+    The scan then looks "stalled" with zero log output while every MB call
+    silently retries to exhaustion.
+
+    httpx/httpcore wrap the ``ssl.SSLCertVerificationError`` inside
+    ``ConnectError`` chains WITHOUT preserving it as ``__cause__`` — the SSL
+    detail survives only in the message text ("[SSL: CERTIFICATE_VERIFY_FAILED]
+    ... unable to get local issuer certificate").  So both the exception-type
+    check AND a message scan are used.
+    """
+    if isinstance(exc, ssl.SSLCertVerificationError):
+        return True
+    cause = getattr(exc, "__cause__", None)
+    depth = 0
+    while cause is not None and depth < 6:
+        if isinstance(cause, ssl.SSLCertVerificationError):
+            return True
+        try:
+            if "CERTIFICATE_VERIFY_FAILED" in str(cause):
+                return True
+        except Exception:
+            pass
+        cause = getattr(cause, "__cause__", None)
+        depth += 1
+    try:
+        if "CERTIFICATE_VERIFY_FAILED" in str(exc):
+            return True
+    except Exception:
+        pass
+    return False
+
+
 class _RetryTransport(httpx.BaseTransport):
     """Transport wrapper that adds retry logic on top of httpx's HTTPTransport.
 
@@ -122,6 +160,10 @@ class _RetryTransport(httpx.BaseTransport):
         def _is_retryable(exc: BaseException) -> bool:
             if isinstance(exc, _RetryableStatus):
                 return True
+            if is_ssl_cert_error(exc):
+                # Certificate problems are config errors — retrying only
+                # wastes the wait budget (each attempt sleeps then times out).
+                return False
             return isinstance(
                 exc,
                 (httpx.ConnectError, httpx.RemoteProtocolError, httpx.TimeoutException),
