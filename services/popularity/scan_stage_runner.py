@@ -1481,8 +1481,18 @@ def run_scan(
                         except Exception as exc:
                             logger.debug("Missing-releases refresh failed", artist=artist, error=str(exc))
 
+                log_unified(
+                    f"[POPULARITY] Prefetching popularity + release data for '{artist}' "
+                    f"(budget {int(_prefetch_budget_seconds or 0)}s)"
+                )
+                _prefetch_start = time.monotonic()
                 _bounded_call(_prefetch_artist_work, seconds=_prefetch_budget_seconds, label=f"per-artist prefetch for '{artist}'")
+                _prefetch_elapsed = time.monotonic() - _prefetch_start
                 prefetched_popularity = _prefetch_state["prefetched_popularity"]
+                log_unified(
+                    f"[POPULARITY] Prefetch complete for '{artist}' in {_prefetch_elapsed:.1f}s "
+                    f"({len(prefetched_popularity or {})} tracks pre-loaded)"
+                )
 
             if not _singles_pass:
                 try:
@@ -1881,6 +1891,10 @@ def run_scan(
                         artist=artist, album=album, failure_ratio_pct=_track_failure_ratio * 100
                     )
                 else:
+                    log_unified(
+                        f"[POPULARITY] Post-singles enrichment for '{artist} - {album}' "
+                        f"(covers, genres, artist metadata)"
+                    )
                     _bounded_call(
                         _post_singles_enrichment_work,
                         seconds=_prefetch_budget_seconds,

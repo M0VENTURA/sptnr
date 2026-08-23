@@ -127,3 +127,30 @@ class TestNoiseStillFiltered:
     def test_scheduler_bookkeeping_filtered(self):
         line = "APScheduler: registered download_queue_processor (every 60 s)"
         assert not _kept(line)
+
+
+class TestAlbumProgressLinesVisible:
+    """Per-album progress lines must be visible in the scanning panel.
+
+    The ``[N/M] Processing: ...`` line is emitted at the top of each album's
+    pass — before the potentially long prefetch phase.  When it was missing
+    from ``_scan_activity_filter`` the panel showed "Popularity Scan - Letter
+    'D'" then silence for minutes, which looked exactly like a stalled scan
+    (it was the artist prefetch running without any visible output).
+    """
+
+    def test_processing_line_visible(self):
+        line = '[1/3] Processing: "Songs of a Lost World" (3 Tracks)'
+        assert _kept(line)
+
+    def test_processing_line_with_album_index(self):
+        line = '[12/42] Processing: "Absolution" (10 Tracks)'
+        assert _kept(line)
+
+    def test_prefetch_start_line_visible(self):
+        line = "[POPULARITY] Prefetching popularity + release data for 'Muse' (budget 360s)"
+        assert _kept(line)
+
+    def test_prefetch_complete_line_visible(self):
+        line = "[POPULARITY] Prefetch complete for 'Muse' in 42.3s (120 tracks pre-loaded)"
+        assert _kept(line)

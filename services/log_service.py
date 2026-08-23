@@ -265,7 +265,8 @@ def _scan_activity_filter() -> re.Pattern:
         r'popularity scan|Popularity |popularity_scan|'
         r'Full library scan|Boot scan|Scan complete|Scan failed|'
         r'Scan stopped|single detection|Singles Detection|SCAN RESULTS|'
-        r'SINGLE CONF|Distribution:|Navidrome: synced|star ratings|★',
+        r'SINGLE CONF|Distribution:|Navidrome: synced|star ratings|★|'
+        r'Processing:',
         re.I,
     )
 
