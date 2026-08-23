@@ -48,7 +48,7 @@ def _derive_musicbrainz_category(release_group: dict[str, Any]) -> str:
     # Search results can carry ``secondary-types`` as a comma-joined STRING
     # ("Live,Compilation"); iterating it character-by-character never matches,
     # so normalise to a list first (mirrors musicbrainz_service).
-    raw_secondary = release_group.get("secondary-types") or release_group.get("secondary_types") or []
+    raw_secondary: Any = release_group.get("secondary-types") or release_group.get("secondary_types") or []
     if isinstance(raw_secondary, str):
         raw_secondary = [raw_secondary]
     secondary = [
@@ -192,7 +192,7 @@ def get_cached_artist_release_rows(artist: str, source: str = "discogs") -> list
                 """),
                 {"artist": artist, "source": source},
             )
-            return [dict(r._mapping) for r in result.fetchall() or []]
+            return [dict(r) for r in result.fetchall() or []]
     except Exception as exc:
         logger.debug(
             "[RELEASE_CACHE] Row read failed",
@@ -215,20 +215,18 @@ def upsert_artist_release_rows(artist: str, releases: list[dict[str, Any]]) -> N
         from services.enrichment.discogs_service import (
             ALBUM_FORMAT_TOKENS,
             SINGLE_FORMAT_TOKENS,
-            _release_format_key,
+            release_format_key,
         )
     except Exception:
         return
     rows: list[dict[str, Any]] = []
     for rel in releases or []:
-        if not isinstance(rel, dict):
-            continue
         if str(rel.get("role") or "Main").strip().lower() != "main":
             continue
         title = str(rel.get("title") or "").strip()
         if not title:
             continue
-        fmt_tokens = _release_format_key(rel.get("format")).split()
+        fmt_tokens = release_format_key(rel.get("format")).split()
         if ALBUM_FORMAT_TOKENS.intersection(fmt_tokens):
             rtype = "album"
         elif SINGLE_FORMAT_TOKENS.intersection(fmt_tokens):
@@ -242,7 +240,7 @@ def upsert_artist_release_rows(artist: str, releases: list[dict[str, Any]]) -> N
             "artist": artist,
             "title": title,
             "rtype": rtype,
-            "category": _derive_discogs_category(_release_format_key(rel.get("format"))),
+            "category": _derive_discogs_category(release_format_key(rel.get("format"))),
             "source": "discogs",
             "release_id": str(rel.get("id") or "").strip() or None,
             "year": year,
@@ -291,10 +289,8 @@ def _fetch_musicbrainz_releases(artist: str) -> list[dict[str, Any]]:
             "single": f'artist:"{escaped}" AND (primarytype:single OR primarytype:ep)',
             "album": f'artist:"{escaped}" AND primarytype:album',
         }
-        for rtype, query in queries.items():
+        for query in queries.values():
             for rg in client.search_release_groups(query, limit=25) or []:
-                if not isinstance(rg, dict):
-                    continue
                 title = str(rg.get("title") or "").strip()
                 primary = str(rg.get("primary-type") or "").lower()
                 if not title or primary not in ("album", "ep", "single"):
@@ -327,13 +323,15 @@ def _fetch_discogs_releases(artist: str, discogs_artist_id: str) -> list[dict[st
         from api_clients.discogs_http import DiscogsHttpClient
         from helpers.config_helpers import get_config
         from services.enrichment.discogs_service import (
-            _release_format_key,
+            release_format_key,
             ALBUM_FORMAT_TOKENS,
             SINGLE_FORMAT_TOKENS,
         )
         token = ""
         try:
-            token = (get_config().get("api_integrations", {}).get("discogs", {}) or {}).get("token", "") or ""
+            api_cfg: dict[str, Any] = get_config().get("api_integrations") or {}
+            discogs_cfg: dict[str, Any] = api_cfg.get("discogs") or {}
+            token = str(discogs_cfg.get("token") or "")
         except Exception:
             token = ""
         if not token or token.lower() in ("your_discogs_token", "your_token", "placeholder"):
@@ -348,8 +346,6 @@ def _fetch_discogs_releases(artist: str, discogs_artist_id: str) -> list[dict[st
         resolve_master_formats(releases, client)
         out: list[dict[str, Any]] = []
         for rel in releases:
-            if not isinstance(rel, dict):
-                continue
             if str(rel.get("role") or "Main").strip().lower() != "main":
                 continue
             title = str(rel.get("title") or "").strip()
@@ -361,7 +357,7 @@ def _fetch_discogs_releases(artist: str, discogs_artist_id: str) -> list[dict[st
             # cache feeds singles detection an empty title set. Same rules as
             # ``DiscogsService._scan_releases``: an Album/LP/compilation row is
             # never a single, even when a title fuzzily matches it.
-            fmt_tokens = _release_format_key(rel.get("format")).split()
+            fmt_tokens = release_format_key(rel.get("format")).split()
             if ALBUM_FORMAT_TOKENS.intersection(fmt_tokens):
                 rtype = "album"
             elif SINGLE_FORMAT_TOKENS.intersection(fmt_tokens):
@@ -375,7 +371,7 @@ def _fetch_discogs_releases(artist: str, discogs_artist_id: str) -> list[dict[st
             out.append({
                 "title": title,
                 "release_type": rtype,
-                "category": _derive_discogs_category(_release_format_key(rel.get("format"))),
+                "category": _derive_discogs_category(release_format_key(rel.get("format"))),
                 "source": "discogs",
                 "release_id": str(rel.get("id") or "").strip() or None,
                 "year": year,
@@ -542,7 +538,7 @@ def refresh_missing_releases_for_artist(artist: str) -> dict[str, Any]:
                 """),
                 {"artist": artist},
             )
-            cached = [dict(r._mapping) for r in result.fetchall() or []]
+            cached = [dict(r) for r in result.fetchall() or []]
     except Exception as exc:
         logger.debug(
             "[RELEASE_CACHE] Missing-releases read failed",
@@ -712,7 +708,7 @@ def populate_missing_release_tracklists(artist: str, limit: int = 5) -> dict[str
                 """),
                 {"artist": artist, "limit": limit},
             )
-            missing = [dict(r._mapping) for r in result.fetchall() or []]
+            missing = [dict(r) for r in result.fetchall() or []]
     except Exception as exc:
         logger.debug(
             "[RELEASE_CACHE] Missing-releases query failed",
@@ -732,14 +728,15 @@ def populate_missing_release_tracklists(artist: str, limit: int = 5) -> dict[str
         try:
             from api_clients.musicbrainz_http import MusicBrainzHttpClient
             client = MusicBrainzHttpClient(enabled=True)
-            recordings = client.get_release_recordings(release_id) or []
-            tracklist = []
-            for rec in recordings:
-                if not isinstance(rec, dict):
-                    continue
-                title = str(rec.get("title") or "").strip()
-                if title:
-                    tracklist.append(title)
+            detail: dict[str, Any] = client.get_release(release_id, inc="recordings") or {}
+            tracklist: list[str] = []
+            media_list: list[dict[str, Any]] = detail.get("media") or []
+            for medium in media_list:
+                tracks: list[dict[str, Any]] = medium.get("tracks") or []
+                for track_obj in tracks:
+                    title = str(track_obj.get("title") or "").strip()
+                    if title:
+                        tracklist.append(title)
             if tracklist:
                 import json
                 tracklist_json = json.dumps(tracklist)

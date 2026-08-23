@@ -173,7 +173,7 @@ def _set_int_if(env_suffix: str, cfg: dict, *keys: str) -> None:
 # Public API
 # -----------------------------------------------------------------------------
 
-def get_config() -> dict:
+def get_config() -> dict[str, Any]:
     """
     Load config.yaml with caching, with Pydantic Settings as defaults.
 

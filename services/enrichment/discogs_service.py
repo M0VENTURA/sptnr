@@ -82,7 +82,13 @@ def _clean_title_for_comparison(title: str) -> str:
 INVERTED_RETRY_MIN_SIMILARITY = 0.50
 
 
-def _release_format_key(formats: Any) -> str:
+def release_format_key(formats: Any) -> str:
+    """Normalize a Discogs ``format`` value (str or list) to a token string.
+
+    Public alias of the former private ``_release_format_key`` so other
+    modules (e.g. ``services.popularity.release_cache_service``) can reuse
+    the classification tokens without tripping protected-member linters.
+    """
     if not formats:
         return ""
     if isinstance(formats, str):
@@ -92,6 +98,10 @@ def _release_format_key(formats: Any) -> str:
     else:
         parts = [str(formats)]
     return " ".join(p.strip().lower() for p in parts if p and p.strip())
+
+
+# Backwards-compatible private alias (internal callers still reference it).
+_release_format_key = release_format_key
 
 
 def _discogs_title_similarity(local_title: str, candidate_title: str) -> float:
