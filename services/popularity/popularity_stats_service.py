@@ -24,17 +24,25 @@ def _filter_bonus_rows(rows) -> list:
     scores would drag the album baseline down and inflate every core track's
     relative z.  DB rows carry no ``is_live``/``album_context_live`` flags, so
     the same title-pattern check used by the star-rating merges
-    (``is_bonus_track_title``) is applied here.  Ambient interludes / skits
-    (``duration < statistics.exclude_from_median_below_seconds``, default 90s)
-    are excluded too — a 30-second ambient piece must not compress the album
-    median or shrink the MAD used for z-scores.
+    (``is_bonus_track_title``) is applied here, PLUS explicit ``bonus``
+    markers ("(Bonus Track)", "[Bonus]", "Bonus Cut") that the shared
+    ``ALT_TRACK_PATTERNS`` does not cover — a deluxe edition's bonus cuts
+    must not compress the album median or shrink the MAD used for z-scores.
+    Ambient interludes / skits (``duration < statistics.exclude_from_median_below_seconds``,
+    default 90s) are excluded too — a 30-second ambient piece must not
+    compress the album median or shrink the MAD used for z-scores.
     """
+    import re as _re
+
     from services.popularity.popularity_config import get_exclude_from_median_below_seconds
 
     floor = get_exclude_from_median_below_seconds() or 0.0
     out = []
     for row in (rows or []):
-        if is_bonus_track_title(str(row[0] or "")):
+        title = str(row[0] or "")
+        if is_bonus_track_title(title):
+            continue
+        if _re.search(r"\bbonus\b", title, _re.IGNORECASE):
             continue
         if floor > 0:
             try:

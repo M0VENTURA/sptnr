@@ -20,7 +20,46 @@ from services.catalog.album_classification_service import (
     is_bonus_track_title,
     should_exclude_track_from_stats,
 )
-from services.popularity.popularity_stats_service import calculate_album_stats
+from services.popularity.popularity_stats_service import (
+    _filter_bonus_rows,
+    calculate_album_stats,
+)
+
+
+class TestBonusRowFilter:
+    """``_filter_bonus_rows`` drops bonus/live/short rows from stats baselines.
+
+    A deluxe edition's "(Bonus Track)" / "[Bonus]" cuts must not compress the
+    album median or inflate every core track's relative z — the shared
+    ``ALT_TRACK_PATTERNS`` covers live/remix/demo but not explicit "bonus"
+    markers, so ``_filter_bonus_rows`` adds its own ``\\bbonus\\b`` match.
+    """
+
+    def test_bonus_track_marker_excluded(self):
+        rows = [
+            ("Main Song", 60.0, 200.0, 240.0),
+            ("Hidden Gem (Bonus Track)", 30.0, 200.0, 180.0),
+            ("Deluxe Cut [Bonus]", 25.0, 200.0, 200.0),
+        ]
+        kept = [r[0] for r in _filter_bonus_rows(rows)]
+        assert kept == ["Main Song"]
+
+    def test_live_and_short_rows_excluded(self):
+        rows = [
+            ("Main Song", 60.0, 200.0, 240.0),
+            ("Song (Live)", 40.0, 200.0, 240.0),
+            ("Ambient Skit", 20.0, 200.0, 30.0),  # below the 90s floor
+        ]
+        kept = [r[0] for r in _filter_bonus_rows(rows)]
+        assert kept == ["Main Song"]
+
+    def test_core_tracks_kept(self):
+        rows = [
+            ("Track One", 55.0, 200.0, 240.0),
+            ("Track Two", 70.0, 200.0, 260.0),
+        ]
+        kept = [r[0] for r in _filter_bonus_rows(rows)]
+        assert kept == ["Track One", "Track Two"]
 
 
 class TestInterludeDurationFloor:
