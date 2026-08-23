@@ -147,10 +147,10 @@ def get_scan_progress() -> dict[str, Any]:
     # ---------------------------------------------------------------------
 
     deduped: list[dict[str, Any]] = []
-    seen = set()
+    seen: set[str] = set()
 
     for entry in active_scans:
-        scan_type = entry.get("scan_type")
+        scan_type = str(entry.get("scan_type") or "")
         if scan_type in seen:
             continue
         seen.add(scan_type)
