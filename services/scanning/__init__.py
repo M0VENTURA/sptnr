@@ -4,10 +4,8 @@ Scan orchestration for library synchronisation and music metadata imports.
 Coordinates Navidrome import, scan checkpoints/resume, and pipeline stages.
 
 Submodules:
-    - scanner:        Top-level scan entry point and main loop.
-    - artist_scanner: Artist-level scan orchestration.
-    - album_scanner:  Album-level data retrieval.
-    - pipeline:       Multi-stage scan pipeline orchestration.
+    - pipeline:       Multi-stage scan pipeline orchestration (full library,
+                      per-artist, boot import).
     - navidrome_import: Artist/album/track import from Navidrome.
     - navidrome_service: Service-level Navidrome API coordination.
     - navidrome_scan_service: Config and client management.
