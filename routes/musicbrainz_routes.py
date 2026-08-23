@@ -317,6 +317,8 @@ async def api_musicbrainz_search() -> Any:
     album = str(payload.get("album", "")).strip()
     track = str(payload.get("track", "")).strip()
     year = str(payload.get("year", "")).strip()
+    year_to = str(payload.get("year_to", "")).strip()
+    genre = str(payload.get("genre", "")).strip()
     query = str(payload.get("query", "")).strip()
     artist_only = bool(payload.get("artist_only", False))
     release_type = str(payload.get("type") or payload.get("release_type") or "").strip().lower()
@@ -356,6 +358,42 @@ async def api_musicbrainz_search() -> Any:
         if pt == "album":
             return "Album"
         return primary_type or "Other"
+
+    def _date_range_term(start_year: str, end_year: str) -> str | None:
+        """Build a Lucene ``date:[... TO ...]`` term from optional year bounds.
+
+        MusicBrainz stores first-release dates as ``YYYY-MM-DD``; a bare
+        ``date:2024`` match is unreliable, so a single year becomes a
+        full-year range and two years a span.  Only used when a year bound
+        is present.
+        """
+        sy = (start_year or "").strip()
+        ey = (end_year or "").strip()
+        if not sy and not ey:
+            return None
+        if not ey:
+            ey = sy
+        if not sy:
+            sy = ey
+        try:
+            y1 = int(sy)
+            y2 = int(ey)
+        except (TypeError, ValueError):
+            return None
+        y1, y2 = min(y1, y2), max(y1, y2)
+        return f"date:[{y1:04d}-01-01 TO {y2:04d}-12-31]"
+
+    def _genre_term(genre_value: str) -> str | None:
+        """Build a Lucene ``tag:`` term for a genre filter.
+
+        MusicBrainz indexes genres as tags; the tag facet is the standard
+        way to filter release-groups/releases by genre.  Multi-word genres
+        are quoted so "hip hop" matches the tag exactly.
+        """
+        g = (genre_value or "").strip().lower()
+        if not g:
+            return None
+        return f'tag:"{_esc(g)}"'
 
     def _category_from_types(primary_type: str, secondary_types: Any) -> str:
         pt = _normalise_category(primary_type)
@@ -525,8 +563,12 @@ async def api_musicbrainz_search() -> Any:
             track_parts = [f'recording:"{_esc(track)}"']
             if artist:
                 track_parts.append(f'artist:"{_esc(artist)}"')
-            if year:
-                track_parts.append(f'date:{_esc(year)}')
+            _date_term = _date_range_term(year, year_to)
+            if _date_term:
+                track_parts.append(_date_term)
+            _genre = _genre_term(genre)
+            if _genre:
+                track_parts.append(_genre)
             type_term = _type_query_term(release_type)
             if type_term:
                 track_parts.append(type_term)
@@ -567,8 +609,12 @@ async def api_musicbrainz_search() -> Any:
                 parts.append(f'artist:"{_esc(artist)}"')
             if album:
                 parts.append(f'releasegroup:"{_esc(album)}"')
-            if year:
-                parts.append(f'date:{_esc(year)}')
+            _date_term = _date_range_term(year, year_to)
+            if _date_term:
+                parts.append(_date_term)
+            _genre = _genre_term(genre)
+            if _genre:
+                parts.append(_genre)
             type_term = _type_query_term(release_type)
             if type_term:
                 parts.append(type_term)

@@ -129,13 +129,15 @@
       artist: val('unifiedFilterArtist'),
       album: val('unifiedFilterAlbum'),
       track: val('unifiedFilterTrack'),
-      year: val('unifiedFilterYear')
+      year: val('unifiedFilterYear'),
+      year_to: val('unifiedFilterYearTo'),
+      genre: val('unifiedFilterGenre')
     };
   }
 
   function fetchMb(query, limit, opts) {
     opts = opts || {};
-    var hasAdvanced = opts.artist || opts.album || opts.track || opts.year;
+    var hasAdvanced = opts.artist || opts.album || opts.track || opts.year || opts.year_to || opts.genre;
 
     // Plain free-text query with no structured filters — reuse the shared MB
     // component internals so the two search UIs stay consistent.
@@ -151,9 +153,11 @@
       payload.album = opts.album || '';
       payload.track = opts.track || '';
       payload.year = opts.year || '';
+      payload.year_to = opts.year_to || '';
+      payload.genre = opts.genre || '';
       // Artist-only search means "release groups BY the artist", not groups
       // whose title happens to match the artist name (matches the MB modal).
-      if (opts.artist && !opts.album && !opts.track && !opts.year) payload.artist_only = true;
+      if (opts.artist && !opts.album && !opts.track && !opts.year && !opts.year_to && !opts.genre) payload.artist_only = true;
     } else {
       payload.query = query;
     }
@@ -208,7 +212,7 @@
     var visible = items.slice(0, SECTION_INLINE_LIMIT);
     var hidden = items.slice(SECTION_INLINE_LIMIT);
     var toggle = hidden.length
-      ? '<button type="button" class="btn btn-sm btn-link us-section-toggle py-0 ms-auto text-decoration-none" data-count="' + count + '" onclick="toggleUsSection(this)">' +
+      ? '<button type="button" class="btn btn-sm btn-link us-section-toggle py-0 text-decoration-none" data-count="' + count + '" onclick="toggleUsSection(this)">' +
         'Show All ' + count + ' <i class="bi bi-chevron-down"></i></button>'
       : '';
     return '<div class="us-section mb-1">' +
@@ -346,6 +350,9 @@
             '<span class="us-row-sub d-block"><span class="us-artist">By ' + esc(it.artist) + '</span> · <span class="us-type">' + esc(it.typeLabel || 'Album') + '</span></span>' +
             trackLine +
           '</span>' +
+          '<span class="us-row-action btn btn-sm btn-outline-secondary" title="View in library">' +
+            '<i class="bi bi-box-arrow-up-right"></i>' +
+          '</span>' +
         '</a>';
       } else if (it.owned) {
         // MusicBrainz release that is ALREADY in the collection: no queue
@@ -360,6 +367,9 @@
             '<span class="us-row-title d-block">' + esc(it.title) + yearSuffix + '</span>' +
             '<span class="us-row-sub d-block"><span class="us-artist">By ' + esc(it.artist) + '</span> · <span class="us-type">' + esc(it.typeLabel || 'Album') + '</span></span>' +
             trackLine +
+          '</span>' +
+          '<span class="us-row-action btn btn-sm btn-outline-secondary" title="View in library">' +
+            '<i class="bi bi-box-arrow-up-right"></i>' +
           '</span>' +
         '</a>';
       } else {
@@ -730,8 +740,9 @@
     // reset search state — exactly as the "navigate away" rule intends).
     selectScope(scope || _scope);
     input.value = prefill;
-    // Advanced filters default to EXPANDED each time the panel opens.
-    setAdvancedFiltersVisible(true);
+    // Advanced filters default to COLLAPSED so results own the panel on open
+    // (re-expand with the toggle — values are preserved).
+    setAdvancedFiltersVisible(false);
     if (getErrorEl()) getErrorEl().classList.add('d-none');
 
     // Anchor the flyout directly under the fixed navbar (measured so the

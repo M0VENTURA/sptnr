@@ -47,17 +47,16 @@ position:fixed flyout anchored below the navbar.
       />
     </div>
 
-    <!-- Advanced filters — collapsible.  Expanded on open, auto-collapses
-         after a search submit so results get the screen; re-expand with the
-         toggle (values are preserved).  Fields drive MusicBrainz discovery
-         AND feed the library search when the main bar is empty (e.g.
-         artist-only matching). -->
+    <!-- Advanced filters — collapsible.  Collapsed by default so results get
+         the screen; expand with the toggle (values are preserved).  Fields
+         drive MusicBrainz discovery AND feed the library search when the
+         main bar is empty (e.g. artist-only matching). -->
     <div class="d-flex align-items-center mb-1">
-      <button type="button" class="btn btn-sm btn-link p-0 text-decoration-none us-filter-toggle" id="unifiedFiltersToggle" aria-expanded="true">
-        <i class="bi bi-chevron-up" id="unifiedFiltersToggleIcon"></i> <span id="unifiedFiltersToggleLabel">Advanced Search</span>
+      <button type="button" class="btn btn-sm btn-link p-0 text-decoration-none us-filter-toggle" id="unifiedFiltersToggle" aria-expanded="false">
+        <i class="bi bi-chevron-right" id="unifiedFiltersToggleIcon"></i> <span id="unifiedFiltersToggleLabel">Advanced Search</span>
       </button>
     </div>
-    <div class="border rounded p-2 mb-2" id="unifiedAdvancedFilters" style="background: var(--primary-bg);">
+    <div class="border rounded p-2 mb-2 d-none" id="unifiedAdvancedFilters" style="background: var(--primary-bg);">
       <div class="d-flex align-items-center gap-2 mb-1 flex-wrap">
         <small class="text-muted" style="font-size: 0.75rem;"><i class="bi bi-info-circle"></i> Apply to your library and MusicBrainz discovery — an artist field alone still matches library artists.</small>
       </div>
@@ -77,6 +76,14 @@ position:fixed flyout anchored below the navbar.
         <div class="col-6 col-md-3">
           <label class="form-label small mb-1 text-muted">Year</label>
           <input type="text" class="form-control form-control-sm" id="unifiedFilterYear" placeholder="2024" maxlength="4" autocomplete="off">
+        </div>
+        <div class="col-6 col-md-3">
+          <label class="form-label small mb-1 text-muted">Genre</label>
+          <input type="text" class="form-control form-control-sm" id="unifiedFilterGenre" placeholder="rock, metal, hip-hop…" autocomplete="off">
+        </div>
+        <div class="col-6 col-md-3">
+          <label class="form-label small mb-1 text-muted">Year To</label>
+          <input type="text" class="form-control form-control-sm" id="unifiedFilterYearTo" placeholder="2025" maxlength="4" autocomplete="off">
         </div>
       </div>
     </div>

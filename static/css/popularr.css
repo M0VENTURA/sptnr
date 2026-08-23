@@ -1155,7 +1155,8 @@ html {
 
 /* Result rows — colored source dot + artist-first subtitle hierarchy.
    The dots reuse the tab accent colors so a row's origin (library green /
-   MusicBrainz amber) is recognisable at a glance. */
+   MusicBrainz amber) is recognisable at a glance.  An icon sits inside the
+   dot (✓ library / ⬡ external) so the status is readable without colour. */
 .us-row .us-dot {
     font-size: 0.6rem;
     vertical-align: middle;
@@ -1165,7 +1166,8 @@ html {
 .us-row .accent-library { color: #2ecc71; }
 .us-row .accent-mb { color: #f1c40f; }
 
-/* Source badges overlaid on the album-art thumbnail (top-right corner):
+/* Source badges overlaid on the album-art thumbnail (top-right corner,
+   nudged inward so they never bleed outside the artwork's bounding box):
    green ♫ = local library, amber ⬡ = MusicBrainz.  Keeps the text column
    free of bullet characters. */
 .us-row .us-thumb-wrap {
@@ -1176,8 +1178,8 @@ html {
 
 .us-row .us-thumb-badge {
     position: absolute;
-    top: -3px;
-    right: -3px;
+    top: 4px;
+    right: 4px;
     width: 16px;
     height: 16px;
     border-radius: 50%;
@@ -1192,6 +1194,26 @@ html {
 
 .us-row .us-thumb-badge.accent-library-bg { background: #2ecc71; }
 .us-row .us-thumb-badge.accent-mb-bg { background: #f1c40f; }
+
+/* Hover-only quick-action for local library rows (View).  Appears on the
+   right side so local results feel as actionable as the MB Queue buttons. */
+.us-row .us-row-action {
+    flex-shrink: 0;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+}
+
+.us-row:hover .us-row-action,
+.us-row:focus-within .us-row-action {
+    opacity: 1;
+}
+
+@media (hover: none) {
+    /* Touch: always show the action so it is tappable. */
+    .us-row .us-row-action {
+        opacity: 1;
+    }
+}
 
 .us-row .us-artist {
     color: #e0e0e0;
@@ -1216,13 +1238,19 @@ html {
     overflow-x: auto;
     min-width: 0;
     -webkit-overflow-scrolling: touch;
-    scrollbar-width: thin;
+    scrollbar-width: none; /* Firefox: hide scrollbar so chips never truncate */
+    -ms-overflow-style: none;
+}
+
+.search-flyout #unifiedScopeTabs.us-scope-chips::-webkit-scrollbar {
+    display: none; /* Chrome/Safari: hide scrollbar, keep swipe */
 }
 
 .search-flyout #unifiedScopeTabs.us-scope-chips .nav-link {
     padding: 4px 12px;
     font-size: 0.85rem;
     white-space: nowrap;
+    flex-shrink: 0; /* chips never shrink/truncate — the row scrolls instead */
 }
 
 .search-flyout #unifiedScopeTabs.us-scope-chips .us-scope-count {
