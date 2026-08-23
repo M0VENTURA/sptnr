@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-import logging
+import structlog
 
 from helpers.config_helpers import get_config
 from services.scanning.scan_state import write_progress_file
+
+logger = structlog.get_logger(__name__)
 
 
 def run_essentia_pipeline(
@@ -57,6 +59,6 @@ def run_essentia_pipeline(
             write_progress_file(progress_file, "essentia_mood_scan", False, {"status": "complete", "exit_code": 0})
 
     except Exception as exc:
-        logging.error("Essentia pipeline failed: %s", exc, exc_info=True)
+        logger.exception("Essentia pipeline failed", error=str(exc))
         write_progress_file(progress_file, "essentia_mood_scan", False, {"status": "error", "error": str(exc), "exit_code": 1})
         raise

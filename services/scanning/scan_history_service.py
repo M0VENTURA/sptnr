@@ -15,7 +15,11 @@ Architecture:
 
 from datetime import datetime
 from sqlalchemy import text
+import structlog
+
 from db.engine import db_session
+
+logger = structlog.get_logger(__name__)
 
 
 def record_scan(
@@ -79,9 +83,13 @@ def record_scan(
                         "completed_at": datetime.utcnow(),
                     },
                 )
-    except Exception:
-        import logging
-        logging.getLogger(__name__).exception("Failed to record scan history")
+    except Exception as exc:
+        logger.exception(
+            "Failed to record scan history",
+            scan_type=scan_type,
+            status=status,
+            error=str(exc),
+        )
 
 
 def get_recent_album_scans(limit: int = 50):
@@ -158,7 +166,12 @@ def was_album_scanned(artist: str, album: str, scan_type: str, days: int = 7) ->
                 {"scan_type": scan_type, "artist": artist, "album": album, "days": int(days)},
             )
             return result.fetchone() is not None
-    except Exception:
-        import logging
-        logging.getLogger(__name__).exception("was_album_scanned query failed")
+    except Exception as exc:
+        logger.exception(
+            "was_album_scanned query failed",
+            artist=artist,
+            album=album,
+            scan_type=scan_type,
+            error=str(exc),
+        )
         return False

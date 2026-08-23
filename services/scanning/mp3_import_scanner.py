@@ -19,12 +19,12 @@ Architecture:
 
 from __future__ import annotations
 
-import logging
 import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import structlog
 from sqlalchemy import text
 from db.engine import db_session
 from helpers.metadata_reader import read_mp3_metadata
@@ -35,7 +35,7 @@ from services.scanning.scan_state import (
     write_progress_with_current_artist,
 )
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # Audio formats that the scanner can read.
 from helpers.config_helpers import get_supported_audio_formats
@@ -142,7 +142,7 @@ class MP3ImportScanner:
                 self._scan_directory()
 
         except Exception as exc:
-            logger.exception("MP3 import scan failed")
+            logger.exception("MP3 import scan failed", error=str(exc))
             self.errors += 1
             _write_progress(False, status="error", error=str(exc))
             return self._results(success=False, error=str(exc))
@@ -165,7 +165,7 @@ class MP3ImportScanner:
 
         rows = self._load_database_tracks()
         self.total_files = len(rows)
-        logger.info("Found %d track(s) with file paths", self.total_files)
+        logger.info("Found tracks with file paths", count=self.total_files)
 
         if not rows:
             return
@@ -178,7 +178,7 @@ class MP3ImportScanner:
             self._update_track_from_file(track_id, file_path, db_artist, db_title, db_album)
 
             if idx % 50 == 0:
-                logger.info("Progress: %d / %d", idx, self.total_files)
+                logger.info("Progress", processed=idx, total=self.total_files)
                 _write_progress(
                     True,
                     processed=self.processed,
@@ -223,7 +223,7 @@ class MP3ImportScanner:
                     audio_files.append(os.path.join(dirpath, fn))
 
         self.total_files = len(audio_files)
-        logger.info("Found %d audio file(s) in %s", self.total_files, root)
+        logger.info("Found audio files", count=self.total_files, root=root)
 
         if not audio_files:
             return
@@ -236,7 +236,7 @@ class MP3ImportScanner:
             self._scan_single_file(file_path)
 
             if idx % 10 == 0:
-                logger.info("Progress: %d / %d", idx, self.total_files)
+                logger.info("Progress", processed=idx, total=self.total_files)
                 _write_progress(
                     True,
                     current_file=os.path.basename(file_path),
@@ -255,18 +255,20 @@ class MP3ImportScanner:
             if not metadata.get("title"):
                 self.skipped += 1
                 if self.verbose:
-                    logger.info("Skipped %s: no title metadata", file_path)
+                    logger.info("Skipped file: no title metadata", file=file_path)
                 return
 
             self.processed += 1
             success, msg = self._import_track(file_path, metadata)
             if self.verbose:
-                level = logging.INFO if success else logging.WARNING
-                logger.log(level, "%s — %s", msg, file_path)
+                if success:
+                    logger.info("Import result", message=msg, file=file_path)
+                else:
+                    logger.warning("Import result", message=msg, file=file_path)
 
         except Exception as exc:
             self.errors += 1
-            logger.warning("Error processing %s: %s", file_path, exc)
+            logger.warning("Error processing file", file=file_path, error=str(exc))
 
     # ------------------------------------------------------------------
     # Import / update logic

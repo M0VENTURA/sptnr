@@ -14,10 +14,14 @@ Architecture:
 
 from __future__ import annotations
 
+import structlog
+
 from api_clients.navidrome import NavidromeClient
 from sqlalchemy import text
 from db.engine import db_session
 from helpers.config_helpers import get_config
+
+logger = structlog.get_logger(__name__)
 
 _nav_client_cache: NavidromeClient | None = None
 
@@ -27,7 +31,7 @@ def get_navidrome_config() -> dict | None:
         from helpers.config_helpers import get_navidrome_first_user
         return get_navidrome_first_user() or None
     except Exception as exc:
-        logger.debug("Could not load Navidrome config: %s", exc)
+        logger.debug("Could not load Navidrome config", error=str(exc))
         return None
 
 

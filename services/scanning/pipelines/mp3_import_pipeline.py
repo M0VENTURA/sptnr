@@ -7,13 +7,16 @@ pipeline asynchronously.
 
 from __future__ import annotations
 
-import logging
 from typing import Any
+
+import structlog
 
 from services.scanning.scan_state import (
     get_scan_progress_path,
     write_progress_with_current_artist,
 )
+
+logger = structlog.get_logger(__name__)
 
 
 def run_mp3_import_pipeline(
@@ -76,7 +79,7 @@ def run_mp3_import_pipeline(
         }
 
     except Exception as exc:
-        logging.error("MP3 import pipeline failed: %s", exc, exc_info=True)
+        logger.exception("MP3 import pipeline failed", error=str(exc))
 
         write_progress_with_current_artist(
             progress_file,

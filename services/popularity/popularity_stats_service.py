@@ -1,8 +1,9 @@
 """Popularity statistics and eligibility helpers."""
 
 from __future__ import annotations
-import logging
 from statistics import mean, median, stdev
+
+import structlog
 
 from services.catalog.album_classification_service import (
     is_bonus_track_title,
@@ -13,7 +14,7 @@ from services.popularity.popularity_math import (
     calculate_track_zscore,
 )
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 def _filter_bonus_rows(rows) -> list:
@@ -74,7 +75,12 @@ def calculate_album_stats(conn, artist: str, album: str) -> tuple[float, float, 
                 {"artist": artist, "album": album},
             ).fetchall() or []
     except Exception as exc:
-        logger.debug("[POPULARITY_STATS] Album stats session error for %s - %s: %s", artist, album, exc)
+        logger.debug(
+            "[POPULARITY_STATS] Album stats session error",
+            artist=artist,
+            album=album,
+            error=str(exc),
+        )
         return 0.0, 0.0, []
 
     values = [float(row[1] or 0) for row in rows if float(row[1] or 0) > 0]
@@ -83,12 +89,23 @@ def calculate_album_stats(conn, artist: str, album: str) -> tuple[float, float, 
         values = core_values
 
     if not values:
-        logger.debug("[POPULARITY_STATS] No valid score tracks found for album: %s - %s", artist, album)
+        logger.debug(
+            "[POPULARITY_STATS] No valid score tracks found for album",
+            artist=artist,
+            album=album,
+        )
         return 0.0, 0.0, []
 
     avg = mean(values)
     sd = stdev(values) if len(values) > 1 else 0.0
-    logger.debug("[POPULARITY_STATS] Album stats for %s - %s: mean=%.1f, stdev=%.1f (count=%d)", artist, album, avg, sd, len(values))
+    logger.debug(
+        "[POPULARITY_STATS] Album stats",
+        artist=artist,
+        album=album,
+        mean=avg,
+        stdev=sd,
+        count=len(values),
+    )
 
     return avg, sd, values
 
@@ -117,17 +134,30 @@ def calculate_artist_stats(conn, artist: str) -> tuple[float, float, list[float]
             )
             rows = result.fetchall() or []
     except Exception as exc:
-        logger.debug("[POPULARITY_STATS] Artist stats session error for %s: %s", artist, exc)
+        logger.debug(
+            "[POPULARITY_STATS] Artist stats session error",
+            artist=artist,
+            error=str(exc),
+        )
         return 0.0, 0.0, []
 
     values = [float(row[1] or 0) for row in _filter_bonus_rows(rows) if float(row[1] or 0) > 0]
     if not values:
-        logger.debug("[POPULARITY_STATS] No valid score tracks found for artist: %s", artist)
+        logger.debug(
+            "[POPULARITY_STATS] No valid score tracks found for artist",
+            artist=artist,
+        )
         return 0.0, 0.0, []
 
     avg = mean(values)
     sd = stdev(values) if len(values) > 1 else 0.0
-    logger.debug("[POPULARITY_STATS] Artist stats for %s: mean=%.1f, stdev=%.1f (count=%d)", artist, avg, sd, len(values))
+    logger.debug(
+        "[POPULARITY_STATS] Artist stats",
+        artist=artist,
+        mean=avg,
+        stdev=sd,
+        count=len(values),
+    )
 
     return avg, sd, values
 
@@ -158,7 +188,12 @@ def calculate_album_listener_stats(conn, artist: str, album: str) -> tuple[list[
             )
             rows = result.fetchall() or []
     except Exception as exc:
-        logger.debug("[POPULARITY_STATS] Album listener session error for %s - %s: %s", artist, album, exc)
+        logger.debug(
+            "[POPULARITY_STATS] Album listener session error",
+            artist=artist,
+            album=album,
+            error=str(exc),
+        )
         return [], []
 
     lf_listeners: list[float] = []

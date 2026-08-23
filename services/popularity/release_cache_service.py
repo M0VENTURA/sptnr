@@ -12,16 +12,17 @@ tracks against known single releases WITHOUT per-track API searches.
 
 from __future__ import annotations
 
-import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, Set
+from typing import Any
+
+import structlog
 
 from sqlalchemy import text
 
 from api_clients.musicbrainz_http import MusicBrainzHttpClient, escape_lucene_special_chars
 from db.engine import db_session
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 CACHE_FRESH_HOURS = 24 * 7
 
@@ -193,7 +194,11 @@ def get_cached_artist_release_rows(artist: str, source: str = "discogs") -> list
             )
             return [dict(r._mapping) for r in result.fetchall() or []]
     except Exception as exc:
-        logger.debug("[RELEASE_CACHE] Row read failed for %s: %s", artist, exc)
+        logger.debug(
+            "[RELEASE_CACHE] Row read failed",
+            artist=artist,
+            error=str(exc),
+        )
         return None
 
 
@@ -269,7 +274,11 @@ def _upsert_releases(artist: str, rows: list[dict[str, Any]]) -> None:
                     {**row, "artist": artist, "is_promo": bool(row.get("is_promo", False))},
                 )
     except Exception as exc:
-        logger.debug("[RELEASE_CACHE] Upsert failed for %s: %s", artist, exc)
+        logger.debug(
+            "[RELEASE_CACHE] Upsert failed",
+            artist=artist,
+            error=str(exc),
+        )
 
 
 def _fetch_musicbrainz_releases(artist: str) -> list[dict[str, Any]]:
@@ -304,7 +313,11 @@ def _fetch_musicbrainz_releases(artist: str) -> list[dict[str, Any]]:
                 })
         return out
     except Exception as exc:
-        logger.debug("[RELEASE_CACHE] MB fetch failed for %s: %s", artist, exc)
+        logger.debug(
+            "[RELEASE_CACHE] MB fetch failed",
+            artist=artist,
+            error=str(exc),
+        )
         return []
 
 
@@ -370,7 +383,11 @@ def _fetch_discogs_releases(artist: str, discogs_artist_id: str) -> list[dict[st
             })
         return out
     except Exception as exc:
-        logger.debug("[RELEASE_CACHE] Discogs fetch failed for %s: %s", artist, exc)
+        logger.debug(
+            "[RELEASE_CACHE] Discogs fetch failed",
+            artist=artist,
+            error=str(exc),
+        )
         return []
 
 
@@ -378,7 +395,7 @@ def _fetch_discogs_releases(artist: str, discogs_artist_id: str) -> list[dict[st
 # Public API
 # ---------------------------------------------------------------------------
 
-def prefetch_artist_releases(artist: str, discogs_artist_id: str = "") -> Dict[str, Any]:
+def prefetch_artist_releases(artist: str, discogs_artist_id: str = "") -> dict[str, Any]:
     """Pull an artist's releases into ``artist_release_cache``.
 
     Skips artists refreshed within the TTL.  Returns per-source counts.
@@ -402,13 +419,15 @@ def prefetch_artist_releases(artist: str, discogs_artist_id: str = "") -> Dict[s
 
     if mb_rows or discogs_rows:
         logger.info(
-            "[RELEASE_CACHE] Artist '%s': %s MB + %s Discogs releases cached",
-            artist, len(mb_rows), len(discogs_rows),
+            "[RELEASE_CACHE] Artist releases cached",
+            artist=artist,
+            mb_count=len(mb_rows),
+            discogs_count=len(discogs_rows),
         )
     return {"musicbrainz": len(mb_rows), "discogs": len(discogs_rows)}
 
 
-def get_artist_single_titles(artist: str, source: str | None = None) -> Set[str]:
+def get_artist_single_titles(artist: str, source: str | None = None) -> set[str]:
     """Single/EP titles known for the artist, lowercased.
 
     ``source``: ``"musicbrainz"``, ``"discogs"``, or None for both.
@@ -434,7 +453,7 @@ def get_artist_single_titles(artist: str, source: str | None = None) -> Set[str]
         return set()
 
 
-def get_artist_promo_titles(artist: str, source: str = "discogs") -> Set[str]:
+def get_artist_promo_titles(artist: str, source: str = "discogs") -> set[str]:
     """Promotional single/EP titles known for the artist, lowercased.
 
     A promo-only release is real Discogs confirmation that the track was
@@ -469,7 +488,7 @@ def _norm_release_title(title: str) -> str:
     return _re.sub(r"\s+", " ", (title or "").strip().lower())
 
 
-def _library_albums(artist: str) -> Set[str]:
+def _library_albums(artist: str) -> set[str]:
     try:
         with db_session() as session:
             result = session.execute(
@@ -485,7 +504,7 @@ def _library_albums(artist: str) -> Set[str]:
         return set()
 
 
-def refresh_missing_releases_for_artist(artist: str) -> Dict[str, Any]:
+def refresh_missing_releases_for_artist(artist: str) -> dict[str, Any]:
     """Compare the cached artist releases against the library and persist gaps.
 
     Mirrors the legacy gap detection: a cached release (album/EP/single) whose
@@ -525,11 +544,15 @@ def refresh_missing_releases_for_artist(artist: str) -> Dict[str, Any]:
             )
             cached = [dict(r._mapping) for r in result.fetchall() or []]
     except Exception as exc:
-        logger.debug("[RELEASE_CACHE] Missing-releases read failed for %s: %s", artist, exc)
+        logger.debug(
+            "[RELEASE_CACHE] Missing-releases read failed",
+            artist=artist,
+            error=str(exc),
+        )
         return {"missing": 0}
 
     current_year = datetime.now().year
-    seen: Set[str] = set()
+    seen: set[str] = set()
 
     # Existing categories (title -> category) so a generic/stale cache value
     # never reverts a more specific category the artist-page scan already
@@ -541,7 +564,7 @@ def refresh_missing_releases_for_artist(artist: str) -> Dict[str, Any]:
     # merge, a metadata sync's prefetch would DELETE + re-INSERT every
     # missing release with the generic "Album" category, flattening all the
     # correct Live/Compilation/Remix buckets the artist page just produced.
-    existing_categories: Dict[str, str] = {}
+    existing_categories: dict[str, str] = {}
     try:
         with db_session() as session:
             result = session.execute(
@@ -558,7 +581,11 @@ def refresh_missing_releases_for_artist(artist: str) -> Dict[str, Any]:
                 if t and cat:
                     existing_categories[_norm_release_title(t)] = cat
     except Exception as exc:
-        logger.debug("[RELEASE_CACHE] Existing missing-releases categories read failed for %s: %s", artist, exc)
+        logger.debug(
+            "[RELEASE_CACHE] Existing missing-releases categories read failed",
+            artist=artist,
+            error=str(exc),
+        )
 
     missing_rows: list[dict[str, Any]] = []
     for row in cached:
@@ -652,12 +679,16 @@ def refresh_missing_releases_for_artist(artist: str) -> Dict[str, Any]:
                     {**item, "artist": artist, "fdate": item.get("first_release_date")},
                 )
     except Exception as exc:
-        logger.debug("[RELEASE_CACHE] Missing-releases persist failed for %s: %s", artist, exc)
+        logger.debug(
+            "[RELEASE_CACHE] Missing-releases persist failed",
+            artist=artist,
+            error=str(exc),
+        )
 
     return {"missing": len(missing_rows)}
 
 
-def populate_missing_release_tracklists(artist: str, limit: int = 5) -> Dict[str, Any]:
+def populate_missing_release_tracklists(artist: str, limit: int = 5) -> dict[str, Any]:
     """Fetch tracklists for missing releases and store them for queue matching.
 
     For the first *limit* missing releases, fetch the tracklist from MusicBrainz
@@ -683,7 +714,11 @@ def populate_missing_release_tracklists(artist: str, limit: int = 5) -> Dict[str
             )
             missing = [dict(r._mapping) for r in result.fetchall() or []]
     except Exception as exc:
-        logger.debug("[RELEASE_CACHE] Missing-releases query failed for %s: %s", artist, exc)
+        logger.debug(
+            "[RELEASE_CACHE] Missing-releases query failed",
+            artist=artist,
+            error=str(exc),
+        )
         return {"fetched": 0}
 
     if not missing:
@@ -719,6 +754,11 @@ def populate_missing_release_tracklists(artist: str, limit: int = 5) -> Dict[str
                     )
                 fetched += 1
         except Exception as exc:
-            logger.debug("[RELEASE_CACHE] Tracklist fetch failed for %s (%s): %s", artist, release_id, exc)
+            logger.debug(
+                "[RELEASE_CACHE] Tracklist fetch failed",
+                artist=artist,
+                release_id=release_id,
+                error=str(exc),
+            )
 
     return {"fetched": fetched}

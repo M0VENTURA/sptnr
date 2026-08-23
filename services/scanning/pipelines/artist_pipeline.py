@@ -6,9 +6,11 @@ stable service function without importing old helpers directly.
 
 from __future__ import annotations
 
-import logging
+import structlog
 
 from helpers.logging_config import log_unified
+
+logger = structlog.get_logger(__name__)
 
 
 def run_artist_pipeline(artist_name: str, force: bool = False) -> None:
@@ -23,7 +25,11 @@ def run_artist_pipeline(artist_name: str, force: bool = False) -> None:
         run_artist_scan_pipeline(artist_name, force=force)
         return
     except Exception as exc:
-        logging.debug("Primary artist pipeline unavailable, trying legacy fallback: %s", exc)
+        logger.debug(
+            "Primary artist pipeline unavailable, trying legacy fallback",
+            artist=artist_name,
+            error=str(exc),
+        )
 
     try:
         from helpers.scan_tasks import run_artist_scan_pipeline

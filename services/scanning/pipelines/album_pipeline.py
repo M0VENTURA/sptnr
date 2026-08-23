@@ -12,12 +12,15 @@ small while preserving the original workflow:
 
 from __future__ import annotations
 
-import logging
 import threading
+
+import structlog
 
 from db.repositories.scan_repository import lookup_artist_id, lookup_track_artist_count
 from helpers.logging_config import log_unified
 from services.scanning.navidrome_import import scan_artist_to_db
+
+logger = structlog.get_logger(__name__)
 
 # In-process guard: prevents the same album pipeline from running twice
 # concurrently (double form submits, dashboard + album page triggers). Two
@@ -51,7 +54,12 @@ def _maybe_auto_detect_album_type(artist_name: str, album_name: str) -> None:
         from album_type_detector import auto_detect_album_type
         auto_detect_album_type(artist_name, album_name)
     except Exception as exc:
-        logging.debug("Album type detection skipped for %s - %s: %s", artist_name, album_name, exc)
+        logger.debug(
+            "Album type detection skipped",
+            artist=artist_name,
+            album=album_name,
+            error=str(exc),
+        )
 
 
 def run_album_pipeline(artist_name: str, album_name: str, force: bool = False) -> None:
@@ -84,7 +92,11 @@ def run_album_pipeline(artist_name: str, album_name: str, force: bool = False) -
                     artist_data = (artist_index or {}).get(artist_name, {})
                     artist_id = artist_data.get("id") if isinstance(artist_data, dict) else None
             except Exception as exc:
-                logging.debug("Could not rebuild artist index for %s: %s", artist_name, exc)
+                logger.debug(
+                    "Could not rebuild artist index",
+                    artist=artist_name,
+                    error=str(exc),
+                )
 
         if artist_id:
             log_unified(f"Step 1/3: Navidrome import for album '{album_display}'")
@@ -128,7 +140,11 @@ def run_album_pipeline(artist_name: str, album_name: str, force: bool = False) -
 
     except Exception as exc:
         log_unified(f"❌ Album scan failed for {album_display}: {exc}")
-        logging.error("Album pipeline failed for %s", album_display, exc_info=True)
+        logger.exception(
+            "Album pipeline failed",
+            album=album_display,
+            error=str(exc),
+        )
         raise
     finally:
         _release(artist_name, album_name)

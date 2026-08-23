@@ -8,7 +8,9 @@ artist→album→track structure used by subsequent stages.
 from __future__ import annotations
 
 import re
-from typing import Any, List, Dict
+from typing import Any
+
+import structlog
 
 from db.repositories.library import (
     get_all_artists,
@@ -17,10 +19,7 @@ from db.repositories.library import (
 )
 from helpers.logging_config import log_unified
 
-
-import logging
-
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 def _artist_key(value: str) -> str:
@@ -53,7 +52,7 @@ def _resolve_artist_for_scan(artists: list[str], artist_filter: str) -> str | No
     return None
 
 
-def load_candidates(options: dict[str, Any]) -> List[Dict[str, Any]]:
+def load_candidates(options: dict[str, Any]) -> list[dict[str, Any]]:
     """
     Build artist → album → track structure for scan pipeline.
     """
@@ -70,7 +69,7 @@ def load_candidates(options: dict[str, Any]) -> List[Dict[str, Any]]:
     album_filter = options.get("album_filter")
     resume_from = options.get("resume_from")
 
-    candidates: List[Dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
 
     # -------------------------------------------------------------------------
     # 1. Get artists
@@ -91,10 +90,9 @@ def load_candidates(options: dict[str, Any]) -> List[Dict[str, Any]]:
                 "name / that the library has been imported."
             )
             logger.warning(
-                "[LOAD_STAGE] artist_filter '%s' matched no artist in the library. "
-                "Present artists: %s",
-                artist_filter,
-                ", ".join(repr(a) for a in artists[:10]),
+                "[LOAD_STAGE] artist_filter matched no artist in the library",
+                artist_filter=artist_filter,
+                present_artists=", ".join(repr(a) for a in artists[:10]),
             )
 
     # Resume support (legacy parity): skip artists before the resume point.
@@ -159,7 +157,13 @@ def load_candidates(options: dict[str, Any]) -> List[Dict[str, Any]]:
             except Exception:
                 min_tracks = 1
             if len(tracks) < max(1, min_tracks):
-                logger.debug("[LOAD_STAGE] Skipping '%s - %s': only %s track(s), min %s", artist, album, len(tracks), min_tracks)
+                logger.debug(
+                    "[LOAD_STAGE] Skipping album below minimum track count",
+                    artist=artist,
+                    album=album,
+                    track_count=len(tracks),
+                    min_tracks=min_tracks,
+                )
                 continue
 
             # Album-type resolution for the album row: prefer a CONSISTENT
@@ -188,9 +192,9 @@ def load_candidates(options: dict[str, Any]) -> List[Dict[str, Any]]:
 
     if artist_filter and not candidates:
         logger.info(
-            "[LOAD_STAGE] Artist '%s' (resolved to %s) produced 0 candidate albums",
-            artist_filter,
-            resolved_artist or repr(artist_filter),
+            "[LOAD_STAGE] Artist produced 0 candidate albums",
+            artist_filter=artist_filter,
+            resolved_artist=resolved_artist or repr(artist_filter),
         )
 
     return candidates

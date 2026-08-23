@@ -14,8 +14,11 @@ Architecture:
 
 from __future__ import annotations
 
-import logging
 from typing import Any
+
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 def should_skip_album(
@@ -29,13 +32,17 @@ def should_skip_album(
 ) -> bool:
     """Return True when an album can be skipped before fetching tracks."""
     if filter_missing and album_name not in albums_needing_reimport:
-        logging.debug("Skipping album '%s' - no missing fields", album_name)
+        logger.debug("Skipping album - no missing fields", album=album_name)
         return True
     if album_filter and album_name.strip() != album_filter.strip():
-        logging.debug("Skipping album '%s' - does not match filter '%s'", album_name, album_filter)
+        logger.debug(
+            "Skipping album - does not match filter",
+            album=album_name,
+            album_filter=album_filter,
+        )
         return True
     if diff_mode and changed_album_names is not None and album_name not in changed_album_names:
-        logging.debug("Skipping album '%s' - not changed in diff mode", album_name)
+        logger.debug("Skipping album - not changed in diff mode", album=album_name)
         return True
     return False
 
@@ -60,6 +67,10 @@ def should_skip_cached_album(
         # MORE ids than Navidrome — leaving the removed songs in the DB.)
         navidrome_album_ids = {track.get("id") for track in tracks if track.get("id")}
         if navidrome_album_ids and navidrome_album_ids == cached_ids_for_album:
-            logging.debug("Skipping unchanged album '%s' (%s tracks, IDs match)", album_name, len(cached_ids_for_album))
+            logger.debug(
+                "Skipping unchanged album (IDs match)",
+                album=album_name,
+                track_count=len(cached_ids_for_album),
+            )
             return True
     return False

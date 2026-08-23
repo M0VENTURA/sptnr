@@ -15,13 +15,13 @@ Architecture:
 """
 
 
-import logging
+import structlog
 from services.scanning.artist_scanner import scan_artist
 from services.scanning.scan_state import get_resume_artist, save_progress
 from db.repositories.library import get_all_artists
 from helpers.logging_config import log_unified
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 def run_scan(artist_filter=None, resume=True, force=False):
@@ -77,6 +77,6 @@ def run_scan(artist_filter=None, resume=True, force=False):
             save_progress(artist)
 
         except Exception as e:
-            logger.error("Error scanning artist %s: %s", artist, e, exc_info=True)
+            logger.error("Error scanning artist", artist=artist, error=str(e), exc_info=True)
 
     log_unified("[SCANNER] Full library scan completed")

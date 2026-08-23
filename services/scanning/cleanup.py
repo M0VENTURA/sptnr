@@ -8,7 +8,7 @@ removal during scanning.
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Set, Tuple
+from typing import Any
 
 import structlog
 
@@ -60,7 +60,7 @@ def cleanup_stale_album_tracks_if_needed(
     *,
     artist_name: str,
     album_name: str,
-    cached_ids_for_album: Set[str],
+    cached_ids_for_album: set[str],
     navidrome_tracks: list[dict[str, Any]],
 ) -> None:
     """Delete DB tracks that no longer exist in a Navidrome album."""
@@ -77,8 +77,8 @@ def cleanup_stale_album_tracks_if_needed(
 def cleanup_stale_artist_tracks_if_needed(
     *,
     artist_name: str,
-    existing_track_ids: Set[str],
-    navidrome_track_ids: Set[str],
+    existing_track_ids: set[str],
+    navidrome_track_ids: set[str],
 ) -> None:
     """Delete DB tracks that no longer exist in Navidrome for an artist."""
     if not existing_track_ids:
@@ -120,7 +120,7 @@ def cleanup_empty_artist_dirs(*, artist_name: str, canonical_artist_name: str) -
         logger.debug("Empty-folder cleanup skipped", artist=artist_name, error=str(err))
 
 
-def normalize_sanitize_summary(summary: Any) -> Tuple[int, int]:
+def normalize_sanitize_summary(summary: Any) -> tuple[int, int]:
     """Return (path_updates, duplicates_removed) from dict/tuple summary."""
     if isinstance(summary, dict):
         return (

@@ -10,10 +10,11 @@ Uses scan_state as the single source of truth for:
 from __future__ import annotations
 
 import concurrent.futures
-import logging
 import os
 import threading
 from typing import Any
+
+import structlog
 
 from helpers.logging_config import log_unified
 from services.scanning.scan_history_service import record_scan
@@ -28,6 +29,8 @@ from services.scanning.scan_state import (
     save_artist_scan_checkpoint,
     write_progress_with_current_artist,
 )
+
+logger = structlog.get_logger(__name__)
 
 # Default worker count for parallel artist import.
 # Can be overridden via config or env var.
@@ -112,11 +115,11 @@ def run_navidrome_import_scan(
                         except Exception:
                             pass
                         if not _db_has_tracks:
-                            logging.info("DB empty despite marker — forcing import")
+                            logger.info("DB empty despite marker — forcing import")
                         else:
-                            logging.info(
-                                "Navidrome scan marker unchanged (%s) — skipping, nothing to import",
-                                current_marker,
+                            logger.info(
+                                "Navidrome scan marker unchanged — skipping, nothing to import",
+                                marker=current_marker,
                             )
                             write_progress_with_current_artist(
                                 progress_file,
@@ -131,7 +134,7 @@ def run_navidrome_import_scan(
                             log_unified("Navidrome Import - Skipped (no changes)")
                             return
             except Exception as exc:
-                logging.debug("Could not check scan marker: %s", exc)
+                logger.debug("Could not check scan marker", error=str(exc))
 
         # Build artist index
         artist_map: dict[str, dict[str, Any]] = {}
@@ -154,26 +157,33 @@ def run_navidrome_import_scan(
                         )
                         if delta_map:
                             artist_map = delta_map
-                            logging.info(
-                                "Navidrome delta index: %d changed artists since %s",
-                                len(delta_map),
-                                delta_since,
+                            logger.info(
+                                "Navidrome delta index built",
+                                changed_artists=len(delta_map),
+                                since=delta_since,
                             )
                             log_unified(
                                 f"Navidrome Import - Delta mode: {len(delta_map)} changed artists "
                                 f"since {delta_since}"
                             )
                     except Exception as exc:
-                        logging.warning("Delta artist index failed (%s) — falling back to full index", exc)
+                        logger.warning(
+                            "Delta artist index failed — falling back to full index",
+                            error=str(exc),
+                        )
 
                 if not artist_map:
                     artist_map = nav_client.build_artist_index() or {}
             except Exception as exc:
-                logging.error("Failed to build artist index: %s", exc)
+                logger.error("Failed to build artist index", error=str(exc))
 
         artists = list(artist_map.items())
         total = len(artists)
-        logging.info("Navidrome import: %d artists to process (workers=%d)", total, workers)
+        logger.info(
+            "Navidrome import starting",
+            artist_count=total,
+            workers=workers,
+        )
 
         start_index = 0
 
@@ -252,7 +262,7 @@ def run_navidrome_import_scan(
                     try:
                         future.result()
                     except Exception as exc:
-                        logging.error("Artist import failed: %s", exc)
+                        logger.error("Artist import failed", error=str(exc))
         else:
             # Serial mode (resume or forced)
             for index, (artist_name, info) in enumerate(
@@ -288,7 +298,7 @@ def run_navidrome_import_scan(
                         extra=marker_extra,
                     )
             except Exception as exc:
-                logging.debug("Could not save scan marker: %s", exc)
+                logger.debug("Could not save scan marker", error=str(exc))
 
         write_progress_with_current_artist(
             progress_file,
@@ -301,7 +311,7 @@ def run_navidrome_import_scan(
         record_scan("navidrome", "completed", message="Navidrome import complete")
 
     except Exception as exc:
-        logging.error("Navidrome import scan failed: %s", exc, exc_info=True)
+        logger.exception("Navidrome import scan failed", error=str(exc))
         record_scan("navidrome", "failed", message=f"Navidrome import failed: {exc}")
 
         write_progress_with_current_artist(

@@ -9,8 +9,6 @@ fixed per process.
 
 from __future__ import annotations
 
-from typing import Tuple
-
 from helpers.config_helpers import get_config
 
 DEFAULT_WEIGHTS = {
@@ -20,7 +18,7 @@ DEFAULT_WEIGHTS = {
 }
 
 
-def resolve_weights(config: dict | None = None) -> Tuple[float, float, float]:
+def resolve_weights(config: dict | None = None) -> tuple[float, float, float]:
     """Resolve Last.fm, ListenBrainz and age weights from config.
 
     ``popularity.weights`` takes precedence (used by the scan pipeline's UI

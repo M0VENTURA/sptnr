@@ -46,15 +46,16 @@ Thread Safety:
 """
 
 from __future__ import annotations
-import logging
 import threading
 
-logger = logging.getLogger(__name__)
+import structlog
 
 from typing import Any
 from services.popularity.pipeline import run_popularity_scan
 from helpers.logging_config import log_unified
 from services.scanning.scan_history_service import record_scan
+
+logger = structlog.get_logger(__name__)
 
 from services.scanning.scan_state import (
     get_navidrome_progress_path,
@@ -164,7 +165,11 @@ def _run_artist_scan_pipeline_inner(artist_name: str, force: bool = False, progr
                         log_unified(f"[SCAN_PIPELINE] Resolved Navidrome artist id for '{artist_name}' from index (artist_stats empty)")
                         break
             except Exception as _idx_exc:
-                logger.debug("[SCAN_PIPELINE] Navidrome index fallback failed for '%s': %s", artist_name, _idx_exc)
+                logger.debug(
+                    "[SCAN_PIPELINE] Navidrome index fallback failed",
+                    artist=artist_name,
+                    error=str(_idx_exc),
+                )
         if artist_id:
             scan_artist_to_db(artist_name, artist_id, verbose=True, force=force, progress_file="navidrome_scan")
         else:
@@ -218,7 +223,11 @@ def _run_artist_scan_pipeline_inner(artist_name: str, force: bool = False, progr
             from services.scanning.pipelines.essentia_scanner import run_essentia_mood_scan
             run_essentia_mood_scan(artist_filter=artist_name, force=force)
         except Exception as exc:
-            logger.debug("[SCAN_PIPELINE] Essentia scan skipped for '%s': %s", artist_name, exc)
+            logger.debug(
+                "[SCAN_PIPELINE] Essentia scan skipped",
+                artist=artist_name,
+                error=str(exc),
+            )
         if callable(progress_callback):
             _cb("essentia", 1, 1, artist_name)
 
@@ -264,8 +273,11 @@ def start_library_scan(
         try:
             run_artist_scan_pipeline(artist_filter, force=force)
         except Exception as exc:
-            import logging
-            logging.getLogger(__name__).error("Artist scan failed for %s: %s", artist_filter, exc)
+            logger.error(
+                "Artist scan failed",
+                artist=artist_filter,
+                error=str(exc),
+            )
             return {"success": False, "message": f"Artist scan failed: {exc}"}
         return {"success": True, "message": f"Scan started for artist: {artist_filter}"}
 
@@ -273,8 +285,7 @@ def start_library_scan(
     try:
         run_full_library_scan(force=force)
     except Exception as exc:
-        import logging
-        logging.getLogger(__name__).error("Full library scan failed: %s", exc)
+        logger.error("Full library scan failed", error=str(exc))
         return {"success": False, "message": f"Full scan failed: {exc}"}
 
     return {"success": True, "message": "Full library scan started"}
@@ -309,7 +320,10 @@ def _validated_resume_artist(
         try:
             clear_scan_checkpoint(checkpoint_path)
         except Exception as exc:
-            logger.debug("[SCAN_PIPELINE] Could not clear stale checkpoint: %s", exc)
+            logger.debug(
+                "[SCAN_PIPELINE] Could not clear stale checkpoint",
+                error=str(exc),
+            )
         return None
     return str(resume_from)
 
@@ -356,9 +370,9 @@ def run_full_library_scan(force: bool = False):
                 run_artist_scan_pipeline(name, force=force)
             except Exception as exc:
                 logger.exception(
-                    "[SCAN_PIPELINE] Artist scan crashed for '%s' (continuing): %s",
-                    name,
-                    exc,
+                    "[SCAN_PIPELINE] Artist scan crashed (continuing)",
+                    artist=name,
+                    error=str(exc),
                 )
                 log_unified(f"Artist scan failed for '{name}': {exc} — continuing with next artist")
 

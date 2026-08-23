@@ -7,14 +7,15 @@ fetching for WebUI display, and graceful stop/cancel state tracking.
 
 from __future__ import annotations
 
-import logging
 from datetime import datetime
 from typing import Any
+
+import structlog
 
 from db.engine import db_session
 from db.models import ScanState
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # -------------------------------------------------------------------------
 # Internal helpers
@@ -172,7 +173,7 @@ def reset_stale_scan_states() -> int:
             session.commit()
             return len(stale)
     except Exception as exc:
-        logger.warning("Failed to reset stale scan states: %s", exc)
+        logger.warning("Failed to reset stale scan states", error=str(exc))
         return 0
 
 # -------------------------------------------------------------------------

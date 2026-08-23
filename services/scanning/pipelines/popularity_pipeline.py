@@ -10,8 +10,9 @@ Routes should call this module rather than building scan kwargs inline.
 
 from __future__ import annotations
 
-import logging
 from typing import Any
+
+import structlog
 
 from services.popularity.pipeline import run_popularity_scan
 from helpers.logging_config import log_unified
@@ -23,8 +24,7 @@ from services.scanning.scan_state import (
     is_stop_requested,
 )
 
-
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 def is_popularity_scan_active() -> bool:
@@ -128,7 +128,10 @@ def run_popularity_mode(
             kwargs["popularity_only"] = True
 
         else:
-            logger.warning("Unknown popularity scan mode '%s' — defaulting to full scan", mode)
+            logger.warning(
+                "Unknown popularity scan mode — defaulting to full scan",
+                mode=mode,
+            )
             scan_type = "full_scan"
 
         # ---------------------------------------------------------------------
@@ -183,7 +186,7 @@ def run_popularity_mode(
         record_scan(mode, status, message=f"{mode} scan {status}", artist="_SCAN_SESSION_", album=mode)
 
     except Exception as exc:
-        logger.error("Popularity pipeline failed: %s", exc, exc_info=True)
+        logger.exception("Popularity pipeline failed", mode=mode, error=str(exc))
         record_scan(mode, "failed", message=f"{mode} scan failed: {exc}", artist="_SCAN_SESSION_", album=mode)
 
         write_progress_with_current_artist(
@@ -227,7 +230,7 @@ def _run_full_scan_as_artist_pipeline(
         artists = get_all_artists()
     except Exception as exc:
         log_unified(f"[FULL_SCAN] Failed to load artist list: {exc}")
-        logger.error("[FULL_SCAN] get_all_artists failed: %s", exc, exc_info=True)
+        logger.exception("[FULL_SCAN] get_all_artists failed", error=str(exc))
         record_scan("all", "failed", message=f"full scan failed: {exc}", artist="_SCAN_SESSION_", album="all")
         return
     total = len(artists)
@@ -337,10 +340,14 @@ def _run_full_scan_as_artist_pipeline(
                 # a raised one must not silently end the whole scan loop as if
                 # it completed.
                 log_unified(f"[FULL_SCAN] Artist {i + 1}/{total} FAILED: {artist} — {_aexc}")
-                logger.warning("[FULL_SCAN] Artist %s failed: %s", artist, _aexc)
+                logger.warning(
+                    "[FULL_SCAN] Artist failed",
+                    artist=artist,
+                    error=str(_aexc),
+                )
     except Exception as exc:
         status = "error"
-        logger.error("[FULL_SCAN] Artist loop failed: %s", exc, exc_info=True)
+        logger.exception("[FULL_SCAN] Artist loop failed", error=str(exc))
         raise
     finally:
         write_progress_with_current_artist(

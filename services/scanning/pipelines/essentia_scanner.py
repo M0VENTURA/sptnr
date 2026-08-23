@@ -27,7 +27,6 @@ Configuration (config.yaml, ``essentia`` section):
 from __future__ import annotations
 
 import json
-import logging
 import os
 import re
 import subprocess
@@ -35,7 +34,9 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
+
+import structlog
 
 from db.utils import get_db_connection_raw
 from helpers.logging_config import log_unified
@@ -44,7 +45,7 @@ from services.metadata.tag_file_service import (
     update_file_tags,
 )
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Bundled defaults (set as ENV vars in the official Docker image)
@@ -89,7 +90,7 @@ def _stop_requested(progress_file: str) -> bool:
         return False
 
 
-def _write_progress(progress_file: str, payload: Dict[str, Any]) -> None:
+def _write_progress(progress_file: str, payload: dict[str, Any]) -> None:
     if not progress_file:
         return
     try:
@@ -107,14 +108,14 @@ def _write_progress(progress_file: str, payload: Dict[str, Any]) -> None:
                 pass
             raise
     except Exception as exc:
-        logger.debug("Failed writing essentia progress: %s", exc)
+        logger.debug("Failed writing essentia progress", error=str(exc))
 
 
 # ---------------------------------------------------------------------------
 # Tag reading helpers
 # ---------------------------------------------------------------------------
 
-def _read_essentia_mood_from_file(file_path: str) -> Optional[str]:
+def _read_essentia_mood_from_file(file_path: str) -> str | None:
     try:
         import mutagen
         from mutagen.flac import FLAC
@@ -124,11 +125,14 @@ def _read_essentia_mood_from_file(file_path: str) -> Optional[str]:
         from mutagen.oggopus import OggOpus
         from mutagen.asf import ASF
     except ImportError as exc:
-        logger.warning("mutagen not available, cannot read Essentia tags: %s", exc)
+        logger.warning(
+            "mutagen not available, cannot read Essentia tags",
+            error=str(exc),
+        )
         return None
 
     ext = os.path.splitext(file_path)[1].lower()
-    mood: Optional[str] = None
+    mood: str | None = None
 
     try:
         if ext == ".flac":
@@ -170,14 +174,18 @@ def _read_essentia_mood_from_file(file_path: str) -> Optional[str]:
                         mood = str(val[0]) if isinstance(val, list) else str(val)
                         break
     except Exception as exc:
-        logger.debug("Failed to read Essentia mood from %s: %s", file_path, exc)
+        logger.debug(
+            "Failed to read Essentia mood from file",
+            file=file_path,
+            error=str(exc),
+        )
         return None
     if not mood:
         return None
     return mood.strip() if mood.strip() else None
 
 
-def _read_essentia_genre_from_file(file_path: str) -> Optional[str]:
+def _read_essentia_genre_from_file(file_path: str) -> str | None:
     try:
         import mutagen
         from mutagen.flac import FLAC
@@ -187,11 +195,14 @@ def _read_essentia_genre_from_file(file_path: str) -> Optional[str]:
         from mutagen.oggopus import OggOpus
         from mutagen.asf import ASF
     except ImportError as exc:
-        logger.warning("mutagen not available, cannot read Essentia genre: %s", exc)
+        logger.warning(
+            "mutagen not available, cannot read Essentia genre",
+            error=str(exc),
+        )
         return None
 
     ext = os.path.splitext(file_path)[1].lower()
-    genres: Optional[str] = None
+    genres: str | None = None
 
     try:
         if ext == ".flac":
@@ -235,15 +246,19 @@ def _read_essentia_genre_from_file(file_path: str) -> Optional[str]:
                         genres = "; ".join(str(v) for v in (val if isinstance(val, list) else [val]) if v)
                         break
     except Exception as exc:
-        logger.debug("Failed to read Essentia genre from %s: %s", file_path, exc)
+        logger.debug(
+            "Failed to read Essentia genre from file",
+            file=file_path,
+            error=str(exc),
+        )
         return None
     return genres.strip() if genres and genres.strip() else None
 
 
-def _extract_child_genres(genre_str: str) -> List[str]:
+def _extract_child_genres(genre_str: str) -> list[str]:
     if not genre_str:
         return []
-    child_genres: List[str] = []
+    child_genres: list[str] = []
     seen_lower: set = set()
     for part in re.split(r"[;,]", genre_str):
         part = part.strip()
@@ -260,7 +275,7 @@ def _extract_child_genres(genre_str: str) -> List[str]:
     return child_genres
 
 
-def _read_existing_tcon_genres(file_path: str) -> List[str]:
+def _read_existing_tcon_genres(file_path: str) -> list[str]:
     try:
         import mutagen
         from mutagen.id3 import ID3
@@ -273,7 +288,7 @@ def _read_existing_tcon_genres(file_path: str) -> List[str]:
         return []
 
     ext = os.path.splitext(file_path)[1].lower()
-    raw_genres: List[str] = []
+    raw_genres: list[str] = []
 
     try:
         if ext == ".mp3":
@@ -302,12 +317,16 @@ def _read_existing_tcon_genres(file_path: str) -> List[str]:
             raw = audio.get("WM/Genre") or []
             raw_genres = [str(v).strip() for v in raw if str(v).strip()]
     except Exception as exc:
-        logger.debug("Failed to read existing genres from %s: %s", file_path, exc)
+        logger.debug(
+            "Failed to read existing genres from file",
+            file=file_path,
+            error=str(exc),
+        )
 
     return [g for g in raw_genres if _ESSENTIA_GENRE_SEPARATOR not in g]
 
 
-def _merge_genres(existing: List[str], new_genres: List[str]) -> List[str]:
+def _merge_genres(existing: list[str], new_genres: list[str]) -> list[str]:
     seen_lower = {g.lower() for g in existing}
     result = list(existing)
     for g in new_genres:
@@ -317,7 +336,7 @@ def _merge_genres(existing: List[str], new_genres: List[str]) -> List[str]:
     return result
 
 
-def _coerce_float(value: Any) -> Optional[float]:
+def _coerce_float(value: Any) -> float | None:
     if value is None:
         return None
     try:
@@ -326,7 +345,7 @@ def _coerce_float(value: Any) -> Optional[float]:
         return None
 
 
-def _read_numeric_tag_from_file(file_path: str, *keys: str) -> Optional[float]:
+def _read_numeric_tag_from_file(file_path: str, *keys: str) -> float | None:
     try:
         import mutagen
         audio = mutagen.File(file_path)
@@ -350,11 +369,15 @@ def _read_numeric_tag_from_file(file_path: str, *keys: str) -> Optional[float]:
             if value is not None:
                 return value
     except Exception as exc:
-        logger.debug("Failed to read numeric tag from %s: %s", file_path, exc)
+        logger.debug(
+            "Failed to read numeric tag from file",
+            file=file_path,
+            error=str(exc),
+        )
     return None
 
 
-def _candidate_sidecar_paths(file_path: str, json_output_dir: str = "") -> List[Path]:
+def _candidate_sidecar_paths(file_path: str, json_output_dir: str = "") -> list[Path]:
     src = Path(file_path)
     candidates = [
         src.with_suffix(src.suffix + ".json"),
@@ -367,7 +390,7 @@ def _candidate_sidecar_paths(file_path: str, json_output_dir: str = "") -> List[
             out / f"{src.name}.json",
             out / f"{src.stem}.json",
         ])
-    dedup: List[Path] = []
+    dedup: list[Path] = []
     seen = set()
     for path in candidates:
         key = str(path)
@@ -378,7 +401,7 @@ def _candidate_sidecar_paths(file_path: str, json_output_dir: str = "") -> List[
     return dedup
 
 
-def _extract_first_numeric(payload: Any, key_candidates: List[str]) -> Optional[float]:
+def _extract_first_numeric(payload: Any, key_candidates: list[str]) -> float | None:
     if isinstance(payload, dict):
         for key in key_candidates:
             if key in payload:
@@ -397,7 +420,7 @@ def _extract_first_numeric(payload: Any, key_candidates: List[str]) -> Optional[
     return None
 
 
-def _extract_first_string(payload: Any, key_candidates: List[str]) -> Optional[str]:
+def _extract_first_string(payload: Any, key_candidates: list[str]) -> str | None:
     """First non-empty string found under any candidate key (nested walk)."""
     if isinstance(payload, dict):
         for key in key_candidates:
@@ -417,7 +440,7 @@ def _extract_first_string(payload: Any, key_candidates: List[str]) -> Optional[s
     return None
 
 
-def _read_key_tag_from_file(file_path: str) -> Optional[str]:
+def _read_key_tag_from_file(file_path: str) -> str | None:
     """Read a musical-key tag from the audio file (TKEY / KEY / InitialKey)."""
     try:
         import mutagen
@@ -437,11 +460,15 @@ def _read_key_tag_from_file(file_path: str) -> Optional[str]:
             if str(raw).strip():
                 return str(raw).strip()
     except Exception as exc:
-        logger.debug("Failed to read key tag from %s: %s", file_path, exc)
+        logger.debug(
+            "Failed to read key tag from file",
+            file=file_path,
+            error=str(exc),
+        )
     return None
 
 
-def _read_essentia_features_from_json(file_path: str, json_output_dir: str = "") -> Dict[str, Any]:
+def _read_essentia_features_from_json(file_path: str, json_output_dir: str = "") -> dict[str, Any]:
     bpm_keys = ["bpm", "tempo", "rhythm.bpm", "musicbrainz.bpm"]
     dance_keys = ["danceability", "rhythm.danceability", "highlevel.danceability.all.danceable"]
     loudness_keys = [
@@ -476,7 +503,11 @@ def _read_essentia_features_from_json(file_path: str, json_output_dir: str = "")
                 "json_path": str(candidate),
             }
         except Exception as exc:
-            logger.debug("Failed parsing Essentia JSON sidecar %s: %s", candidate, exc)
+            logger.debug(
+                "Failed parsing Essentia JSON sidecar",
+                candidate=str(candidate),
+                error=str(exc),
+            )
     return {
         "bpm": None, "danceability": None, "loudness": None,
         "replaygain": None, "musical_key": None, "json_path": None,
@@ -508,7 +539,7 @@ def run_essentia_mood_scan(
     resume_from_artist: str = "",
     cpu_nice: int = 10,
     inter_file_delay: float = 0.0,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Run Essentia-based mood/genre detection on tracks with a local file path.
 
     Parameters match the legacy ``old_system/essentia_mood_scan.py`` signature
@@ -572,7 +603,7 @@ def run_essentia_mood_scan(
 
     os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
     os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
-    _essentia_scan_version: Optional[str] = None
+    _essentia_scan_version: str | None = None
     try:
         import essentia
         _essentia_scan_version = getattr(essentia, "__version__", None)
@@ -588,13 +619,13 @@ def run_essentia_mood_scan(
 
     mood_threshold_pct = round(float(mood_threshold) * 100.0, 4)
 
-    _nice_prefix: List[str] = []
+    _nice_prefix: list[str] = []
     _cpu_nice = int(cpu_nice)
     if _cpu_nice != 0 and sys.platform != "win32":
         _nice_prefix = ["nice", "-n", str(max(-20, min(19, _cpu_nice)))]
 
     python_exec = sys.executable
-    base_cmd: List[str] = _nice_prefix + [
+    base_cmd: list[str] = _nice_prefix + [
         python_exec, script_path, "--auto", "--single-file", "--overwrite", "--quiet",
     ]
     if tag_moods:
@@ -638,15 +669,15 @@ def run_essentia_mood_scan(
             conn.rollback()
         except Exception:
             pass
-        logger.warning("Could not ensure essentia columns: %s", _col_err)
+        logger.warning("Could not ensure essentia columns", error=str(_col_err))
 
-    conditions: List[str] = [
+    conditions: list[str] = [
         f"COALESCE(file_path, '') NOT LIKE {placeholder}",
         f"CAST(id AS TEXT) NOT LIKE {placeholder}",
         "file_path IS NOT NULL",
         "file_path != ''",
     ]
-    params: List[Any] = ["__queued_for_download__%", "queue_%"]
+    params: list[Any] = ["__queued_for_download__%", "queue_%"]
 
     if not force:
         if tag_moods and not tag_genres:
@@ -674,7 +705,10 @@ def run_essentia_mood_scan(
                     resume_from_artist = _saved_checkpoint
                     log_unified(f"Essentia Scan - Auto-resuming from checkpoint artist '{resume_from_artist}'")
             except Exception as _pr_err:
-                logger.debug("Could not read essentia resume checkpoint: %s", _pr_err)
+                logger.debug(
+                    "Could not read essentia resume checkpoint",
+                    error=str(_pr_err),
+                )
 
     if track_id_filter:
         conditions.append(f"CAST(id AS TEXT) = {placeholder}")
@@ -703,7 +737,7 @@ def run_essentia_mood_scan(
     rows = cursor.fetchall() or []
     conn.commit()
 
-    artists: List[str] = []
+    artists: list[str] = []
     seen: set = set()
     for row in rows:
         artist_key = (
@@ -718,8 +752,8 @@ def run_essentia_mood_scan(
     scanned_tracks = 0
     updated_tracks = 0
     synced_files = 0
-    current_artist: Optional[str] = None
-    current_album: Optional[str] = None
+    current_artist: str | None = None
+    current_album: str | None = None
     _album_scan_count: int = 0
     total_tracks = len(rows)
 
@@ -809,7 +843,11 @@ def run_essentia_mood_scan(
             _essentia_milestones_logged.add(75)
 
         if not file_path or not os.path.isfile(file_path):
-            logger.debug("Essentia scan: skipping track %s — file not found at path %r", track_id, file_path)
+            logger.debug(
+                "Essentia scan: skipping track — file not found",
+                track_id=track_id,
+                file_path=file_path,
+            )
             _write_progress(progress_file, {
                 "is_running": True, "scan_type": "essentia_mood_scan",
                 "status": "running", "processed_artists": processed_artists,
@@ -838,14 +876,15 @@ def run_essentia_mood_scan(
                 _combined_output = (stderr_text + "\n" + stdout_text).lower()
                 if result.returncode == 1 and _ESSENTIA_NO_MODELS_PHRASE in _combined_output:
                     logger.debug(
-                        "Essentia: no SVM classifier models configured for %s "
-                        "(exit code 1 ignored — continuing to read tags)", file_path,
+                        "Essentia: no SVM classifier models configured (exit code 1 ignored — continuing to read tags)",
+                        file=file_path,
                     )
                 else:
                     logger.warning(
-                        "Essentia script returned exit code %d for %s: %s",
-                        result.returncode, file_path,
-                        (stderr_text or stdout_text)[:300],
+                        "Essentia script returned non-zero exit code",
+                        exit_code=result.returncode,
+                        file=file_path,
+                        output=(stderr_text or stdout_text)[:300],
                     )
                     log_unified(
                         f"Essentia Scan - Error processing {os.path.basename(file_path)}"
@@ -868,7 +907,11 @@ def run_essentia_mood_scan(
             genre_str = _read_essentia_genre_from_file(file_path) if tag_genres else None
 
             if not mood_str and not genre_str:
-                logger.debug("Essentia scan: no new tags for track %s (%s)", track_id, file_path)
+                logger.debug(
+                    "Essentia scan: no new tags for track",
+                    track_id=track_id,
+                    file=file_path,
+                )
                 _write_progress(progress_file, {
                     "is_running": True, "scan_type": "essentia_mood_scan",
                     "status": "running", "processed_artists": processed_artists,
@@ -884,7 +927,7 @@ def run_essentia_mood_scan(
             updated_tracks += 1
 
             # Build UPDATE payload
-            updates: Dict[str, Any] = {}
+            updates: dict[str, Any] = {}
             if mood_str:
                 updates["mood"] = mood_str
                 updates["mood_source"] = "essentia"
@@ -914,7 +957,10 @@ def run_essentia_mood_scan(
                     # Sync merged genres to file tags
                     write_ok = update_file_tags(file_path, {"genre": "; ".join(merged_genres)})
                     if not write_ok:
-                        logger.debug("Failed to write genre tags to file: %s", file_path)
+                        logger.debug(
+                            "Failed to write genre tags to file",
+                            file=file_path,
+                        )
 
             if parse_json_features:
                 features = _read_essentia_features_from_json(file_path, json_output_dir=json_output_dir)
@@ -944,8 +990,11 @@ def run_essentia_mood_scan(
                     try:
                         os.unlink(features["json_path"])
                     except OSError as _del_err:
-                        logger.debug("Could not delete Essentia JSON sidecar %s: %s",
-                                     features["json_path"], _del_err)
+                        logger.debug(
+                            "Could not delete Essentia JSON sidecar",
+                            path=features["json_path"],
+                            error=str(_del_err),
+                        )
 
             updates["essentia_scan_version"] = _essentia_scan_version
             updates["essentia_last_updated"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
@@ -960,7 +1009,11 @@ def run_essentia_mood_scan(
                 )
                 conn.commit()
             except Exception as db_exc:
-                logger.error("Failed to update track %s: %s", track_id, db_exc)
+                logger.error(
+                    "Failed to update track",
+                    track_id=track_id,
+                    error=str(db_exc),
+                )
                 try:
                     conn.rollback()
                 except Exception:
@@ -973,7 +1026,11 @@ def run_essentia_mood_scan(
                 if sync_ok:
                     synced_files += 1
             except Exception as sync_exc:
-                logger.debug("Failed to sync tags for track %s: %s", track_id, sync_exc)
+                logger.debug(
+                    "Failed to sync tags for track",
+                    track_id=track_id,
+                    error=str(sync_exc),
+                )
 
             _write_progress(progress_file, {
                 "is_running": True, "scan_type": "essentia_mood_scan",
@@ -987,7 +1044,11 @@ def run_essentia_mood_scan(
                 time.sleep(inter_file_delay)
 
         except subprocess.TimeoutExpired:
-            logger.warning("Essentia script timed out after %ds for %s", per_file_timeout, file_path)
+            logger.warning(
+                "Essentia script timed out",
+                timeout=per_file_timeout,
+                file=file_path,
+            )
             log_unified(f"Essentia Scan - Timeout processing {os.path.basename(file_path)}")
             _write_progress(progress_file, {
                 "is_running": True, "scan_type": "essentia_mood_scan",
@@ -998,7 +1059,11 @@ def run_essentia_mood_scan(
             })
             continue
         except Exception as exc:
-            logger.error("Unexpected error processing %s: %s", file_path, exc)
+            logger.error(
+                "Unexpected error processing file",
+                file=file_path,
+                error=str(exc),
+            )
             log_unified(f"Essentia Scan - Unexpected error: {exc}")
             _write_progress(progress_file, {
                 "is_running": True, "scan_type": "essentia_mood_scan",

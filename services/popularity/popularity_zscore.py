@@ -11,11 +11,12 @@ album's own tracklist distribution.
 
 from __future__ import annotations
 
-import logging
 import math
 from statistics import mean, stdev
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 # Log-space noise floor for ``log_listener_z``.  On a UNIFORM album (all
 # counts near-identical, stdev → 0) the z formula amplifies tiny scrobble
@@ -94,5 +95,10 @@ def composite_listener_z(
             return z_lf
         return (w_lf * z_lf + w_lb * z_lb) / total
     except Exception as exc:
-        logger.debug("Composite listener z failed for %s / %s: %s", artist, album, exc)
+        logger.debug(
+            "Composite listener z failed",
+            artist=artist,
+            album=album,
+            error=str(exc),
+        )
         return 0.0

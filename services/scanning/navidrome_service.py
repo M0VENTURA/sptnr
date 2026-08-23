@@ -17,14 +17,15 @@ Architecture:
 from __future__ import annotations
 
 import concurrent.futures
-import logging
 import time
 from typing import Any
+
+import structlog
 
 from api_clients.navidrome import NavidromeClient
 from helpers.logging_config import log_unified
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 from helpers.config_helpers import get_scan_pipeline_config
@@ -66,7 +67,11 @@ def fetch_all_tracks_concurrently(
                 if page_data:
                     all_tracks.extend(page_data)
             except Exception as exc:
-                logger.warning("Failed to fetch Navidrome page at offset %s: %s", offset, exc)
+                logger.warning(
+                    "Failed to fetch Navidrome page",
+                    offset=offset,
+                    error=str(exc),
+                )
 
     return all_tracks
 
@@ -232,7 +237,10 @@ def fetch_changed_songs(
         try:
             page = client.get_songs(offset=offset, size=page_size, modified=since_ts)
         except Exception as exc:
-            logger.debug("Delta song fetch failed (server may not support `modified`): %s", exc)
+            logger.debug(
+                "Delta song fetch failed (server may not support `modified`)",
+                error=str(exc),
+            )
             break
         if not page:
             break
@@ -300,7 +308,7 @@ def build_delta_artist_index(
                 f"Delta artist index: {len(artist_map)} artists from getIndexes(ifModifiedSince)"
             )
     except Exception as exc:
-        logger.debug("Delta getIndexes failed (%s) — relying on album/song deltas", exc)
+        logger.debug("Delta getIndexes failed — relying on album/song deltas", error=str(exc))
 
     changed_albums = fetch_changed_albums(
         client,
@@ -392,5 +400,5 @@ def get_library_stats(client: NavidromeClient, cache_seconds: int = 3600) -> dic
         return client._stats_cache  # type: ignore[return-value]
 
     except Exception as exc:
-        logger.error("Failed to get Navidrome library stats: %s", exc, exc_info=True)
+        logger.error("Failed to get Navidrome library stats", error=str(exc), exc_info=True)
         return {"total_albums": 0, "total_tracks": 0, "total_songs": 0}

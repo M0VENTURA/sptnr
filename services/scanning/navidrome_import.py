@@ -18,10 +18,11 @@ Architecture:
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 from api_clients.navidrome import NavidromeClient
 from db.repositories.tracks import upsert_track_payload, upsert_tracks_bulk
@@ -133,7 +134,11 @@ def artist_album_name_diff(
     try:
         nav_albums = fetch_artist_albums(artist_id, client=client)
     except Exception as exc:
-        logging.debug("[NAVIDROME_SCAN] Could not fetch albums for '%s': %s", artist_name, exc)
+        logger.debug(
+            "[NAVIDROME_SCAN] Could not fetch albums",
+            artist=artist_name,
+            error=str(exc),
+        )
         return False, set(), set()
 
     nav_names: set[str] = set()
@@ -175,7 +180,11 @@ def artist_album_name_diff(
                     db_names.add(stripped_db)
                     db_counts[stripped_db] = db_counts.get(stripped_db, 0) + count
     except Exception as exc:
-        logging.debug("[NAVIDROME_SCAN] Could not query DB albums for '%s': %s", artist_name, exc)
+        logger.debug(
+            "[NAVIDROME_SCAN] Could not query DB albums",
+            artist=artist_name,
+            error=str(exc),
+        )
         return False, set(), set()
 
     changed = nav_names.symmetric_difference(db_names)
@@ -233,7 +242,11 @@ def fetch_album_tracks_safe(
         album_data = fetch_album_tracks(album_id, client=client) or {}
         return album_data.get("tracks", []) or [], album_data.get("artist", "") or ""
     except Exception as err:
-        logging.debug("Failed to fetch tracks for album '%s': %s", album_name, err)
+        logger.debug(
+            "Failed to fetch tracks for album",
+            album=album_name,
+            error=str(err),
+        )
         return [], ""
 
 
@@ -312,7 +325,7 @@ def scan_artist_to_db(
     log_unified(f"[NAVIDROME_IMPORT] Importing artist: {artist_name} (artist_id={artist_id or 'none'}, force={force}, processed={processed_artists})")
 
     if not artist_id:
-        logging.warning("[NAVIDROME_SCAN] No artist_id for '%s'", artist_name)
+        logger.warning("[NAVIDROME_SCAN] No artist_id", artist=artist_name)
         return None
 
     canonical_artist_name = _clean_artist_name_for_storage(artist_name) or artist_name
@@ -376,9 +389,9 @@ def scan_artist_to_db(
                 "skipping import and stale-track cleanup (existing local tracks "
                 "preserved). Check Navidrome connectivity / artist mapping."
             )
-            logging.warning(
-                "[NAVIDROME_SCAN] %s: fetch_artist_albums returned empty — skipping import + cleanup to avoid deleting existing tracks",
-                artist_name,
+            logger.warning(
+                "[NAVIDROME_SCAN] fetch_artist_albums returned empty — skipping import + cleanup to avoid deleting existing tracks",
+                artist=artist_name,
             )
             return None
 
@@ -416,7 +429,12 @@ def scan_artist_to_db(
             if not album_id:
                 continue
 
-            logging.info("   💿 [Album %s/%s] %s", album_index, len(albums), album_name)
+            logger.info(
+                "Importing album",
+                album_index=album_index,
+                album_total=len(albums),
+                album=album_name,
+            )
             log_unified(f"Navidrome Import - {artist_name} - Album {album_index}/{len(albums)}: {album_name}")
 
             album_context = detect_live_album(album_name)
@@ -490,18 +508,18 @@ def scan_artist_to_db(
                     upsert_tracks_bulk(_album_payloads)
                 except Exception as exc:
                     logger.warning(
-                        "[NAVIDROME_SCAN] Bulk track persist failed for '%s - %s': %s",
-                        artist_name,
-                        album_name,
-                        exc,
+                        "[NAVIDROME_SCAN] Bulk track persist failed",
+                        artist=artist_name,
+                        album=album_name,
+                        error=str(exc),
                     )
 
             if len(album_mbids_seen) > 1:
-                logging.warning(
-                    "[NAVIDROME_SCAN] Album MBID inconsistency for '%s - %s': %s MBIDs",
-                    artist_name,
-                    album_name,
-                    len(album_mbids_seen),
+                logger.warning(
+                    "[NAVIDROME_SCAN] Album MBID inconsistency",
+                    artist=artist_name,
+                    album=album_name,
+                    mbid_count=len(album_mbids_seen),
                 )
 
             if diff_mode and album_name not in duplicate_album_names:
@@ -555,7 +573,7 @@ def scan_artist_to_db(
         return None
 
     except Exception:
-        logging.error("scan_artist_to_db failed for %s", artist_name, exc_info=True)
+        logger.exception("scan_artist_to_db failed", artist=artist_name)
         raise
 
 
