@@ -341,15 +341,22 @@ def _fetch_discogs_artist_id(artist: str, conn: Any, options: dict[str, Any]) ->
             return
             
         _cache_key = artist.casefold().strip()
-        
+
+        # Cache check under the lock only — the network call MUST happen
+        # outside it.  Holding the module-global lock across a Discogs
+        # request (which can sleep up to 60s per 429 cooldown, plus retries)
+        # lets an abandoned bounded thread (album enrichment exceeding its
+        # budget) deadlock every later caller on ``with _discogs_artist_id_lock``
+        # for the rest of the scan — the scan appears frozen with zero logs.
         with _discogs_artist_id_lock:
-            if _cache_key not in _discogs_artist_id_cache:
-                from api_clients.discogs_http import DiscogsHttpClient
-                client = DiscogsHttpClient(token=token)
-                discogs_artist_id = str(client.get_artist_id(artist, timeout=12) or "")
+            discogs_artist_id = _discogs_artist_id_cache.get(_cache_key, "")
+        if not discogs_artist_id:
+            from api_clients.discogs_http import DiscogsHttpClient
+            client = DiscogsHttpClient(token=token)
+            discogs_artist_id = str(client.get_artist_id(artist, timeout=12) or "")
+            with _discogs_artist_id_lock:
                 _discogs_artist_id_cache[_cache_key] = discogs_artist_id
-            discogs_artist_id = _discogs_artist_id_cache[_cache_key]
-            
+
         if not discogs_artist_id:
             return
             

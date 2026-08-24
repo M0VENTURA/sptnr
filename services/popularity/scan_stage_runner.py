@@ -1555,8 +1555,14 @@ def run_scan(
                                 _needs_album_lb = True
                                 break
                     if _needs_album_lb:
-                        _album_lb_by_title, _album_release_mbid = (
-                            get_listenbrainz_album_tracklist_with_release(artist, album, track_dicts) or ({}, "")
+                        _album_lb_by_title, _album_release_mbid = _bounded_call_result(
+                            lambda: (
+                                get_listenbrainz_album_tracklist_with_release(artist, album, track_dicts)
+                                or ({}, "")
+                            ),
+                            seconds=min(_track_timeout_seconds, 120),
+                            label=f"album-tracklist LB for '{artist} - {album}'",
+                            default=({}, ""),
                         )
                         _cache_rows: list[dict[str, Any]] = []
                         for _t in track_dicts:
@@ -1600,7 +1606,16 @@ def run_scan(
                 if _tc > 0:
                     album_lb_listens.append(_tc)
 
-            artist_max_lf = get_lastfm_artist_max_listeners(artist) if not _singles_pass else 0
+            artist_max_lf = (
+                _bounded_call_result(
+                    lambda: get_lastfm_artist_max_listeners(artist),
+                    seconds=min(_track_timeout_seconds, 90),
+                    label=f"artist max LF listeners for '{artist}'",
+                    default=0,
+                )
+                if not _singles_pass
+                else 0
+            )
 
             album_count = len(track_contexts)
             log_unified(f"[POPULARITY] Album {album_index}/{total_albums} ({scan_type}): {artist} - {album} ({album_count} tracks)")
@@ -1618,9 +1633,14 @@ def run_scan(
                         if _tt and _aa:
                             _mb_entries.append((str(_tt), str(_aa)))
                     if _mb_entries:
-                        _mb_batch = MusicBrainzService(
-                            http_client=get_shared_mb_client()
-                        ).lookup_album_metadata(_mb_entries, album=str(album or ""))
+                        _mb_batch = _bounded_call_result(
+                            lambda: MusicBrainzService(
+                                http_client=get_shared_mb_client()
+                            ).lookup_album_metadata(_mb_entries, album=str(album or "")),
+                            seconds=min(_track_timeout_seconds, 120),
+                            label=f"MB album batch for '{artist} - {album}'",
+                            default={},
+                        ) or {}
                         if _mb_batch:
                             _collapse_album_mb_batch(_mb_batch, track_contexts, album)
                             options["mb_batch_metadata"] = _mb_batch
@@ -1644,7 +1664,12 @@ def run_scan(
                             _lb_tag_mbids.append(_m)
                     if _lb_tag_mbids:
                         from api_clients.listenbrainz import get_recording_tags_batch
-                        options["lb_recording_tags_batch"] = get_recording_tags_batch(_lb_tag_mbids)
+                        options["lb_recording_tags_batch"] = _bounded_call_result(
+                            lambda: get_recording_tags_batch(_lb_tag_mbids),
+                            seconds=min(_track_timeout_seconds, 90),
+                            label=f"LB tag batch for '{artist} - {album}'",
+                            default={},
+                        ) or {}
                 except Exception as exc:
                     logger.debug("LB tag batch failed", artist=artist, album=album, error=str(exc))
 
