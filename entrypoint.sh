@@ -108,22 +108,25 @@ run_queue_startup_schema() {
 }
 
 run_alembic_migrations() {
-    if [ -f alembic.ini ] && [ -d migrations/versions ]; then
-        # Try to APPLY migrations first — a fresh database (or one whose
-        # schema bootstrap has not run yet) gets the full DDL from the
-        # revision chain.  Stamping is only a fallback for databases that
-        # db.bootstrap already built in full (CREATE TABLE against existing
-        # tables fails, so migrations cannot be "applied" there) — stamping
-        # tells Alembic those tables are already at head.
-        if python3 -m alembic upgrade head 2>/dev/null; then
-            ok2 "Alembic migrations applied"
-        else
-            if python3 -m alembic stamp head 2>/dev/null; then
-                ok2 "Alembic schema stamped (head) — bootstrap-built schema"
-            else
-                warn "Alembic skipped — schema bootstrap handles table creation"
-            fi
-        fi
+    if [ ! -f alembic.ini ] || [ ! -d migrations/versions ]; then
+        return 0
+    fi
+
+    # Apply migrations with FULL output visible.  Every revision is written
+    # idempotently (existence-guarded DDL), so "upgrade head" converges on
+    # ANY starting state: fresh DB (full chain runs), bootstrap-built DB
+    # (guards skip already-created objects), or partially-migrated DB.
+    #
+    # The old behaviour piped stderr to /dev/null and fell back to a BLIND
+    # "alembic stamp head" on failure — which marked never-applied DDL as
+    # applied and produced recurring "relation ... already exists" noise on
+    # every boot.  A real failure now surfaces loudly and is retried by the
+    # deferred bootstrap path instead of being masked.
+    if python3 -m alembic upgrade head; then
+        ok2 "Alembic migrations applied"
+    else
+        warn "Alembic 'upgrade head' FAILED — see error above."
+        warn "The runtime schema bootstrap will retry migrations after PostgreSQL is fully available."
     fi
 }
 

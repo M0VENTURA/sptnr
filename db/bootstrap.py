@@ -287,8 +287,16 @@ def init_database_and_schema() -> bool:
             if ensure_full_schema():
                 verify_all_tables_exist()
                 
-                # Automatically apply any newer Alembic migrations on top of the legacy bootstrap
-                run_migrations_on_startup()
+                # Automatically apply any newer Alembic migrations on top of the
+                # legacy bootstrap.  All revisions are idempotent (existence-guarded
+                # DDL), so this converges even when the bootstrap already created
+                # every table.  A failure is logged loudly — never silently — so a
+                # stuck alembic_version cannot mask unapplied DDL across boots.
+                if not run_migrations_on_startup():
+                    logger.error(
+                        "Alembic migrations FAILED after schema bootstrap — "
+                        "check error.log; DDL may be missing until fixed"
+                    )
                 
                 _reset_stale_scan_states()
                 _prune_genre_playlists_at_boot()

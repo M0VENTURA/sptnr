@@ -34,6 +34,13 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     bind = op.get_bind()
 
+    # The ADD COLUMN IF NOT EXISTS / DROP CONSTRAINT syntax below is
+    # PostgreSQL-only.  On other dialects (SQLite test suite) the fresh
+    # install path already created the full canonical table via the updated
+    # ``002`` revision, so there is nothing to sync.
+    if bind.dialect.name != "postgresql":
+        return
+
     # ── 1. Add the columns the runtime writers rely on ──────────────────
     # Mirrors db/schema.py's upcoming_releases DDL + COLUMN_REGISTRY.
     # ADD COLUMN IF NOT EXISTS makes this safe on fresh installs where the

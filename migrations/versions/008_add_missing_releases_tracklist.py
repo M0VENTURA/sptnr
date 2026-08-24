@@ -26,6 +26,15 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _table_exists() -> bool:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    try:
+        return "missing_releases" in inspector.get_table_names()
+    except Exception:
+        return False
+
+
 def _existing_columns() -> set[str]:
     bind = op.get_bind()
     inspector = sa.inspect(bind)
@@ -38,6 +47,10 @@ def _existing_columns() -> set[str]:
 
 
 def upgrade() -> None:
+    # Partial-bootstrap databases may predate missing_releases entirely; the
+    # table is created by 001 (or db.bootstrap).  Nothing to alter here.
+    if not _table_exists():
+        return
     if "tracklist" not in _existing_columns():
         op.execute(
             sa.text("ALTER TABLE missing_releases ADD COLUMN IF NOT EXISTS tracklist TEXT")

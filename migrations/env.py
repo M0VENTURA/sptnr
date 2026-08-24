@@ -3,6 +3,12 @@
 Loads the SQLAlchemy engine from ``db.engine`` (respecting DATABASE_URL /
 PG_* env vars) so the same connection logic applies to both the
 app and migrations.
+
+An explicitly-set ``sqlalchemy.url`` in the Alembic config takes precedence
+(standard Alembic behaviour — the test suite uses it to point the chain at a
+scratch database).  When unset (production entrypoint), the shared app engine
+from ``db.engine`` is used so migrations honour DATABASE_URL / PG_* exactly
+like the application.
 """
 
 from __future__ import annotations
@@ -13,6 +19,7 @@ import sys
 from logging.config import fileConfig
 
 from alembic import context
+import sqlalchemy as sa
 
 # Ensure the project root is on sys.path so we can import db.engine
 _project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -24,7 +31,9 @@ from db.engine import get_base_metadata, get_engine
 # Alembic Config object
 config = context.config
 
-# Set sqlalchemy.url from our dynamic resolver if not already in alembic.ini
+# Set sqlalchemy.url from our dynamic resolver if not already configured.
+# NOTE: an explicitly-configured URL is left untouched — run_migrations_online()
+# builds a throwaway engine from it (test-suite isolation).
 if not config.get_main_option("sqlalchemy.url"):
     engine = get_engine()
     config.set_main_option("sqlalchemy.url", str(engine.url))
@@ -100,12 +109,20 @@ def run_migrations_online() -> None:
     Creates an Engine directly from the Alembic config and associates a
     connection with the migration context.
     """
-    connectable = get_engine()
+    explicit_url = config.get_main_option("sqlalchemy.url")
+    if explicit_url:
+        connectable = sa.create_engine(explicit_url)
+    else:
+        connectable = get_engine()
 
     with connectable.connect() as connection:
         # Widen the version column BEFORE Alembic records any revision, so
-        # the long 007/008 ids fit and the chain can finally advance.
-        _widen_version_num(connection)
+        # the long 007/008 ids fit and the chain can finally advance.  The
+        # ALTER COLUMN ... TYPE syntax is PostgreSQL-only; other dialects
+        # (SQLite test suite) store version ids as TEXT natively so widening
+        # is unnecessary there.
+        if connectable.dialect.name == "postgresql":
+            _widen_version_num(connection)
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
