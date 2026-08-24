@@ -95,6 +95,19 @@ def _detect_album_type(artist: str, album: str, album_artist: str | None, spotif
 
 def _fetch_album_art_with_fallback(artist: str, album: str, discogs_token: str | None = None) -> str | None:
     """Fetch album art: Navidrome first (default), then MusicBrainz/CAA, then AudioDB, then Discogs."""
+
+    # 0) Skip the whole provider chain when art is already in the DB — a
+    # repeat/forced scan must not re-hit 4 external services per album
+    # (each with 1 req/s throttles + 429 cooldown sleeps) for art that was
+    # already fetched in a previous run.  The 360s album-enrichment budget
+    # was consistently being eaten by exactly this chain.
+    try:
+        from db.repositories.metadata import fetch_album_art_blob
+        blob, _ = fetch_album_art_blob(artist=artist, album=album)
+        if blob:
+            return "cached"
+    except Exception as exc:
+        logger.debug("Album-art cache check failed", artist=artist, album=album, error=str(exc))
     
     # 0) Try Navidrome
     try:

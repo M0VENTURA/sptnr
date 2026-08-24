@@ -1757,7 +1757,7 @@ def run_scan(
                         pass
                     return None
 
-            _track_worker_hard_timeout = max(60, min(_track_timeout_seconds, 300))
+            _track_worker_hard_timeout = max(60, min(_track_timeout_seconds, 600))
 
             def _run_track_job_bounded(job: tuple) -> dict[str, Any] | None:
                 import threading as _th
@@ -1885,7 +1885,7 @@ def run_scan(
                 _pool = _futures.ThreadPoolExecutor(max_workers=_scan_threads)
                 try:
                     _track_futures = []
-                    _worker_slots = max(1, min(_scan_threads, 5))
+                    _worker_slots = max(1, min(_scan_threads, 8))
                     _slot_semaphore = threading.BoundedSemaphore(_worker_slots)
 
                     def _submit_chunked(job):
