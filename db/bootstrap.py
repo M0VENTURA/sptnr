@@ -281,6 +281,15 @@ def _prune_genre_playlists_at_boot() -> None:
     threading.Thread(target=_run, daemon=True, name="boot-genre-playlist-prune").start()
 
 def init_database_and_schema() -> bool:
+    # --- TEMPORARY HACK TO UNBLOCK ALEMBIC ---
+    try:
+        with db_session() as session:
+            session.execute(text("DROP TABLE IF EXISTS missing_album_tracks CASCADE"))
+            logger.info("Temporarily dropped missing_album_tracks to allow Alembic creation")
+    except Exception as exc:
+        logger.warning("Failed to drop missing_album_tracks", error=str(exc))
+    # -----------------------------------------
+
     max_attempts = 4
     for attempt in range(1, max_attempts + 1):
         try:
