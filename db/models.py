@@ -477,3 +477,42 @@ class AlbumArt(Base):
 
     def __repr__(self) -> str:
         return f"<AlbumArt(id={self.id}, artist={self.artist_name!r}, album={self.album_name!r})>"
+
+# =============================================================================
+# missing_album_tracks
+# =============================================================================
+
+from sqlalchemy import Boolean, UniqueConstraint
+
+class MissingAlbumTrack(Base):
+    __tablename__ = "missing_album_tracks"
+
+    id: Mapped[int] = mapped_column(BigInteger, Sequence("missing_album_tracks_id_seq"), primary_key=True)
+    artist_name: Mapped[str] = mapped_column(String, nullable=False)
+    album_name: Mapped[str] = mapped_column(String, nullable=False)
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    
+    track_number: Mapped[str | None] = mapped_column(String)
+    track_artist: Mapped[str | None] = mapped_column(String)
+    year: Mapped[str | None] = mapped_column(String)
+    release_id: Mapped[str | None] = mapped_column(String)
+    recording_mbid: Mapped[str | None] = mapped_column(String)
+    
+    duration: Mapped[int | None] = mapped_column(Integer)
+    disc_number: Mapped[int | None] = mapped_column(Integer, server_default=text("1"))
+    ignored: Mapped[bool] = mapped_column(Boolean, server_default=text("FALSE"), nullable=False)
+    
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
+
+    __table_args__ = (
+        UniqueConstraint(
+            "artist_name", 
+            "album_name", 
+            "title", 
+            "disc_number", 
+            name="uq_missing_album_tracks"
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return f"<MissingAlbumTrack(id={self.id}, artist={self.artist_name!r}, title={self.title!r})>"
