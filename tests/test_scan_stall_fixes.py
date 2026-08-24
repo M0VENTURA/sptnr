@@ -262,3 +262,110 @@ class TestQueueProcessorNonBlocking:
         assert 'daemon=True' in source
         # The cycle is spawned, not invoked inline.
         assert ".start()" in source
+
+
+# ---------------------------------------------------------------------------
+# 5. Discogs artist-ID lock must NOT be held across the network call
+# ---------------------------------------------------------------------------
+
+class TestDiscogsArtistIdLockNotHeldAcrossIO:
+    """Regression test for the 3-hour scan freeze after "Prefetch complete".
+
+    ``_fetch_discogs_artist_id`` used to hold the module-global
+    ``_discogs_artist_id_lock`` while calling the Discogs API.  A Discogs
+    request can sleep up to 60s per 429 cooldown plus retries, so when the
+    bounded album-enrichment thread exceeded its budget it was abandoned
+    MID-REQUEST while STILL HOLDING the lock — every later caller (track
+    workers, subsequent albums) then blocked on ``with
+    _discogs_artist_id_lock:`` forever, and the scan sat silent for hours
+    (the Postgres checkpoints kept firing because the DB itself was idle).
+    """
+
+    def test_network_call_occurs_outside_lock(self, monkeypatch):
+        """While the Discogs lookup is in flight, another thread must be
+        able to acquire the lock — proving the call is not made under it."""
+        import services.popularity.stages.album_stage as album_stage
+
+        # Fresh cache → guaranteed miss → forces the network path.
+        monkeypatch.setattr(album_stage, "_discogs_artist_id_cache", {})
+        monkeypatch.setattr(album_stage, "_discogs_artist_id_lock", threading.Lock())
+
+        in_flight = threading.Event()
+        release = threading.Event()
+        started = {"v": False}
+        lock_acquired = {"v": False}
+
+        def _fake_get_artist_id(*args, **kwargs):
+            started["v"] = True
+            in_flight.set()
+            # Simulate a slow/hung Discogs request (cooldown + retries).
+            release.wait(timeout=5)
+            return "12345"
+
+        class _FakeClient:
+            def get_artist_id(self, *args, **kwargs):
+                return _fake_get_artist_id(*args, **kwargs)
+
+        # The function imports DiscogsHttpClient and get_config at call
+        # time — patch them in their source modules.
+        import api_clients.discogs_http as discogs_http_module
+        monkeypatch.setattr(discogs_http_module, "DiscogsHttpClient", lambda token: _FakeClient())
+        import helpers.config_helpers as config_helpers_module
+        monkeypatch.setattr(config_helpers_module, "get_config", lambda: {
+            "api_integrations": {"discogs": {"enabled": True, "token": "tok"}}
+        })
+
+        def _caller():
+            album_stage._fetch_discogs_artist_id(
+                "Test Artist", None, {},
+            )
+
+        t = threading.Thread(target=_caller)
+        t.start()
+        assert in_flight.wait(timeout=5), "Discogs lookup never started"
+
+        # The lock MUST be acquirable while the request is in flight —
+        # before the fix this blocked forever (abandoned thread holds it).
+        lock_acquired["v"] = album_stage._discogs_artist_id_lock.acquire(timeout=2)
+        if lock_acquired["v"]:
+            album_stage._discogs_artist_id_lock.release()
+
+        release.set()
+        t.join(timeout=5)
+
+        assert started["v"] is True
+        assert lock_acquired["v"] is True, (
+            "Discogs artist-ID lock was held across the network call — an "
+            "abandoned thread can deadlock the whole scan."
+        )
+
+    def test_source_acquires_lock_before_network(self):
+        """The function must do the cache check under the lock, then release
+        it before the HTTP call — verify the source shape."""
+        import services.popularity.stages.album_stage as album_stage
+
+        source = open(album_stage.__file__, encoding="utf-8").read()
+        # Extract the function body between its def and the next def.
+        func_start = source.index("def _fetch_discogs_artist_id")
+        func_end = source.index("def _fetch_musicbrainz_artist_id")
+        body = source[func_start:func_end]
+
+        # The first lock block must contain ONLY the cache read and must be
+        # immediately followed (outside the lock) by the network call.
+        first_with = body.index("with _discogs_artist_id_lock:")
+        # Find the line after the first lock block's indented body: the next
+        # line that starts at 8 spaces (the same indent as ``with``).
+        after_with = body[first_with:]
+        lines = after_with.splitlines()
+        # line 0 = "with ...:", line 1 = the indented cache read.
+        assert "with _discogs_artist_id_lock:" in lines[0]
+        assert "_discogs_artist_id_cache.get(_cache_key" in lines[1]
+        # Line 2 must be dedented back to the function-body indent (8 spaces)
+        # — proving the lock was released before the network call.
+        assert lines[2].startswith("        if not discogs_artist_id:")
+        # The network call happens after the lock is released.
+        assert "client.get_artist_id" in body
+        # And there's a second lock block AFTER the network call (cache write).
+        assert body.count("with _discogs_artist_id_lock:") == 2
+        assert "_discogs_artist_id_cache[_cache_key]" in body
+

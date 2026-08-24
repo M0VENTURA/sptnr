@@ -34,9 +34,17 @@ config = context.config
 # Set sqlalchemy.url from our dynamic resolver if not already configured.
 # NOTE: an explicitly-configured URL is left untouched — run_migrations_online()
 # builds a throwaway engine from it (test-suite isolation).
+#
+# CRITICAL: must NOT use ``str(engine.url)`` here — SQLAlchemy 2.0's
+# ``URL.__str__`` MASKS the password as ``***`` for security, so the
+# migration engine would try to authenticate with the literal password
+# "***" and fail with "password authentication failed for user ..." even
+# though the app (which uses the URL object directly) connects fine.
+# ``render_as_string(hide_password=False)`` emits the real password.
 if not config.get_main_option("sqlalchemy.url"):
     engine = get_engine()
-    config.set_main_option("sqlalchemy.url", str(engine.url))
+    url_with_password = engine.url.render_as_string(hide_password=False)
+    config.set_main_option("sqlalchemy.url", url_with_password)
 
 # Configure logging from alembic.ini if present
 if config.config_file_name is not None:
