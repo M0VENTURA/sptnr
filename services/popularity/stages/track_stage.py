@@ -14,6 +14,7 @@ rate-limit exhaustion and 300s+ timeout stalls on large albums.
 from __future__ import annotations
 
 import json
+import time
 from difflib import SequenceMatcher
 from typing import Any
 
@@ -667,6 +668,15 @@ def process_track(
     
     from helpers.logging_config import log_unified
 
+    _track_started = time.monotonic()
+    try:
+        log_unified(
+            f"[TRACK] ▶ Processing: \"{str(track_title or '').strip()}\" "
+            f"({str(track_artist or '').strip()})"
+        )
+    except Exception:
+        pass
+
     # Fetch configuration gates for heavy fallbacks
     try:
         from helpers.config_helpers import get_config
@@ -1218,6 +1228,14 @@ def process_track(
                 _sd_manual_override = False
 
             if _sd_eligible and not _sd_manual_override:
+                _sd_start = time.monotonic()
+                try:
+                    log_unified(
+                        f"[TRACK] ▶ Singles detection: \"{str(sd_title or '').strip()}\" "
+                        f"({str(sd_artist or '').strip()}) — Discogs/MusicBrainz/Last.fm…"
+                    )
+                except Exception:
+                    pass
                 sd_result = detect_single_for_track(
                     title=sd_title,
                     artist=sd_artist,
@@ -1253,6 +1271,20 @@ def process_track(
                     artist_stats_override=(options.get("artist_stats_override") if isinstance(options, dict) else None),
                     artist_listen_override=(options.get("artist_listen_override") if isinstance(options, dict) else None),
                 )
+                _sd_elapsed = time.monotonic() - _sd_start
+                try:
+                    _sd_conf_log = str(sd_result.get("confidence") or "low").upper() if sd_result else "SKIPPED"
+                    _sd_srcs_log = ",".join(
+                        str(s.get("source") or "").replace("_", " ")
+                        for s in (sd_result or {}).get("sources") or []
+                        if isinstance(s, dict) and bool(s.get("matched"))
+                    ) or "none"
+                    log_unified(
+                        f"[TRACK] ✓ Singles detection done: \"{str(sd_title or '').strip()}\" "
+                        f"→ {_sd_conf_log} ({_sd_srcs_log}) in {_sd_elapsed:.1f}s"
+                    )
+                except Exception:
+                    pass
             else:
                 sd_result = None
                 if _sd_manual_override:
@@ -1380,7 +1412,15 @@ def process_track(
     # -------------------------------------------------------------------------
 
     if not popularity_only and not singles_detection_only:
+        _meta_start = time.monotonic()
         try:
+            try:
+                log_unified(
+                    f"[TRACK] ▶ Metadata lookup: \"{str(track_title or '').strip()}\" "
+                    f"— MB genres / Discogs / LB tags…"
+                )
+            except Exception:
+                pass
             title = _genre_lookup_title
             artist = _genre_lookup_artist
             mb_data = (_mb_meta or {}).get("mb_data")
@@ -1532,6 +1572,14 @@ def process_track(
                 except Exception as e:
                     logger.debug("ListenBrainz genre fetch failed", track_id=track_id, error=str(e))
 
+            _meta_elapsed = time.monotonic() - _meta_start
+            try:
+                log_unified(
+                    f"[TRACK] ✓ Metadata lookup done: \"{str(track_title or '').strip()}\" "
+                    f"in {_meta_elapsed:.1f}s"
+                )
+            except Exception:
+                pass
         except Exception as e:
             logger.debug("Metadata fetch failed", track_id=track_id, error=str(e))
 
@@ -1721,12 +1769,14 @@ def process_track(
         _src_names = []
         
     _isrc_part = f" | ISRC: {_isrc_found}" if _isrc_found else ""
+    _track_total_elapsed = time.monotonic() - _track_started
     _consolidated = (
         f"[TRACK] 🎵 \"{str(track_title or '').strip()}\""
         f" | {_pop_summary or 'Score: —'}"
         f"{_stars_part}"
         f"{_isrc_part}"
         f" | {_single_summary}"
+        f" | {_track_total_elapsed:.1f}s"
     )
     if _src_names:
         _consolidated += f" | Matched: {', '.join(_src_names)}"
