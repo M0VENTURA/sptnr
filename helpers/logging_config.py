@@ -349,52 +349,34 @@ def _setup_standard_logging(service_name: str, log_dir: str, use_structlog: bool
                 "level": "INFO",
                 "propagate": False,
             },
+            # ── Download-queue related loggers ─────────────────────────────
+            # All download/queue activity belongs in queue.log (with errors in
+            # error.log), NOT info.log.  The web UI has dedicated Queue and
+            # Logs pages that read these files, so the info.log stays focused
+            # on scan / library / server activity.
+            #
+            # ``services.queue`` routes every ``services.queue.*`` module.
+            # ``services.downloads`` routes every ``services.downloads.*``
+            # module (download scan, watcher, match engine, organisers,
+            # slskd, verification, retry, scheduler…).
+            # ``db.repositories.queue*`` is the queue repository layer (its
+            # "Duplicate skipped" messages flooded info.log on every cycle).
             "services.queue": {
                 "handlers": ["queue_file", "error_file"],
                 "level": "INFO",
                 "propagate": False,
             },
-            "services.downloads.download_completion_service": {
+            "services.downloads": {
                 "handlers": ["queue_file", "error_file"],
                 "level": "INFO",
                 "propagate": False,
             },
-            "services.downloads.download_pipeline_service": {
+            "db.repositories.queue": {
                 "handlers": ["queue_file", "error_file"],
                 "level": "INFO",
                 "propagate": False,
             },
-            "services.downloads.download_processing_service": {
-                "handlers": ["queue_file", "error_file"],
-                "level": "INFO",
-                "propagate": False,
-            },
-            "services.downloads.download_queue_normalizer": {
-                "handlers": ["queue_file", "error_file"],
-                "level": "INFO",
-                "propagate": False,
-            },
-            "services.downloads.download_queue_service": {
-                "handlers": ["queue_file", "error_file"],
-                "level": "INFO",
-                "propagate": False,
-            },
-            "services.downloads.download_retry_service": {
-                "handlers": ["queue_file", "error_file"],
-                "level": "INFO",
-                "propagate": False,
-            },
-            "services.downloads.slskd_service": {
-                "handlers": ["queue_file", "error_file"],
-                "level": "INFO",
-                "propagate": False,
-            },
-            "services.downloads.download_organize_helpers": {
-                "handlers": ["queue_file", "error_file"],
-                "level": "INFO",
-                "propagate": False,
-            },
-            "services.downloads.download_verification_service": {
+            "db.repositories.queue_admin": {
                 "handlers": ["queue_file", "error_file"],
                 "level": "INFO",
                 "propagate": False,
