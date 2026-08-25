@@ -272,6 +272,10 @@ window.performMbSearch = async function() {
     // discovery search (universal search modal) skips it for speed.
     if (window._mbSearchWithReleases === true) {
       payload.with_releases = true;
+      // Also request each concrete release's full tracklist so the modal can
+      // render per-release track tables (old-system behaviour) — otherwise
+      // releases are indistinguishable at a glance.
+      payload.with_tracklists = true;
       window._mbSearchWithReleases = false;
     }
 
@@ -368,26 +372,46 @@ window.performMbSearch = async function() {
         html += '</div>';
 
         if (hasReleases) {
-          html += '<button class="btn btn-sm btn-outline-secondary mb-select-btn w-100 mb-1" onclick="toggleMbReleases(\'' + dataKey + '\', this)"><i class="bi bi-chevron-down"></i> Choose Release (' + r.releases.length + ')</button>';
-          html += '<div id="releases_' + dataKey + '" class="d-none"><div class="list-group list-group-flush" style="max-height:200px;overflow-y:auto;">';
-          r.releases.forEach(function(rel) {
+          // Accordion-style per-release tracklist tables — the old-system
+          // UX.  Each concrete release is a header row that expands to its
+          // own # | Title | Duration table (tracks attached server-side when
+          // with_tracklists=1, or lazy-loaded via /api/album/musicbrainz/release/tracks).
+          html += '<div class="accordion accordion-flush" id="acc_' + dataKey + '">';
+          r.releases.forEach(function(rel, relIdx) {
             var relYear = (rel.date || rel.release_date || '').split('-')[0] || '?';
             var relCountry = rel.country || '';
-            // Concrete releases carry track_count from the search route's
-            // browse enrichment (media track-counts).  Show it so the user
-            // can tell a 10-track original from a 13-track deluxe at a
-            // glance; hide it when the count is unknown (0).
             var relTracks = Number(rel.track_count) > 0 ? rel.track_count + ' tracks' : '';
             var relFmt = rel.format || (Array.isArray(rel.formats) ? rel.formats.join(' + ') : '');
-            html += '<button class="list-group-item list-group-item-action py-1 px-2 small" onclick="selectMbRelease(\'' + dataKey + '\', \'' + escHtml(rel.id) + '\', \'' + escHtml(rel.title || r.title) + '\')">';
-            html += '<div class="d-flex justify-content-between"><span><strong>' + escHtml(rel.title || r.title) + '</strong> (' + relYear + ')</span>';
-            if (relCountry) html += '<span class="text-muted ms-2">' + escHtml(relCountry) + '</span>';
+            var relMetaBits = [relTracks, relFmt, rel.label, relCountry].filter(Boolean);
+            var hasTracks = Array.isArray(rel.tracks) && rel.tracks.length > 0;
+            var accId = 'acc' + dataKey + '_' + relIdx;
+            var show = relIdx === 0 ? ' show' : '';
+            var expanded = relIdx === 0 ? 'true' : 'false';
+            var collapsed = relIdx === 0 ? '' : ' collapsed';
+
+            html += '<div class="accordion-item">';
+            html += '<h2 class="accordion-header" id="hd_' + accId + '">';
+            html += '<button class="accordion-button ' + collapsed + ' py-2 px-3 small" type="button" data-bs-toggle="collapse" data-bs-target="#' + accId + '" aria-expanded="' + expanded + '" aria-controls="' + accId + '" onclick="' + (hasTracks ? '' : 'loadMbReleaseTracks(\'' + dataKey + '\', \'' + escHtml(rel.id) + '\', ' + relIdx + ')') + '">';
+            html += '<div class="w-100 d-flex justify-content-between align-items-center gap-2">';
+            html += '<span class="fw-semibold">' + escHtml(rel.title || r.title) + ' <span class="text-muted fw-normal">(' + relYear + ')</span></span>';
+            html += '<span class="text-muted fw-normal text-nowrap small">' + escHtml(relMetaBits.join(' · ')) + '</span>';
             html += '</div>';
-            var relMetaBits = [relTracks, relFmt, rel.label].filter(Boolean);
-            if (relMetaBits.length) html += '<div class="text-muted small">' + escHtml(relMetaBits.join(' · ')) + '</div>';
             html += '</button>';
+            html += '</h2>';
+            html += '<div id="' + accId + '" class="accordion-collapse collapse' + show + '" aria-labelledby="hd_' + accId + '" data-bs-parent="#acc_' + dataKey + '">';
+            html += '<div class="accordion-body py-2 px-0">';
+            if (hasTracks) {
+              html += _renderMbReleaseTrackTable(rel.tracks);
+            } else {
+              html += '<div class="text-muted small px-3 py-2" id="tracks_' + accId + '">' +
+                      '<span class="spinner-border spinner-border-sm me-1" role="status"></span> Loading tracks…</div>';
+            }
+            html += '<div class="d-flex gap-2 px-3 py-2">';
+            html += '<button class="btn btn-sm btn-primary" onclick="selectMbRelease(\'' + dataKey + '\', \'' + escHtml(rel.id) + '\', \'' + escHtml(rel.title || r.title) + '\')"><i class="bi bi-check-circle"></i> Select This Release</button>';
+            html += '</div>';
+            html += '</div></div></div>';
           });
-          html += '</div></div>';
+          html += '</div>';
         } else {
           html += '<button class="btn btn-sm btn-outline-secondary mb-select-btn w-100" onclick="selectMbRelease(\'' + dataKey + '\', \'' + escHtml(r.id || '') + '\', \'' + escHtml(r.title) + '\')"><i class="bi bi-plus-lg"></i> Select</button>';
         }
@@ -397,6 +421,17 @@ window.performMbSearch = async function() {
     });
 
     resultsEl.innerHTML = html;
+
+    // The first release of each group is expanded by default, but if its
+    // tracks weren't attached server-side they'd sit on "Loading tracks…"
+    // forever (no click ever fires on the already-open accordion header).
+    // Trigger the lazy load for any expanded body that still needs it.
+    resultsEl.querySelectorAll('.accordion-collapse.show').forEach(function(collapse) {
+      var tracksId = 'tracks_' + collapse.id;
+      if (!document.getElementById(tracksId)) return;
+      var btn = collapse.previousElementSibling.querySelector('button');
+      if (btn && btn.onclick) btn.onclick();
+    });
   } catch (e) {
     resultsEl.innerHTML = '<div class="col-12 text-center py-4"><p class="text-danger">Search failed: ' + escHtml(e.message) + '</p></div>';
   }
@@ -409,6 +444,70 @@ window.toggleMbReleases = function(dataKey, btn) {
   btn.innerHTML = container.classList.contains('d-none')
     ? '<i class="bi bi-chevron-down"></i> Choose Release (' + (window._mbReleaseData[dataKey]?.releases?.length || 0) + ')'
     : '<i class="bi bi-chevron-up"></i> Hide Releases';
+};
+
+// Renders a # | Title | Duration table for a MusicBrainz release tracklist.
+// Tracks are normalised to { track_number, disc_number, title, duration, recording_mbid }.
+window._renderMbReleaseTrackTable = function(tracks) {
+  if (!tracks || !tracks.length) {
+    return '<div class="text-muted small px-3 py-2">No tracklist available.</div>';
+  }
+  var html = '<table class="table table-sm table-hover mb-0 small">' +
+    '<thead><tr>' +
+    '<th style="width:44px;" class="text-center">#</th>' +
+    '<th>Title</th>' +
+    '<th style="width:90px;">Duration</th>' +
+    '</tr></thead><tbody>';
+  var hasDiscs = tracks.some(function(t) { return parseInt(t.disc_number || t.disc || 0, 10) > 1; });
+  tracks.forEach(function(t) {
+    var num = t.track_number != null ? t.track_number : (t.position != null ? t.position : '');
+    var disc = parseInt(t.disc_number || t.disc || 0, 10);
+    var numLabel = '';
+    if (num !== '') numLabel = hasDiscs ? (disc || 1) + '-' + num : String(num);
+    else if (disc > 1) numLabel = 'D' + disc;
+    var durRaw = parseInt(t.duration_ms || t.duration || t.length || 0, 10);
+    var dur = '';
+    if (durRaw > 0) {
+      var secs = durRaw >= 10000 ? Math.round(durRaw / 1000) : Math.round(durRaw);
+      dur = Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0');
+    }
+    html += '<tr>' +
+      '<td class="text-center text-muted">' + escHtml(String(numLabel)) + '</td>' +
+      '<td>' + escHtml(t.title || '?') + '</td>' +
+      '<td class="text-muted">' + escHtml(dur) + '</td>' +
+      '</tr>';
+  });
+  html += '</tbody></table>';
+  return html;
+};
+
+// Lazy-load a concrete release's tracklist into its (already expanded)
+// accordion body via /api/album/musicbrainz/release/tracks.  Used when the
+// server didn't attach tracks (e.g. the universal search path skips the
+// expensive per-release fetches).
+window.loadMbReleaseTracks = async function(dataKey, releaseId, relIdx) {
+  if (!releaseId) return;
+  var release = window._mbReleaseData[dataKey];
+  if (!release || !release.releases || !release.releases[relIdx]) return;
+  var rel = release.releases[relIdx];
+  if (rel._tracksLoading) return;
+  rel._tracksLoading = true;
+  var containerId = 'tracks_acc' + dataKey + '_' + relIdx;
+  var container = document.getElementById(containerId);
+  if (!container) return;
+  try {
+    var resp = await fetch('/api/album/musicbrainz/release/tracks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ release_mbid: releaseId })
+    });
+    var data = await resp.json();
+    var tracks = (data && data.tracks) || [];
+    rel.tracks = tracks;
+    container.outerHTML = '<div class="px-0 py-0" id="' + containerId + '">' + window._renderMbReleaseTrackTable(tracks) + '</div>';
+  } catch (e) {
+    container.innerHTML = '<div class="text-danger small px-3 py-2">Could not load tracks: ' + escHtml(e.message) + '</div>';
+  }
 };
 
 // ✅ FIX 1: Support BOTH _mbSearchCallback (downloads.js) AND CustomEvent

@@ -143,7 +143,10 @@ var _pageData = window._pageData || {};
         window._mbSearchIncludeOwned = true;
         // The album lookup needs each group's CONCRETE releases for the
         // release picker — request them (the generic universal search skips
-        // this expensive browse per group).
+        // this expensive browse per group).  Setting this also makes the
+        // search attach each release's full tracklist (with_tracklists) so
+        // the modal renders per-release track tables — the old-system UX
+        // that made releases easy to tell apart at a glance.
         window._mbSearchWithReleases = true;
         if (typeof window.populateMusicBrainzSearch === 'function') {
             window.populateMusicBrainzSearch(artist, album, '', '');

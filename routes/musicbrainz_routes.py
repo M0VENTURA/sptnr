@@ -14,6 +14,7 @@ from db.engine import async_db_session, db_session
 from helpers.config_helpers import get_config
 from services.downloads.download_pipeline_service import start_release_download
 from services.downloads.download_processing_service import queue_add
+from services.downloads.download_matching_service import get_musicbrainz_release_tracks
 import structlog
 
 logger = structlog.get_logger(__name__)
@@ -330,6 +331,10 @@ async def api_musicbrainz_search() -> Any:
     # Default to OFF for free-text / discovery searches; the targeted flows
     # opt in explicitly.
     with_releases = bool(payload.get("with_releases", False))
+    # Attach each concrete release's full tracklist (one extra throttled MB
+    # release call per release) so the modal can render per-release track
+    # tables — the album-page lookup and universal search request it.
+    with_tracklists = bool(payload.get("with_tracklists", False))
 
     def _esc(value: str) -> str:
         return value.replace('"', "")
@@ -493,12 +498,43 @@ async def api_musicbrainz_search() -> Any:
             logger.debug("Concrete-release enrich skipped", release_group_id=rgid, error=str(exc))
         return rg
 
+    def _attach_tracklists(rg: dict[str, Any]) -> dict[str, Any]:
+        """Attach each concrete release's full track list.
+
+        This is what makes releases easy to tell apart: every release in
+        ``rg["releases"]`` gains a ``tracks`` array (disc/track number,
+        title, duration, recording MBID).  The album-page lookup and the
+        universal-search modal request it so the per-release tracklist can
+        be rendered inline — mirroring the old system's per-release track
+        tables.  Costs one throttled MB release call per concrete release,
+        so it stays opt-in.
+        """
+        releases = rg.get("releases") or []
+        if not releases:
+            return rg
+        for rel in releases:
+            rid = str(rel.get("id") or "")
+            if not rid:
+                continue
+            try:
+                tracks = get_musicbrainz_release_tracks(rid)
+            except Exception as exc:
+                logger.debug("Tracklist attach failed", release_id=rid, error=str(exc))
+                tracks = []
+            rel["tracks"] = tracks or []
+            if not rel.get("track_count"):
+                rel["track_count"] = len(rel["tracks"])
+        return rg
+
     def _enrich_release_group_with_releases(rg: dict[str, Any], source: str) -> dict[str, Any]:
         # Opt-in: the universal search skips the expensive per-group browse;
         # the album lookup / folder-match flows request it for the picker.
         if not with_releases:
             return _enrich_release_group(rg, source)
-        return _attach_concrete_releases(_enrich_release_group(rg, source))
+        enriched = _attach_concrete_releases(_enrich_release_group(rg, source))
+        if with_tracklists:
+            enriched = _attach_tracklists(enriched)
+        return enriched
 
     try:
         client = _get_mb_client()
