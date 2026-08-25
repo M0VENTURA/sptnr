@@ -1280,6 +1280,24 @@ async def album_detail(album_path: str) -> Any:
             for f in release_fields
         }
 
+        # Disc Total drives per-track disc_number:
+        # - disctotal > 1  → multi-disc release; leave each track's disc_number
+        #   as-is (or re-derive below when a value is present), it is valid.
+        # - disctotal == 1 (or empty/"1") → SINGLE-disc: strip disc_number from
+        #   every track so Navidrome/file tags don't carry a bogus "1/x".
+        _disc_total_raw = release_values.get("disctotal") or ""
+        _strip_disc_numbers = False
+        _multi_disc = False
+        try:
+            _disc_total = int(_disc_total_raw)
+            _multi_disc = _disc_total > 1
+            _strip_disc_numbers = _disc_total <= 1
+        except (TypeError, ValueError):
+            # Empty or non-numeric disctotal: if it was explicitly provided as
+            # a single value, treat as single-disc (strip); otherwise leave
+            # tracks untouched.
+            _strip_disc_numbers = bool(_disc_total_raw)
+
         updated_count = 0
         reverted_live_count = 0
         file_sync_failures = 0
@@ -1329,6 +1347,20 @@ async def album_detail(album_path: str) -> Any:
                 if value:
                     payload[field] = value
 
+            # Single-disc albums: strip the per-track disc_number so neither
+            # the DB nor the audio file tags carry a bogus disc position.
+            # Only set this when the payload is otherwise being written (the
+            # field is TEXT; an empty string clears the frame on file write).
+            if _strip_disc_numbers:
+                _cur_disc = str(track.get("disc_number") or "").strip()
+                if _cur_disc:
+                    payload["disc_number"] = ""
+            elif _multi_disc:
+                # Multi-disc: ensure every track has a non-empty disc_number
+                # (default to "1" when unset) so the album displays correctly.
+                if not str(track.get("disc_number") or "").strip():
+                    payload["disc_number"] = "1"
+
             if genres_str:
                 genres_list = [
                     g.strip()
@@ -1361,6 +1393,10 @@ async def album_detail(album_path: str) -> Any:
             if _resolved_file:
                 try:
                     _file_tags = build_tag_updates(payload)
+                    # Single-disc strip: build_tag_updates drops EMPTY values,
+                    # so push disc_number="" explicitly to clear the frame.
+                    if _strip_disc_numbers:
+                        _file_tags["disc_number"] = ""
                     if _file_tags:
                         _file_write_ok = bool(update_file_tags(_resolved_file, _file_tags))
                 except Exception as tag_err:
