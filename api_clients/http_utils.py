@@ -157,9 +157,21 @@ class _RetryTransport(httpx.BaseTransport):
                 super().__init__(f"Retryable HTTP status {response.status_code}")
                 self.response = response
 
+        class _RetryBudgetExceeded(Exception):
+            """Marker raised when the cumulative retry-wait budget is exhausted.
+
+            Raising a NON-retryable exception inside ``_wait`` makes tenacity
+            stop immediately (its ``retry`` predicate returns False for this
+            type), instead of falling back to a zero-delay retry.  The outer
+            ``except _RetryableStatus`` then surfaces the last retryable
+            response (or the raw exception if there was none).
+            """
+
         def _is_retryable(exc: BaseException) -> bool:
             if isinstance(exc, _RetryableStatus):
                 return True
+            if isinstance(exc, _RetryBudgetExceeded):
+                return False
             if is_ssl_cert_error(exc):
                 # Certificate problems are config errors — retrying only
                 # wastes the wait budget (each attempt sleeps then times out).
@@ -229,10 +241,20 @@ class _RetryTransport(httpx.BaseTransport):
                 # Exponential backoff (legacy default).
                 n = retry_state.attempt_number  # 1-based (1 = first failed attempt)
                 wait = min(self._backoff * (2 ** (n - 1)), 60.0)
-            # Enforce the cumulative budget: a request that has already slept
-            # past the cap gives up instead of sleeping again.
+            # Enforce the cumulative budget: once the sum of all waits exceeds
+            # the cap, STOP retrying entirely — raising a non-retryable
+            # sentinel makes tenacity give up immediately.  Returning 0.0
+            # here (the previous behaviour) retried with ZERO delay, which
+            # against an overloaded peer (429/503 storm) turned "back off
+            # politely" into "hammer it as fast as possible" for the
+            # remaining attempts — the opposite of the intent.
             if _retry_waits["total"] + wait > _TOTAL_RETRY_WAIT_BUDGET:
-                return 0.0  # immediate retry — the stop condition below ends it
+                logger.debug(
+                    "[HTTP] retry wait budget exceeded for %s — giving up (cumulative %.1fs)",
+                    request.url,
+                    _retry_waits["total"],
+                )
+                raise _RetryBudgetExceeded()
             _retry_waits["total"] += wait
             logger.debug(
                 "[HTTP] retrying %s — attempt %d, wait %.1fs (cumulative %.1fs)",
@@ -254,6 +276,12 @@ class _RetryTransport(httpx.BaseTransport):
             for attempt in retrying:
                 with attempt:
                     return _attempt()
+        except _RetryBudgetExceeded:
+            # Budget exhausted: surface the last retryable response (or re-raise
+            # the network error if the budget ran out before any status retry).
+            if last_status_response is not None:
+                return last_status_response
+            raise
         except _RetryableStatus:
             if last_status_response is not None:
                 return last_status_response

@@ -20,6 +20,7 @@ import json
 import os
 import re
 import threading
+import time
 from typing import Any
 
 import structlog
@@ -83,6 +84,19 @@ _INIT_LOCK = threading.Lock()
 
 _MB_BATCH_CHUNK = 20
 _MB_BATCH_SIMILARITY_FLOOR = 0.6
+
+# Single-track suggested-MBID cache bounds (items 4 & 5 of the review):
+# - _MBID_CACHE_SIMILARITY_FLOOR: same floor as the batch path — a weak
+#   early match must not be cached permanently (a bad match poisoned the
+#   track's identity forever before).
+# - _MBID_CACHE_TTL_SECONDS: cached entries are re-validated after this long
+#   (MusicBrainz merges/edits recordings, so a forever-cached MBID can go
+#   stale).
+# - _MBID_CACHE_MAX_SIZE: FIFO size cap so /tmp/mbid_cache.json cannot grow
+#   without bound across long scans.
+_MBID_CACHE_SIMILARITY_FLOOR = 0.6
+_MBID_CACHE_TTL_SECONDS = 30 * 24 * 3600  # 30 days
+_MBID_CACHE_MAX_SIZE = 5000
 
 
 # =============================================================================
@@ -213,13 +227,15 @@ class MusicBrainzService:
                     with open(CACHE_FILE, "r", encoding="utf-8") as f:
                         raw = json.load(f)
                     if isinstance(raw, dict):
-                        return {
-                            key: value
-                            for key, value in raw.items()
-                            if isinstance(value, (list, tuple))
-                            and len(value) == 2
-                            and str(value[0] or "").strip()
-                        }
+                        out: dict[str, Any] = {}
+                        for key, value in raw.items():
+                            if (
+                                isinstance(value, (list, tuple))
+                                and len(value) >= 2
+                                and str(value[0] or "").strip()
+                            ):
+                                out[key] = value
+                        return out
             except Exception:
                 pass
             return {}
@@ -228,11 +244,16 @@ class MusicBrainzService:
         # Safely clone the cache so we don't hold the memory lock during slow disk I/O
         with self._mem_lock:
             data_to_save = dict(self._mbid_cache)
-            
+
         with _CACHE_IO_LOCK:
             try:
-                with open(CACHE_FILE, "w", encoding="utf-8") as f:
+                # Atomic write via temp-then-rename: a second process writing
+                # concurrently sees either the old or the new file, never a
+                # truncated/corrupted half-written JSON.
+                tmp_path = f"{CACHE_FILE}.tmp"
+                with open(tmp_path, "w", encoding="utf-8") as f:
                     json.dump(data_to_save, f)
+                os.replace(tmp_path, CACHE_FILE)
             except Exception:
                 pass
 
@@ -248,12 +269,19 @@ class MusicBrainzService:
             return "", 0.0
 
         cache_key = self._cache_key(title, artist)
+        now = time.time()
 
         with self._mem_lock:
             cached = self._mbid_cache.get(cache_key)
-            
-        if isinstance(cached, (list, tuple)) and len(cached) == 2 and str(cached[0] or "").strip():
-            return tuple(cached)  # type: ignore
+            if isinstance(cached, (list, tuple)) and len(cached) >= 2:
+                # Entry shape: (mbid, score, cached_at).  Legacy entries may
+                # lack the timestamp — treat them as valid (no expiry info).
+                mbid, score = str(cached[0] or ""), float(cached[1] or 0)
+                cached_at = float(cached[2]) if len(cached) >= 3 else None
+                if mbid and (
+                    cached_at is None or (now - cached_at) < _MBID_CACHE_TTL_SECONDS
+                ):
+                    return (mbid, round(score, 3))
 
         query_title = normalize_title_for_lucene_query(strip_search_keywords(title))
         query = f'recording:"{escape_lucene_special_chars(query_title)}" AND artist:"{escape_lucene_special_chars(artist)}"'
@@ -278,10 +306,19 @@ class MusicBrainzService:
                     best_mbid = rec.get("id", "")
 
             result = (best_mbid, round(best_score, 3))
-            
-            if best_mbid:
+
+            # Only cache a match that clears the similarity floor — a weak
+            # early match (e.g. 0.1) must not be cached permanently and
+            # poison the track's identity.  Same floor as the batch path.
+            if best_mbid and best_score >= _MBID_CACHE_SIMILARITY_FLOOR:
                 with self._mem_lock:
-                    self._mbid_cache[cache_key] = result
+                    self._mbid_cache[cache_key] = (best_mbid, round(best_score, 3), now)
+                    # FIFO size cap — drop oldest entries past the bound.
+                    while len(self._mbid_cache) > _MBID_CACHE_MAX_SIZE:
+                        try:
+                            self._mbid_cache.pop(next(iter(self._mbid_cache)))
+                        except (StopIteration, RuntimeError):
+                            break
                 self._save_cache()
 
             logger.debug(
@@ -385,6 +422,13 @@ class MusicBrainzService:
                     recordings = self.http.search_recordings(
                         " OR ".join(groups),
                         limit=min(100, len(chunk) * candidates_per_entry),
+                        # Request release/release-group data so
+                        # ``_recording_matches_album`` can actually read
+                        # ``recording["releases"]`` for album-anchor matching.
+                        # Without this include, the field is absent from the
+                        # search response and album anchoring silently never
+                        # fires — matches fall back to pure title similarity.
+                        inc="releases",
                     )
                 except Exception as exc:
                     logger.debug("Album batch search failed", chunk_start=chunk_start, error=str(exc))
@@ -567,7 +611,8 @@ class MusicBrainzService:
                 or (data.get("begin-area") or {}).get("name")
                 or ""
             )
-        except Exception:
+        except Exception as exc:
+            logger.debug("Artist country lookup failed", artist=artist, error=str(exc))
             return ""
 
     def get_genres(self, title: str, artist: str) -> list[str]:
@@ -585,7 +630,8 @@ class MusicBrainzService:
             tags = recordings[0].get("tags") or []
             return [t["name"] for t in tags if t.get("name")]
 
-        except Exception:
+        except Exception as exc:
+            logger.debug("Genre lookup failed", artist=artist, title=title, error=str(exc))
             return []
 
     # -----------------------------------------------------------------------------
@@ -601,7 +647,8 @@ class MusicBrainzService:
 
         try:
             groups = self.http.search_release_groups(query, limit=limit)
-        except Exception:
+        except Exception as exc:
+            logger.debug("Release-group search failed", artist=artist_name, album=album_name, error=str(exc))
             groups = []
 
         if not groups and clean_album:
@@ -612,7 +659,8 @@ class MusicBrainzService:
                         f'artist:"{escape_lucene_special_chars(artist_name)}" AND releasegroup:{terms}',
                         limit=limit,
                     )
-                except Exception:
+                except Exception as exc:
+                    logger.debug("Release-group fallback search failed", artist=artist_name, album=album_name, error=str(exc))
                     groups = []
 
         matches = []
