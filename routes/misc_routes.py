@@ -180,6 +180,27 @@ async def api_search() -> Any:
         starts_pattern = f"{query}%"
         contains_pattern = f"%{query}%"
 
+        # SELF-HEAL: a legacy database can carry a bare ``tracks`` table
+        # without ``album_artist``.  The Alembic chain (001/007/010) used to
+        # abort on such a table before 011 could add the column, so search
+        # kept failing even after a container rebuild.  If the column is
+        # missing, add it + backfill now so the search below never 500s —
+        # the schema bootstrap and migrations converge on the same state.
+        try:
+            with db_session() as session:
+                from db.schema_helpers import get_table_columns
+                cols = get_table_columns(session, "tracks")
+                if cols and "album_artist" not in cols:
+                    session.execute(text("ALTER TABLE tracks ADD COLUMN IF NOT EXISTS album_artist TEXT"))
+                    # Backfill only when ``artist`` exists — a truly bare
+                    # table (id only) has nothing to copy yet; the bootstrap
+                    # adds the rest of the columns on the next boot.
+                    if "artist" in cols:
+                        session.execute(text("UPDATE tracks SET album_artist = artist WHERE album_artist IS NULL"))
+                    logger.warning("Search self-heal: added missing tracks.album_artist column")
+        except Exception as heal_err:
+            logger.debug("Search self-heal skipped", error=str(heal_err))
+
         # pg_trgm availability (Postgres + extension present + feature on).
         # When missing or disabled, fall back to the legacy ranking.
         _trgm_ok = False

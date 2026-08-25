@@ -30,6 +30,14 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    # A legacy database can carry a BARE ``tracks`` table (``id`` only) with
+    # ``alembic_version`` stamped below head.  Indexing missing columns here
+    # would abort ``upgrade head`` and block every later revision — guard on
+    # the columns existing so the chain converges on ANY starting state.
+    existing = {col["name"] for col in sa.inspect(bind).get_columns("tracks")}
+    if "album_artist" not in existing and "artist" not in existing:
+        return
     op.execute(
         sa.text(
             "CREATE INDEX IF NOT EXISTS idx_tracks_album_artist_trim ON tracks "

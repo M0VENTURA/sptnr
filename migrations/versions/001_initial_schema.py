@@ -25,6 +25,7 @@ from sqlalchemy.dialects import postgresql
 from migrations.idempotent import (
     create_index_if_missing,
     create_table_if_missing,
+    table_exists,
 )
 
 revision: str = "001_initial_schema"
@@ -416,22 +417,46 @@ def upgrade() -> None:
     # ------------------------------------------------------------------
     # Indexes — IF NOT EXISTS so they are safe whether or not the tables
     # above were created by this revision or pre-existed from the bootstrap.
+    #
+    # CRITICAL: a LEGACY database can carry a BARE ``tracks`` table
+    # (``id TEXT PRIMARY KEY`` only) from the original system.  Indexing
+    # columns that don't exist yet (``artist``, ``album_artist``, etc.)
+    # aborts ``alembic upgrade head`` on the FIRST revision — blocking every
+    # later revision (007/010/011 add the columns / indexes) so the rebuilt
+    # container stays broken.  Guard each ``tracks`` index on its column
+    # existing; the columns are added by the runtime bootstrap's
+    # ``_ensure_columns`` (``db.bootstrap``) and/or revision 011.
     # ------------------------------------------------------------------
-    _INDEXES: list[tuple[str, str, str]] = [
-        ("idx_tracks_artist", "tracks", "CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks (artist)"),
-        ("idx_tracks_album_artist", "tracks", "CREATE INDEX IF NOT EXISTS idx_tracks_album_artist ON tracks (album_artist)"),
-        ("idx_tracks_album", "tracks", "CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks (album)"),
-        ("idx_tracks_stars", "tracks", "CREATE INDEX IF NOT EXISTS idx_tracks_stars ON tracks (stars)"),
-        ("idx_tracks_final_score", "tracks", "CREATE INDEX IF NOT EXISTS idx_tracks_final_score ON tracks (final_score)"),
-        ("idx_tracks_is_single", "tracks", "CREATE INDEX IF NOT EXISTS idx_tracks_is_single ON tracks (is_single)"),
-        ("idx_tracks_file_path", "tracks", "CREATE INDEX IF NOT EXISTS idx_tracks_file_path ON tracks (file_path)"),
+    _tracks_columns = {
+        col["name"]
+        for col in sa.inspect(bind).get_columns("tracks")
+    } if table_exists(bind, "tracks") else set()
+
+    _INDEXES: list[tuple[str, str, str]] = []
+    if "artist" in _tracks_columns:
+        _INDEXES.append(("idx_tracks_artist", "tracks", "CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks (artist)"))
+    if "album_artist" in _tracks_columns:
+        _INDEXES.append(("idx_tracks_album_artist", "tracks", "CREATE INDEX IF NOT EXISTS idx_tracks_album_artist ON tracks (album_artist)"))
+    if "album" in _tracks_columns:
+        _INDEXES.append(("idx_tracks_album", "tracks", "CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks (album)"))
+    if "stars" in _tracks_columns:
+        _INDEXES.append(("idx_tracks_stars", "tracks", "CREATE INDEX IF NOT EXISTS idx_tracks_stars ON tracks (stars)"))
+    if "final_score" in _tracks_columns:
+        _INDEXES.append(("idx_tracks_final_score", "tracks", "CREATE INDEX IF NOT EXISTS idx_tracks_final_score ON tracks (final_score)"))
+    if "is_single" in _tracks_columns:
+        _INDEXES.append(("idx_tracks_is_single", "tracks", "CREATE INDEX IF NOT EXISTS idx_tracks_is_single ON tracks (is_single)"))
+    if "file_path" in _tracks_columns:
+        _INDEXES.append(("idx_tracks_file_path", "tracks", "CREATE INDEX IF NOT EXISTS idx_tracks_file_path ON tracks (file_path)"))
+
+    _INDEXES.extend([
         ("idx_download_queue_status", "download_queue", "CREATE INDEX IF NOT EXISTS idx_download_queue_status ON download_queue (status)"),
         ("idx_download_queue_artist", "download_queue", "CREATE INDEX IF NOT EXISTS idx_download_queue_artist ON download_queue (artist)"),
         ("idx_scan_history_started_at", "scan_history", "CREATE INDEX IF NOT EXISTS idx_scan_history_started_at ON scan_history (started_at)"),
         ("idx_scan_history_artist", "scan_history", "CREATE INDEX IF NOT EXISTS idx_scan_history_artist ON scan_history (artist)"),
         ("idx_musicbrainz_releases_artist", "musicbrainz_releases", "CREATE INDEX IF NOT EXISTS idx_musicbrainz_releases_artist ON musicbrainz_releases (artist)"),
         ("idx_missing_releases_artist", "missing_releases", "CREATE INDEX IF NOT EXISTS idx_missing_releases_artist ON missing_releases (artist)"),
-    ]
+    ])
+
     for index_name, table_name, ddl in _INDEXES:
         create_index_if_missing(bind, index_name, table_name, ddl)
 

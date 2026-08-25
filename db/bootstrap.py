@@ -59,11 +59,18 @@ def _ensure_index(cursor: Any, ddl: str) -> None:
             return
         # pg_trgm GIN indexes are best-effort: the extension may not be
         # installed (CREATE EXTENSION needs superuser) — a missing extension
-        # must never fail the whole schema bootstrap.
+        # must never fail the whole schema bootstrap.  A missing INDEXED
+        # COLUMN (legacy bare ``tracks`` table that predates the column
+        # registries) is also tolerated here — the column is added by
+        # ``_ensure_columns`` on the NEXT boot once the table has it, and
+        # migration 011 converges the Alembic path.
         if "pg_trgm" in ddl.lower() and (
             "extension" in msg or "does not exist" in msg or "operator class" in msg
         ):
             logger.warning("Skipped pg_trgm index (extension unavailable)", ddl=ddl.split("ON")[0].strip(), error=str(e))
+            return
+        if "does not exist" in msg and "column" in msg:
+            logger.warning("Skipped index (column missing — will be created on next boot)", ddl=ddl.split("ON")[0].strip(), error=str(e))
             return
         raise
 

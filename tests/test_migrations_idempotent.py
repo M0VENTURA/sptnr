@@ -198,6 +198,63 @@ class TestMigrationChainIdempotency:
         assert "user_favourites" in tables
 
 
+class TestBareTracksUpgradeConverges:
+    """Regression: a legacy BARE ``tracks`` table (id only) must not abort
+    the migration chain.
+
+    The original system created ``tracks (id TEXT PRIMARY KEY)`` only.
+    Revisions 001/007/010 used to index columns that don't exist on such a
+    table (artist/album_artist/album/...), aborting ``alembic upgrade head``
+    on the first revision — so the rebuilt container kept failing with
+    ``column "album_artist" does not exist`` because 011 never ran.  The
+    chain must now converge on the bare state and end at 011 with
+    ``album_artist`` added + backfilled.
+    """
+
+    def test_bare_tracks_id_only_upgrade_to_head(self, sqlite_engine: sa.Engine) -> None:
+        # The production legacy state: tracks holds ONLY id.
+        with sqlite_engine.begin() as conn:
+            conn.exec_driver_sql("CREATE TABLE tracks (id TEXT PRIMARY KEY)")
+            conn.exec_driver_sql(
+                "INSERT INTO tracks (id) VALUES ('t1')"
+            )
+
+        # Stamp at 001 so 001's index block runs against the bare table.
+        _stamp(sqlite_engine, "001_initial_schema")
+        cfg = _make_alembic_config(str(sqlite_engine.url))
+        command.upgrade(cfg, "head")  # must not raise
+
+        inspector = sa.inspect(sqlite_engine)
+        cols = {c["name"] for c in inspector.get_columns("tracks")}
+        assert "album_artist" in cols
+
+        with sqlite_engine.connect() as conn:
+            version = conn.exec_driver_sql(
+                "SELECT version_num FROM alembic_version"
+            ).scalar()
+        assert version == "011_add_tracks_album_artist"
+
+    def test_bare_tracks_stamped_at_010_upgrade_to_head(self, sqlite_engine: sa.Engine) -> None:
+        """Even when alembic_version is at 010 (so only 011 remains), the
+        chain must apply 011 and add album_artist."""
+        with sqlite_engine.begin() as conn:
+            conn.exec_driver_sql("CREATE TABLE tracks (id TEXT PRIMARY KEY)")
+
+        _stamp(sqlite_engine, "010_add_pg_trgm_indexes")
+        cfg = _make_alembic_config(str(sqlite_engine.url))
+        command.upgrade(cfg, "head")  # must not raise
+
+        inspector = sa.inspect(sqlite_engine)
+        cols = {c["name"] for c in inspector.get_columns("tracks")}
+        assert "album_artist" in cols
+
+        with sqlite_engine.connect() as conn:
+            version = conn.exec_driver_sql(
+                "SELECT version_num FROM alembic_version"
+            ).scalar()
+        assert version == "011_add_tracks_album_artist"
+
+
 class TestMigration011AddsTracksAlbumArtist:
     """Regression: legacy bare ``tracks`` tables are missing ``album_artist``.
 
