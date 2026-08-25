@@ -41,6 +41,37 @@ logger = structlog.get_logger(__name__)
 misc_api_bp = Blueprint("misc_api", __name__, url_prefix="/api")
 
 
+def _trigger_scan_after_tag_write() -> bool:
+    """Trigger a Navidrome library rescan after audio-file tags were rewritten.
+
+    Navidrome's "mapped tags" index only refreshes when its scanner re-reads
+    the file; a plain tag write (even with a fresh mtime) is not picked up
+    until a scan runs.  Returns True optimistically when at least one
+    Navidrome user is configured; the scan itself runs in a daemon thread.
+    """
+    cfg = get_config() or {}
+    users = cfg.get("navidrome_users") or []
+    if not users and cfg.get("navidrome"):
+        users = [cfg["navidrome"]]
+    configured = [
+        u for u in users
+        if u.get("base_url") and u.get("user") and u.get("pass")
+    ]
+    if not configured:
+        return False
+
+    def _run() -> None:
+        try:
+            for u in configured:
+                if NavidromeClient(u["base_url"], u["user"], u["pass"]).start_scan():
+                    return
+        except Exception as exc:
+            logger.debug("Navidrome scan trigger failed", error=str(exc))
+
+    threading.Thread(target=_run, daemon=True).start()
+    return True
+
+
 # ===========================================================================
 # ALGORITHM SANDBOX
 # ===========================================================================
@@ -1115,10 +1146,15 @@ async def api_track_tags(track_id: str) -> Any:
             except Exception as exc:
                 logger.debug("File sync failed", track_id=track_id, error=str(exc))
 
+        navidrome_scan_triggered = False
+        if file_synced:
+            navidrome_scan_triggered = _trigger_scan_after_tag_write()
+
         return jsonify({
             "success": True,
             "track_id": track_id,
             "file_synced": file_synced,
+            "navidrome_scan_triggered": navidrome_scan_triggered,
             "message": f"Updated {len(tag_updates)} field(s) for track {track_id}",
         })
     except Exception as exc:

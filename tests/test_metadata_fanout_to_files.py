@@ -106,6 +106,110 @@ class TestAtomicTagWrites:
         leftovers = [p.name for p in tmp_path.iterdir() if p.name.startswith(".populartag_")]
         assert leftovers == []
 
+    def test_content_change_keeps_fresh_mtime(self, tmp_path, monkeypatch):
+        """Navidrome compatibility: when tag bytes change, the atomic swap's
+        fresh mtime is NOT restored (Navidrome keys change detection on
+        path+mtime)."""
+        from services.metadata import tag_file_service as tfs
+        import helpers.config_helpers as ch
+
+        mp3 = tmp_path / "track.mp3"
+        mp3.write_bytes(b"\xff\xfb\x90\x00" + b"\x00" * 500)
+        # Preserve timestamps is ON (default) — but content changes.
+        monkeypatch.setattr(ch, "get_tagging_config", lambda: {"write_tags_to_file": True, "preserve_file_timestamps": True})
+
+        class _FakeAudio:
+            def __init__(self, path):
+                self._path = str(path)
+                self._tags = {}
+
+            def __contains__(self, field):
+                return field in self._tags
+
+            def __setitem__(self, field, values):
+                self._tags[field] = list(values)
+
+            def __delitem__(self, field):
+                self._tags.pop(field, None)
+
+            def delall(self, frame_id):
+                self._tags.pop(frame_id, None)
+
+            def add(self, frame):
+                pass
+
+            def add_tags(self):
+                pass
+
+            def save(self, *args, **kw):
+                # Simulate a REAL tag write: append bytes to the temp file so
+                # the content hash differs after the swap.
+                with open(self._path, "ab") as fh:
+                    fh.write(b"TAG")
+
+        monkeypatch.setattr(tfs, "MP3", _FakeAudio)
+        monkeypatch.setattr(tfs, "ID3", _FakeAudio)
+
+        # Pin mtime to a clearly old value so the post-write mtime is
+        # unambiguous (avoids same-nanosecond races with the file creation).
+        import time as _time
+        old_mtime = 1_600_000_000
+        os.utime(mp3, (old_mtime, old_mtime))
+        ok = tfs.update_file_tags(str(mp3), {"title": "Atomic"})
+        assert ok is True
+        after = os.stat(mp3).st_mtime_ns
+        # The swap produced a NEW inode + fresh mtime that we keep — NOT the
+        # restored old timestamp (which would hide the change from
+        # Navidrome's path+mtime change detection).
+        assert after // 1_000_000_000 > old_mtime
+
+    def test_noop_write_restores_timestamps(self, tmp_path, monkeypatch):
+        """When the write is a true no-op (bytes identical), timestamps are
+        restored so the file is untouched."""
+        from services.metadata import tag_file_service as tfs
+        import helpers.config_helpers as ch
+
+        mp3 = tmp_path / "track.mp3"
+        mp3.write_bytes(b"\xff\xfb\x90\x00" + b"\x00" * 500)
+        # Pin mtime to a known old value.
+        import time
+        old_mtime = 1_600_000_000
+        os.utime(mp3, (old_mtime, old_mtime))
+        monkeypatch.setattr(ch, "get_tagging_config", lambda: {"write_tags_to_file": True, "preserve_file_timestamps": True})
+
+        class _NoopAudio:
+            def __init__(self, path):
+                self._path = str(path)
+
+            def __contains__(self, field):
+                return False
+
+            def __setitem__(self, field, values):
+                pass
+
+            def __delitem__(self, field):
+                pass
+
+            def delall(self, frame_id):
+                pass
+
+            def add(self, frame):
+                pass
+
+            def add_tags(self):
+                pass
+
+            def save(self, *args, **kw):
+                # No-op writer: does NOT change the temp file bytes.
+                pass
+
+        monkeypatch.setattr(tfs, "MP3", _NoopAudio)
+        monkeypatch.setattr(tfs, "ID3", _NoopAudio)
+        ok = tfs.update_file_tags(str(mp3), {"title": "Noop"})
+        assert ok is True
+        # Timestamp restored to the pre-write value.
+        assert os.stat(mp3).st_mtime == old_mtime
+
     def test_unsupported_extension_returns_false(self, tmp_path, monkeypatch):
         from services.metadata import tag_file_service as tfs
         import helpers.config_helpers as ch

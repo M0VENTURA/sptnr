@@ -1051,7 +1051,7 @@
           <div class="form-check form-switch">
             <input class="form-check-input" type="checkbox" id="tagging_preserve_timestamps" {% if tagging_cfg.get('preserve_file_timestamps', True) %}checked{% endif %}>
             <label class="form-check-label" for="tagging_preserve_timestamps">Preserve File Timestamps</label>
-            <small class="d-block text-muted">Restore file mtime/atime after writing tags so scanners and sync tools don't see the file as changed.</small>
+            <small class="d-block text-muted">Only restores mtime/atime when a write is a no-op. When tags actually change, the new timestamp is kept so Navidrome detects the file and refreshes its mapped tags on scan.</small>
           </div>
         </div>
       </div>

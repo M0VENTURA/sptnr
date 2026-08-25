@@ -184,12 +184,36 @@ def write_tags_to_file(file_path: str, tags: Dict[str, Any]) -> bool:
         if not tags:
             return False
 
+    # Timestamp policy (Navidrome compatibility):
+    #
+    # The atomic writer replaces the original with a NEW inode
+    # (temp + os.replace).  Navidrome's scanner detects file changes by
+    # path + mtime — if we restore the OLD mtime after the swap (the prior
+    # behaviour when preserve_file_timestamps=true), the swapped file looks
+    # "unchanged" to Navidrome, its incremental scan never re-reads it, and
+    # the "mapped tags" index stays stale even though raw tags updated
+    # (the reported bug; the old in-place writer always bumped mtime, so
+    # this never happened before the atomic-write change).
+    #
+    # To stay Navidrome-friendly we keep the swap's fresh mtime whenever the
+    # file's bytes actually changed.  Timestamps are only restored when the
+    # write was a TRUE no-op (identical bytes) — e.g. fill_missing_only left
+    # every frame as-is, or the writer cleared a frame that was already
+    # absent.  Comparing hashes is cheap here because metadata writes are
+    # infrequent (user edits, not per-scan).
     stat_before = None
     if cfg.get("preserve_file_timestamps", True):
         try:
             stat_before = os.stat(file_path)
         except OSError:
             stat_before = None
+
+        if stat_before is not None:
+            try:
+                with open(file_path, "rb") as fh:
+                    bytes_before = fh.read()
+            except OSError:
+                stat_before = None
 
     suffix = Path(file_path).suffix.lower()
 
@@ -201,9 +225,18 @@ def write_tags_to_file(file_path: str, tags: Dict[str, Any]) -> bool:
 
     if ok and stat_before is not None:
         try:
-            os.utime(file_path, ns=(stat_before.st_atime_ns, stat_before.st_mtime_ns))
+            with open(file_path, "rb") as fh:
+                bytes_after = fh.read()
+            changed = bytes_after != bytes_before
         except OSError:
-            pass
+            changed = True
+        if not changed:
+            # True no-op: restore the original timestamps so the file is
+            # byte-for-byte and timestamp-for-timestamp untouched.
+            try:
+                os.utime(file_path, ns=(stat_before.st_atime_ns, stat_before.st_mtime_ns))
+            except OSError:
+                pass
     return ok
 
 

@@ -12,6 +12,7 @@ from quart import Blueprint, Response, jsonify, request, send_file
 from sqlalchemy import text
 
 from api_clients.lrclib import fetch_lyrics
+from api_clients.navidrome import NavidromeClient
 from db.engine import db_session
 from helpers.config_helpers import get_config
 from services.enrichment.musicbrainz_service import get_shared_mb_client
@@ -21,6 +22,41 @@ from services.metadata.tag_file_service import sync_track_tags_to_file
 logger = structlog.get_logger(__name__)
 
 track_bp = Blueprint("track_api", __name__, url_prefix="/api/track")
+
+
+def _trigger_navidrome_scan() -> bool:
+    """Best-effort trigger of a Navidrome server-side library rescan.
+
+    Called after file tags are rewritten so Navidrome re-reads the frames
+    and refreshes its mapped-tag index.  Returns True optimistically when at
+    least one Navidrome user is configured (the actual scan runs in a
+    daemon thread; failures are logged at DEBUG — a scan trigger is a
+    nicety, never a reason to fail the request).
+    """
+    import threading
+
+    cfg = get_config() or {}
+    users = cfg.get("navidrome_users") or []
+    if not users and cfg.get("navidrome"):
+        users = [cfg["navidrome"]]
+    configured = [
+        u for u in users
+        if u.get("base_url") and u.get("user") and u.get("pass")
+    ]
+    if not configured:
+        return False
+
+    def _run() -> None:
+        try:
+            for u in configured:
+                client = NavidromeClient(u["base_url"], u["user"], u["pass"])
+                if client.start_scan():
+                    return
+        except Exception as exc:
+            logger.debug("Navidrome scan trigger failed", error=str(exc))
+
+    threading.Thread(target=_run, daemon=True).start()
+    return True
 
 
 def _coerce_optional_int(value: Any, allow_prefix: bool = False) -> int | None:
@@ -465,12 +501,21 @@ async def api_track_update_metadata() -> Any:
                 file_synced = bool(sync_track_tags_to_file(track_id))
             except Exception as sync_err:
                 logger.warning("File tag sync failed after DB update", track_id=track_id, error=str(sync_err))
-                
+
+        navidrome_scan_triggered = False
+        if file_synced:
+            # The file tags changed — trigger a Navidrome library scan so its
+            # "mapped tags" index re-reads the new frames.  Without this the
+            # server keeps serving the stale mapped tags even after a manual
+            # rescan (raw tags update immediately, mapped tags do not).
+            navidrome_scan_triggered = _trigger_navidrome_scan()
+
         return jsonify({
             "success": True,
             "updated": list(updates.keys()),
             "file_synced": file_synced,
             "album_tracks_updated": album_tracks_updated,
+            "navidrome_scan_triggered": navidrome_scan_triggered,
         })
     except Exception as exc:
         logger.error("Update metadata failed", track_id=track_id, error=str(exc))
