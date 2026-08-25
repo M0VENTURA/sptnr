@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -830,14 +831,40 @@ def _run_full_enrichment(
     options: dict[str, Any],
     discogs_token: str | None,
 ) -> tuple[dict[str, Any], dict[str, list[Any]]]:
-    """Album art, artist metadata, tags, similar artists, live/remix tagging."""
-    
+    """Album art, artist metadata, tags, similar artists, live/remix tagging.
+
+    Each step logs its duration at DEBUG so enabling debug in config.html
+    surfaces exactly where enrichment time goes (album art chain, artist
+    metadata, similar artists, etc.) in unified_scan.log.
+    """
+    _enrich_start = time.monotonic()
+
+    _step_start = time.monotonic()
     art_source = _fetch_album_art_with_fallback(artist, album, discogs_token)
     if art_source:
         logger.info("Album art cached", artist=artist, album=album, source=art_source)
+    logger.debug(
+        "[ENRICH] album art lookup done",
+        artist=artist, album=album, source=art_source,
+        elapsed_s=round(time.monotonic() - _step_start, 1),
+    )
 
+    _step_start = time.monotonic()
     meta = _fetch_artist_metadata(artist, None)
+    logger.debug(
+        "[ENRICH] artist metadata done",
+        artist=artist,
+        country=meta.get("country"), has_bio=bool(meta.get("bio")), has_image=bool(meta.get("image_url")),
+        elapsed_s=round(time.monotonic() - _step_start, 1),
+    )
+
+    _step_start = time.monotonic()
     _fetch_artist_lastfm_tags(artist, None)
+    logger.debug(
+        "[ENRICH] artist lastfm tags done",
+        artist=artist,
+        elapsed_s=round(time.monotonic() - _step_start, 1),
+    )
 
     if meta.get("country"):
         try:
@@ -851,12 +878,40 @@ def _run_full_enrichment(
         except Exception as exc:
             logger.debug("releasecountry backfill failed", error=str(exc))
 
+    _step_start = time.monotonic()
     _fetch_musicbrainz_artist_id(artist, None, options)
+    logger.debug(
+        "[ENRICH] artist musicbrainz id done",
+        artist=artist,
+        elapsed_s=round(time.monotonic() - _step_start, 1),
+    )
+
+    _step_start = time.monotonic()
     similar = _fetch_similar_artists(artist, None, options)
+    logger.debug(
+        "[ENRICH] similar artists done",
+        artist=artist,
+        lastfm_count=len(similar.get("lastfm") or []),
+        listenbrainz_count=len(similar.get("listenbrainz") or []),
+        elapsed_s=round(time.monotonic() - _step_start, 1),
+    )
+
+    _step_start = time.monotonic()
     _fetch_discogs_artist_id(artist, None, options)
-    
+    logger.debug(
+        "[ENRICH] artist discogs id done",
+        artist=artist,
+        elapsed_s=round(time.monotonic() - _step_start, 1),
+    )
+
     _apply_live_remix_album_tagging(artist, album, detected_type, album_tracks)
     _persist_alternate_takes(album_context)
+
+    logger.debug(
+        "[ENRICH] album enrichment complete",
+        artist=artist, album=album,
+        total_s=round(time.monotonic() - _enrich_start, 1),
+    )
 
     return meta, similar
 
@@ -920,6 +975,7 @@ def enrich_album(
     album_tracks = album_row.get("tracks") or []
     
     try:
+        _detect_start = time.monotonic()
         detected_type = _detect_album_type(artist, album, album_artist or None, spotify_type or None)
         if _popularity_pass:
             is_hetero = any(m in detected_type.lower() for m in _HETEROGENEOUS_MARKERS)
@@ -937,6 +993,13 @@ def enrich_album(
                     
             is_hetero = any(m in detected_type.lower() for m in _HETEROGENEOUS_MARKERS)
             logger.info("Album type resolved", artist=artist, album=album, type=detected_type, heterogeneous=is_hetero)
+            logger.debug(
+                "[ENRICH] album type detection done",
+                artist=artist, album=album,
+                detected_type=detected_type,
+                mb_type=mb_type,
+                elapsed_s=round(time.monotonic() - _detect_start, 1),
+            )
 
             _persist_album_type_to_tracks(None, None, artist, album, album_tracks, detected_type, rg_mbid)
 

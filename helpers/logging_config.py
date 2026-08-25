@@ -69,12 +69,35 @@ def resolve_log_dir() -> str:
 
 
 class UnifiedLogFilter(logging.Filter):
-    """Filters out noisy API requests and sub-INFO noise from unified logs."""
-    
+    """Filters out noisy API requests and sub-INFO noise from unified logs.
+
+    In normal (INFO) mode, sub-INFO records never reach unified_scan.log so
+    the scan log stays readable.  When the configured root level is DEBUG
+    (``logging.level: debug`` in config.html), DEBUG records ARE allowed
+    through — that is what surfaces the per-step enrichment detail
+    (album-type lookup, album art chain, artist metadata, similar artists,
+    etc.) in unified_scan.log for troubleshooting a slow scan.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        try:
+            self._debug_enabled = _resolve_log_level() == "DEBUG"
+        except Exception:
+            self._debug_enabled = False
+
     def filter(self, record: logging.LogRecord) -> bool:
+        if self._debug_enabled:
+            # In debug mode only skip the known noisy access/scheduler names.
+            if record.name.startswith("uvicorn.access") or record.name.startswith("werkzeug"):
+                return False
+            if record.name.startswith("apscheduler"):
+                return False
+            return True
+
         if record.levelno < logging.INFO:
             return False
-            
+
         if record.name.startswith("uvicorn.access") or record.name.startswith("werkzeug"):
             return False
 
@@ -281,7 +304,11 @@ def _setup_standard_logging(service_name: str, log_dir: str, use_structlog: bool
                 "encoding": "utf-8",
                 "formatter": "unified",
                 "filters": ["unified_filter"],
-                "level": "INFO",
+                # Follow the configured root level so DEBUG records (per-step
+                # enrichment detail) reach unified_scan.log when the user
+                # enables debug in config.html.  In INFO mode the filter
+                # already drops sub-INFO records, so this stays clean.
+                "level": root_level,
             },
             "info_file": {
                 "class": "logging.handlers.TimedRotatingFileHandler",
