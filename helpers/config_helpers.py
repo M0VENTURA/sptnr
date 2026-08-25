@@ -1361,13 +1361,17 @@ def get_audiodb_config() -> dict[str, Any]:
 def get_state_directory() -> str:
     """Get the directory for runtime state/progress files.
 
+    Holds non-database JSON state: API rate-limiter counters, scan progress,
+    playlist sessions, etc.  This is NOT the application database — the app is
+    PostgreSQL-only and the DB connection is configured via PG_* / config.yaml.
+
     Returns:
         Absolute path string.
 
     Default:
-        Value of env var ``SCAN_STATE_DIR``, or ``/database``.
+        Value of env var ``SCAN_STATE_DIR``, or ``/state``.
     """
-    return os.environ.get("SCAN_STATE_DIR", "/database")
+    return os.environ.get("SCAN_STATE_DIR", "/state")
 
 
 def get_api_rate_limiter_state_file() -> str:
@@ -1377,7 +1381,7 @@ def get_api_rate_limiter_state_file() -> str:
         Absolute path string.
 
     Default:
-        ``/database/api_rate_limiter_state.json``
+        ``/state/api_rate_limiter_state.json``
     """
     return os.path.join(get_state_directory(), "api_rate_limiter_state.json")
 
@@ -1389,7 +1393,7 @@ def get_navidrome_progress_file() -> str:
         Absolute path string (may be overridden by env var).
 
     Default:
-        ``/database/navidrome_scan_progress.json``
+        ``/state/navidrome_scan_progress.json``
     """
     return os.environ.get(
         "NAVIDROME_PROGRESS_FILE",

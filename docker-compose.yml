@@ -59,7 +59,9 @@ services:
       # Configuration paths
       CONFIG_PATH: ${CONFIG_PATH:-/config/config.yaml}
       LOG_PATH: ${LOG_PATH:-/config/app.log}
-      DB_PATH: ${DB_PATH:-/database/popularr.db}
+      # Runtime state directory (rate-limiter state, scan progress, etc.) —
+      # NOT a database.  The app is PostgreSQL-only; see the ``db`` service.
+      SCAN_STATE_DIR: ${SCAN_STATE_DIR:-/state}
 
       # Gunicorn
       SPTNR_GUNICORN_WORKERS: ${GUNICORN_WORKERS:-4}
@@ -72,9 +74,10 @@ services:
       SPTNR_QUEUE_PROCESSOR_INTERVAL: ${QUEUE_INTERVAL:-30}
 
     volumes:
-      # Persistent config and data (the app DB is PostgreSQL via the db service)
+      # Persistent config and runtime state (the app DB is PostgreSQL via the
+      # db service; /state holds JSON state files only)
       - config_data:/config
-      - db_data:/database
+      - state_data:/state
 
       # Music library — mount your music directory here
       - ${MUSIC_ROOT:-./music}:/music:ro
@@ -96,5 +99,5 @@ volumes:
     driver: local
   config_data:
     driver: local
-  db_data:
+  state_data:
     driver: local

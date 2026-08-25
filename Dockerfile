@@ -56,7 +56,7 @@ COPY . /app
 RUN find /app -name "*.sh" -exec sed -i 's/\r$//' {} + \
     && chmod +x /app/entrypoint.sh
 
-RUN mkdir -p /config /database
+RUN mkdir -p /config /state
 
 EXPOSE 5000
 ENTRYPOINT ["./entrypoint.sh"]
