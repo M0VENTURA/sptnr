@@ -1818,7 +1818,7 @@ def run_scan(
                 _last_heartbeat = _phase1_started
                 _heartbeat_interval = 60.0
                 _deadline_at = time.monotonic() + _deadline_seconds
-                
+
                 while True:
                     _remaining_phase = max(0.0, _deadline_at - time.monotonic())
                     if _remaining_phase <= 0:
@@ -1826,6 +1826,15 @@ def run_scan(
                     _wait_chunk = min(_remaining_phase, _heartbeat_interval)
                     _collect_finished(time.monotonic() + _wait_chunk)
                     _now_hb = time.monotonic()
+                    # FAST PATH: once every future is done, collection is
+                    # complete — return immediately.  Previously this loop
+                    # kept iterating (and re-entering as_completed with a
+                    # fresh timeout) until the FULL album deadline elapsed,
+                    # which produced the observed multi-minute stall AFTER
+                    # all tracks had already finished (e.g. 8m19s gap between
+                    # the last [TRACK] log and the [TRACK_RESULT] logs).
+                    if all(_f.done() for _f in _track_futures):
+                        break
                     if _now_hb - _last_heartbeat >= _heartbeat_interval:
                         _last_heartbeat = _now_hb
                         _in_flight = [
