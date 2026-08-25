@@ -777,6 +777,23 @@ def match_folder_to_release(folder_path: str, mb_id: str) -> dict[str, Any]:
             )
             if result.get("success"):
                 moved += 1
+                target_path = result.get("target_path")
+                if target_path:
+                    # Link the just-moved file back to its download_queue item
+                    # (the old system's watcher did this via
+                    # mark_queue_item_matched_from_torrent).  Without this the
+                    # file lands in the library but the queue item stays
+                    # 'downloading'/orphaned — the reported regression where a
+                    # release appears in Matched Folders but never matches the
+                    # queue entry.
+                    _link_moved_file_to_queue_item(
+                        queue_artist=album_artist,
+                        queue_album=album,
+                        file_title=title or Path(src).stem,
+                        track_number=number,
+                        target_path=target_path,
+                        release_mbid=release_mbid,
+                    )
             else:
                 errors.append(f"{Path(src).name}: {result.get('error')}")
 
@@ -803,6 +820,114 @@ def match_folder_to_release(folder_path: str, mb_id: str) -> dict[str, Any]:
     except Exception as exc:
         logger.error("Match folder error", error=str(exc), exc_info=True)
         return {"success": False, "error": str(exc)}
+
+
+def _link_moved_file_to_queue_item(
+    *,
+    queue_artist: str,
+    queue_album: str,
+    file_title: str,
+    track_number: Any,
+    target_path: str,
+    release_mbid: str,
+) -> bool:
+    """Associate a library-moved file with its download_queue item.
+
+    Mirrors the old system's ``mark_queue_item_matched_from_torrent``: after
+    confirming a folder match and moving a file to the library, the matching
+    queue item is marked ``imported`` with its file paths and release MBID so
+    the queue reflects the completed download (instead of staying orphaned in
+    'downloading').
+    """
+    try:
+        from db.repositories.queue import get_album_queue_tracks, update_queue_item
+        from helpers.normalization_service import (
+            edition_annotations_compatible,
+            extract_track_disc,
+            normalize_match_text,
+        )
+
+        file_title = str(file_title or "")
+        file_title_norm = normalize_match_text(file_title)
+        file_num, _ = extract_track_disc(str(track_number or ""))
+
+        # Prefer album-scoped queue items; fall back to a title-only match
+        # across ALL active queue items (a single-track download often has a
+        # different album label on the queue item than the resolved MB
+        # release, e.g. queue album "BiiiG" vs release "BiiiG (FLAC)...").
+        queue_items = get_album_queue_tracks(queue_artist, queue_album)
+        if not queue_items:
+            try:
+                from db.repositories.queue import get_active_queue
+                _all = get_active_queue(limit=500) or []
+                _a_norm = normalize_match_text(queue_artist)
+                queue_items = [
+                    q for q in _all
+                    if _a_norm and (
+                        _a_norm.startswith(normalize_match_text(str(q.get("artist") or ""))[:12])
+                        or normalize_match_text(str(q.get("artist") or "")).startswith(_a_norm[:12])
+                    )
+                ]
+            except Exception:
+                queue_items = []
+        if not queue_items:
+            return False
+
+        used: set[int] = set()
+        target = None
+
+        # 1) Prefer an exact track-number match.
+        if file_num is not None:
+            for q in queue_items:
+                if q.get("id") in used or str(q.get("status") or "").lower() in ("imported", "completed"):
+                    continue
+                q_num, _ = extract_track_disc(str(q.get("track_number") or ""))
+                if q_num == file_num and edition_annotations_compatible(
+                    file_title, str(q.get("title") or "")
+                ):
+                    target = q
+                    used.add(int(q["id"]))
+                    break
+
+        # 2) Fall back to normalized-title equality.
+        if target is None:
+            for q in queue_items:
+                if q.get("id") in used or str(q.get("status") or "").lower() in ("imported", "completed"):
+                    continue
+                q_title_norm = normalize_match_text(str(q.get("title") or ""))
+                if q_title_norm and q_title_norm == file_title_norm:
+                    target = q
+                    used.add(int(q["id"]))
+                    break
+
+        if target is None:
+            logger.debug(
+                "No queue item matched for moved file",
+                artist=queue_artist, album=queue_album, title=file_title,
+            )
+            return False
+
+        queue_id = int(target["id"])
+        update_queue_item(
+            queue_id,
+            status="imported",
+            file_path=target_path,
+            matched_file_path=target_path,
+            music_file_path=target_path,
+            found_filename=os.path.basename(target_path),
+            release_mbid=release_mbid,
+            release_id=release_mbid,
+            release_source="musicbrainz",
+            copied_individually=1,
+        )
+        logger.info(
+            "Linked moved file to queue item",
+            queue_id=queue_id, target=target_path, release_mbid=release_mbid,
+        )
+        return True
+    except Exception as exc:
+        logger.warning("Could not link moved file to queue item", error=str(exc))
+        return False
 
 
 def retry_matching_for_release(release_id: str) -> dict[str, Any]:
