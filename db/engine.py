@@ -39,8 +39,81 @@ logger = structlog.get_logger(__name__)
 # Configuration (Powered by pydantic-settings)
 # ---------------------------------------------------------------------------
 
+_PG_FROM_FILE_LOADED = False
+
+
+def _load_pg_from_config_file(settings: "DatabaseSettings") -> None:
+    """Fall back to config.yaml's ``database:`` section when PG_* env vars are absent.
+
+    The first-run setup wizard writes the user's PostgreSQL credentials to
+    ``config.yaml`` under ``database: {host, port, user, password, name}``
+    (and sets ``os.environ["PG_*"]`` for the current process only).  On the
+    next boot those env vars are gone, so without this fallback the app
+    would reconnect to the default ``localhost/popularr`` instead of the DB
+    the wizard configured.  This runs once, lazily, before the first engine
+    connection is built; explicit ``PG_*`` env vars or a ``DATABASE_URL``
+    always take precedence (we only fill fields that are still at their
+    defaults / empty).
+    """
+    global _PG_FROM_FILE_LOADED
+    if _PG_FROM_FILE_LOADED:
+        return
+    _PG_FROM_FILE_LOADED = True
+
+    # Respect explicit env configuration — never override a set PG_* value.
+    has_env = bool(
+        os.environ.get("PG_HOST")
+        or os.environ.get("PG_PORT")
+        or os.environ.get("PG_USER")
+        or os.environ.get("PG_PASSWORD")
+        or os.environ.get("PG_DATABASE")
+        or os.environ.get("DATABASE_URL")
+    )
+    if has_env:
+        return
+
+    try:
+        config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+        if not os.path.isfile(config_path):
+            return
+        import yaml
+        with open(config_path, "r", encoding="utf-8") as fh:
+            cfg = yaml.safe_load(fh) or {}
+        db_cfg = cfg.get("database") or {}
+        if not isinstance(db_cfg, dict):
+            return
+
+        if not settings.database_url and db_cfg.get("host"):
+            settings.database_url = ""  # built from fields below
+        if db_cfg.get("host"):
+            settings.pg_host = str(db_cfg["host"]).strip()
+        try:
+            settings.pg_port = int(db_cfg.get("port") or settings.pg_port)
+        except (TypeError, ValueError):
+            pass
+        if db_cfg.get("user"):
+            settings.pg_user = str(db_cfg["user"]).strip()
+        if db_cfg.get("password"):
+            settings.pg_password = str(db_cfg["password"])
+        if db_cfg.get("name"):
+            settings.pg_database = str(db_cfg["name"]).strip()
+    except Exception:
+        # Never fail boot on a config-file read problem — fall back to defaults.
+        pass
+
+
 class DatabaseSettings(BaseSettings):
     """Database configuration parsed from environment variables or .env."""
+
+    # The setup wizard (routes/ui_routes.py) persists the user's DB
+    # credentials to config.yaml under ``database: {host, port, user,
+    # password, name}`` in ADDITION to setting ``os.environ["PG_*"]``.  The
+    # env vars are in-process only, so on the next boot the wizard's saved
+    # credentials would be lost unless the DB settings fall back to the
+    # config file.  ``_PG_*_FROM_FILE`` is populated lazily by
+    # ``_load_pg_from_config_file`` before the first connection is built —
+    # only used when the corresponding ``PG_*`` env var / .env value is
+    # absent, so explicit env configuration always wins.
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     database_url: str = ""
@@ -58,10 +131,11 @@ class DatabaseSettings(BaseSettings):
     auto_migrate: bool = True
 
     @computed_field
+    @property
     def sync_url(self) -> str:
         if self.database_url:
             return self.database_url
-        
+        _load_pg_from_config_file(self)
         from urllib.parse import quote_plus
         pwd = quote_plus(self.pg_password) if self.pg_password else ""
         auth = f"{self.pg_user}:{pwd}" if pwd else self.pg_user
