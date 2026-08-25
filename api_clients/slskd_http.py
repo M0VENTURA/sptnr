@@ -329,15 +329,14 @@ class SlskdHttpClient:
     def remove_completed_downloads(self, timeout: int = 10) -> bool:
         """Remove all completed downloads from the queue.
 
-        NOTE: the exact route for this bulk operation could not be
-        independently confirmed against slskd's controller source (unlike
-        the per-transfer endpoints above, which were verified directly).
-        The path below matches the official slskd-python-api's documented
-        `remove_completed_downloads()` behavior; if it starts 404ing after
-        a slskd upgrade, check the current TransfersController routes.
+        Route confirmed as DELETE /transfers/downloads/all/completed against
+        a working production caller (services.downloads.slskd_service). An
+        earlier version of this method guessed "transfers/downloads/completed"
+        (missing the "all/" segment) and was flagged as unverified; that
+        guess was incorrect and has been corrected here.
         """
         try:
-            resp = self.delete("transfers/downloads/completed", timeout=timeout)
+            resp = self.delete("transfers/downloads/all/completed", timeout=timeout)
             return resp.status_code in (200, 204)
         except Exception as exc:
             logger.debug("Failed to remove completed downloads", error=str(exc))
