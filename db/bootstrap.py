@@ -114,7 +114,17 @@ def ensure_album_artist_column_data() -> bool:
         with db_session() as session:
             if not table_exists(session, "tracks") or not _try_advisory_lock(session, _ALBUM_ART_DATA_LOCK_KEY, attempts=1): 
                 return True
-            session.execute(text("UPDATE tracks SET album_artist = artist WHERE album_artist IS NULL"))
+            try:
+                # A truly bare tracks(id) table has no ``artist`` column yet —
+                # the backfill then fails and must NOT abort the bootstrap.
+                # Use a savepoint so the failure is contained.
+                session.execute(text("SAVEPOINT popularr_backfill_album_artist"))
+                session.execute(text("UPDATE tracks SET album_artist = artist WHERE album_artist IS NULL"))
+                session.execute(text("RELEASE SAVEPOINT popularr_backfill_album_artist"))
+            except Exception as e:
+                try: session.execute(text("ROLLBACK TO SAVEPOINT popularr_backfill_album_artist"))
+                except Exception: pass
+                logger.debug("Album-artist backfill skipped (columns still bootstrapping)", error=str(e))
             _release_advisory_lock(session, _ALBUM_ART_DATA_LOCK_KEY)
         return True
     except Exception as e:

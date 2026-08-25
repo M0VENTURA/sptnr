@@ -609,18 +609,36 @@ async def api_search() -> Any:
     try:
         return await _api_search_impl()
     except _MissingAlbumArtistError:
-        # No introspection: ``ADD COLUMN IF NOT EXISTS`` is idempotent and
-        # runs against whatever table the connection's search_path resolves.
-        # The backfill only touches rows where the column IS NULL and never
-        # requires knowing the existing column set in advance.
+        healed = False
         try:
             with db_session() as session:
+                # The ALTER is idempotent and resolves via search_path.
+                # Postgres DDL is transactional: a failing backfill UPDATE
+                # would roll back the ALTER too.  So the ALTER is committed
+                # FIRST (its own transaction), then the backfill runs in a
+                # separate attempt and any failure is logged without undoing
+                # the schema fix.
                 session.execute(text("ALTER TABLE tracks ADD COLUMN IF NOT EXISTS album_artist TEXT"))
-                session.execute(text("UPDATE tracks SET album_artist = artist WHERE album_artist IS NULL"))
+            # Backfill in a SECOND transaction so a missing ``artist`` column
+            # (truly bare tracks(id) table) can never roll back the ALTER.
+            try:
+                with db_session() as session:
+                    session.execute(text("UPDATE tracks SET album_artist = artist WHERE album_artist IS NULL"))
+            except Exception as backfill_err:
+                logger.warning("Search self-heal backfill skipped (artist column may be absent)", error=str(backfill_err))
+            healed = True
             logger.warning("Search self-heal: added missing tracks.album_artist after UndefinedColumn")
         except Exception as heal_err:
             logger.error("Search self-heal FAILED to add tracks.album_artist", error=str(heal_err))
-        return await _api_search_impl()
+
+        # Retry once.  If the heal truly failed (or the column is in another
+        # schema that ALTER can't reach), return a graceful 500 instead of
+        # letting the exception escape as an unhandled error.
+        try:
+            return await _api_search_impl()
+        except Exception as retry_exc:
+            logger.error("Search retry failed after self-heal", error=str(retry_exc), healed=healed, exc_info=True)
+            return jsonify({"error": f"Search failed: {retry_exc}"}), 500
 
 
 # ===========================================================================
