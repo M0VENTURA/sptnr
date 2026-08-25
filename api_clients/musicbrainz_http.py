@@ -9,15 +9,23 @@ Strictly adheres to MusicBrainz API Rules:
 
 from __future__ import annotations
 
+import copy
 import os
 import re
 import threading
 import time
+from collections import OrderedDict
 from typing import Any
 
 import httpx
 import structlog
-from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
+from tenacity import (
+    retry,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential,
+    wait_random_exponential,
+)
 
 from api_clients import session
 from services.infrastructure.api_rate_limiter import get_rate_limiter
@@ -60,40 +68,71 @@ def escape_lucene_special_chars(text: str) -> str:
 
 
 # =============================================================================
-# STRICT RATE LIMITING & THREAD-SAFE CACHES
+# STRICT RATE LIMITING & THREAD-SAFE LRU CACHES
 # =============================================================================
 
-_CACHE_LOCK = threading.Lock()
 _THROTTLE_LOCK = threading.Lock()
 _LAST_MB_REQUEST_TIME = 0.0
 
 _RECORDING_INC_SUPERSET = "artist-credits+releases+work-rels+recording-rels+artist-rels+genres+tags"
-_RECORDING_DETAIL_CACHE: dict[str, dict[str, Any]] = {}
-_RECORDING_DETAIL_CACHE_MAX = 4000
-
 _ISRC_INC_SUPERSET = "artist-credits+releases+work-rels"
-_ISRC_LOOKUP_CACHE: dict[str, list[dict[str, Any]]] = {}
-_ISRC_LOOKUP_CACHE_MAX = 2000
-
 _RELEASE_INC_SUPERSET = "recordings+artist-credits+media+release-groups+labels"
-_RELEASE_DETAIL_CACHE: dict[str, dict[str, Any]] = {}
-_RELEASE_DETAIL_CACHE_MAX = 2000
+
+
+class _LruCache:
+    """Thread-safe, size-bounded LRU cache.
+
+    Each cache instance owns its own lock so that lookups/inserts against
+    one cache (e.g. recordings) never contend with another (e.g. releases).
+    Values are deep-copied on both set and get so callers can freely mutate
+    what they receive without corrupting the shared cache entry (and vice
+    versa — mutating a value before caching won't affect other holders of it).
+    """
+
+    def __init__(self, max_size: int):
+        self._data: OrderedDict[str, Any] = OrderedDict()
+        self._lock = threading.Lock()
+        self._max_size = max_size
+
+    def get(self, key: str) -> Any:
+        with self._lock:
+            if key not in self._data:
+                return None
+            self._data.move_to_end(key)
+            return copy.deepcopy(self._data[key])
+
+    def set(self, key: str, value: Any) -> None:
+        with self._lock:
+            if key in self._data:
+                self._data.move_to_end(key)
+            self._data[key] = copy.deepcopy(value)
+            while len(self._data) > self._max_size:
+                self._data.popitem(last=False)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._data.clear()
+
+
+_RECORDING_DETAIL_CACHE = _LruCache(max_size=4000)
+_ISRC_LOOKUP_CACHE = _LruCache(max_size=2000)
+_RELEASE_DETAIL_CACHE = _LruCache(max_size=2000)
 
 
 def _strict_throttle() -> None:
     """A thread-locked turnstile guaranteeing <= 1 request per second globally.
-    
+
     This acts as a failsafe even if the external _rate_limiter is bypassed,
     preventing track workers from bursting MusicBrainz simultaneously.
     """
     global _LAST_MB_REQUEST_TIME
-    
+
     if _rate_limiter:
         try:
             _rate_limiter.throttle_musicbrainz()
             return
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("External MusicBrainz rate limiter failed, using local fallback", error=str(exc))
 
     # Fallback strict local throttle
     with _THROTTLE_LOCK:
@@ -102,18 +141,6 @@ def _strict_throttle() -> None:
         if elapsed < 1.0:
             time.sleep(1.0 - elapsed)
         _LAST_MB_REQUEST_TIME = time.monotonic()
-
-
-def _safe_cache_set(cache: dict[str, Any], key: str, value: Any, max_size: int) -> None:
-    """Safely store items in a cache under a thread lock with FIFO eviction."""
-    with _CACHE_LOCK:
-        while len(cache) >= max_size:
-            try:
-                first_key = next(iter(cache))
-                cache.pop(first_key, None)
-            except (StopIteration, RuntimeError):
-                break
-        cache[key] = value
 
 
 def _is_retryable_mb_error(exc: BaseException) -> bool:
@@ -132,6 +159,30 @@ def _is_retryable_mb_error(exc: BaseException) -> bool:
     return False
 
 
+def _is_valid_mbid(mbid: str) -> bool:
+    """Return True when *mbid* is a well-formed MusicBrainz UUID."""
+    return bool(mbid) and bool(MUSICBRAINZ_UUID_RE.match(str(mbid).strip()))
+
+
+def _wait_for_mb_retry_after(retry_state: Any) -> float:
+    """Honor a server-provided ``Retry-After`` header (429/503) when present.
+
+    MusicBrainz's rate limiting is enforced with bare 503s and no documented
+    guarantee of a Retry-After header, but respecting one when it *is* sent
+    is cheap, forward-compatible, and more considerate than a fixed backoff
+    curve.  Falls back to the jittered exponential backoff otherwise.
+    """
+    exc = retry_state.outcome.exception() if retry_state.outcome else None
+    if isinstance(exc, httpx.HTTPStatusError):
+        retry_after = exc.response.headers.get("Retry-After")
+        if retry_after:
+            try:
+                return max(0.0, float(retry_after))
+            except ValueError:
+                pass
+    return wait_random_exponential(multiplier=1.5, max=10.0)(retry_state)
+
+
 # =============================================================================
 # HTTP CLIENT
 # =============================================================================
@@ -145,6 +196,19 @@ class MusicBrainzHttpClient:
         self.base_url = "https://musicbrainz.org/ws/2/"
         self.headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
 
+    def clear_caches(self) -> None:
+        """Drop all in-memory MusicBrainz response caches.
+
+        Long-running batch scans across thousands of artists can grow the
+        LRU caches (recording detail, ISRC lookup, release detail) up to
+        their max sizes; call this between major multi-artist pipeline runs
+        to reclaim memory.  Thread-safe — each cache clears under its own
+        lock.
+        """
+        _RECORDING_DETAIL_CACHE.clear()
+        _ISRC_LOOKUP_CACHE.clear()
+        _RELEASE_DETAIL_CACHE.clear()
+
     def get(self, endpoint: str, *, params: dict[str, Any] | None = None, timeout: float = 10.0) -> dict[str, Any]:
         if not self.enabled:
             return {}
@@ -152,10 +216,14 @@ class MusicBrainzHttpClient:
         url = f"{self.base_url}{endpoint.lstrip('/')}"
         query_params = params or {}
 
-        # If MB throws a 503 Rate Limit, back off automatically and retry
+        # If MB throws a 503 Rate Limit, back off automatically and retry.
+        # ``_wait_for_mb_retry_after`` honors a server ``Retry-After`` header
+        # when present and otherwise uses ``wait_random_exponential`` (jitter
+        # stops concurrent workers waking at the same instant and re-hitting a
+        # busy server — self-DOS).  The window stays capped at 10s.
         @retry(
             stop=stop_after_attempt(4),
-            wait=wait_exponential(multiplier=1.5, min=1.5, max=10.0),
+            wait=_wait_for_mb_retry_after,
             retry=retry_if_exception(_is_retryable_mb_error),
             reraise=True,
         )
@@ -173,6 +241,26 @@ class MusicBrainzHttpClient:
 
         try:
             return _execute_request()
+        except httpx.HTTPStatusError as exc:
+            # 400/404 are deterministic "bad request / not found" responses
+            # (deleted or merged MBIDs, stale cached GUIDs) — they are NOT
+            # transient and retrying never helps.  Log them at DEBUG so dead
+            # entities don't clutter production logs with WARNING noise.
+            if exc.response.status_code in (400, 404):
+                logger.debug(
+                    "MusicBrainz request not found (permanent)",
+                    endpoint=endpoint,
+                    status_code=exc.response.status_code,
+                    error=str(exc),
+                )
+            else:
+                logger.warning(
+                    "MusicBrainz request failed permanently after retries",
+                    endpoint=endpoint,
+                    status_code=exc.response.status_code,
+                    error=str(exc),
+                )
+            return {}
         except Exception as exc:
             logger.warning("MusicBrainz request failed permanently after retries", endpoint=endpoint, error=str(exc))
             return {}
@@ -223,21 +311,25 @@ class MusicBrainzHttpClient:
             return ""
 
     def get_release(self, release_mbid: str, inc: str = "", timeout: float = 10.0) -> dict[str, Any]:
-        if not release_mbid:
+        if not _is_valid_mbid(release_mbid):
+            if release_mbid:
+                logger.debug("Rejected malformed release MBID", release_mbid=release_mbid)
             return {}
-        with _CACHE_LOCK:
-            cached = _RELEASE_DETAIL_CACHE.get(release_mbid)
+
+        cached = _RELEASE_DETAIL_CACHE.get(release_mbid)
         if cached is not None:
             return cached
 
         params = {"fmt": "json", "inc": _RELEASE_INC_SUPERSET}
         data = self.get(f"release/{release_mbid}", params=params, timeout=timeout)
         if data:
-            _safe_cache_set(_RELEASE_DETAIL_CACHE, release_mbid, data, _RELEASE_DETAIL_CACHE_MAX)
+            _RELEASE_DETAIL_CACHE.set(release_mbid, data)
         return data
 
     def get_release_group(self, release_group_mbid: str, inc: str = "", timeout: float = 10.0) -> dict[str, Any]:
-        if not release_group_mbid:
+        if not _is_valid_mbid(release_group_mbid):
+            if release_group_mbid:
+                logger.debug("Rejected malformed release-group MBID", release_group_mbid=release_group_mbid)
             return {}
         params: dict[str, Any] = {"fmt": "json"}
         if inc:
@@ -245,21 +337,25 @@ class MusicBrainzHttpClient:
         return self.get(f"release-group/{release_group_mbid}", params=params, timeout=timeout)
 
     def get_recording(self, recording_mbid: str, inc: str = "", timeout: float = 10.0) -> dict[str, Any]:
-        if not recording_mbid:
+        if not _is_valid_mbid(recording_mbid):
+            if recording_mbid:
+                logger.debug("Rejected malformed recording MBID", recording_mbid=recording_mbid)
             return {}
-        with _CACHE_LOCK:
-            cached = _RECORDING_DETAIL_CACHE.get(recording_mbid)
+
+        cached = _RECORDING_DETAIL_CACHE.get(recording_mbid)
         if cached is not None:
             return cached
 
         params = {"fmt": "json", "inc": _RECORDING_INC_SUPERSET}
         data = self.get(f"recording/{recording_mbid}", params=params, timeout=timeout)
         if data:
-            _safe_cache_set(_RECORDING_DETAIL_CACHE, recording_mbid, data, _RECORDING_DETAIL_CACHE_MAX)
+            _RECORDING_DETAIL_CACHE.set(recording_mbid, data)
         return data
 
     def get_artist(self, artist_mbid: str, inc: str = "", timeout: float = 10.0) -> dict[str, Any]:
-        if not artist_mbid:
+        if not _is_valid_mbid(artist_mbid):
+            if artist_mbid:
+                logger.debug("Rejected malformed artist MBID", artist_mbid=artist_mbid)
             return {}
         params = {"fmt": "json"}
         if inc:
@@ -338,8 +434,7 @@ class MusicBrainzHttpClient:
             return []
 
         cache_key = clean_isrc
-        with _CACHE_LOCK:
-            cached = _ISRC_LOOKUP_CACHE.get(cache_key)
+        cached = _ISRC_LOOKUP_CACHE.get(cache_key)
         if cached is not None:
             return cached
 
@@ -349,7 +444,7 @@ class MusicBrainzHttpClient:
         payload = self.get(f"isrc/{clean_isrc}", params=params)
         recordings = payload.get("recordings", []) if isinstance(payload.get("recordings"), list) else []
         
-        _safe_cache_set(_ISRC_LOOKUP_CACHE, cache_key, recordings, _ISRC_LOOKUP_CACHE_MAX)
+        _ISRC_LOOKUP_CACHE.set(cache_key, recordings)
         return recordings
 
     def search_recordings_with_genres(self, query: str, limit: int = 25) -> list[dict[str, Any]]:
