@@ -609,13 +609,14 @@ async def api_search() -> Any:
     try:
         return await _api_search_impl()
     except _MissingAlbumArtistError:
+        # No introspection: ``ADD COLUMN IF NOT EXISTS`` is idempotent and
+        # runs against whatever table the connection's search_path resolves.
+        # The backfill only touches rows where the column IS NULL and never
+        # requires knowing the existing column set in advance.
         try:
             with db_session() as session:
-                from db.schema_helpers import get_table_columns
-                cols = get_table_columns(session, "tracks")
                 session.execute(text("ALTER TABLE tracks ADD COLUMN IF NOT EXISTS album_artist TEXT"))
-                if "artist" in cols:
-                    session.execute(text("UPDATE tracks SET album_artist = artist WHERE album_artist IS NULL"))
+                session.execute(text("UPDATE tracks SET album_artist = artist WHERE album_artist IS NULL"))
             logger.warning("Search self-heal: added missing tracks.album_artist after UndefinedColumn")
         except Exception as heal_err:
             logger.error("Search self-heal FAILED to add tracks.album_artist", error=str(heal_err))

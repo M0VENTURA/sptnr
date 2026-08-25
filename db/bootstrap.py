@@ -37,17 +37,18 @@ def _ensure_table(cursor: Any, table_name: str, ddl: str) -> None:
         except Exception: pass
 
 def _ensure_columns(cursor: Any, table_name: str, columns: dict[str, str]) -> None:
-    if not table_exists(cursor, table_name): 
-        return
-    
-    existing = get_table_columns(cursor, table_name)
+    # No introspection: ``ADD COLUMN IF NOT EXISTS`` is idempotent and runs
+    # against whatever table the connection's search_path resolves.  The old
+    # ``table_exists``/``get_table_columns`` guards were skipped (or returned
+    # empty) when the table lived in a schema earlier on search_path than the
+    # default schema, so the column never got added and searches kept failing
+    # with ``column album_artist does not exist`` even after rebuilds.
     for col_name, col_def in columns.items():
-        if col_name not in existing:
-            try:
-                cursor.execute(text(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {col_name} {col_def}"))
-                logger.info("Added column", table=table_name, column=col_name)
-            except Exception as e:
-                logger.warning("Could not add column", table=table_name, column=col_name, error=str(e))
+        try:
+            cursor.execute(text(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {col_name} {col_def}"))
+            logger.info("Added column", table=table_name, column=col_name)
+        except Exception as e:
+            logger.warning("Could not add column", table=table_name, column=col_name, error=str(e))
 
 def _ensure_index(cursor: Any, ddl: str) -> None:
     try:
