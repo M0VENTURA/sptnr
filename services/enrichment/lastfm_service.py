@@ -615,9 +615,9 @@ class LastFmService:
         method = "user.getTopArtists" if self.username else "chart.getTopArtists"
         kwargs = {"user": self.username, "limit": 20, "period": "6month"} if self.username else {"limit": 20}
         try:
-            response = retry_with_backoff(lambda: self.http.request(method, timeout=(5, 10), **kwargs))
-            if response is None:
-                return []
+            # The shared session transport is the single retry authority; no
+            # extra retry_with_backoff layer here.
+            response = self.http.request(method, timeout=(5, 10), **kwargs)
             response.raise_for_status()
             data = response.json()
             artists = data.get("topartists", {}).get("artist", []) if self.username else data.get("artists", {}).get("artist", [])
@@ -638,9 +638,7 @@ class LastFmService:
         if not self.username:
             return []
         try:
-            response = retry_with_backoff(lambda: self.http.request("user.getTopAlbums", timeout=(5, 10), user=self.username, limit=12, period="6month"))
-            if response is None:
-                return []
+            response = self.http.request("user.getTopAlbums", timeout=(5, 10), user=self.username, limit=12, period="6month")
             response.raise_for_status()
             albums = response.json().get("topalbums", {}).get("album", [])
             return [
@@ -660,9 +658,7 @@ class LastFmService:
         method = "user.getTopTracks" if self.username else "chart.getTopTracks"
         kwargs = {"user": self.username, "limit": 20, "period": "6month"} if self.username else {"limit": 20}
         try:
-            response = retry_with_backoff(lambda: self.http.request(method, timeout=(5, 10), **kwargs))
-            if response is None:
-                return []
+            response = self.http.request(method, timeout=(5, 10), **kwargs)
             response.raise_for_status()
             tracks = response.json().get("toptracks", {}).get("track", [])
             return [

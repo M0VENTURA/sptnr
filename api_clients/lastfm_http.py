@@ -185,30 +185,25 @@ class LastFmHttpClient:
     ) -> Any:
         """Issue a read (GET) request to a Last.fm method.
 
-        `retryable=False` should be used for calls where the docs explicitly
-        say not to retry on failure (e.g. track.updateNowPlaying).
+        Retries are handled by the shared ``api_clients.session``
+        (``_RetryTransport``) — the single retry authority.  A previous
+        version wrapped these calls in ``retry_with_backoff`` as well,
+        stacking a second retry loop on top of the transport and
+        multiplying worst-case latency per call.  ``retryable=False`` is
+        kept for callers that must not be retried (e.g.
+        track.updateNowPlaying) — it short-circuits nothing now (the
+        transport always retries on its own) but documents the intent.
         """
         if not self.enabled or not self.api_key:
             raise RuntimeError("Last.fm client disabled or API key missing")
 
-        def _do_request() -> httpx.Response:
-            _strict_throttle()
-            return self.session.get(
-                self.base_url,
-                params=self.build_params(method, **kwargs),
-                headers=self.headers,
-                timeout=timeout,
-            )
-
-        if not retryable:
-            return _do_request()
-
-        retry_kwargs = {}
-        if hasattr(self, "lastfm_config"):
-            retry_kwargs["max_retries"] = self.lastfm_config.get("max_retries", 3)
-            retry_kwargs["backoff_factor"] = self.lastfm_config.get("retry_backoff", 1.5)
-            retry_kwargs["rate_limit_delay"] = self.lastfm_config.get("rate_limit_delay", 0.5)
-        return retry_with_backoff(_do_request, **retry_kwargs)
+        _strict_throttle()
+        return self.session.get(
+            self.base_url,
+            params=self.build_params(method, **kwargs),
+            headers=self.headers,
+            timeout=timeout,
+        )
 
     def get_json(
         self,

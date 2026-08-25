@@ -1,7 +1,14 @@
 """ListenBrainz API client.
 
 Handles ListenBrainz HTTP operations including popularity, metadata, and user interactions.
-Modernized with strict thread-safe throttling, Tenacity retries, and structured logging.
+Modernized with strict thread-safe throttling and structured logging.
+
+Retry policy: the shared ``api_clients.session`` (``_RetryTransport``) is the
+SINGLE retry authority — it already retries 3× with a cumulative 40s wait
+budget for 429/502/503/504 and network errors.  Do NOT add a second tenacity
+``@retry`` layer here; stacking two retry loops (outer app-level + inner
+transport) multiplied worst-case latency per call (~350s vs ~80s) and was a
+major contributor to scan-stage "budget exceeded" stalls.
 """
 
 from __future__ import annotations
@@ -13,7 +20,6 @@ from typing import Any
 
 import httpx
 import structlog
-from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from api_clients import session
 
@@ -44,7 +50,7 @@ class ListenBrainzError(Exception):
 
 
 # =============================================================================
-# STRICT RATE LIMITING & RETRIES
+# STRICT RATE LIMITING
 # =============================================================================
 
 _THROTTLE_LOCK = threading.Lock()
@@ -74,15 +80,6 @@ def _strict_throttle() -> None:
         if elapsed < 1.0:
             time.sleep(1.0 - elapsed)
         _LAST_LB_REQUEST_TIME = time.monotonic()
-
-
-def _is_retryable_lb_error(exc: BaseException) -> bool:
-    """Retry on transient network drops or temporary rate-limiting (429/503/504)."""
-    if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
-        return True
-    if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code in {429, 502, 503, 504}
-    return False
 
 
 # =============================================================================
@@ -117,48 +114,28 @@ class ListenBrainzClient:
     def _get(self, path: str, *, params: dict[str, Any] | None = None, authenticated: bool = False, timeout: float = 15.0) -> Any:
         if not self.enabled:
             raise ListenBrainzError("ListenBrainz client is disabled")
-            
-        @retry(
-            stop=stop_after_attempt(3),
-            wait=wait_exponential(multiplier=1.0, min=1.0, max=5.0),
-            retry=retry_if_exception(_is_retryable_lb_error),
-            reraise=True,
+        _strict_throttle()
+        response = self.session.get(
+            f"{self.base_url}{path}",
+            params=params,
+            headers=self._headers(authenticated),
+            timeout=timeout,
         )
-        def _execute_get() -> Any:
-            _strict_throttle()
-            response = self.session.get(
-                f"{self.base_url}{path}", 
-                params=params, 
-                headers=self._headers(authenticated), 
-                timeout=timeout
-            )
-            response.raise_for_status()
-            return response.json()
-            
-        return _execute_get()
+        response.raise_for_status()
+        return response.json()
 
     def _post(self, path: str, *, payload: dict[str, Any], authenticated: bool = False, timeout: float = 15.0) -> Any:
         if not self.enabled:
             raise ListenBrainzError("ListenBrainz client is disabled")
-            
-        @retry(
-            stop=stop_after_attempt(3),
-            wait=wait_exponential(multiplier=1.0, min=1.0, max=5.0),
-            retry=retry_if_exception(_is_retryable_lb_error),
-            reraise=True,
+        _strict_throttle()
+        response = self.session.post(
+            f"{self.base_url}{path}",
+            json=payload,
+            headers=self._headers(authenticated),
+            timeout=timeout,
         )
-        def _execute_post() -> Any:
-            _strict_throttle()
-            response = self.session.post(
-                f"{self.base_url}{path}", 
-                json=payload, 
-                headers=self._headers(authenticated), 
-                timeout=timeout
-            )
-            response.raise_for_status()
-            return response.json()
-            
-        return _execute_post()
+        response.raise_for_status()
+        return response.json()
 
     # ------------------------------------------------------------------
     # Batch & Popularity Lookups

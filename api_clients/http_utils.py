@@ -234,6 +234,13 @@ class _RetryTransport(httpx.BaseTransport):
             if _retry_waits["total"] + wait > _TOTAL_RETRY_WAIT_BUDGET:
                 return 0.0  # immediate retry — the stop condition below ends it
             _retry_waits["total"] += wait
+            logger.debug(
+                "[HTTP] retrying %s — attempt %d, wait %.1fs (cumulative %.1fs)",
+                request.url,
+                retry_state.attempt_number,
+                wait,
+                _retry_waits["total"],
+            )
             return wait
 
         retrying = Retrying(
