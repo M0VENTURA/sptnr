@@ -17,6 +17,7 @@ import traceback
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
+from urllib.parse import quote
 
 import structlog
 
@@ -26,6 +27,14 @@ logger = structlog.get_logger(__name__)
 
 STUCK_SEARCH_TIMEOUT_MS = 3 * 60 * 1000
 EMPTY_TERMINAL_STATES = frozenset({"Completed, Cancelled", "Completed, Errored", "Cancelled", "Errored"})
+
+# Search lifecycle states (distinct from download-transfer states).
+# slskd reports a search as "InProgress" while peers are still responding
+# and "Queued" while it is waiting to start.  Using a dedicated set (rather
+# than overloading the transfer-state ACTIVE_STATES) means a future slskd
+# version that returns a different in-progress search state string is not
+# misread as "complete".
+SEARCH_ACTIVE_STATES = frozenset({"InProgress", "Queued", "Requested", "None", "Initializing", "In Progress"})
 
 # Transient httpx exception names that warrant a retry rather than an
 # immediate queue-item failure.
@@ -330,7 +339,7 @@ class SlskdService:
             return [], state, True
             
         try:
-            raw = self.http.get_json(f"searches/{search_id}/responses", timeout=timeout, default=[])
+            raw = self.http.get_json(f"searches/{quote(search_id, safe='')}/responses", timeout=timeout, default=[])
             responses = []
             for raw_resp in raw or []:
                 if isinstance(raw_resp, dict):
@@ -341,18 +350,24 @@ class SlskdService:
                         upload_speed=raw_resp.get("uploadSpeed"),
                         queue_length=raw_resp.get("queueLength"),
                     ))
-            return responses, state, state not in self.ACTIVE_STATES
+            return responses, state, state not in SEARCH_ACTIVE_STATES
         except Exception as exc:
             logger.warning("slskd get responses failed for search", search_id=search_id, error=str(exc))
-            return [], state, state not in self.ACTIVE_STATES
+            return [], state, state not in SEARCH_ACTIVE_STATES
 
     def download_file(self, username: str, filename: str, size: int = 0, timeout: Optional[int] = None) -> bool:
         if not self.http.enabled:
             return False
-            
+        if not size:
+            logger.warning(
+                "slskd download_file called without a file size — slskd requires the real size to request the file from the peer",
+                username=username,
+                filename=str(filename or "")[:80],
+            )
         for attempt in range(1, 3):
             try:
-                resp = self.http.post_json(f"transfers/downloads/{username}", [{"filename": filename, "size": int(size or 0)}], timeout=timeout)
+                safe_user = quote(username or "", safe="")
+                resp = self.http.post_json(f"transfers/downloads/{safe_user}", [{"filename": filename, "size": int(size or 0)}], timeout=timeout)
                 return resp.status_code in [200, 201, 204]
             except Exception as exc:
                 if _is_transient_error(exc) and attempt < 2:
@@ -563,24 +578,47 @@ class SlskdService:
 
     def cancel_search(self, search_id: str, timeout: Optional[int] = None) -> bool:
         try:
-            resp = self.http.delete(f"searches/{search_id}", timeout=timeout)
+            resp = self.http.delete(f"searches/{quote(search_id or '', safe='')}", timeout=timeout)
             if resp.status_code in [200, 204]:
                 return True
             body = (resp.text or "")[:400]
             return resp.status_code in [409, 500] and "concurrency" in body.lower()
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "slskd cancel search failed",
+                search_id=search_id,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
             return False
 
     def cancel_download(self, username: str, transfer_id: str, remove: bool = True, timeout: Optional[int] = None) -> bool:
         try:
-            resp = self.http.delete(f"transfers/downloads/{username}/{transfer_id}?remove={str(remove).lower()}", timeout=timeout)
+            # URL-encode both path segments — Soulseek usernames can legally
+            # contain spaces, #, &, %, ? and unicode, which would otherwise
+            # corrupt the path/query string.
+            safe_user = quote(username or "", safe="")
+            safe_id = quote(transfer_id or "", safe="")
+            resp = self.http.delete(f"transfers/downloads/{safe_user}/{safe_id}?remove={str(remove).lower()}", timeout=timeout)
             return resp.status_code in [200, 204]
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "slskd cancel download failed",
+                username=username,
+                transfer_id=transfer_id,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
             return False
 
     def clear_completed_downloads(self, timeout: Optional[int] = None) -> bool:
         try:
             resp = self.http.delete("transfers/downloads/all/completed", timeout=timeout)
             return resp.status_code in [200, 204]
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "slskd clear completed downloads failed",
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
             return False
