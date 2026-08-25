@@ -355,3 +355,104 @@ def move_track_to_library(track: dict[str, Any], release_metadata: dict[str, Any
         return {"success": False, "error": str(exc)}
 
     return {"success": True, "target_path": target_path}
+
+
+# Audio extensions considered when sweeping a library folder for duplicates.
+_AUDIO_EXTS = {".flac", ".wav", ".alac", ".aiff", ".ape", ".wv", ".mp3", ".m4a", ".aac", ".ogg", ".opus", ".wma"}
+
+
+def _filename_title_candidates(filename: str) -> list[str]:
+    """Extract likely track-title candidates from an audio filename.
+
+    Handles common layouts: ``02 - Artist - Title.ext``, ``Artist - Title.ext``,
+    ``02 Title.ext``, and ``Title.ext``.  Returns normalized (casefolded,
+    whitespace-collapsed) candidates, most-specific first.
+    """
+    base = os.path.splitext(os.path.basename(filename))[0]
+    # Strip leading track numbers ("02 - ...", "02. ...", "0206 - ...").
+    base = re.sub(r"^\d{1,4}\s*[-._]\s*", "", base)
+    # Strip a trailing pid-suffix from the duplicate fallback ("Title_12345").
+    base = re.sub(r"_\d{2,}$", "", base)
+    # Split "Artist - Title" / "Artist - Album - Title" on the LAST separator.
+    parts = [p.strip() for p in re.split(r"\s*[-–—]\s*", base) if p.strip()]
+    candidates = []
+    if len(parts) >= 2:
+        candidates.append(re.sub(r"\s+", " ", parts[-1].casefold()))
+    candidates.append(re.sub(r"\s+", " ", base.casefold()))
+    return candidates
+
+
+def dedupe_library_folder(folder_path: str, keep_path: str | None = None) -> dict[str, Any]:
+    """Sweep a library folder and remove duplicate copies of the same track.
+
+    Groups audio files by normalized title (last ``-``-separated segment and
+    full basename, with leading track numbers and pid-suffixes stripped).
+    For each group with more than one file, keeps the highest-quality file
+    (lossless > bitrate > sample rate) and deletes the rest.
+
+    This cleans up the accumulated duplicates from repeated downloads of the
+    same track — e.g. ``02 - Lay Your Head to Rest.flac``,
+    ``02 - Lay Your Head to Rest_12345.flac`` — leaving a single best copy.
+
+    ``keep_path`` is never deleted (the file just moved in).
+    """
+    if not folder_path or not os.path.isdir(folder_path):
+        return {"removed": 0, "groups": 0}
+
+    keep_abs = os.path.abspath(keep_path) if keep_path else None
+
+    def _quality(path: str) -> int:
+        score = 100000 if os.path.splitext(path)[1].lower() in {".flac", ".wav", ".alac", ".aiff", ".ape", ".wv"} else 0
+        try:
+            from mutagen import File as MutagenFile
+            audio = MutagenFile(path)
+            if audio and hasattr(audio, "info"):
+                score += int(getattr(audio.info, "bitrate", 0) or 0) // 1000
+                score += int(getattr(audio.info, "sample_rate", 0) or 0) // 100
+        except Exception:
+            pass
+        return score
+
+    # group normalized-title -> list of (path, quality)
+    groups: dict[str, list[tuple[str, int]]] = {}
+    for entry in os.scandir(folder_path):
+        if not entry.is_file():
+            continue
+        ext = os.path.splitext(entry.name)[1].lower()
+        if ext not in _AUDIO_EXTS:
+            continue
+        candidates = _filename_title_candidates(entry.name)
+        key = candidates[0] if candidates else entry.name.casefold()
+        groups.setdefault(key, []).append((entry.path, _quality(entry.path)))
+
+    removed = 0
+    group_count = 0
+    for key, files in groups.items():
+        if len(files) < 2:
+            continue
+        group_count += 1
+        # Keep the highest quality; on ties keep the first (alphabetical) path.
+        files.sort(key=lambda fp: (-fp[1], fp[0]))
+        keep = files[0][0]
+        if keep_abs and os.path.abspath(keep) != keep_abs:
+            # Prefer keeping the just-moved file even if quality ties.
+            if os.path.abspath(keep_abs) in {os.path.abspath(f) for f, _ in files}:
+                keep = keep_abs
+        for path, _ in files:
+            if os.path.abspath(path) == os.path.abspath(keep):
+                continue
+            if keep_abs and os.path.abspath(path) == keep_abs:
+                continue
+            try:
+                os.remove(path)
+                removed += 1
+                logger.info(
+                    "Removed duplicate track from library folder",
+                    folder=folder_path, removed_path=path, kept=keep,
+                )
+            except Exception as exc:
+                logger.debug("Failed to remove duplicate", path=path, error=str(exc))
+
+    if removed:
+        logger.info("Library folder dedup complete", folder=folder_path, removed=removed, groups=group_count)
+    return {"removed": removed, "groups": group_count}

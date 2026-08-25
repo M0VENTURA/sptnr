@@ -557,6 +557,16 @@ def _move_and_import(item: dict[str, Any], abs_path: str, match_source: str) -> 
         )
 
         if verify_result.get("success") or file_exists:
+            # Sweep the target folder for duplicates of this track (e.g.
+            # repeated downloads leaving "02 - Lay Your Head to Rest.flac"
+            # plus "02 - Lay Your Head to Rest_12345.flac").  Keeps the
+            # just-moved file (highest quality wins otherwise).
+            try:
+                from services.downloads.download_organize_helpers import dedupe_library_folder
+                dedupe_library_folder(os.path.dirname(target_path), keep_path=target_path)
+            except Exception as exc:
+                logger.debug("Library folder dedup sweep failed", folder=os.path.dirname(target_path), error=str(exc))
+
             try:
                 mark_queue_item_moved(queue_id, target_path)
                 update_queue_item(
