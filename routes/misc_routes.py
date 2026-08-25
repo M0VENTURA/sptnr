@@ -159,8 +159,12 @@ def api_sandbox_metrics() -> Any:
 # SEARCH
 # ===========================================================================
 
-@misc_api_bp.route("/search", methods=["POST"])
-async def api_search() -> Any:
+class _MissingAlbumArtistError(RuntimeError):
+    """Raised internally when a search query hits ``column album_artist does
+    not exist`` — triggers the one-time schema heal + retry."""
+
+
+async def _api_search_impl() -> Any:
     """Search artists, albums and tracks with legacy ranking behaviour.
 
     Ranking uses the existing exact → prefix → contains tiers (fast, indexed
@@ -168,6 +172,9 @@ async def api_search() -> Any:
     ``similarity()`` tiebreaker so typo'd queries ("Sipce Girls") still find
     "Spice Girls".  When pg_trgm is unavailable (a DB that skipped migration
     010) the query falls back to plain ``LIKE`` ranking.
+
+    Raises :class:`_MissingAlbumArtistError` when ``tracks.album_artist`` is
+    missing so the public route can heal the schema and retry.
     """
     try:
         data = (await request.get_json(silent=True)) or {}
@@ -179,30 +186,6 @@ async def api_search() -> Any:
         exact_pattern = query
         starts_pattern = f"{query}%"
         contains_pattern = f"%{query}%"
-
-        # SELF-HEAL: a legacy database can carry a bare ``tracks`` table
-        # without ``album_artist``.  The Alembic chain (001/007/010) used to
-        # abort on such a table before 011 could add the column, so search
-        # kept failing even after a container rebuild.  If the column is
-        # missing, add it + backfill now so the search below never 500s —
-        # the schema bootstrap and migrations converge on the same state.
-        try:
-            with db_session() as session:
-                from db.schema_helpers import get_table_columns
-                cols = get_table_columns(session, "tracks")
-                if "album_artist" not in cols:
-                    session.execute(text("ALTER TABLE tracks ADD COLUMN IF NOT EXISTS album_artist TEXT"))
-                    # Backfill only when ``artist`` exists — a truly bare
-                    # table (id only) has nothing to copy yet; the bootstrap
-                    # adds the rest of the columns on the next boot.
-                    if "artist" in cols:
-                        session.execute(text("UPDATE tracks SET album_artist = artist WHERE album_artist IS NULL"))
-                    logger.warning("Search self-heal: added missing tracks.album_artist column")
-        except Exception as heal_err:
-            # A failed heal must be LOUD, not silent: if the column is still
-            # missing the search query below will fail, and a DEBUG-only log
-            # (suppressed at default log level) hides the reason.
-            logger.warning("Search self-heal FAILED to ensure tracks.album_artist", error=str(heal_err))
 
         # pg_trgm availability (Postgres + extension present + feature on).
         # When missing or disabled, fall back to the legacy ranking.
@@ -610,8 +593,33 @@ async def api_search() -> Any:
             "tracks": tracks,
         })
     except Exception as exc:
-        logger.error("Search error", error=str(exc), exc_info=True)
-        return jsonify({"error": str(exc)}), 500
+        msg = str(exc)
+        # A legacy bare ``tracks`` table is missing album_artist — let the
+        # public route heal it and retry once.
+        if "album_artist" in msg and "does not exist" in msg:
+            raise _MissingAlbumArtistError(msg) from exc
+        logger.error("Search error", error=msg, exc_info=True)
+        return jsonify({"error": msg}), 500
+
+
+@misc_api_bp.route("/search", methods=["POST"])
+async def api_search() -> Any:
+    """Public search route — heals a missing ``tracks.album_artist`` column
+    on the fly (legacy bare-tracks DBs) and retries once."""
+    try:
+        return await _api_search_impl()
+    except _MissingAlbumArtistError:
+        try:
+            with db_session() as session:
+                from db.schema_helpers import get_table_columns
+                cols = get_table_columns(session, "tracks")
+                session.execute(text("ALTER TABLE tracks ADD COLUMN IF NOT EXISTS album_artist TEXT"))
+                if "artist" in cols:
+                    session.execute(text("UPDATE tracks SET album_artist = artist WHERE album_artist IS NULL"))
+            logger.warning("Search self-heal: added missing tracks.album_artist after UndefinedColumn")
+        except Exception as heal_err:
+            logger.error("Search self-heal FAILED to add tracks.album_artist", error=str(heal_err))
+        return await _api_search_impl()
 
 
 # ===========================================================================
