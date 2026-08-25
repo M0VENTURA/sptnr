@@ -16,6 +16,10 @@ from helpers.config_helpers import get_config
 
 _VALID_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 
+# Direct handle to the unified_scan.log handler (set in _setup_standard_logging)
+# so a runtime set_log_level() toggle can raise/lower its level.
+_UNIFIED_FILE_HANDLER = None
+
 
 def _resolve_log_level() -> str:
     """Resolve the configured root log level (default ``INFO``)."""
@@ -40,6 +44,15 @@ def set_log_level(level: str) -> str:
     if level not in _VALID_LEVELS:
         level = "INFO"
     logging.getLogger().setLevel(level)
+
+    # The unified_file handler follows the configured root level so DEBUG
+    # records (per-step enrichment detail) reach unified_scan.log when debug
+    # is enabled in config.html.  Updating it here makes a runtime toggle take
+    # effect immediately instead of on the next restart.
+    global _UNIFIED_FILE_HANDLER
+    if _UNIFIED_FILE_HANDLER is not None:
+        _UNIFIED_FILE_HANDLER.setLevel(level)
+
     return level
 
 
@@ -77,17 +90,20 @@ class UnifiedLogFilter(logging.Filter):
     through — that is what surfaces the per-step enrichment detail
     (album-type lookup, album art chain, artist metadata, similar artists,
     etc.) in unified_scan.log for troubleshooting a slow scan.
+
+    The debug check is evaluated on EVERY ``filter()`` call (a cheap config
+    dict read) rather than cached at construction, so toggling debug in
+    config.html at runtime takes effect immediately without a restart.
     """
 
-    def __init__(self) -> None:
-        super().__init__()
+    def _debug_enabled(self) -> bool:
         try:
-            self._debug_enabled = _resolve_log_level() == "DEBUG"
+            return _resolve_log_level() == "DEBUG"
         except Exception:
-            self._debug_enabled = False
+            return False
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if self._debug_enabled:
+        if self._debug_enabled():
             # In debug mode only skip the known noisy access/scheduler names.
             if record.name.startswith("uvicorn.access") or record.name.startswith("werkzeug"):
                 return False
@@ -416,3 +432,17 @@ def _setup_standard_logging(service_name: str, log_dir: str, use_structlog: bool
     }
 
     logging.config.dictConfig(config)
+
+    # Keep a direct handle to the unified_file handler so a runtime
+    # ``set_log_level()`` toggle can adjust its level (dictConfig handlers
+    # don't carry the config key as a ``name``, so we can't look it up by
+    # name on the root logger).
+    global _UNIFIED_FILE_HANDLER
+    _UNIFIED_FILE_HANDLER = None
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers:
+        if isinstance(handler, logging.FileHandler) and getattr(handler, "baseFilename", "").endswith(
+            os.path.join(log_dir, "unified_scan.log")
+        ):
+            _UNIFIED_FILE_HANDLER = handler
+            break

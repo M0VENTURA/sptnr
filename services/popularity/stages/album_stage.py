@@ -840,28 +840,40 @@ def _run_full_enrichment(
     _enrich_start = time.monotonic()
 
     _step_start = time.monotonic()
+    logger.debug(
+        "[ENRICH] ▶ album art lookup (Navidrome → MB/CAA → AudioDB → Discogs)",
+        artist=artist, album=album,
+    )
     art_source = _fetch_album_art_with_fallback(artist, album, discogs_token)
     if art_source:
         logger.info("Album art cached", artist=artist, album=album, source=art_source)
     logger.debug(
-        "[ENRICH] album art lookup done",
+        "[ENRICH] ✓ album art lookup done",
         artist=artist, album=album, source=art_source,
         elapsed_s=round(time.monotonic() - _step_start, 1),
     )
 
     _step_start = time.monotonic()
+    logger.debug(
+        "[ENRICH] ▶ artist metadata (bio / country / image)",
+        artist=artist,
+    )
     meta = _fetch_artist_metadata(artist, None)
     logger.debug(
-        "[ENRICH] artist metadata done",
+        "[ENRICH] ✓ artist metadata done",
         artist=artist,
         country=meta.get("country"), has_bio=bool(meta.get("bio")), has_image=bool(meta.get("image_url")),
         elapsed_s=round(time.monotonic() - _step_start, 1),
     )
 
     _step_start = time.monotonic()
+    logger.debug(
+        "[ENRICH] ▶ artist lastfm tags",
+        artist=artist,
+    )
     _fetch_artist_lastfm_tags(artist, None)
     logger.debug(
-        "[ENRICH] artist lastfm tags done",
+        "[ENRICH] ✓ artist lastfm tags done",
         artist=artist,
         elapsed_s=round(time.monotonic() - _step_start, 1),
     )
@@ -879,17 +891,25 @@ def _run_full_enrichment(
             logger.debug("releasecountry backfill failed", error=str(exc))
 
     _step_start = time.monotonic()
+    logger.debug(
+        "[ENRICH] ▶ artist musicbrainz id",
+        artist=artist,
+    )
     _fetch_musicbrainz_artist_id(artist, None, options)
     logger.debug(
-        "[ENRICH] artist musicbrainz id done",
+        "[ENRICH] ✓ artist musicbrainz id done",
         artist=artist,
         elapsed_s=round(time.monotonic() - _step_start, 1),
     )
 
     _step_start = time.monotonic()
+    logger.debug(
+        "[ENRICH] ▶ similar artists (Last.fm + ListenBrainz)",
+        artist=artist,
+    )
     similar = _fetch_similar_artists(artist, None, options)
     logger.debug(
-        "[ENRICH] similar artists done",
+        "[ENRICH] ✓ similar artists done",
         artist=artist,
         lastfm_count=len(similar.get("lastfm") or []),
         listenbrainz_count=len(similar.get("listenbrainz") or []),
@@ -897,9 +917,13 @@ def _run_full_enrichment(
     )
 
     _step_start = time.monotonic()
+    logger.debug(
+        "[ENRICH] ▶ artist discogs id",
+        artist=artist,
+    )
     _fetch_discogs_artist_id(artist, None, options)
     logger.debug(
-        "[ENRICH] artist discogs id done",
+        "[ENRICH] ✓ artist discogs id done",
         artist=artist,
         elapsed_s=round(time.monotonic() - _step_start, 1),
     )
@@ -908,7 +932,7 @@ def _run_full_enrichment(
     _persist_alternate_takes(album_context)
 
     logger.debug(
-        "[ENRICH] album enrichment complete",
+        "[ENRICH] ✓ album enrichment complete",
         artist=artist, album=album,
         total_s=round(time.monotonic() - _enrich_start, 1),
     )
@@ -976,6 +1000,10 @@ def enrich_album(
     
     try:
         _detect_start = time.monotonic()
+        logger.debug(
+            "[ENRICH] ▶ album type detection",
+            artist=artist, album=album,
+        )
         detected_type = _detect_album_type(artist, album, album_artist or None, spotify_type or None)
         if _popularity_pass:
             is_hetero = any(m in detected_type.lower() for m in _HETEROGENEOUS_MARKERS)
@@ -994,14 +1022,24 @@ def enrich_album(
             is_hetero = any(m in detected_type.lower() for m in _HETEROGENEOUS_MARKERS)
             logger.info("Album type resolved", artist=artist, album=album, type=detected_type, heterogeneous=is_hetero)
             logger.debug(
-                "[ENRICH] album type detection done",
+                "[ENRICH] ✓ album type detection done",
                 artist=artist, album=album,
                 detected_type=detected_type,
                 mb_type=mb_type,
                 elapsed_s=round(time.monotonic() - _detect_start, 1),
             )
 
+            _persist_start = time.monotonic()
+            logger.debug(
+                "[ENRICH] ▶ persist album type + release resolution (resolve_release_id)",
+                artist=artist, album=album,
+            )
             _persist_album_type_to_tracks(None, None, artist, album, album_tracks, detected_type, rg_mbid)
+            logger.debug(
+                "[ENRICH] ✓ persist album type done",
+                artist=artist, album=album,
+                elapsed_s=round(time.monotonic() - _persist_start, 1),
+            )
 
             if "+compilation" in detected_type.lower() or "+soundtrack" in detected_type.lower():
                 try:
