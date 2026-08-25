@@ -187,6 +187,31 @@ async def _api_search_impl() -> Any:
         starts_pattern = f"{query}%"
         contains_pattern = f"%{query}%"
 
+        # Does the tracks table have album_artist?  A legacy bare-tracks DB
+        # (or a schema/permissions situation that blocked the boot-time
+        # ALTER) may lack it.  Search must WORK either way: when the column
+        # exists we prefer it (album-artist aggregation); when it doesn't we
+        # degrade to artist-only expressions so the search bar never 500s.
+        _has_album_artist = False
+        try:
+            with db_session() as session:
+                _has_album_artist = bool(
+                    session.execute(text("SELECT 1 FROM information_schema.columns WHERE table_name = 'tracks' AND column_name = 'album_artist'")).scalar()
+                )
+        except Exception:
+            _has_album_artist = False
+
+        # The artist expression used across ALL search SQL below.  Single
+        # source of truth: if album_artist exists we aggregate by it (falling
+        # back to artist); otherwise plain artist.
+        _artist_expr = "COALESCE(NULLIF(album_artist, ''), artist)" if _has_album_artist else "artist"
+        _artist_like = "COALESCE(album_artist, '')" if _has_album_artist else "COALESCE(artist, '')"
+
+        def _sql(template: str):
+            """Inject the artist expression into a SQL template and return a
+            SQLAlchemy text() object ready to execute."""
+            return text(template.replace("{artist_expr}", _artist_expr).replace("{artist_like}", _artist_like))
+
         # pg_trgm availability (Postgres + extension present + feature on).
         # When missing or disabled, fall back to the legacy ranking.
         _trgm_ok = False
@@ -209,17 +234,17 @@ async def _api_search_impl() -> Any:
                 # contains tiers, so a typo'd query still ranks by how close
                 # the trigrams are while exact matches keep priority.
                 artist_result = session.execute(
-                    text("""
+                    _sql("""
                         WITH variants AS (
                             SELECT
-                                COALESCE(NULLIF(album_artist, ''), artist) AS variant,
-                                LOWER(COALESCE(NULLIF(album_artist, ''), artist)) AS name_key,
+                                {artist_expr} AS variant,
+                                LOWER({artist_expr}) AS name_key,
                                 COUNT(*) AS cnt,
                                 COUNT(DISTINCT album) AS album_count
                             FROM tracks
                             WHERE LOWER(COALESCE(artist, '')) LIKE :contains
-                               OR LOWER(COALESCE(album_artist, '')) LIKE :contains
-                            GROUP BY COALESCE(NULLIF(album_artist, ''), artist)
+                               OR LOWER({artist_like}) LIKE :contains
+                            GROUP BY {artist_expr}
                         ),
                         ranked AS (
                             SELECT
@@ -242,7 +267,7 @@ async def _api_search_impl() -> Any:
                                 ELSE 2
                             END AS match_rank,
                             GREATEST(
-                                similarity(COALESCE(NULLIF(album_artist, ''), artist), :query),
+                                similarity({artist_expr}, :query),
                                 similarity(COALESCE(artist, ''), :query)
                             ) AS sim
                         FROM ranked
@@ -263,17 +288,17 @@ async def _api_search_impl() -> Any:
                 )
             else:
                 artist_result = session.execute(
-                    text("""
+                    _sql("""
                         WITH variants AS (
                             SELECT
-                                COALESCE(NULLIF(album_artist, ''), artist) AS variant,
-                                LOWER(COALESCE(NULLIF(album_artist, ''), artist)) AS name_key,
+                                {artist_expr} AS variant,
+                                LOWER({artist_expr}) AS name_key,
                                 COUNT(*) AS cnt,
                                 COUNT(DISTINCT album) AS album_count
                             FROM tracks
                             WHERE LOWER(COALESCE(artist, '')) LIKE :contains
-                               OR LOWER(COALESCE(album_artist, '')) LIKE :contains
-                            GROUP BY COALESCE(NULLIF(album_artist, ''), artist)
+                               OR LOWER({artist_like}) LIKE :contains
+                            GROUP BY {artist_expr}
                         ),
                         ranked AS (
                             SELECT
@@ -322,11 +347,11 @@ async def _api_search_impl() -> Any:
 
             if _trgm_ok:
                 album_result = session.execute(
-                    text("""
+                    _sql("""
                         WITH variants AS (
                             SELECT
-                                COALESCE(NULLIF(album_artist, ''), artist) AS variant,
-                                LOWER(COALESCE(NULLIF(album_artist, ''), artist)) AS name_key,
+                                {artist_expr} AS variant,
+                                LOWER({artist_expr}) AS name_key,
                                 album,
                                 COUNT(*) AS track_count,
                                 AVG(stars) AS avg_stars,
@@ -345,15 +370,15 @@ async def _api_search_impl() -> Any:
                                 END AS match_rank,
                                 GREATEST(
                                     similarity(COALESCE(album, ''), :query),
-                                    similarity(COALESCE(NULLIF(album_artist, ''), artist), :query),
+                                    similarity({artist_expr}, :query),
                                     similarity(COALESCE(artist, ''), :query)
                                 ) AS sim
                             FROM tracks
                             WHERE LOWER(COALESCE(album, '')) LIKE :contains
-                               OR LOWER(COALESCE(album_artist, '')) LIKE :contains
+                               OR LOWER({artist_like}) LIKE :contains
                                OR LOWER(COALESCE(artist, '')) LIKE :contains
                             GROUP BY
-                                COALESCE(NULLIF(album_artist, ''), artist),
+                                {artist_expr},
                                 album
                         ),
                         ranked AS (
@@ -394,11 +419,11 @@ async def _api_search_impl() -> Any:
                 )
             else:
                 album_result = session.execute(
-                    text("""
+                    _sql("""
                         WITH variants AS (
                             SELECT
-                                COALESCE(NULLIF(album_artist, ''), artist) AS variant,
-                                LOWER(COALESCE(NULLIF(album_artist, ''), artist)) AS name_key,
+                                {artist_expr} AS variant,
+                                LOWER({artist_expr}) AS name_key,
                                 album,
                                 COUNT(*) AS track_count,
                                 AVG(stars) AS avg_stars,
@@ -417,10 +442,10 @@ async def _api_search_impl() -> Any:
                                 END AS match_rank
                             FROM tracks
                             WHERE LOWER(COALESCE(album, '')) LIKE :contains
-                               OR LOWER(COALESCE(album_artist, '')) LIKE :contains
+                               OR LOWER({artist_like}) LIKE :contains
                                OR LOWER(COALESCE(artist, '')) LIKE :contains
                             GROUP BY
-                                COALESCE(NULLIF(album_artist, ''), artist),
+                                {artist_expr},
                                 album
                         ),
                         ranked AS (
@@ -508,11 +533,11 @@ async def _api_search_impl() -> Any:
 
             if _trgm_ok:
                 track_result = session.execute(
-                    text("""
+                    _sql("""
                         SELECT
                             id,
                             title,
-                            COALESCE(NULLIF(album_artist, ''), artist) AS artist,
+                            {artist_expr} AS artist,
                             album,
                             stars,
                             CASE
@@ -524,12 +549,12 @@ async def _api_search_impl() -> Any:
                             GREATEST(
                                 similarity(COALESCE(title, ''), :query),
                                 similarity(COALESCE(artist, ''), :query),
-                                similarity(COALESCE(album_artist, ''), :query)
+                                similarity({artist_like}, :query)
                             ) AS sim
                         FROM tracks
                         WHERE LOWER(COALESCE(title, '')) LIKE :contains
                            OR LOWER(COALESCE(artist, '')) LIKE :contains
-                           OR LOWER(COALESCE(album_artist, '')) LIKE :contains
+                           OR LOWER({artist_like}) LIKE :contains
                         ORDER BY
                             match_rank ASC,
                             sim DESC,
@@ -546,11 +571,11 @@ async def _api_search_impl() -> Any:
                 )
             else:
                 track_result = session.execute(
-                    text("""
+                    _sql("""
                         SELECT
                             id,
                             title,
-                            COALESCE(NULLIF(album_artist, ''), artist) AS artist,
+                            {artist_expr} AS artist,
                             album,
                             stars,
                             CASE
@@ -562,7 +587,7 @@ async def _api_search_impl() -> Any:
                         FROM tracks
                         WHERE LOWER(COALESCE(title, '')) LIKE :contains
                            OR LOWER(COALESCE(artist, '')) LIKE :contains
-                           OR LOWER(COALESCE(album_artist, '')) LIKE :contains
+                           OR LOWER({artist_like}) LIKE :contains
                         ORDER BY
                             match_rank ASC,
                             stars DESC NULLS LAST,

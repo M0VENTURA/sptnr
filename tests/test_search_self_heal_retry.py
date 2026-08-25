@@ -25,6 +25,50 @@ class _MissingAlbumArtistError(RuntimeError):
     pass
 
 
+def _artist_expressions(has_album_artist: bool) -> tuple[str, str]:
+    """Mirror of the route's artist-expr / artist-like builder."""
+    if has_album_artist:
+        return "COALESCE(NULLIF(album_artist, ''), artist)", "COALESCE(album_artist, '')"
+    return "artist", "COALESCE(artist, '')"
+
+
+def _sql(template: str, has_album_artist: bool) -> str:
+    expr, like = _artist_expressions(has_album_artist)
+    return template.replace("{artist_expr}", expr).replace("{artist_like}", like)
+
+
+class TestSearchArtistExpressionDegradation:
+    """The search SQL must degrade to artist-only when album_artist is absent
+    (a legacy bare-tracks table), so the search bar never 500s even if the
+    boot-time ALTER can't run."""
+
+    def test_full_expression_when_column_present(self):
+        template = "SELECT {artist_expr} AS variant, LOWER({artist_like}) LIKE :c"
+        out = _sql(template, has_album_artist=True)
+        assert "album_artist" in out
+        assert "COALESCE(NULLIF(album_artist, ''), artist)" in out
+        assert "{artist_expr}" not in out  # placeholder fully substituted
+
+    def test_artist_only_when_column_missing(self):
+        template = "SELECT {artist_expr} AS variant, LOWER({artist_like}) LIKE :c"
+        out = _sql(template, has_album_artist=False)
+        assert "album_artist" not in out
+        assert out.startswith("SELECT artist AS variant")
+        assert "{artist_like}" not in out
+
+    def test_no_placeholder_left_after_substitution(self):
+        """Every {artist_expr}/{artist_like} must be replaced — a leftover
+        placeholder would be invalid SQL."""
+        templates = [
+            "SELECT {artist_expr} FROM tracks GROUP BY {artist_expr}",
+            "WHERE LOWER({artist_like}) LIKE :contains",
+            "similarity({artist_expr}, :query)",
+        ]
+        for t in templates:
+            assert "{" not in _sql(t, has_album_artist=True)
+            assert "{" not in _sql(t, has_album_artist=False)
+
+
 async def _public_route(impl, db_session_cm, get_columns):
     """Mirror of routes/misc_routes.api_search (the retry + heal contract)."""
     try:
