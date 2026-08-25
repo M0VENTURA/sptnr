@@ -74,7 +74,7 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
-def _widen_version_num(connection) -> None:
+def _widen_version_num(connection: "sa.Connection") -> None:
     """Widen ``alembic_version.version_num`` to ``varchar(64)``.
 
     The default Alembic version table uses ``varchar(32)`` for the revision
@@ -126,11 +126,19 @@ def run_migrations_online() -> None:
     with connectable.connect() as connection:
         # Widen the version column BEFORE Alembic records any revision, so
         # the long 007/008 ids fit and the chain can finally advance.  The
-        # ALTER COLUMN ... TYPE syntax is PostgreSQL-only; other dialects
-        # (SQLite test suite) store version ids as TEXT natively so widening
-        # is unnecessary there.
+        # ALTER COLUMN ... TYPE syntax is PostgreSQL-only.
+        #
+        # CRITICAL: the ALTER must be COMMITTED immediately.  SQLAlchemy 2.0
+        # autobegins a transaction on the first execute; if we let that
+        # transaction stay open, Alembic's ``context.begin_transaction()``
+        # below can roll it back when it starts its own migration
+        # transaction — the column reverts to VARCHAR(32), the 007+ version
+        # stamps fail again ("value too long"), and every boot re-runs the
+        # whole 006→010 chain.  An explicit commit pins the wider column
+        # before any migration runs.
         if connectable.dialect.name == "postgresql":
             _widen_version_num(connection)
+            connection.commit()
         context.configure(
             connection=connection,
             target_metadata=target_metadata,

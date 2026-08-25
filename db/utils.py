@@ -54,7 +54,7 @@ def is_postgres_configured() -> bool:
 
 
 def get_db_connection() -> Any:
-    """Get a raw DBAPI (psycopg2/sqlite) connection from the SQLAlchemy pool.
+    """Get a raw DBAPI (psycopg2) connection from the SQLAlchemy pool.
 
     Prefer ``db.engine.db_session`` / ``async_db_session`` for new code.
     This legacy path exists for the few callers that genuinely need a raw

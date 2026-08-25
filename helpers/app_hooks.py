@@ -123,7 +123,12 @@ def register_app_hooks(app: Any) -> None:
             duration_ms = int((time.time() - g.start_time) * 1000)
             response.headers["X-Request-Duration-Ms"] = str(duration_ms)
             if duration_ms > 1000:
-                logger.info(
+                # DEBUG, not INFO — "Slow request" lines for the UI's own
+                # polling endpoints (log-file, upcoming-releases) flooded
+                # info.log during scans.  The duration is still exposed via
+                # the X-Request-Duration-Ms header; this line is purely
+                # diagnostic and belongs in debug.log.
+                logger.debug(
                     "Slow request",
                     method=request.method,
                     path=request.path,

@@ -97,7 +97,7 @@ def save_to_db(track_payload: dict[str, Any]) -> None:
     """Persist a track payload through the PostgreSQL-safe tracks repository.
 
     This replaces the previous fallback to ``popularity_helpers.save_to_db`` so
-    the import path stays PostgreSQL-only and avoids old SQLite-era behaviour.
+    the import path stays PostgreSQL-only.
     """
     upsert_track_payload(track_payload)
 

@@ -116,7 +116,7 @@ def _file_lock(
     max_attempts: int,
     interval: float,
 ) -> Iterator[bool]:
-    """Hold an exclusive ``flock`` on a temp lock file (SQLite fallback)."""
+    """Hold an exclusive ``flock`` on a temp lock file (fallback lock)."""
     import fcntl
 
     path = os.path.join(tempfile.gettempdir(), f"popularr_{key}.lock")

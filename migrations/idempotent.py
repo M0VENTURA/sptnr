@@ -24,8 +24,8 @@ on ANY starting state instead of erroring:
 - :func:`create_index_if_missing` — execute a raw ``CREATE INDEX IF NOT
   EXISTS`` statement only when the index is absent.
 
-Only the standard SQLAlchemy inspector is used, so the helpers work on both
-PostgreSQL (production) and SQLite (test suite).
+Only the standard SQLAlchemy inspector is used, so the helpers stay
+dialect-portable (PostgreSQL in production).
 """
 
 from __future__ import annotations

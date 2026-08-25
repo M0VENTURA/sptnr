@@ -33,7 +33,7 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 # JSON columns: JSONB on PostgreSQL (production), plain JSON elsewhere so the
-# revision also compiles/runs on SQLite (test suite).
+# revision also compiles/runs in non-Postgres test engines.
 _JSON_TYPE = sa.JSON().with_variant(postgresql.JSONB(), "postgresql")
 
 
@@ -438,8 +438,7 @@ def upgrade() -> None:
     # ------------------------------------------------------------------
     # Status-changed trigger for download_queue
     # (CREATE OR REPLACE FUNCTION + DROP TRIGGER IF EXISTS are idempotent.)
-    # PostgreSQL-only syntax (plpgsql) — skipped on other dialects so the
-    # revision also runs under SQLite in the test suite.
+    # PostgreSQL-only syntax (plpgsql) — skipped on other dialects.
     # ------------------------------------------------------------------
     if bind.dialect.name == "postgresql":
         op.execute("""

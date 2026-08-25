@@ -135,8 +135,8 @@ async def api_search() -> Any:
     Ranking uses the existing exact → prefix → contains tiers (fast, indexed
     by the pg_trgm GIN indexes added in migration 010), with a trigram
     ``similarity()`` tiebreaker so typo'd queries ("Sipce Girls") still find
-    "Spice Girls".  When pg_trgm is unavailable (SQLite test env / a DB that
-    skipped migration 010) the query falls back to plain ``LIKE`` ranking.
+    "Spice Girls".  When pg_trgm is unavailable (a DB that skipped migration
+    010) the query falls back to plain ``LIKE`` ranking.
     """
     try:
         data = (await request.get_json(silent=True)) or {}

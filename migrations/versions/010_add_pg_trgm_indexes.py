@@ -30,7 +30,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # pg_trgm is a Postgres-only extension.  SQLite (test suite) must skip it.
+    # pg_trgm is a Postgres-only extension; other dialects must skip it.
     bind = op.get_bind()
     if bind.dialect.name != "postgresql":
         return
