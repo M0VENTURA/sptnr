@@ -34,6 +34,8 @@ DISCOGS_FULL_CONFIDENCE = 0.85
 ALBUM_FORMAT_TOKENS = frozenset({"album", "lp", "compilation", "mixtape"})
 SINGLE_FORMAT_TOKENS = frozenset({"single", "ep", "maxi", "maxi-single"})
 MAX_SINGLE_TRACKS = 6
+# Cap master-format resolutions per artist fetch (see resolve_master_formats).
+_MAX_MASTER_FORMAT_RESOLUTIONS = 15
 
 
 def calculate_discogs_confidence(
@@ -193,6 +195,14 @@ def _parse_discogs_duration(duration_str: str) -> int | None:
 
 
 def resolve_master_formats(releases: list[dict[str, Any]], http: DiscogsHttpClient) -> None:
+    # Cap how many master-format resolutions run per artist fetch.  Each
+    # master requires its own ``get_release`` call at Discogs' 1 req/s
+    # throttle — a catalogue-heavy artist with 50+ masters would otherwise
+    # add 50+ serialised seconds to EVERY cold artist-releases fetch (which
+    # used to run once per track worker, blowing the per-track budget).
+    # Formats resolved here are only a classification aid; an unresolved
+    # master falls back to its existing ``format`` token.
+    resolved = 0
     for rel in releases:
         if not isinstance(rel, dict):
             continue
@@ -202,6 +212,9 @@ def resolve_master_formats(releases: list[dict[str, Any]], http: DiscogsHttpClie
             and str(rel.get("role") or "Main").lower() == "main"
             and rel.get("main_release")
         ):
+            if resolved >= _MAX_MASTER_FORMAT_RESOLUTIONS:
+                continue
+            resolved += 1
             try:
                 main = http.get_release(rel["main_release"], timeout=8.0)
                 rel["format"] = [
@@ -234,47 +247,52 @@ class DiscogsService:
 
     def _get_artist_releases(self, artist: str) -> list[dict[str, Any]]:
         key = artist.lower()
-        
+
+        # Double-checked locking: hold the lock across the ENTIRE fetch so
+        # concurrent track workers for the same artist don't each re-run the
+        # full Discogs catalogue fetch (get_artist_id + 10 pages of releases
+        # + resolve_master_formats) simultaneously.  Previously the fetch ran
+        # OUTSIDE the lock, so with a cold cache every worker serialised its
+        # own copy of 50-100+ Discogs calls on the 1 req/s throttle — each
+        # track then took 300-600s+ and every album's workers timed out.
         with self._lock:
             if key in self._artist_releases_cache:
                 return self._artist_releases_cache[key]
 
-        releases: list[dict[str, Any]] = []
-        rows = None
-        try:
-            from services.popularity.release_cache_service import get_cached_artist_release_rows
-            rows = get_cached_artist_release_rows(artist, source="discogs")
-        except Exception as exc:
-            logger.debug("Release-cache read failed", artist=artist, error=str(exc))
-            
-        if rows is not None:
-            releases = [
-                {
-                    "title": str(r.get("title") or ""),
-                    "role": "Main",
-                    "id": str(r.get("release_id") or ""),
-                    "year": r.get("year"),
-                    "format": [str(r.get("release_type") or "album").lower()]
-                    + (["promo"] if r.get("is_promo") else []),
-                    "track_count": None,
-                }
-                for r in rows
-            ]
-        else:
-            artist_id = self.get_artist_id(artist)
-            if artist_id:
-                releases = self.http.get_artist_releases_all(artist_id, max_pages=10) or []
-                resolve_master_formats(releases, self.http)
-                try:
-                    from services.popularity.release_cache_service import upsert_artist_release_rows
-                    upsert_artist_release_rows(artist, releases)
-                except Exception as exc:
-                    logger.debug("Release-cache write-back failed", artist=artist, error=str(exc))
-                    
-        with self._lock:
+            releases: list[dict[str, Any]] = []
+            rows = None
+            try:
+                from services.popularity.release_cache_service import get_cached_artist_release_rows
+                rows = get_cached_artist_release_rows(artist, source="discogs")
+            except Exception as exc:
+                logger.debug("Release-cache read failed", artist=artist, error=str(exc))
+
+            if rows is not None:
+                releases = [
+                    {
+                        "title": str(r.get("title") or ""),
+                        "role": "Main",
+                        "id": str(r.get("release_id") or ""),
+                        "year": r.get("year"),
+                        "format": [str(r.get("release_type") or "album").lower()]
+                        + (["promo"] if r.get("is_promo") else []),
+                        "track_count": None,
+                    }
+                    for r in rows
+                ]
+            else:
+                artist_id = self.get_artist_id(artist)
+                if artist_id:
+                    releases = self.http.get_artist_releases_all(artist_id, max_pages=10) or []
+                    resolve_master_formats(releases, self.http)
+                    try:
+                        from services.popularity.release_cache_service import upsert_artist_release_rows
+                        upsert_artist_release_rows(artist, releases)
+                    except Exception as exc:
+                        logger.debug("Release-cache write-back failed", artist=artist, error=str(exc))
+
             self._artist_releases_cache[key] = releases
-            
-        return self._artist_releases_cache[key]
+            return releases
 
     @staticmethod
     def _release_is_promo(rel: dict[str, Any]) -> bool:
