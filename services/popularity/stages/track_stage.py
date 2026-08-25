@@ -683,10 +683,14 @@ def process_track(
         _cfg = get_config() or {}
         _features = _cfg.get("features", {})
         deep_pop_agg = bool(_features.get("deep_popularity_aggregation", False))
-        deep_genre_search = bool(_features.get("deep_genre_search", False))
+        # Genre enrichment is a core part of metadata scans.  Default ON so
+        # tracks without MBIDs still get genres via the Discogs / heavy MB
+        # recording search fallbacks — otherwise only Navidrome's own genre
+        # field populates and the album page shows every genre as "Navidrome".
+        deep_genre_search = bool(_features.get("deep_genre_search", True))
     except Exception:
         deep_pop_agg = False
-        deep_genre_search = False
+        deep_genre_search = True
 
     metadata_only = bool(options.get("metadata_only"))
     popularity_only = bool(options.get("popularity_only"))
@@ -1631,12 +1635,19 @@ def process_track(
             effective_track = _build_effective_track(track, update_payload)
             source_map = {}
 
+            # Include navidrome_genres as a low-authority fallback source so
+            # the aggregated ``genres`` field is always populated during a
+            # metadata scan — even when the external sources (MB/Discogs/
+            # Last.fm/LB) returned nothing for this track.  The weight for
+            # navidrome comes from the genre-weights config (below the
+            # external providers), so a real Last.fm/MB genre outranks it.
             for key, source_name in [
                 ("musicbrainz_genres", "musicbrainz"),
                 ("discogs_genres", "discogs"),
                 ("lastfm_tags", "lastfm"),
                 ("listenbrainz_genres", "listenbrainz"),
                 ("spotify_genres", "spotify"),
+                ("navidrome_genres", "navidrome"),
             ]:
                 raw = effective_track.get(key) or track.get(key) or ""
                 if not raw:
@@ -1649,46 +1660,47 @@ def process_track(
                 if genres:
                     source_map[source_name] = genres
 
-            if source_map:
-                from services.enrichment.genre_aggregation_service import aggregate_genres
-                aggregated = aggregate_genres(source_map, max_genres=3)
-                if aggregated:
-                    update_payload["genres"] = ", ".join(aggregated)
-                else:
-                    _album_genres = _album_top_genres(album_tracks or [], max_genres=3)
-                    if not _album_genres:
-                        _album_genres = _artist_dominant_genres(
-                            _as_str(
-                                track.get("album_artist")
-                                or album_context.get("album_artist")
-                                or album_context.get("artist")
-                                or track_artist
-                            ),
-                            max_genres=3,
-                        )
-                    if _album_genres:
-                        update_payload["genres"] = ", ".join(_album_genres)
-                
-                _cur_genres = [g.strip() for g in str(update_payload.get("genres") or "").split(",") if g.strip()]
-                if len(_cur_genres) < 3:
-                    _album_top = _album_top_genres(album_tracks or [], max_genres=3)
-                    _fallback_sources = _album_top
-                    if not _fallback_sources:
-                        _artist_top = _artist_dominant_genres(
-                            _as_str(
-                                track.get("album_artist")
-                                or album_context.get("album_artist")
-                                or album_context.get("artist")
-                                or track_artist
-                            ),
-                            max_genres=3,
-                        )
-                        _fallback_sources = _artist_top
-                    for _g in _fallback_sources:
-                        if _g not in _cur_genres and len(_cur_genres) < 3:
-                            _cur_genres.append(_g)
-                    if _cur_genres and _cur_genres != [g.strip() for g in str(update_payload.get("genres") or "").split(",") if g.strip()]:
-                        update_payload["genres"] = ", ".join(_cur_genres)
+            from services.enrichment.genre_aggregation_service import aggregate_genres
+            aggregated = aggregate_genres(source_map, max_genres=3)
+            if aggregated:
+                update_payload["genres"] = ", ".join(aggregated)
+            else:
+                # No source genres at all — fall back to album/artist context
+                # so the track never loses its genre field.
+                _album_genres = _album_top_genres(album_tracks or [], max_genres=3)
+                if not _album_genres:
+                    _album_genres = _artist_dominant_genres(
+                        _as_str(
+                            track.get("album_artist")
+                            or album_context.get("album_artist")
+                            or album_context.get("artist")
+                            or track_artist
+                        ),
+                        max_genres=3,
+                    )
+                if _album_genres:
+                    update_payload["genres"] = ", ".join(_album_genres)
+
+            _cur_genres = [g.strip() for g in str(update_payload.get("genres") or "").split(",") if g.strip()]
+            if len(_cur_genres) < 3:
+                _album_top = _album_top_genres(album_tracks or [], max_genres=3)
+                _fallback_sources = _album_top
+                if not _fallback_sources:
+                    _artist_top = _artist_dominant_genres(
+                        _as_str(
+                            track.get("album_artist")
+                            or album_context.get("album_artist")
+                            or album_context.get("artist")
+                            or track_artist
+                        ),
+                        max_genres=3,
+                    )
+                    _fallback_sources = _artist_top
+                for _g in _fallback_sources:
+                    if _g not in _cur_genres and len(_cur_genres) < 3:
+                        _cur_genres.append(_g)
+                if _cur_genres and _cur_genres != [g.strip() for g in str(update_payload.get("genres") or "").split(",") if g.strip()]:
+                    update_payload["genres"] = ", ".join(_cur_genres)
 
                 try:
                     from services.metadata.genre_detector import detect_special_tags

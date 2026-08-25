@@ -2159,6 +2159,36 @@ async def track_detail(track_id: str) -> Any:
         except Exception as ge_err:
             logger.debug("Could not get genre sources", track_id=track_id, error=str(ge_err))
 
+        # Last.fm display score: the stored ``lastfm_score`` is the
+        # ALBUM-RELATIVE z-score — a track far below its album's mean
+        # listener count scores 0 even when it has tens of thousands of
+        # listeners (e.g. 49k listeners → 0.0), while the ListenBrainz score
+        # uses an absolute log-scale and shows ~70.  That mismatch is
+        # confusing: the page should present comparable "source popularity"
+        # numbers.  Show the absolute log-scaled score (the same function
+        # ListenBrainz uses, and what the combined score uses as its
+        # Last.fm component) whenever the stored z-score is 0 but listeners
+        # exist; otherwise fall back to the stored score.
+        _lf_display_score = None
+        try:
+            _lf_stored = track.get("lastfm_score")
+            _lf_listeners = track.get("lastfm_listeners")
+            if _lf_listeners and _lf_listeners > 0 and (
+                _lf_stored is None or float(_lf_stored or 0) <= 0
+            ):
+                from services.popularity.popularity_math import calculate_lastfm_popularity_score
+                _lf_display_score = round(
+                    calculate_lastfm_popularity_score(int(_lf_listeners), 0), 1
+                )
+            else:
+                _lf_display_score = (
+                    round(float(_lf_stored), 1)
+                    if _lf_stored is not None and str(_lf_stored).strip() != ""
+                    else None
+                )
+        except Exception as lf_err:
+            logger.debug("Last.fm display score fallback failed", track_id=track_id, error=str(lf_err))
+
         return await render_template(
             "pages/track_detail.html",
             track=track,
@@ -2166,6 +2196,7 @@ async def track_detail(track_id: str) -> Any:
             track_id=str(track_id),
             is_track_favourite=is_track_favourite,
             genre_sources=genre_sources,
+            lastfm_display_score=_lf_display_score,
             slskd_config=cfg.get("slskd", {"enabled": False}),
         )
 

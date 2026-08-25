@@ -792,7 +792,13 @@
                                     </div>
                                     <div class="d-flex justify-content-between small">
                                         <span class="text-muted">Score</span>
-                                        <strong>{{ track.lastfm_score|round(1) if track.lastfm_score is defined and track.lastfm_score is not none else '—' }}</strong>
+                                        {% if lastfm_display_score is defined and lastfm_display_score is not none %}
+                                        <strong>{{ lastfm_display_score|round(1) }}</strong>
+                                        {% elif track.lastfm_score is defined and track.lastfm_score is not none %}
+                                        <strong>{{ track.lastfm_score|round(1) }}</strong>
+                                        {% else %}
+                                        <strong>—</strong>
+                                        {% endif %}
                                     </div>
                                 </div>
                             </div>

@@ -1525,6 +1525,14 @@
           <small class="form-text text-muted">MusicBrainz work-history lookup + "(Artist Cover)" renames. Turn off to skip the per-track cover pass entirely. Default: <strong>True</strong></small>
         </div>
         <div class="col-12 col-sm-6 col-lg-4">
+          <label class="form-label form-label-sm">Deep Genre Search (Discogs / MB fallback)</label>
+          <select class="form-select form-select-sm feature-field" name="feature_deep_genre_search">
+            <option value="true" {% if config.get('features', {}).get('deep_genre_search', True) %}selected{% endif %}>True</option>
+            <option value="false" {% if not config.get('features', {}).get('deep_genre_search', True) %}selected{% endif %}>False</option>
+          </select>
+          <small class="form-text text-muted">During metadata scans, fetch genres from Discogs and fall back to MusicBrainz recording text search when the track has no MBIDs. Ensures the album page shows genres from real sources (not just Navidrome). Default: <strong>True</strong></small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-4">
           <label class="form-label form-label-sm">Mature Track Freeze Cutoff (years)</label>
           <input type="number" min="1" max="50" class="form-control form-control-sm" id="mature_track_min_age_years" placeholder="2" value="{{ config.get('features', {}).get('mature_track_min_age_years', 2) }}">
           <small class="form-text text-muted">Tracks at or above this age keep their existing Last.fm-backed popularity unless listener data is missing. Default: <strong>2</strong></small>
