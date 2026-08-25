@@ -478,6 +478,32 @@ def _score_result(
     if title_score >= 0.95 and cand_title_words and len(cand_title_words) > 2 * max(1, exp_word_count):
         title_score = 0.6
 
+    # HARD TITLE GATE: a candidate whose title shares no meaningful
+    # similarity with the expected track must be rejected outright — the
+    # artist + lossless + free-slot bonuses alone can otherwise clear the
+    # 30-point floor for a completely WRONG song (e.g. searching "The
+    # Allfather Awakens" pulled in a 2006 "Cry of the Black Birds" FLAC
+    # from a different album).  A title score of 0.0 must never be rescued
+    # by quality/perf bonuses.
+    #
+    # Accept when the title matches OR the expected title's words appear in
+    # the full filename (covers "Artist - Album - Track" layouts where the
+    # parsed title segment is partial).
+    title_ok = title_score >= 0.35
+    if not title_ok and exp_word_count >= 2:
+        norm_filename = _normalise(filename)
+        title_words = re.findall(r"[a-z0-9]+", _normalise(expected_title))
+        significant = [w for w in title_words if len(w) >= 3]
+        if significant:
+            title_ok = all(w in norm_filename for w in significant)
+    if not title_ok:
+        logger.debug(
+            "Rejected candidate — title mismatch",
+            filename=filename[:180], expected_title=expected_title,
+            parsed_title=str(parts.get("title") or ""), title_score=round(title_score, 2),
+        )
+        return 0.0
+
     if title_score > 0.7:
         score += 25 * min(1.0, title_score)
     elif _normalise(expected_title) in _normalise(filename):
