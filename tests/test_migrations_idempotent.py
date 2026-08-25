@@ -144,7 +144,7 @@ class TestMigrationChainIdempotency:
             version = conn.exec_driver_sql(
                 "SELECT version_num FROM alembic_version"
             ).scalar()
-        assert version == "010_add_pg_trgm_indexes"
+        assert version == "011_add_tracks_album_artist"
 
     def test_partially_bootstrapped_db_upgrade_converges(self, sqlite_engine: sa.Engine) -> None:
         """Partial bootstrap state (some tables, older stamp) also converges."""
@@ -196,6 +196,59 @@ class TestMigrationChainIdempotency:
         tables = set(inspector.get_table_names())
         assert "missing_album_tracks" in tables
         assert "user_favourites" in tables
+
+
+class TestMigration011AddsTracksAlbumArtist:
+    """Regression: legacy bare ``tracks`` tables are missing ``album_artist``.
+
+    Simulates the production state behind
+    ``column "album_artist" does not exist`` on the Search page: a ``tracks``
+    table holding only ``id`` (created by the original system) with
+    ``alembic_version`` already stamped at 010.  upgrade head must add the
+    column, backfill it from ``artist``, and create the btree index.
+    """
+
+    def test_legacy_bare_tracks_gets_album_artist(self, sqlite_engine: sa.Engine) -> None:
+        # Bare legacy tracks table — exactly the drift state.
+        with sqlite_engine.begin() as conn:
+            conn.exec_driver_sql(
+                "CREATE TABLE tracks (id TEXT PRIMARY KEY, artist TEXT, album TEXT, title TEXT)"
+            )
+            conn.exec_driver_sql(
+                "INSERT INTO tracks (id, artist, album, title) VALUES "
+                "('t1', 'Spice Girls', 'Spice', 'Wannabe')"
+            )
+
+        _stamp(sqlite_engine, "010_add_pg_trgm_indexes")
+        cfg = _make_alembic_config(str(sqlite_engine.url))
+        command.upgrade(cfg, "head")  # must not raise
+
+        inspector = sa.inspect(sqlite_engine)
+        tracks_cols = {col["name"] for col in inspector.get_columns("tracks")}
+        assert "album_artist" in tracks_cols
+
+        with sqlite_engine.connect() as conn:
+            value = conn.exec_driver_sql(
+                "SELECT album_artist FROM tracks WHERE id = 't1'"
+            ).scalar()
+        assert value == "Spice Girls"
+
+        with sqlite_engine.connect() as conn:
+            version = conn.exec_driver_sql(
+                "SELECT version_num FROM alembic_version"
+            ).scalar()
+        assert version == "011_add_tracks_album_artist"
+
+    def test_fresh_db_011_is_noop(self, sqlite_engine: sa.Engine) -> None:
+        """A fresh chain already declares album_artist in 001 — no-op."""
+        cfg = _make_alembic_config(str(sqlite_engine.url))
+        command.upgrade(cfg, "head")  # must not raise
+
+        with sqlite_engine.connect() as conn:
+            version = conn.exec_driver_sql(
+                "SELECT version_num FROM alembic_version"
+            ).scalar()
+        assert version == "011_add_tracks_album_artist"
 
 
 class TestIdempotentHelpers:
