@@ -190,7 +190,7 @@ async def api_search() -> Any:
             with db_session() as session:
                 from db.schema_helpers import get_table_columns
                 cols = get_table_columns(session, "tracks")
-                if cols and "album_artist" not in cols:
+                if "album_artist" not in cols:
                     session.execute(text("ALTER TABLE tracks ADD COLUMN IF NOT EXISTS album_artist TEXT"))
                     # Backfill only when ``artist`` exists — a truly bare
                     # table (id only) has nothing to copy yet; the bootstrap
@@ -199,7 +199,10 @@ async def api_search() -> Any:
                         session.execute(text("UPDATE tracks SET album_artist = artist WHERE album_artist IS NULL"))
                     logger.warning("Search self-heal: added missing tracks.album_artist column")
         except Exception as heal_err:
-            logger.debug("Search self-heal skipped", error=str(heal_err))
+            # A failed heal must be LOUD, not silent: if the column is still
+            # missing the search query below will fail, and a DEBUG-only log
+            # (suppressed at default log level) hides the reason.
+            logger.warning("Search self-heal FAILED to ensure tracks.album_artist", error=str(heal_err))
 
         # pg_trgm availability (Postgres + extension present + feature on).
         # When missing or disabled, fall back to the legacy ranking.

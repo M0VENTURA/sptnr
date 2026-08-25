@@ -43,7 +43,23 @@ __all__ = [
 
 
 def table_exists(bind: Any, table_name: str) -> bool:
-    """Return True when ``table_name`` exists in the bound database."""
+    """Return True when ``table_name`` exists in the bound database.
+
+    On PostgreSQL the bare name is resolved through the connection's
+    ``search_path`` (``to_regclass``) — the same resolution ``FROM tracks``
+    uses — so a table living in a schema earlier on ``search_path`` is seen
+    as present.  The plain ``inspector.get_table_names()`` only reports the
+    DEFAULT schema, which made migrations try to CREATE an already-existing
+    table (``relation ... already exists``) or skip column guards when the
+    schema differed.  Non-Postgres dialects keep the inspector fallback.
+    """
+    try:
+        if bind.dialect.name == "postgresql":
+            result = bind.execute(sa.text("SELECT to_regclass(:name)"), {"name": table_name})
+            row = result.fetchone()
+            return bool(row and row[0])
+    except Exception:
+        pass
     inspector = sa.inspect(bind)
     try:
         return table_name in inspector.get_table_names()

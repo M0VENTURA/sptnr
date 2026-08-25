@@ -9,34 +9,47 @@ from sqlalchemy.orm import Session
 
 
 def table_exists(conn_or_session: Session | Connection, table_name: str) -> bool:
-    """Check whether a table exists in the current PostgreSQL schema."""
+    """Check whether a table exists as the app would resolve it.
+
+    Uses ``to_regclass(:name)`` which resolves the bare name through the
+    connection's ``search_path`` — the EXACT same resolution ``FROM tracks``
+    uses.  The previous ``table_schema = current_schema()`` check only looked
+    at the connection's default schema, so when ``tracks`` lived in a schema
+    earlier on ``search_path`` (e.g. ``popularr`` before ``public``) the
+    helper reported the table missing, the bootstrap skipped its column-ensure
+    (and the search self-heal skipped its ALTER), and queries kept failing
+    with ``column album_artist does not exist``.
+    """
     result = conn_or_session.execute(
-        text("""
-            SELECT EXISTS (
-                SELECT 1
-                FROM information_schema.tables
-                WHERE table_schema = current_schema()
-                  AND table_name = :name
-            )
-        """),
+        text("SELECT to_regclass(:name)"),
         {"name": table_name},
     )
     row = result.fetchone()
-    return bool(row[0]) if row else False
+    return bool(row and row[0])
 
 
 def get_table_columns(conn_or_session: Session | Connection, table_name: str) -> set[str]:
-    """Return column names for a table in the current PostgreSQL schema."""
-    result = conn_or_session.execute(
+    """Return column names for a table, resolved via ``search_path``.
+
+    Mirrors :func:`table_exists`: resolves the bare name through
+    ``to_regclass`` so the columns are read from whatever schema the queries
+    actually use.  Reads ``pg_attribute`` on the schema-qualified relation
+    resolved by ``to_regclass`` (not ``current_schema()``).
+    """
+    rows = conn_or_session.execute(
         text("""
-            SELECT column_name
-            FROM information_schema.columns
-            WHERE table_schema = current_schema()
-              AND table_name = :name
+            SELECT a.attname
+            FROM pg_attribute a
+            JOIN pg_class c ON c.oid = a.attrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE a.attnum > 0
+              AND NOT a.attisdropped
+              AND (n.nspname || '.' || c.relname) = to_regclass(:name)::text
+            ORDER BY a.attnum
         """),
         {"name": table_name},
-    )
-    return {str(row[0]).strip() for row in result.fetchall() if row[0]}
+    ).fetchall()
+    return {str(r[0]).strip() for r in rows if r[0]}
 
 
 def get_postgres_column_types(
@@ -51,11 +64,14 @@ def get_postgres_column_types(
 
     result = conn_or_session.execute(
         text("""
-            SELECT column_name, data_type
-            FROM information_schema.columns
-            WHERE table_schema = current_schema()
-              AND table_name = :name
-              AND column_name = ANY(:columns)
+            SELECT a.attname, format_type(a.atttypid, a.atttypmod)
+            FROM pg_attribute a
+            JOIN pg_class c ON c.oid = a.attrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE a.attnum > 0
+              AND NOT a.attisdropped
+              AND (n.nspname || '.' || c.relname) = to_regclass(:name)::text
+              AND a.attname = ANY(:columns)
         """),
         {"name": table_name, "columns": column_names_list},
     )
