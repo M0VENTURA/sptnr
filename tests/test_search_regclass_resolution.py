@@ -51,6 +51,32 @@ class TestRegclassResolutionWiring:
         assert "nspname || '.' || c.relname" not in sql_section
         assert "to_regclass(:name)::text" not in sql_section
 
+    def test_resolve_table_qualified_name_resolves_via_to_regclass(self):
+        src = _read_source(os.path.join("db", "schema_helpers.py"))
+        # The qualified-name helper must quote via quote_ident so DDL/DML
+        # target the same table the search resolves (search_path-safe).
+        assert "def resolve_table_qualified_name" in src
+        assert "quote_ident(n.nspname) || '.' || quote_ident(c.relname)" in src
+        assert "c.oid = to_regclass(:name)" in src
+
+    def test_search_sql_uses_resolved_tracks_table(self):
+        src = _read_source(os.path.join("routes", "misc_routes.py"))
+        # The search templates must run against the resolved schema-qualified
+        # table (not a bare FROM tracks) so the probe / heal / query always
+        # agree on which physical table they touch.
+        assert "FROM {tracks_table}" in src
+        assert "resolve_table_qualified_name" in src
+        assert '"{tracks_table}"' in src or ".replace(\"{tracks_table}\", _tracks_table)" in src
+
+    def test_self_heal_alters_qualified_table(self):
+        src = _read_source(os.path.join("routes", "misc_routes.py"))
+        # The self-heal must ALTER the resolved schema-qualified table — a
+        # bare ALTER TABLE tracks can miss when search_path differs.
+        heal = src[src.find("def _self_heal_tracks_schema"):src.find("async def _api_search_impl")]
+        assert "resolve_table_qualified_name" in heal
+        assert "ALTER TABLE {qualified}" in heal
+        assert "UPDATE {qualified}" in heal
+
     def test_resolve_tracks_columns_only_trusts_non_empty_probe(self):
         src = _read_source(os.path.join("routes", "misc_routes.py"))
         # An empty probe result falls through to the inspector — it must not

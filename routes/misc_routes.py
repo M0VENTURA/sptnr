@@ -200,22 +200,37 @@ def _self_heal_tracks_schema() -> None:
     absent (legacy bare table).  ``ADD COLUMN IF NOT EXISTS`` is idempotent,
     so this converges on any starting state and is safe to run on every
     request until the columns exist.
+
+    The ALTER targets the schema-qualified name resolved via ``to_regclass``
+    (``resolve_table_qualified_name``) — NOT the bare ``tracks`` — so the
+    column is added to the EXACT table the search's ``FROM tracks`` resolves
+    to.  A bare ``ALTER TABLE tracks`` can resolve differently when the app
+    connection's ``search_path`` differs from the database default, which is
+    the recurring "column album_artist does not exist" even after the
+    bootstrap's own column-ensure appears to succeed.
     """
     try:
         from db.engine import db_session as _ds
+        from db.schema_helpers import resolve_table_qualified_name
         from sqlalchemy import text as _text
         with _ds() as session:
+            qualified = resolve_table_qualified_name(session, "tracks")
+            if not qualified:
+                logger.warning("Search schema self-heal: tracks does not resolve")
+                return
             existing = _resolve_tracks_columns(session)
             for col, ddl in (("album_artist", "TEXT"), ("artist", "TEXT"),
                              ("title", "TEXT"), ("album", "TEXT")):
                 if col in existing:
                     continue
-                session.execute(_text(f"ALTER TABLE tracks ADD COLUMN IF NOT EXISTS {col} {ddl}"))
+                session.execute(_text(
+                    f"ALTER TABLE {qualified} ADD COLUMN IF NOT EXISTS {col} {ddl}"
+                ))
             # Backfill album_artist from artist so grouping behaves as before
             # a re-scan (guarded: artist may not exist yet on a truly bare table).
             if "artist" in _resolve_tracks_columns(session):
                 session.execute(_text(
-                    "UPDATE tracks SET album_artist = artist WHERE album_artist IS NULL"
+                    f"UPDATE {qualified} SET album_artist = artist WHERE album_artist IS NULL"
                 ))
     except Exception as exc:
         logger.warning("Search schema self-heal failed", error=str(exc))
@@ -256,8 +271,22 @@ async def _api_search_impl() -> Any:
         # probe previously used here was Postgres-only and 500'd on any other
         # engine (e.g. the SQLite test engine), turning every search into a
         # "Search failed" page instead of results or a graceful empty state.
+        #
+        # The search queries ALSO run against the schema-qualified name
+        # resolved via to_regclass (``resolve_table_qualified_name``) so
+        # ``FROM <qualified>`` always hits the same table the probe read —
+        # immune to search_path ambiguity between the bootstrap's bare
+        # ``ALTER TABLE tracks`` and the search's ``FROM tracks`` (the
+        # recurring "column album_artist does not exist" at search time).
         with db_session() as session:
             _tracks_cols = _resolve_tracks_columns(session)
+            from db.schema_helpers import resolve_table_qualified_name
+            try:
+                _tracks_table = resolve_table_qualified_name(session, "tracks") or "tracks"
+            except Exception:
+                # Non-Postgres engine (test suite) — the bare name resolves
+                # via search_path on the same connection as the queries.
+                _tracks_table = "tracks"
             _trgm_ok = False
             try:
                 from helpers.config_helpers import get_search_fuzzy_config
@@ -285,9 +314,14 @@ async def _api_search_impl() -> Any:
         _can_search = bool(_artist_expr) and ("title" in _tracks_cols or "album" in _tracks_cols)
 
         def _sql(template: str):
-            """Inject the artist expression into a SQL template and return a
-            SQLAlchemy text() object ready to execute."""
-            return text(template.replace("{artist_expr}", _artist_expr).replace("{artist_like}", _artist_like))
+            """Inject the artist expression + resolved table name into a SQL
+            template and return a SQLAlchemy text() object ready to execute."""
+            return text(
+                template
+                .replace("{artist_expr}", _artist_expr)
+                .replace("{artist_like}", _artist_like)
+                .replace("{tracks_table}", _tracks_table)
+            )
 
         # No searchable columns (truly bare tracks(id) table) — return an
         # empty-but-successful response instead of 500ing.
@@ -317,7 +351,7 @@ async def _api_search_impl() -> Any:
                                 LOWER({artist_expr}) AS name_key,
                                 COUNT(*) AS cnt,
                                 COUNT(DISTINCT album) AS album_count
-                            FROM tracks
+                            FROM {tracks_table}
                             WHERE LOWER(COALESCE(artist, '')) LIKE :contains
                                OR LOWER({artist_like}) LIKE :contains
                             GROUP BY {artist_expr}
@@ -371,7 +405,7 @@ async def _api_search_impl() -> Any:
                                 LOWER({artist_expr}) AS name_key,
                                 COUNT(*) AS cnt,
                                 COUNT(DISTINCT album) AS album_count
-                            FROM tracks
+                            FROM {tracks_table}
                             WHERE LOWER(COALESCE(artist, '')) LIKE :contains
                                OR LOWER({artist_like}) LIKE :contains
                             GROUP BY {artist_expr}
@@ -449,7 +483,7 @@ async def _api_search_impl() -> Any:
                                     similarity({artist_expr}, :query),
                                     similarity(COALESCE(artist, ''), :query)
                                 ) AS sim
-                            FROM tracks
+                            FROM {tracks_table}
                             WHERE LOWER(COALESCE(album, '')) LIKE :contains
                                OR LOWER({artist_like}) LIKE :contains
                                OR LOWER(COALESCE(artist, '')) LIKE :contains
@@ -516,7 +550,7 @@ async def _api_search_impl() -> Any:
                                     WHEN LOWER(COALESCE(album, '')) LIKE :starts THEN 1
                                     ELSE 2
                                 END AS match_rank
-                            FROM tracks
+                            FROM {tracks_table}
                             WHERE LOWER(COALESCE(album, '')) LIKE :contains
                                OR LOWER({artist_like}) LIKE :contains
                                OR LOWER(COALESCE(artist, '')) LIKE :contains
@@ -627,7 +661,7 @@ async def _api_search_impl() -> Any:
                                 similarity(COALESCE(artist, ''), :query),
                                 similarity({artist_like}, :query)
                             ) AS sim
-                        FROM tracks
+                        FROM {tracks_table}
                         WHERE LOWER(COALESCE(title, '')) LIKE :contains
                            OR LOWER(COALESCE(artist, '')) LIKE :contains
                            OR LOWER({artist_like}) LIKE :contains
@@ -660,7 +694,7 @@ async def _api_search_impl() -> Any:
                                 WHEN LOWER(COALESCE(title, '')) LIKE :contains THEN 2
                                 ELSE 3
                             END AS match_rank
-                        FROM tracks
+                        FROM {tracks_table}
                         WHERE LOWER(COALESCE(title, '')) LIKE :contains
                            OR LOWER(COALESCE(artist, '')) LIKE :contains
                            OR LOWER({artist_like}) LIKE :contains

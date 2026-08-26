@@ -62,6 +62,36 @@ def get_table_columns(conn_or_session: Session | Connection, table_name: str) ->
     return {str(r[0]).strip() for r in rows if r[0]}
 
 
+def resolve_table_qualified_name(
+    conn_or_session: Session | Connection,
+    table_name: str,
+) -> str | None:
+    """Return the schema-qualified, quoted name of ``table_name`` as resolved
+    through the connection's ``search_path`` (``to_regclass``) — e.g.
+    ``"public"."tracks"`` — or ``None`` when the table does not resolve.
+
+    DDL and DML built from this name always target the SAME table that
+    ``FROM tracks`` resolves to, regardless of ``search_path`` quirks.  This
+    is the fix for the recurring "column album_artist does not exist" at
+    search time while the bootstrap's bare ``ALTER TABLE tracks`` appears to
+    succeed: if the app connection's ``search_path`` differs from the
+    database default (e.g. ``tracks`` living in a non-first schema), the bare
+    ``ALTER TABLE tracks`` can resolve to a DIFFERENT table than the search's
+    ``FROM tracks``.  Quoting via ``quote_ident`` keeps mixed-case / reserved
+    identifiers safe.
+    """
+    row = conn_or_session.execute(
+        text("""
+            SELECT quote_ident(n.nspname) || '.' || quote_ident(c.relname)
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.oid = to_regclass(:name)
+        """),
+        {"name": table_name},
+    ).fetchone()
+    return str(row[0]) if row and row[0] else None
+
+
 def get_postgres_column_types(
     conn_or_session: Session | Connection, 
     table_name: str, 

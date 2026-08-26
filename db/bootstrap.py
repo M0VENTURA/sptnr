@@ -43,9 +43,44 @@ def _ensure_columns(cursor: Any, table_name: str, columns: dict[str, str]) -> No
     # empty) when the table lived in a schema earlier on search_path than the
     # default schema, so the column never got added and searches kept failing
     # with ``column album_artist does not exist`` even after rebuilds.
+    #
+    # The ALTER targets the schema-qualified name resolved via ``to_regclass``
+    # (``resolve_table_qualified_name``) so it lands on the EXACT table the
+    # application queries (``FROM tracks``) even when the connection's
+    # ``search_path`` differs from the database default — the recurring
+    # "column album_artist does not exist" at search time after rebuilds.
+    # The resolution is dialect-guarded (pg_class only exists on Postgres)
+    # and runs inside a savepoint so a failure can never poison the caller's
+    # transaction (SQLAlchemy sessions abort after a SQL error).
+    qualified: str | None = None
+    try:
+        # Dialect guard: pg_class / to_regclass only exist on Postgres.  The
+        # callers pass either a Session (has .get_bind()) or a Connection
+        # (exposes .dialect directly).
+        bind = getattr(cursor, "get_bind", lambda: None)()
+        if bind is None:
+            bind = getattr(cursor, "bind", None)
+        dialect_name = ""
+        if bind is not None:
+            dialect_name = getattr(getattr(bind, "dialect", None), "name", "") or ""
+        if dialect_name == "postgresql":
+            from db.schema_helpers import resolve_table_qualified_name
+            cursor.execute(text("SAVEPOINT popularr_resolve_qualified"))
+            try:
+                qualified = resolve_table_qualified_name(cursor, table_name)
+            except Exception:
+                try: cursor.execute(text("ROLLBACK TO SAVEPOINT popularr_resolve_qualified"))
+                except Exception: pass
+            else:
+                try: cursor.execute(text("RELEASE SAVEPOINT popularr_resolve_qualified"))
+                except Exception: pass
+    except Exception:
+        qualified = None
+    target = qualified or table_name
+
     for col_name, col_def in columns.items():
         try:
-            cursor.execute(text(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {col_name} {col_def}"))
+            cursor.execute(text(f"ALTER TABLE {target} ADD COLUMN IF NOT EXISTS {col_name} {col_def}"))
             logger.info("Added column", table=table_name, column=col_name)
         except Exception as e:
             logger.warning("Could not add column", table=table_name, column=col_name, error=str(e))
