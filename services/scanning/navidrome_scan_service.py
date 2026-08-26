@@ -41,9 +41,16 @@ def get_nav_client() -> NavidromeClient:
     if _nav_client_cache:
         return _nav_client_cache
 
-    cfg = get_navidrome_config()
-    if not cfg:
-        raise RuntimeError("Navidrome config missing")
+    cfg = get_navidrome_config() or {}
+    # A config dict with EMPTY base_url/user/pass must be treated as "not
+    # configured" — building a client from it yields requests to
+    # ``/rest/...`` (no host) that fail with ``unknown url type`` and the
+    # import scan imports 0 artists, leaving ``tracks`` bare forever.
+    if not all([cfg.get("base_url"), cfg.get("user"), cfg.get("pass")]):
+        raise RuntimeError(
+            "Navidrome is not configured (missing base_url/user/pass). "
+            "Complete the setup wizard or check config.yaml navidrome_users."
+        )
 
     _nav_client_cache = NavidromeClient(
         base_url=cfg["base_url"],

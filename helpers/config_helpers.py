@@ -1296,12 +1296,29 @@ def get_navidrome_users_normalized() -> list[dict[str, str]]:
 def get_navidrome_first_user() -> dict[str, str]:
     """Primary Navidrome account as a normalized dict (``{}`` when unset).
 
+    Returns ``{}`` when no USABLE Navidrome user exists — i.e. every
+    configured user has an empty ``base_url`` / ``user`` / ``pass`` (e.g. a
+    setup-wizard stub row).  Callers MUST treat ``{}`` as "not configured":
+    building a client from empty fields produces requests to ``/rest/...``
+    (no host) which fail with ``unknown url type`` — exactly the failure
+    that left the import scan importing 0 artists and the ``tracks`` table
+    permanently bare.
+
     Env fallback (``NAV_BASE_URL``/``NAV_USER``/``NAV_PASS``) is included so
     container/env-based installs resolve the same way as config-file ones.
     """
     users = get_navidrome_users_normalized()
     if users:
-        return users[0]
+        first = users[0] or {}
+        if all([first.get("base_url"), first.get("user"), first.get("pass")]):
+            return first
+        # First configured user is empty — keep scanning for a usable one
+        # before giving up (some installs leave a stub row and put the real
+        # creds in a later entry).
+        for u in users[1:]:
+            if u and all([u.get("base_url"), u.get("user"), u.get("pass")]):
+                return u
+        return {}
     base_url = os.environ.get("NAV_BASE_URL", "").strip().rstrip("/")
     user = os.environ.get("NAV_USER", "").strip()
     pw = os.environ.get("NAV_PASS", "").strip()

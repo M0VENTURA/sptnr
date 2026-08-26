@@ -211,6 +211,11 @@ class NavidromeClient:
         return True
 
     def _get_subsonic_response(self, endpoint: str, *, timeout: int = 30, retries: int = _DEFAULT_RETRIES, **params: Any) -> dict[str, Any]:
+        if not self.base_url:
+            raise ValueError(
+                "Navidrome base_url is empty — Navidrome is not configured. "
+                "Complete the setup wizard or check config.yaml navidrome_users."
+            )
         url = f"{self.base_url}/rest/{endpoint}"
         last_error: Exception | None = None
         retry_flag = True
