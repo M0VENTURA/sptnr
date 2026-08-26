@@ -299,6 +299,25 @@ async def _api_search_impl() -> Any:
             except Exception:
                 _trgm_ok = False
 
+        # Proactive schema self-heal: if the resolved ``tracks`` table is
+        # missing any search-critical column (a legacy bare ``tracks(id)``
+        # table that never got its column-ensure applied to the RIGHT schema),
+        # add the columns now — BEFORE building the SQL — so the very first
+        # search after boot converges the schema.  The failure-driven heal in
+        # ``api_search`` only fires when a query throws, but with the
+        # column-aware builder the query degrades (artist → album → none)
+        # instead of throwing, so the heal would never run and the rest of
+        # the app (artists page, album detail, repository upserts — all of
+        # which reference album_artist) stays broken.
+        _missing_meta = [c for c in ("album_artist", "artist", "title", "album")
+                         if c not in _tracks_cols]
+        if _missing_meta:
+            _self_heal_tracks_schema()
+            # Re-probe: the heal may have added the columns; pick the artist
+            # expression from the post-heal reality.
+            with db_session() as session:
+                _tracks_cols = _resolve_tracks_columns(session)
+
         # Pick the artist expression from what the table actually has:
         #   album_artist (best) -> artist -> (fallback) no artist search.
         if "album_artist" in _tracks_cols:

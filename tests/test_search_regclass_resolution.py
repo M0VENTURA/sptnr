@@ -77,6 +77,16 @@ class TestRegclassResolutionWiring:
         assert "ALTER TABLE {qualified}" in heal
         assert "UPDATE {qualified}" in heal
 
+    def test_search_proactively_heals_missing_columns(self):
+        src = _read_source(os.path.join("routes", "misc_routes.py"))
+        # With the column-aware builder the query degrades instead of
+        # throwing, so the failure-driven heal never fires — the search must
+        # proactively heal a bare tracks table BEFORE building the SQL.
+        probe = src[src.find("_missing_meta = "):]
+        assert "_missing_meta" in src
+        assert "_self_heal_tracks_schema()" in probe
+        assert "Re-probe" in src or "_tracks_cols = _resolve_tracks_columns(session)" in probe
+
     def test_resolve_tracks_columns_only_trusts_non_empty_probe(self):
         src = _read_source(os.path.join("routes", "misc_routes.py"))
         # An empty probe result falls through to the inspector — it must not
