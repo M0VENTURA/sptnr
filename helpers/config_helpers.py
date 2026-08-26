@@ -258,15 +258,28 @@ def clear_config_cache():
 
 
 def get_navidrome_config():
-    """Return Navidrome section (first user from navidrome_users, or legacy navidrome key)."""
-    cfg = get_config()
-    nav = cfg.get("navidrome", {})
-    if isinstance(nav, dict) and nav:
-        return nav
-    users = cfg.get("navidrome_users", [])
-    if users and isinstance(users[0], dict):
-        return users[0]
-    return {}
+    """Return Navidrome connection settings.
+
+    Delegates to :func:`get_navidrome_first_user`, which resolves the first
+    USABLE Navidrome account in priority order:
+
+      1. First user in ``navidrome_users`` with base_url + user + pass set —
+         this is where the config UI and setup wizard write real credentials.
+      2. The legacy top-level ``navidrome`` dict — but ONLY when it carries
+         real connection fields.  Since the config UI also persists
+         operational flags there (``auto_public_playlists``,
+         ``playlist_cover_art``), a bare ``navidrome:`` section with no
+         ``base_url`` must NOT be returned — otherwise callers build a
+         Navidrome client with ``base_url=None`` and every request fails
+         with "Navidrome base_url is empty".
+      3. The flat settings/env keys (``nav_url``/``nav_user``/``nav_pass``,
+         i.e. ``POPULARLR_NAV_URL`` etc).
+
+    Returns:
+        Dict with ``base_url``/``user``/``pass`` keys, or ``{}`` when no
+        usable Navidrome connection is configured.
+    """
+    return get_navidrome_first_user()
 
 
 def needs_setup(cfg: dict | None = None) -> bool:
