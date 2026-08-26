@@ -159,6 +159,20 @@ def api_sandbox_metrics() -> Any:
 # SEARCH
 # ===========================================================================
 
+# Persists the degraded (artist-only) search mode across requests.  Once the
+# album_artist column proves absent, every subsequent /api/search call uses
+# artist-only SQL — the column may never be addable (permissions/schema), and
+# search must keep working.  Set back to False by the schema heal when the
+# ALTER succeeds.
+_SEARCH_ALBUM_ARTIST_DEGRADED = False
+
+
+def _set_search_album_artist_degraded(value: bool) -> None:
+    """Set the module-level degraded-search flag (artist-only SQL)."""
+    global _SEARCH_ALBUM_ARTIST_DEGRADED
+    _SEARCH_ALBUM_ARTIST_DEGRADED = bool(value)
+
+
 class _MissingAlbumArtistError(RuntimeError):
     """Raised internally when a search query hits ``column album_artist does
     not exist`` — triggers the one-time schema heal + retry."""
@@ -187,30 +201,34 @@ async def _api_search_impl() -> Any:
         starts_pattern = f"{query}%"
         contains_pattern = f"%{query}%"
 
-        # Does the tracks table have album_artist?  A legacy bare-tracks DB
-        # (or a schema/permissions situation that blocked the boot-time
-        # ALTER) may lack it.  Search must WORK either way: when the column
-        # exists we prefer it (album-artist aggregation); when it doesn't we
-        # degrade to artist-only expressions so the search bar never 500s.
-        _has_album_artist = False
-        try:
-            with db_session() as session:
-                _has_album_artist = bool(
-                    session.execute(text("SELECT 1 FROM information_schema.columns WHERE table_name = 'tracks' AND column_name = 'album_artist'")).scalar()
-                )
-        except Exception:
-            _has_album_artist = False
-
-        # The artist expression used across ALL search SQL below.  Single
-        # source of truth: if album_artist exists we aggregate by it (falling
-        # back to artist); otherwise plain artist.
-        _artist_expr = "COALESCE(NULLIF(album_artist, ''), artist)" if _has_album_artist else "artist"
-        _artist_like = "COALESCE(album_artist, '')" if _has_album_artist else "COALESCE(artist, '')"
+        # The artist expression used across ALL search SQL below.
+        #
+        # A legacy bare-tracks DB (or a schema/permissions situation that
+        # blocked the boot-time ALTER) may lack ``album_artist``.  Detection
+        # via information_schema was unreliable (a tracks table in ANOTHER
+        # schema made the check report the column present), so the expression
+        # is chosen by TRYING the album_artist-aware query first and falling
+        # back to artist-only on ``UndefinedColumn``.  Both forms share the
+        # same {artist_expr}/{artist_like} templates.
+        #
+        # Optimistic default: prefer album-artist aggregation (better group
+        # results).  Degraded to plain artist only when the query proves the
+        # column is absent.
+        if _SEARCH_ALBUM_ARTIST_DEGRADED:
+            _artist_expr = "artist"
+            _artist_like = "COALESCE(artist, '')"
+        else:
+            _artist_expr = "COALESCE(NULLIF(album_artist, ''), artist)"
+            _artist_like = "COALESCE(album_artist, '')"
 
         def _sql(template: str):
             """Inject the artist expression into a SQL template and return a
             SQLAlchemy text() object ready to execute."""
             return text(template.replace("{artist_expr}", _artist_expr).replace("{artist_like}", _artist_like))
+
+        def _is_missing_album_artist(exc: BaseException) -> bool:
+            msg = str(exc)
+            return "album_artist" in msg and "does not exist" in msg
 
         # pg_trgm availability (Postgres + extension present + feature on).
         # When missing or disabled, fall back to the legacy ranking.
@@ -621,8 +639,16 @@ async def _api_search_impl() -> Any:
         msg = str(exc)
         # A legacy bare ``tracks`` table is missing album_artist — let the
         # public route heal it and retry once.
-        if "album_artist" in msg and "does not exist" in msg:
-            raise _MissingAlbumArtistError(msg) from exc
+        if _is_missing_album_artist(exc):
+            if _SEARCH_ALBUM_ARTIST_DEGRADED:
+                # Already degraded and still failing — surface it.
+                raise _MissingAlbumArtistError(msg) from exc
+            # Degrade to artist-only SQL and re-run once.  This is the
+            # definitive fix: search works even when the column can never be
+            # added (permissions/schema).
+            _set_search_album_artist_degraded(True)
+            logger.warning("Search degraded to artist-only SQL (album_artist column absent)")
+            return await _api_search_impl()
         logger.error("Search error", error=msg, exc_info=True)
         return jsonify({"error": msg}), 500
 
@@ -652,13 +678,15 @@ async def api_search() -> Any:
             except Exception as backfill_err:
                 logger.warning("Search self-heal backfill skipped (artist column may be absent)", error=str(backfill_err))
             healed = True
+            # The column now exists — resume album_artist-aware search.
+            _set_search_album_artist_degraded(False)
             logger.warning("Search self-heal: added missing tracks.album_artist after UndefinedColumn")
         except Exception as heal_err:
             logger.error("Search self-heal FAILED to add tracks.album_artist", error=str(heal_err))
 
         # Retry once.  If the heal truly failed (or the column is in another
-        # schema that ALTER can't reach), return a graceful 500 instead of
-        # letting the exception escape as an unhandled error.
+        # schema that ALTER can't reach), _api_search_impl already degrades
+        # to artist-only SQL (module flag), so this retry will SUCCEED.
         try:
             return await _api_search_impl()
         except Exception as retry_exc:
