@@ -217,39 +217,58 @@ def _self_heal_tracks_schema() -> None:
     being added — the exact "heals but never converges" failure seen in the
     live logs.  ``ADD COLUMN IF NOT EXISTS`` is a no-op when the column is
     already present, so unconditional execution is always safe.
+
+    The ALTERs run in their OWN committed ``db_session`` each (a separate
+    transaction per column) and the backfill in another.  PostgreSQL aborts
+    the whole transaction when a statement errors — and SQLAlchemy marks the
+    session for rollback on any SQL error even when the Python exception is
+    caught — so a failing statement inside the same transaction would roll
+    back the already executed ``ADD COLUMN`` statements and the heal would
+    never persist (the "errors repeat forever" failure).  One transaction
+    per statement guarantees each successful ALTER commits independently.
     """
     try:
         from db.engine import db_session as _ds
         from db.schema_helpers import resolve_table_qualified_name
         from sqlalchemy import text as _text
+
+        # ── Phase 1: add the columns — one committed tx per column so a
+        # failing statement can never roll back a successful ALTER. ──────
+        qualified: str | None = None
         with _ds() as session:
-            qualified = resolve_table_qualified_name(session, "tracks")
-            if not qualified:
-                logger.warning("Search schema self-heal: tracks does not resolve")
-                return
-            for col, ddl in (("album_artist", "TEXT"), ("artist", "TEXT"),
-                             ("title", "TEXT"), ("album", "TEXT")):
-                try:
+            try:
+                qualified = resolve_table_qualified_name(session, "tracks")
+            except Exception:
+                qualified = None
+        if not qualified:
+            logger.warning("Search schema self-heal: tracks does not resolve")
+            return
+
+        for col, ddl in (("album_artist", "TEXT"), ("artist", "TEXT"),
+                         ("title", "TEXT"), ("album", "TEXT")):
+            try:
+                with _ds() as session:
                     session.execute(_text(
                         f"ALTER TABLE {qualified} ADD COLUMN IF NOT EXISTS {col} {ddl}"
                     ))
-                except Exception as col_exc:
-                    logger.debug(
-                        "Search self-heal ADD COLUMN skipped",
-                        column=col, error=str(col_exc),
-                    )
-            # Backfill album_artist from artist so grouping behaves as before
-            # a re-scan.  Tolerate the column still being absent (bare table /
-            # locked schema) — the next search degrades to artist-based SQL.
-            try:
+            except Exception as col_exc:
+                logger.debug(
+                    "Search self-heal ADD COLUMN skipped",
+                    column=col, error=str(col_exc),
+                )
+
+        # ── Phase 2: backfill album_artist in a SEPARATE committed tx so a
+        # failure here can never roll back the ALTERs above. ─────────────
+        try:
+            with _ds() as session:
                 session.execute(_text(
                     f"UPDATE {qualified} SET album_artist = artist WHERE album_artist IS NULL"
                 ))
-            except Exception as backfill_exc:
-                logger.debug(
-                    "Search self-heal album_artist backfill skipped",
-                    error=str(backfill_exc),
-                )
+        except Exception as backfill_exc:
+            logger.debug(
+                "Search self-heal album_artist backfill skipped",
+                error=str(backfill_exc),
+            )
     except Exception as exc:
         logger.warning("Search schema self-heal failed", error=str(exc))
 

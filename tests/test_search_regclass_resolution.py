@@ -92,6 +92,22 @@ class TestRegclassResolutionWiring:
         assert "ALTER TABLE {qualified} ADD COLUMN IF NOT EXISTS {col} {ddl}" in heal
         assert '("album_artist", "TEXT"), ("artist", "TEXT")' in heal
 
+    def test_self_heal_commits_each_alter_independently(self):
+        src = _read_source(os.path.join("routes", "misc_routes.py"))
+        # A failing statement (e.g. the backfill when artist is missing)
+        # inside the SAME transaction as the ALTERs would abort the whole
+        # transaction and roll the ADD COLUMNs back — the heal would "run"
+        # every search but never persist (repeated errors forever).  Each
+        # ALTER and the backfill must run in their own committed db_session.
+        heal = src[src.find("def _self_heal_tracks_schema"):src.find("async def _api_search_impl")]
+        # The ALTER loop opens a fresh session per column:
+        assert "with _ds() as session:" in heal
+        assert heal.count("with _ds() as session:") >= 3  # resolve + 4-column loop + backfill
+        # The backfill is a separate committed transaction after the ALTERs:
+        backfill = heal[heal.find("Phase 2"):]
+        assert "UPDATE {qualified} SET album_artist = artist" in backfill
+        assert "with _ds() as session:" in backfill
+
     def test_search_proactively_heals_missing_columns(self):
         src = _read_source(os.path.join("routes", "misc_routes.py"))
         # With the column-aware builder the query degrades instead of
