@@ -208,6 +208,15 @@ def _self_heal_tracks_schema() -> None:
     connection's ``search_path`` differs from the database default, which is
     the recurring "column album_artist does not exist" even after the
     bootstrap's own column-ensure appears to succeed.
+
+    IMPORTANT: the ALTERs run UNCONDITIONALLY (no ``if col in existing``
+    skip).  The column probe can disagree with reality (e.g. it resolves a
+    different ``tracks`` via ``search_path`` than the explicit qualified
+    table, or returns ORM-declared columns for a bare table), and a skip
+    based on that wrong probe would permanently prevent the column from
+    being added — the exact "heals but never converges" failure seen in the
+    live logs.  ``ADD COLUMN IF NOT EXISTS`` is a no-op when the column is
+    already present, so unconditional execution is always safe.
     """
     try:
         from db.engine import db_session as _ds
@@ -218,20 +227,29 @@ def _self_heal_tracks_schema() -> None:
             if not qualified:
                 logger.warning("Search schema self-heal: tracks does not resolve")
                 return
-            existing = _resolve_tracks_columns(session)
             for col, ddl in (("album_artist", "TEXT"), ("artist", "TEXT"),
                              ("title", "TEXT"), ("album", "TEXT")):
-                if col in existing:
-                    continue
-                session.execute(_text(
-                    f"ALTER TABLE {qualified} ADD COLUMN IF NOT EXISTS {col} {ddl}"
-                ))
+                try:
+                    session.execute(_text(
+                        f"ALTER TABLE {qualified} ADD COLUMN IF NOT EXISTS {col} {ddl}"
+                    ))
+                except Exception as col_exc:
+                    logger.debug(
+                        "Search self-heal ADD COLUMN skipped",
+                        column=col, error=str(col_exc),
+                    )
             # Backfill album_artist from artist so grouping behaves as before
-            # a re-scan (guarded: artist may not exist yet on a truly bare table).
-            if "artist" in _resolve_tracks_columns(session):
+            # a re-scan.  Tolerate the column still being absent (bare table /
+            # locked schema) — the next search degrades to artist-based SQL.
+            try:
                 session.execute(_text(
                     f"UPDATE {qualified} SET album_artist = artist WHERE album_artist IS NULL"
                 ))
+            except Exception as backfill_exc:
+                logger.debug(
+                    "Search self-heal album_artist backfill skipped",
+                    error=str(backfill_exc),
+                )
     except Exception as exc:
         logger.warning("Search schema self-heal failed", error=str(exc))
 
@@ -780,8 +798,29 @@ async def api_search() -> Any:
             try:
                 return await _api_search_impl()
             except Exception as retry_exc:
-                logger.error("Search error after schema heal", error=str(retry_exc), exc_info=True)
-                return jsonify({"error": str(retry_exc)}), 500
+                retry_msg = str(retry_exc)
+                if "column" in retry_msg and "does not exist" in retry_msg:
+                    # The heal could not add the column (permissions, locked
+                    # table, or a probe that keeps resolving a different
+                    # table).  Never surface a 500 for a library that simply
+                    # has not converged — return a graceful empty result with
+                    # the hint instead, exactly like the bare-table path.
+                    logger.warning(
+                        "Search degraded after heal: column still missing",
+                        error=retry_msg,
+                    )
+                    return jsonify({
+                        "artists": [],
+                        "albums": [],
+                        "compilations": [],
+                        "live_albums": [],
+                        "eps": [],
+                        "singles": [],
+                        "tracks": [],
+                        "note": "Library tracks table is missing metadata columns — run a Navidrome import scan to populate track metadata.",
+                    })
+                logger.error("Search error after schema heal", error=retry_msg, exc_info=True)
+                return jsonify({"error": retry_msg}), 500
         logger.error("Search error", error=msg, exc_info=True)
         return jsonify({"error": msg}), 500
 

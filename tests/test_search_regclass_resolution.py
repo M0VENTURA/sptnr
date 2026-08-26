@@ -77,6 +77,21 @@ class TestRegclassResolutionWiring:
         assert "ALTER TABLE {qualified}" in heal
         assert "UPDATE {qualified}" in heal
 
+    def test_self_heal_runs_alter_unconditionally(self):
+        src = _read_source(os.path.join("routes", "misc_routes.py"))
+        # The heal must NOT skip the ALTER based on a probe that may lie
+        # (a probe resolving a different tracks via search_path, or the ORM
+        # inspector reporting model-declared columns for a bare table).
+        # ADD COLUMN IF NOT EXISTS is idempotent, so unconditional execution
+        # is safe and guarantees convergence.
+        heal = src[src.find("def _self_heal_tracks_schema"):src.find("async def _api_search_impl")]
+        # No skip-on-probe-present logic:
+        assert "if col in existing:" not in heal
+        # The ALTER template runs for every search-critical column via the
+        # loop over the 4-column tuple, unconditionally:
+        assert "ALTER TABLE {qualified} ADD COLUMN IF NOT EXISTS {col} {ddl}" in heal
+        assert '("album_artist", "TEXT"), ("artist", "TEXT")' in heal
+
     def test_search_proactively_heals_missing_columns(self):
         src = _read_source(os.path.join("routes", "misc_routes.py"))
         # With the column-aware builder the query degrades instead of
