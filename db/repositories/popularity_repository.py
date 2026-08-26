@@ -22,6 +22,23 @@ DB_LOCK_MAX_RETRIES = 5
 DB_LOCK_BASE_DELAY_SECONDS = 0.25
 
 
+def invalidate_tracks_column_cache() -> None:
+    """Drop the cached tracks columns/types.
+
+    The caches are module-level singletons populated on first write.  If the
+    first write happened while ``tracks`` was still bare (id only) — e.g. a
+    scan racing the bootstrap's ``ADD COLUMN IF NOT EXISTS`` pass — the cache
+    would permanently omit artist/title/album/album_artist and every later
+    upsert would silently drop those columns, leaving search empty while the
+    artists page (which reads rows directly) still shows data.  Call this
+    whenever the schema is known to have changed (bootstrap, migrations,
+    self-heal) so the next write re-reads the real columns.
+    """
+    global _TRACKS_COLUMN_CACHE, _TRACKS_COLUMN_TYPES_CACHE
+    _TRACKS_COLUMN_CACHE = None
+    _TRACKS_COLUMN_TYPES_CACHE = None
+
+
 def get_tracks_table_columns(session=None) -> set[str]:
     global _TRACKS_COLUMN_CACHE
     if _TRACKS_COLUMN_CACHE:
@@ -231,6 +248,22 @@ def _execute_save(session, track_data: dict) -> bool:
     """
     columns = get_tracks_table_columns(session)
     types = get_tracks_table_column_types(session)
+
+    # Self-heal a stale column cache: if the payload carries a metadata
+    # column the cache doesn't know about, the cache was populated before
+    # the schema finished bootstrapping (ADD COLUMN pass) — re-read the real
+    # columns so metadata (artist/title/album/album_artist) is never silently
+    # dropped from writes.  Without this, a scan racing the bootstrap
+    # permanently wrote id-only rows and search stayed empty forever.
+    if columns and track_data:
+        missing_meta = [
+            k for k in ("artist", "title", "album", "album_artist")
+            if k in track_data and k not in columns
+        ]
+        if missing_meta:
+            invalidate_tracks_column_cache()
+            columns = get_tracks_table_columns(session)
+            types = get_tracks_table_column_types(session)
 
     is_navidrome_sync = bool(track_data.get("_navidrome_sync"))
 

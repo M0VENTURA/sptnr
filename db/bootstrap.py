@@ -265,7 +265,18 @@ def ensure_full_schema() -> bool:
         # Type alterations and data backfills
         migrate_single_confidence_type()
         migrate_queue_source_data()
-        
+
+        # The tracks column cache (db.repositories.popularity_repository) is
+        # populated on first write; if that happened before this bootstrap
+        # pass finished adding columns, it would omit metadata columns and
+        # every later upsert would silently drop them (search stays empty).
+        # Invalidate so the next write re-reads the real schema.
+        try:
+            from db.repositories.popularity_repository import invalidate_tracks_column_cache
+            invalidate_tracks_column_cache()
+        except Exception:
+            pass
+
         return True
     except Exception as exc:
         if is_transient_pg_startup_error(exc): return False

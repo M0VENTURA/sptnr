@@ -159,6 +159,63 @@ def api_sandbox_metrics() -> Any:
 # SEARCH
 # ===========================================================================
 
+def _resolve_tracks_columns(session: Any) -> set[str]:
+    """Return the ACTUAL column names on the search_path-resolved ``tracks``
+    table.
+
+    Delegates to ``db.schema_helpers.get_table_columns`` (to_regclass-based,
+    dialect-aware) so the probe can never 500 the search: on PostgreSQL it
+    reads ``pg_attribute`` exactly as ``FROM tracks`` resolves; on other
+    engines (SQLite test engine) it falls back to the SQLAlchemy inspector so
+    the query layer is still exercised.
+    """
+    try:
+        from db.schema_helpers import get_table_columns
+        cols = get_table_columns(session, "tracks")
+        if cols is not None:
+            return cols
+    except Exception:
+        pass
+    # Dialect fallback: SQLAlchemy inspector (Postgres + SQLite alike).
+    try:
+        import sqlalchemy as _sa
+        inspector = _sa.inspect(session.get_bind())
+        return {
+            str(col["name"])
+            for col in inspector.get_columns("tracks") or []
+        }
+    except Exception:
+        return set()
+
+
+def _self_heal_tracks_schema() -> None:
+    """Best-effort ADD of the search-critical ``tracks`` columns.
+
+    Runs when a search query proves ``album_artist``/``artist``/``title`` are
+    absent (legacy bare table).  ``ADD COLUMN IF NOT EXISTS`` is idempotent,
+    so this converges on any starting state and is safe to run on every
+    request until the columns exist.
+    """
+    try:
+        from db.engine import db_session as _ds
+        from sqlalchemy import text as _text
+        with _ds() as session:
+            existing = _resolve_tracks_columns(session)
+            for col, ddl in (("album_artist", "TEXT"), ("artist", "TEXT"),
+                             ("title", "TEXT"), ("album", "TEXT")):
+                if col in existing:
+                    continue
+                session.execute(_text(f"ALTER TABLE tracks ADD COLUMN IF NOT EXISTS {col} {ddl}"))
+            # Backfill album_artist from artist so grouping behaves as before
+            # a re-scan (guarded: artist may not exist yet on a truly bare table).
+            if "artist" in _resolve_tracks_columns(session):
+                session.execute(_text(
+                    "UPDATE tracks SET album_artist = artist WHERE album_artist IS NULL"
+                ))
+    except Exception as exc:
+        logger.warning("Search schema self-heal failed", error=str(exc))
+
+
 async def _api_search_impl() -> Any:
     """Search artists, albums and tracks with legacy ranking behaviour.
 
@@ -188,17 +245,14 @@ async def _api_search_impl() -> Any:
         # tracks table in another schema).  A legacy bare-tracks DB may lack
         # artist/album_artist entirely, so the SQL is built from what really
         # exists and the search NEVER 500s on a missing column.
+        #
+        # The canonical helper (db.schema_helpers.get_table_columns) resolves
+        # through to_regclass and is dialect-safe; the inline pg_catalog
+        # probe previously used here was Postgres-only and 500'd on any other
+        # engine (e.g. the SQLite test engine), turning every search into a
+        # "Search failed" page instead of results or a graceful empty state.
         with db_session() as session:
-            _tracks_cols = {
-                str(r[0]) for r in session.execute(text("""
-                    SELECT a.attname
-                    FROM pg_attribute a
-                    JOIN pg_class c ON c.oid = a.attrelid
-                    JOIN pg_namespace n ON n.oid = c.relnamespace
-                    WHERE a.attnum > 0 AND NOT a.attisdropped
-                      AND (n.nspname || '.' || c.relname) = to_regclass('tracks')::text
-                """)).fetchall()
-            }
+            _tracks_cols = _resolve_tracks_columns(session)
             _trgm_ok = False
             try:
                 from helpers.config_helpers import get_search_fuzzy_config
@@ -636,8 +690,12 @@ async def _api_search_impl() -> Any:
         })
     except Exception as exc:
         # The SQL is built from the ACTUAL resolved columns, so a missing
-        # column here is a genuine race — return graceful 500.
+        # column here is a genuine race/schema drift.  Re-raise missing-column
+        # errors so the public route's self-heal (ALTER + retry) can recover
+        # the schema; anything else is a graceful 500.
         msg = str(exc)
+        if "column" in msg and "does not exist" in msg:
+            raise
         logger.error("Search error", error=msg, exc_info=True)
         return jsonify({"error": msg}), 500
 
@@ -651,7 +709,23 @@ async def api_search() -> Any:
     bare legacy table.  If the album_artist/artist columns are absent it
     returns a graceful empty result with a hint to run a Navidrome import.
     """
-    return await _api_search_impl()
+    try:
+        return await _api_search_impl()
+    except Exception as exc:
+        # A search query proved the schema is missing search-critical
+        # columns (UndefinedColumn) — heal the table and retry ONCE before
+        # falling back to the 500.  ADD COLUMN IF NOT EXISTS is idempotent,
+        # so concurrent healers (hypercorn workers) are safe.
+        msg = str(exc)
+        if "column" in msg and "does not exist" in msg:
+            _self_heal_tracks_schema()
+            try:
+                return await _api_search_impl()
+            except Exception as retry_exc:
+                logger.error("Search error after schema heal", error=str(retry_exc), exc_info=True)
+                return jsonify({"error": str(retry_exc)}), 500
+        logger.error("Search error", error=msg, exc_info=True)
+        return jsonify({"error": msg}), 500
 
 
 # ===========================================================================

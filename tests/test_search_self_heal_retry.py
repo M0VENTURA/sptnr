@@ -71,7 +71,11 @@ class TestSearchSourceWiring:
 
     def test_uses_to_regclass_column_discovery(self):
         src = self._read_source()
-        assert "to_regclass('tracks')::text" in src
+        # The route resolves columns through the canonical helper
+        # (db.schema_helpers.get_table_columns), which uses to_regclass —
+        # the SAME resolution FROM tracks uses.
+        assert "_resolve_tracks_columns" in src
+        assert "get_table_columns" in src
 
     def test_three_way_expression_selection(self):
         src = self._read_source()
