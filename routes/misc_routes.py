@@ -168,11 +168,16 @@ def _resolve_tracks_columns(session: Any) -> set[str]:
     reads ``pg_attribute`` exactly as ``FROM tracks`` resolves; on other
     engines (SQLite test engine) it falls back to the SQLAlchemy inspector so
     the query layer is still exercised.
+
+    The catalog probe is only trusted when it returns a NON-EMPTY set: an
+    empty result means the probe could not resolve the table (regclass text
+    formatting quirks, a truly bare table, or a non-Postgres engine), in
+    which case the inspector reflection below reflects the real table.
     """
     try:
         from db.schema_helpers import get_table_columns
         cols = get_table_columns(session, "tracks")
-        if cols is not None:
+        if cols:
             return cols
     except Exception:
         pass

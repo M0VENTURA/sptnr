@@ -33,18 +33,28 @@ def get_table_columns(conn_or_session: Session | Connection, table_name: str) ->
 
     Mirrors :func:`table_exists`: resolves the bare name through
     ``to_regclass`` so the columns are read from whatever schema the queries
-    actually use.  Reads ``pg_attribute`` on the schema-qualified relation
-    resolved by ``to_regclass`` (not ``current_schema()``).
+    actually use.  Reads ``pg_attribute`` on the relation resolved by
+    ``to_regclass`` (not ``current_schema()``).
+
+    The filter compares ``a.attrelid`` (the relation OID) directly against
+    ``to_regclass(:name)`` rather than comparing ``nspname || '.' || relname``
+    to ``to_regclass(:name)::text``: ``regclass::text`` output OMITS the
+    schema qualifier when the object is visible through the current
+    ``search_path`` (e.g. ``to_regclass('tracks')::text`` → ``tracks`` on the
+    default ``"$user", public`` path), so the old text comparison never
+    matched and this helper silently returned an EMPTY column set on any
+    Postgres database with a default search path — making /api/search return
+    the graceful "run a Navidrome import" empty result while the artists /
+    albums / tracks browse pages (which query ``FROM tracks`` directly) kept
+    working.
     """
     rows = conn_or_session.execute(
         text("""
             SELECT a.attname
             FROM pg_attribute a
-            JOIN pg_class c ON c.oid = a.attrelid
-            JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE a.attnum > 0
+            WHERE a.attrelid = to_regclass(:name)
+              AND a.attnum > 0
               AND NOT a.attisdropped
-              AND (n.nspname || '.' || c.relname) = to_regclass(:name)::text
             ORDER BY a.attnum
         """),
         {"name": table_name},
@@ -66,11 +76,9 @@ def get_postgres_column_types(
         text("""
             SELECT a.attname, format_type(a.atttypid, a.atttypmod)
             FROM pg_attribute a
-            JOIN pg_class c ON c.oid = a.attrelid
-            JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE a.attnum > 0
+            WHERE a.attrelid = to_regclass(:name)
+              AND a.attnum > 0
               AND NOT a.attisdropped
-              AND (n.nspname || '.' || c.relname) = to_regclass(:name)::text
               AND a.attname = ANY(:columns)
         """),
         {"name": table_name, "columns": column_names_list},

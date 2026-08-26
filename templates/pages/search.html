@@ -256,8 +256,21 @@
     const searchResults = document.getElementById('searchResults');
     const emptyState = document.getElementById('emptyState');
     
-    const { artists = [], albums = [], tracks = [] } = data;
-    const hasResults = artists.length > 0 || albums.length > 0 || tracks.length > 0;
+    const { artists = [], tracks = [] } = data;
+    // The backend splits releases into buckets (studio albums, compilations,
+    // live albums, EPs, singles) — count them all so a search that only
+    // matches a single/EP/compilation still shows results.
+    const albumBuckets = [
+      { key: 'albums', icon: 'bi-disc', label: 'Albums' },
+      { key: 'compilations', icon: 'bi-collection', label: 'Compilations' },
+      { key: 'live_albums', icon: 'bi-mic', label: 'Live Albums' },
+      { key: 'eps', icon: 'bi-music-note-list', label: 'EPs' },
+      { key: 'singles', icon: 'bi-music-note-beamed', label: 'Singles' },
+    ];
+    const buckets = {};
+    albumBuckets.forEach(b => { buckets[b.key] = (data[b.key] || []); });
+    const albumTotal = albumBuckets.reduce((n, b) => n + buckets[b.key].length, 0);
+    const hasResults = artists.length > 0 || albumTotal > 0 || tracks.length > 0;
     
     if (!hasResults) {
       searchResults.style.display = 'none';
@@ -306,18 +319,21 @@
       `;
     }
     
-    // Albums section
-    if (albums.length > 0) {
+    // Release sections — every bucket the backend returns (studio albums,
+    // compilations, live albums, EPs, singles), rendered with its type badge.
+    albumBuckets.forEach(b => {
+      const items = buckets[b.key];
+      if (!items.length) return;
       html += `
         <div class="results-section">
           <h5 class="results-section-title">
-            <i class="bi bi-disc"></i> Albums (${albums.length})
+            <i class="${b.icon}"></i> ${b.label} (${items.length})
           </h5>
           <div class="results-grid">
-            ${albums.map(album => `
+            ${items.map(album => `
               <div class="card search-result-card" onclick="navigateTo('/album/${encodeURIComponent(album.artist)}/${encodeURIComponent(album.album)}')">
                 <div class="card-body">
-                  <span class="badge badge-success result-type-badge">Album</span>
+                  <span class="badge badge-success result-type-badge">${escapeHtml(album.type_label || b.label.replace(/s$/, ''))}</span>
                   <div class="result-title">${escapeHtml(album.album)}</div>
                   <div class="result-subtitle"><i class="bi bi-person"></i> ${escapeHtml(album.artist)}</div>
                   <div class="result-meta">
@@ -330,7 +346,7 @@
           </div>
         </div>
       `;
-    }
+    });
     
     // Tracks section
     if (tracks.length > 0) {
