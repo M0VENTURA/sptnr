@@ -1,282 +1,86 @@
-"""Regression: the public search route must heal a missing
-``tracks.album_artist`` column and retry once.
+"""Regression: /api/search must build its SQL from the ACTUAL ``tracks``
+columns resolved via ``to_regclass`` — album_artist → artist → none — so a
+legacy bare-tracks table (missing artist/album_artist/title) never 500s.
 
-A legacy bare ``tracks`` table (original system) lacks album_artist.  The
-introspection-based pre-check was unreliable (schema/search_path mismatch), so
-the heal is now FAILURE-DRIVEN: if the query itself throws UndefinedColumn for
-album_artist, the public route adds the column and calls the impl again.  This
-test pins that contract.
+The long saga: the search previously referenced album_artist unconditionally,
+then degraded to artist-only.  But the live DB turned out to have a TRULY
+bare ``tracks`` table (``id`` only) — even ``artist`` was absent.  This test
+pins the column-aware builder that handles all three states.
 
-The ``routes.misc_routes`` module cannot be imported directly in the test
-suite (a pre-existing circular import between ``db.repositories.tag_repository``
-and ``services.metadata.tag_file_service``), so the retry contract is verified
-by extracting the route's logic through a stub module-level harness that
-mirrors the exact structure of ``api_search``.
+The ``routes.misc_routes`` module cannot be imported directly (a pre-existing
+circular import), so the builder contract is verified via a local mirror and
+by asserting the committed source wires the right expressions.
 """
 
 from __future__ import annotations
 
-import asyncio
-
-import pytest
+import os
 
 
-class _MissingAlbumArtistError(RuntimeError):
-    pass
-
-
-def _artist_expressions(has_album_artist: bool) -> tuple[str, str]:
-    """Mirror of the route's artist-expr / artist-like builder."""
-    if has_album_artist:
+def _artist_columns(tracks_cols: set[str]) -> tuple[str, str]:
+    """Mirror of the route's artist-expr / artist-like selection."""
+    if "album_artist" in tracks_cols:
         return "COALESCE(NULLIF(album_artist, ''), artist)", "COALESCE(album_artist, '')"
-    return "artist", "COALESCE(artist, '')"
+    if "artist" in tracks_cols:
+        return "artist", "COALESCE(artist, '')"
+    return "", ""
 
 
-def _sql(template: str, has_album_artist: bool) -> str:
-    expr, like = _artist_expressions(has_album_artist)
-    return template.replace("{artist_expr}", expr).replace("{artist_like}", like)
+def _can_search(tracks_cols: set[str]) -> bool:
+    expr, _like = _artist_columns(tracks_cols)
+    return bool(expr) and ("title" in tracks_cols or "album" in tracks_cols)
 
 
-class TestSearchArtistExpressionDegradation:
-    """The search SQL must degrade to artist-only when album_artist is absent
-    (a legacy bare-tracks table), so the search bar never 500s even if the
-    boot-time ALTER can't run."""
+class TestSearchColumnAwareBuilder:
+    """The artist expression must be chosen from the real resolved columns."""
 
-    def test_full_expression_when_column_present(self):
-        template = "SELECT {artist_expr} AS variant, LOWER({artist_like}) LIKE :c"
-        out = _sql(template, has_album_artist=True)
-        assert "album_artist" in out
-        assert "COALESCE(NULLIF(album_artist, ''), artist)" in out
-        assert "{artist_expr}" not in out  # placeholder fully substituted
+    def test_full_columns_prefer_album_artist(self):
+        expr, like = _artist_columns({"id", "artist", "album_artist", "album", "title"})
+        assert expr == "COALESCE(NULLIF(album_artist, ''), artist)"
+        assert like == "COALESCE(album_artist, '')"
 
-    def test_artist_only_when_column_missing(self):
-        template = "SELECT {artist_expr} AS variant, LOWER({artist_like}) LIKE :c"
-        out = _sql(template, has_album_artist=False)
-        assert "album_artist" not in out
-        assert out.startswith("SELECT artist AS variant")
-        assert "{artist_like}" not in out
+    def test_no_album_artist_uses_artist(self):
+        expr, like = _artist_columns({"id", "artist", "album", "title"})
+        assert expr == "artist"
+        assert like == "COALESCE(artist, '')"
 
-    def test_no_placeholder_left_after_substitution(self):
-        """Every {artist_expr}/{artist_like} must be replaced — a leftover
-        placeholder would be invalid SQL."""
-        templates = [
-            "SELECT {artist_expr} FROM tracks GROUP BY {artist_expr}",
-            "WHERE LOWER({artist_like}) LIKE :contains",
-            "similarity({artist_expr}, :query)",
-        ]
-        for t in templates:
-            assert "{" not in _sql(t, has_album_artist=True)
-            assert "{" not in _sql(t, has_album_artist=False)
+    def test_bare_tracks_table_no_searchable_columns(self):
+        """A tracks(id)-only table cannot be searched — must NOT 500."""
+        cols = {"id"}
+        assert _can_search(cols) is False
+
+    def test_artist_without_title_can_search_albums(self):
+        """With artist + album (no title) we can still search albums."""
+        cols = {"id", "artist", "album"}
+        assert _can_search(cols) is True
+
+    def test_no_artist_no_search(self):
+        """Without ANY artist column (bare tracks(id)+title), the route
+        returns the graceful empty payload — no artist grouping possible."""
+        assert _can_search({"id", "title"}) is False
 
 
-class TestSearchDegradedRetryPersistence:
-    """Once degraded, the artist-only mode persists across requests (module
-    flag) so the first failing request's retry and all later requests use
-    artist-only SQL — no per-request re-probe that could flip back."""
+class TestSearchSourceWiring:
+    """The committed route must use to_regclass-based column discovery and
+    the three-way expression selection."""
 
-    def test_impl_uses_module_flag(self):
-        """_api_search_impl must read the module-level degraded flag, not a
-        per-call probe (which was the unreliable path)."""
-        import inspect
-        src = inspect.getsource(_api_search_impl) if "_api_search_impl" in dir() else ""
-        # We can't import the real module (circular import) — verify the
-        # pattern via the committed source instead.
-        import os
+    def _read_source(self) -> str:
         repo = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
         with open(os.path.join(repo, "routes", "misc_routes.py"), encoding="utf-8") as fh:
-            source = fh.read()
-        # The impl must reference the module flag (not a schema probe that
-        # can see a tracks table in another schema).
-        assert "_SEARCH_ALBUM_ARTIST_DEGRADED" in source
-        # And the artist-expr builder must pick based on that flag.
-        assert 'if _SEARCH_ALBUM_ARTIST_DEGRADED:' in source
+            return fh.read()
 
-    def test_artist_only_expr_used_when_flag_set(self):
-        """With the flag set, the SQL builder yields plain artist — no
-        album_artist anywhere (the exact regression)."""
-        # Reuse the route's builder contract via the local _sql mirror with
-        # has_album_artist=False, plus assert the module source wires the flag
-        # to that branch.
-        import os
-        repo = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-        with open(os.path.join(repo, "routes", "misc_routes.py"), encoding="utf-8") as fh:
-            source = fh.read()
-        assert '"artist"' in source and '"COALESCE(artist, \'\')"' in source
+    def test_uses_to_regclass_column_discovery(self):
+        src = self._read_source()
+        assert "to_regclass('tracks')::text" in src
 
+    def test_three_way_expression_selection(self):
+        src = self._read_source()
+        assert '"album_artist" in _tracks_cols' in src
+        assert '"artist" in _tracks_cols' in src
+        assert 'COALESCE(NULLIF(album_artist, \'\'), artist)' in src
 
-async def _public_route(impl, db_session_cm, get_columns):
-    """Mirror of routes/misc_routes.api_search (the retry + heal contract)."""
-    try:
-        return await impl()
-    except _MissingAlbumArtistError:
-        try:
-            with db_session_cm() as session:
-                cols = get_columns(session, "tracks")
-                session.execute("ALTER TABLE tracks ADD COLUMN IF NOT EXISTS album_artist TEXT")
-                if "artist" in cols:
-                    session.execute("UPDATE tracks SET album_artist = artist WHERE album_artist IS NULL")
-        except Exception:
-            pass
-        return await impl()
-
-
-class TestSearchSelfHealRetry:
-    def test_missing_column_heals_and_retries(self, monkeypatch):
-        """A first impl call raising _MissingAlbumArtistError triggers the
-        ALTER, and the second call returns the real result."""
-        calls: list[int] = []
-        healed: list[str] = []
-
-        async def _fake_impl():
-            calls.append(1)
-            if len(calls) == 1:
-                raise _MissingAlbumArtistError("column album_artist does not exist")
-            return {"success": True, "healed": True}
-
-        class _FakeSession:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
-            def execute(self, sql, params=None):
-                healed.append(str(sql))
-                return None
-
-        def _db_cm():
-            return _FakeSession()
-
-        def _columns(session, table):
-            return {"id", "artist"}
-
-        result = asyncio.run(_public_route(_fake_impl, _db_cm, _columns))
-        assert result == {"success": True, "healed": True}
-        assert calls == [1, 1]  # first raised, second succeeded
-        assert len(healed) == 2  # ALTER + backfill UPDATE ran
-
-    def test_no_error_no_heal(self, monkeypatch):
-        """A clean impl result does NOT trigger the heal."""
-        calls: list[int] = []
-        healed: list[str] = []
-
-        async def _fake_impl():
-            calls.append(1)
-            return {"success": True, "tracks": []}
-
-        class _FakeSession:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
-            def execute(self, sql, params=None):
-                healed.append(str(sql))
-                return None
-
-        result = asyncio.run(_public_route(_fake_impl, lambda: _FakeSession(), lambda s, t: {"id"}))
-        assert result == {"success": True, "tracks": []}
-        assert calls == [1]
-        assert healed == []  # no ALTER on a clean path
-
-
-class TestSearchSelfHealRetryResilient:
-    """The heal must not let a backfill failure roll back the ALTER, and a
-    failed retry must return a graceful error (not an unhandled exception)."""
-
-    def test_backfill_failure_does_not_roll_back_alter(self, monkeypatch):
-        """If the backfill UPDATE fails (missing artist column), the ALTER
-        (already committed in its own transaction) still stands, and the
-        retry runs."""
-        committed: list[str] = []
-        calls: list[int] = []
-
-        class _FakeSession:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
-            def execute(self, sql, params=None):
-                sql_s = str(sql)
-                if sql_s.startswith("ALTER"):
-                    committed.append(sql_s)
-                    return None
-                raise RuntimeError('column "artist" does not exist')
-
-        def _alter_cm():
-            return _FakeSession()
-
-        def _backfill_cm():
-            return _FakeSession()
-
-        async def _impl():
-            calls.append(1)
-            if len(calls) == 1:
-                raise _MissingAlbumArtistError("column album_artist does not exist")
-            return {"success": True, "tracks": []}
-
-        async def _route():
-            try:
-                return await _impl()
-            except _MissingAlbumArtistError:
-                try:
-                    with _alter_cm() as s:
-                        s.execute("ALTER TABLE tracks ADD COLUMN IF NOT EXISTS album_artist TEXT")
-                    try:
-                        with _backfill_cm() as s:
-                            s.execute("UPDATE tracks SET album_artist = artist WHERE album_artist IS NULL")
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
-                return await _impl()
-
-        result = asyncio.run(_route())
-        assert result == {"success": True, "tracks": []}
-        assert calls == [1, 1]
-        assert len(committed) == 1  # ALTER happened despite backfill failure
-
-    def test_retry_failure_returns_graceful_500(self, monkeypatch):
-        """If the retry STILL fails (heal ineffective), the route returns a
-        500 JSON — never lets the exception escape."""
-        calls: list[int] = []
-
-        async def _impl_always_raises():
-            calls.append(1)
-            raise _MissingAlbumArtistError("column album_artist does not exist")
-
-        class _FakeSession:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
-            def execute(self, sql, params=None):
-                return None
-
-        async def _route():
-            try:
-                return await _impl_always_raises()
-            except _MissingAlbumArtistError:
-                try:
-                    with _FakeSession():
-                        pass
-                    try:
-                        with _FakeSession():
-                            pass
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
-                try:
-                    return await _impl_always_raises()
-                except Exception as exc:
-                    return {"error": f"Search failed: {exc}"}
-
-        result = asyncio.run(_route())
-        assert "error" in result
-        assert calls == [1, 1]  # initial + retry, both raised
+    def test_graceful_empty_result_for_bare_table(self):
+        src = self._read_source()
+        # A bare table returns an empty-but-successful payload, never a 500.
+        assert "not _can_search" in src
+        assert '"artists": [],' in src

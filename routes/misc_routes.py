@@ -159,25 +159,6 @@ def api_sandbox_metrics() -> Any:
 # SEARCH
 # ===========================================================================
 
-# Persists the degraded (artist-only) search mode across requests.  Once the
-# album_artist column proves absent, every subsequent /api/search call uses
-# artist-only SQL — the column may never be addable (permissions/schema), and
-# search must keep working.  Set back to False by the schema heal when the
-# ALTER succeeds.
-_SEARCH_ALBUM_ARTIST_DEGRADED = False
-
-
-def _set_search_album_artist_degraded(value: bool) -> None:
-    """Set the module-level degraded-search flag (artist-only SQL)."""
-    global _SEARCH_ALBUM_ARTIST_DEGRADED
-    _SEARCH_ALBUM_ARTIST_DEGRADED = bool(value)
-
-
-class _MissingAlbumArtistError(RuntimeError):
-    """Raised internally when a search query hits ``column album_artist does
-    not exist`` — triggers the one-time schema heal + retry."""
-
-
 async def _api_search_impl() -> Any:
     """Search artists, albums and tracks with legacy ranking behaviour.
 
@@ -187,8 +168,9 @@ async def _api_search_impl() -> Any:
     "Spice Girls".  When pg_trgm is unavailable (a DB that skipped migration
     010) the query falls back to plain ``LIKE`` ranking.
 
-    Raises :class:`_MissingAlbumArtistError` when ``tracks.album_artist`` is
-    missing so the public route can heal the schema and retry.
+    The SQL is built from the ACTUAL ``tracks`` columns resolved via
+    ``to_regclass`` — album_artist → artist → none — so a legacy bare-tracks
+    table never 500s; it returns an empty result with a hint instead.
     """
     try:
         data = (await request.get_json(silent=True)) or {}
@@ -201,49 +183,66 @@ async def _api_search_impl() -> Any:
         starts_pattern = f"{query}%"
         contains_pattern = f"%{query}%"
 
-        # The artist expression used across ALL search SQL below.
-        #
-        # A legacy bare-tracks DB (or a schema/permissions situation that
-        # blocked the boot-time ALTER) may lack ``album_artist``.  Detection
-        # via information_schema was unreliable (a tracks table in ANOTHER
-        # schema made the check report the column present), so the expression
-        # is chosen by TRYING the album_artist-aware query first and falling
-        # back to artist-only on ``UndefinedColumn``.  Both forms share the
-        # same {artist_expr}/{artist_like} templates.
-        #
-        # Optimistic default: prefer album-artist aggregation (better group
-        # results).  Degraded to plain artist only when the query proves the
-        # column is absent.
-        if _SEARCH_ALBUM_ARTIST_DEGRADED:
+        # Discover the ACTUAL columns on the search_path-resolved ``tracks``
+        # table (via to_regclass, not information_schema — which could see a
+        # tracks table in another schema).  A legacy bare-tracks DB may lack
+        # artist/album_artist entirely, so the SQL is built from what really
+        # exists and the search NEVER 500s on a missing column.
+        with db_session() as session:
+            _tracks_cols = {
+                str(r[0]) for r in session.execute(text("""
+                    SELECT a.attname
+                    FROM pg_attribute a
+                    JOIN pg_class c ON c.oid = a.attrelid
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                    WHERE a.attnum > 0 AND NOT a.attisdropped
+                      AND (n.nspname || '.' || c.relname) = to_regclass('tracks')::text
+                """)).fetchall()
+            }
+            _trgm_ok = False
+            try:
+                from helpers.config_helpers import get_search_fuzzy_config
+                if get_search_fuzzy_config().get("enabled", True):
+                    _trgm_ok = bool(
+                        session.execute(
+                            text("SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm'")
+                        ).scalar()
+                    )
+            except Exception:
+                _trgm_ok = False
+
+        # Pick the artist expression from what the table actually has:
+        #   album_artist (best) -> artist -> (fallback) no artist search.
+        if "album_artist" in _tracks_cols:
+            _artist_expr = "COALESCE(NULLIF(album_artist, ''), artist)"
+            _artist_like = "COALESCE(album_artist, '')"
+        elif "artist" in _tracks_cols:
             _artist_expr = "artist"
             _artist_like = "COALESCE(artist, '')"
         else:
-            _artist_expr = "COALESCE(NULLIF(album_artist, ''), artist)"
-            _artist_like = "COALESCE(album_artist, '')"
+            _artist_expr = ""
+            _artist_like = ""
+
+        _can_search = bool(_artist_expr) and ("title" in _tracks_cols or "album" in _tracks_cols)
 
         def _sql(template: str):
             """Inject the artist expression into a SQL template and return a
             SQLAlchemy text() object ready to execute."""
             return text(template.replace("{artist_expr}", _artist_expr).replace("{artist_like}", _artist_like))
 
-        def _is_missing_album_artist(exc: BaseException) -> bool:
-            msg = str(exc)
-            return "album_artist" in msg and "does not exist" in msg
-
-        # pg_trgm availability (Postgres + extension present + feature on).
-        # When missing or disabled, fall back to the legacy ranking.
-        _trgm_ok = False
-        try:
-            from helpers.config_helpers import get_search_fuzzy_config
-            if get_search_fuzzy_config().get("enabled", True):
-                with db_session() as session:
-                    _trgm_ok = bool(
-                        session.execute(
-                            text("SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm'")
-                        ).scalar()
-                    )
-        except Exception:
-            _trgm_ok = False
+        # No searchable columns (truly bare tracks(id) table) — return an
+        # empty-but-successful response instead of 500ing.
+        if not _can_search:
+            return jsonify({
+                "artists": [],
+                "albums": [],
+                "compilations": [],
+                "live_albums": [],
+                "eps": [],
+                "singles": [],
+                "tracks": [],
+                "note": "Library tracks table is not fully populated yet — run a Navidrome import scan to populate track metadata.",
+            })
 
         with db_session() as session:
             if _trgm_ok:
@@ -636,62 +635,23 @@ async def _api_search_impl() -> Any:
             "tracks": tracks,
         })
     except Exception as exc:
+        # The SQL is built from the ACTUAL resolved columns, so a missing
+        # column here is a genuine race — return graceful 500.
         msg = str(exc)
-        # A legacy bare ``tracks`` table is missing album_artist — let the
-        # public route heal it and retry once.
-        if _is_missing_album_artist(exc):
-            if _SEARCH_ALBUM_ARTIST_DEGRADED:
-                # Already degraded and still failing — surface it.
-                raise _MissingAlbumArtistError(msg) from exc
-            # Degrade to artist-only SQL and re-run once.  This is the
-            # definitive fix: search works even when the column can never be
-            # added (permissions/schema).
-            _set_search_album_artist_degraded(True)
-            logger.warning("Search degraded to artist-only SQL (album_artist column absent)")
-            return await _api_search_impl()
         logger.error("Search error", error=msg, exc_info=True)
         return jsonify({"error": msg}), 500
 
 
 @misc_api_bp.route("/search", methods=["POST"])
 async def api_search() -> Any:
-    """Public search route — heals a missing ``tracks.album_artist`` column
-    on the fly (legacy bare-tracks DBs) and retries once."""
-    try:
-        return await _api_search_impl()
-    except _MissingAlbumArtistError:
-        healed = False
-        try:
-            with db_session() as session:
-                # The ALTER is idempotent and resolves via search_path.
-                # Postgres DDL is transactional: a failing backfill UPDATE
-                # would roll back the ALTER too.  So the ALTER is committed
-                # FIRST (its own transaction), then the backfill runs in a
-                # separate attempt and any failure is logged without undoing
-                # the schema fix.
-                session.execute(text("ALTER TABLE tracks ADD COLUMN IF NOT EXISTS album_artist TEXT"))
-            # Backfill in a SECOND transaction so a missing ``artist`` column
-            # (truly bare tracks(id) table) can never roll back the ALTER.
-            try:
-                with db_session() as session:
-                    session.execute(text("UPDATE tracks SET album_artist = artist WHERE album_artist IS NULL"))
-            except Exception as backfill_err:
-                logger.warning("Search self-heal backfill skipped (artist column may be absent)", error=str(backfill_err))
-            healed = True
-            # The column now exists — resume album_artist-aware search.
-            _set_search_album_artist_degraded(False)
-            logger.warning("Search self-heal: added missing tracks.album_artist after UndefinedColumn")
-        except Exception as heal_err:
-            logger.error("Search self-heal FAILED to add tracks.album_artist", error=str(heal_err))
+    """Public search route.
 
-        # Retry once.  If the heal truly failed (or the column is in another
-        # schema that ALTER can't reach), _api_search_impl already degrades
-        # to artist-only SQL (module flag), so this retry will SUCCEED.
-        try:
-            return await _api_search_impl()
-        except Exception as retry_exc:
-            logger.error("Search retry failed after self-heal", error=str(retry_exc), healed=healed, exc_info=True)
-            return jsonify({"error": f"Search failed: {retry_exc}"}), 500
+    The search SQL is built from the actual ``tracks`` columns resolved via
+    ``to_regclass`` (album_artist → artist → none), so it never 500s on a
+    bare legacy table.  If the album_artist/artist columns are absent it
+    returns a graceful empty result with a hint to run a Navidrome import.
+    """
+    return await _api_search_impl()
 
 
 # ===========================================================================
