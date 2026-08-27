@@ -159,6 +159,17 @@ def api_sandbox_metrics() -> Any:
 # SEARCH
 # ===========================================================================
 
+# Set by ``api_search`` when a search query fails with a missing column
+# (UndefinedColumn).  The retry then FORCES the artist-based SQL instead of
+# re-trusting the column probe, which can disagree with the table the query
+# actually runs against (a probe resolving a different ``tracks`` via a
+# pooled connection's ``search_path`` while the query hits another — the
+# recurring live-log failure where the probe reports album_artist but
+# ``FROM tracks`` says it does not exist).  ``artist`` provably exists in
+# those logs, so the degraded path always succeeds.
+_SEARCH_FORCE_ARTIST: bool = False
+
+
 def _resolve_tracks_columns(session: Any, table_name: str = "tracks") -> set[str]:
     """Return the ACTUAL column names on the search_path-resolved ``tracks``
     table.
@@ -342,7 +353,14 @@ async def _api_search_impl() -> Any:
 
         # Pick the artist expression from what the table actually has:
         #   album_artist (best) -> artist -> (fallback) no artist search.
-        if "album_artist" in _tracks_cols:
+        # When ``_SEARCH_FORCE_ARTIST`` is set (a previous search proved
+        # album_artist unusable on the query's connection), skip the probe
+        # entirely and go straight to ``artist`` — the provably-working path
+        # in the live logs.
+        if _SEARCH_FORCE_ARTIST:
+            _artist_expr = "artist" if "artist" in _tracks_cols else ""
+            _artist_like = "COALESCE(artist, '')" if _artist_expr else ""
+        elif "album_artist" in _tracks_cols:
             _artist_expr = "COALESCE(NULLIF(album_artist, ''), artist)"
             _artist_like = "COALESCE(album_artist, '')"
         elif "artist" in _tracks_cols:
@@ -378,6 +396,29 @@ async def _api_search_impl() -> Any:
             })
 
         with db_session() as session:
+            # ── Per-connection pre-flight (decisive) ──────────────────────
+            # The probe above ran on a DIFFERENT connection.  A pooled
+            # connection can carry a different ``search_path`` than another
+            # (the recurring live-log failure: probe reports album_artist,
+            # but the query's connection says it does not exist).  Verify the
+            # artist expression's columns on THIS exact connection; if the
+            # selected column is unusable here, degrade to ``artist`` before
+            # any query runs.  ``_sql`` closes over ``_artist_expr`` /
+            # ``_artist_like`` by reference, so reassigning them here changes
+            # the SQL below.
+            if _artist_expr and "album_artist" in _artist_expr:
+                try:
+                    session.execute(text("SELECT album_artist FROM tracks LIMIT 0"))
+                except Exception:
+                    # album_artist unusable on this connection — degrade to
+                    # artist (provably present: the browse pages work).
+                    if "artist" in _tracks_cols:
+                        _artist_expr = "artist"
+                        _artist_like = "COALESCE(artist, '')"
+                    else:
+                        _artist_expr = ""
+                        _artist_like = ""
+
             if _trgm_ok:
                 # Trigram similarity fallback column: 0 when the extension is
                 # absent.  Used only as a tiebreaker AFTER the exact/prefix/
@@ -787,9 +828,19 @@ async def api_search() -> Any:
     ``to_regclass`` (album_artist → artist → none), so it never 500s on a
     bare legacy table.  If the album_artist/artist columns are absent it
     returns a graceful empty result with a hint to run a Navidrome import.
+
+    Failure-driven self-heal: when a query proves a search-critical column
+    is unusable on the query's connection (``UndefinedColumn``), the schema
+    is healed and the retry FORCES the ``artist``-based SQL (via
+    ``_SEARCH_FORCE_ARTIST``) instead of re-trusting the probe — the
+    provably-working path even when the probe keeps resolving a different
+    ``tracks`` table.
     """
+    global _SEARCH_FORCE_ARTIST
     try:
-        return await _api_search_impl()
+        result = await _api_search_impl()
+        _SEARCH_FORCE_ARTIST = False
+        return result
     except Exception as exc:
         # A search query proved the schema is missing search-critical
         # columns (UndefinedColumn) — heal the table and retry ONCE before
@@ -798,6 +849,7 @@ async def api_search() -> Any:
         msg = str(exc)
         if "column" in msg and "does not exist" in msg:
             _self_heal_tracks_schema()
+            _SEARCH_FORCE_ARTIST = True
             try:
                 return await _api_search_impl()
             except Exception as retry_exc:

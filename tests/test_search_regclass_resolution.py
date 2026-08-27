@@ -121,6 +121,28 @@ class TestRegclassResolutionWiring:
         assert "_self_heal_tracks_schema()" in probe
         assert "Re-probe" in src or "_tracks_cols = _resolve_tracks_columns(session" in probe
 
+    def test_force_artist_retry_after_missing_column(self):
+        src = _read_source(os.path.join("routes", "misc_routes.py"))
+        # The failure-driven retry must FORCE artist-based SQL instead of
+        # re-trusting the probe, which can disagree with the query's
+        # connection (the recurring live-log failure).
+        assert "_SEARCH_FORCE_ARTIST" in src
+        # The retry sets the flag before re-running:
+        route = src[src.find("async def api_search"):src.find("async def api_stats")]
+        assert "_SEARCH_FORCE_ARTIST = True" in route
+        # The expression selection consumes the flag:
+        assert "if _SEARCH_FORCE_ARTIST:" in src
+
+    def test_query_session_preflights_album_artist(self):
+        src = _read_source(os.path.join("routes", "misc_routes.py"))
+        # The query block must verify the selected artist column on the SAME
+        # connection that runs the queries (a pooled connection can carry a
+        # different search_path than the probe's connection).  If album_artist
+        # is unusable there, degrade to artist before any query runs.
+        assert 'SELECT album_artist FROM tracks LIMIT 0' in src
+        assert 'if "artist" in _tracks_cols:' in src
+        assert '_artist_expr = "artist"' in src
+
     def test_resolve_tracks_columns_only_trusts_non_empty_probe(self):
         src = _read_source(os.path.join("routes", "misc_routes.py"))
         # An empty probe result falls through to the inspector — it must not
