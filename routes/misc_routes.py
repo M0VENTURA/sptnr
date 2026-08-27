@@ -159,7 +159,7 @@ def api_sandbox_metrics() -> Any:
 # SEARCH
 # ===========================================================================
 
-def _resolve_tracks_columns(session: Any) -> set[str]:
+def _resolve_tracks_columns(session: Any, table_name: str = "tracks") -> set[str]:
     """Return the ACTUAL column names on the search_path-resolved ``tracks``
     table.
 
@@ -176,7 +176,7 @@ def _resolve_tracks_columns(session: Any) -> set[str]:
     """
     try:
         from db.schema_helpers import get_table_columns
-        cols = get_table_columns(session, "tracks")
+        cols = get_table_columns(session, table_name)
         if cols:
             return cols
     except Exception:
@@ -187,7 +187,7 @@ def _resolve_tracks_columns(session: Any) -> set[str]:
         inspector = _sa.inspect(session.get_bind())
         return {
             str(col["name"])
-            for col in inspector.get_columns("tracks") or []
+            for col in inspector.get_columns(table_name) or []
         }
     except Exception:
         return set()
@@ -201,22 +201,21 @@ def _self_heal_tracks_schema() -> None:
     so this converges on any starting state and is safe to run on every
     request until the columns exist.
 
-    The ALTER targets the schema-qualified name resolved via ``to_regclass``
-    (``resolve_table_qualified_name``) — NOT the bare ``tracks`` — so the
-    column is added to the EXACT table the search's ``FROM tracks`` resolves
-    to.  A bare ``ALTER TABLE tracks`` can resolve differently when the app
-    connection's ``search_path`` differs from the database default, which is
-    the recurring "column album_artist does not exist" even after the
-    bootstrap's own column-ensure appears to succeed.
+    The ALTER targets bare ``tracks`` — the SAME table the artists / albums /
+    tracks browse pages query (which provably work with album_artist).  An
+    earlier version targeted the schema-qualified name
+    (``resolve_table_qualified_name`` → ``public.tracks``), but the browse
+    pages resolve bare ``tracks`` to a DIFFERENT physical table (the one
+    WITH album_artist), so the qualified-name ALTER kept missing the real
+    table and the error repeated forever.
 
     IMPORTANT: the ALTERs run UNCONDITIONALLY (no ``if col in existing``
     skip).  The column probe can disagree with reality (e.g. it resolves a
-    different ``tracks`` via ``search_path`` than the explicit qualified
-    table, or returns ORM-declared columns for a bare table), and a skip
-    based on that wrong probe would permanently prevent the column from
-    being added — the exact "heals but never converges" failure seen in the
-    live logs.  ``ADD COLUMN IF NOT EXISTS`` is a no-op when the column is
-    already present, so unconditional execution is always safe.
+    different ``tracks`` via ``search_path``, or returns ORM-declared
+    columns for a bare table), and a skip based on that wrong probe would
+    permanently prevent the column from being added.  ``ADD COLUMN IF NOT
+    EXISTS`` is a no-op when the column is already present, so unconditional
+    execution is always safe.
 
     The ALTERs run in their OWN committed ``db_session`` each (a separate
     transaction per column) and the backfill in another.  PostgreSQL aborts
@@ -229,27 +228,16 @@ def _self_heal_tracks_schema() -> None:
     """
     try:
         from db.engine import db_session as _ds
-        from db.schema_helpers import resolve_table_qualified_name
         from sqlalchemy import text as _text
 
         # ── Phase 1: add the columns — one committed tx per column so a
         # failing statement can never roll back a successful ALTER. ──────
-        qualified: str | None = None
-        with _ds() as session:
-            try:
-                qualified = resolve_table_qualified_name(session, "tracks")
-            except Exception:
-                qualified = None
-        if not qualified:
-            logger.warning("Search schema self-heal: tracks does not resolve")
-            return
-
         for col, ddl in (("album_artist", "TEXT"), ("artist", "TEXT"),
                          ("title", "TEXT"), ("album", "TEXT")):
             try:
                 with _ds() as session:
                     session.execute(_text(
-                        f"ALTER TABLE {qualified} ADD COLUMN IF NOT EXISTS {col} {ddl}"
+                        f"ALTER TABLE tracks ADD COLUMN IF NOT EXISTS {col} {ddl}"
                     ))
             except Exception as col_exc:
                 logger.debug(
@@ -262,7 +250,7 @@ def _self_heal_tracks_schema() -> None:
         try:
             with _ds() as session:
                 session.execute(_text(
-                    f"UPDATE {qualified} SET album_artist = artist WHERE album_artist IS NULL"
+                    "UPDATE tracks SET album_artist = artist WHERE album_artist IS NULL"
                 ))
         except Exception as backfill_exc:
             logger.debug(
@@ -309,21 +297,18 @@ async def _api_search_impl() -> Any:
         # engine (e.g. the SQLite test engine), turning every search into a
         # "Search failed" page instead of results or a graceful empty state.
         #
-        # The search queries ALSO run against the schema-qualified name
-        # resolved via to_regclass (``resolve_table_qualified_name``) so
-        # ``FROM <qualified>`` always hits the same table the probe read —
-        # immune to search_path ambiguity between the bootstrap's bare
-        # ``ALTER TABLE tracks`` and the search's ``FROM tracks`` (the
-        # recurring "column album_artist does not exist" at search time).
+        # The search SQL runs against bare ``FROM tracks`` — the SAME table
+        # the artists / albums / tracks browse pages query (which provably
+        # work with album_artist).  The probe reads the same bare name, so
+        # probe and query always agree.  NOTE: an earlier attempt pinned the
+        # search to the schema-qualified name (``resolve_table_qualified_name``
+        # → ``public.tracks``) — but the browse pages resolve bare ``tracks``
+        # to a DIFFERENT physical table (the one WITH album_artist), so the
+        # qualified name hit a stale bare table and produced the recurring
+        # "column album_artist does not exist" against ``FROM public.tracks``.
+        # Bare ``tracks`` is the correct target.
         with db_session() as session:
-            _tracks_cols = _resolve_tracks_columns(session)
-            from db.schema_helpers import resolve_table_qualified_name
-            try:
-                _tracks_table = resolve_table_qualified_name(session, "tracks") or "tracks"
-            except Exception:
-                # Non-Postgres engine (test suite) — the bare name resolves
-                # via search_path on the same connection as the queries.
-                _tracks_table = "tracks"
+            _tracks_cols = _resolve_tracks_columns(session, "tracks")
             _trgm_ok = False
             try:
                 from helpers.config_helpers import get_search_fuzzy_config
@@ -353,7 +338,7 @@ async def _api_search_impl() -> Any:
             # Re-probe: the heal may have added the columns; pick the artist
             # expression from the post-heal reality.
             with db_session() as session:
-                _tracks_cols = _resolve_tracks_columns(session)
+                _tracks_cols = _resolve_tracks_columns(session, "tracks")
 
         # Pick the artist expression from what the table actually has:
         #   album_artist (best) -> artist -> (fallback) no artist search.
@@ -370,13 +355,12 @@ async def _api_search_impl() -> Any:
         _can_search = bool(_artist_expr) and ("title" in _tracks_cols or "album" in _tracks_cols)
 
         def _sql(template: str):
-            """Inject the artist expression + resolved table name into a SQL
-            template and return a SQLAlchemy text() object ready to execute."""
+            """Inject the artist expression into a SQL template and return a
+            SQLAlchemy text() object ready to execute."""
             return text(
                 template
                 .replace("{artist_expr}", _artist_expr)
                 .replace("{artist_like}", _artist_like)
-                .replace("{tracks_table}", _tracks_table)
             )
 
         # No searchable columns (truly bare tracks(id) table) — return an
@@ -407,7 +391,7 @@ async def _api_search_impl() -> Any:
                                 LOWER({artist_expr}) AS name_key,
                                 COUNT(*) AS cnt,
                                 COUNT(DISTINCT album) AS album_count
-                            FROM {tracks_table}
+                            FROM tracks
                             WHERE LOWER(COALESCE(artist, '')) LIKE :contains
                                OR LOWER({artist_like}) LIKE :contains
                             GROUP BY {artist_expr}
@@ -461,7 +445,7 @@ async def _api_search_impl() -> Any:
                                 LOWER({artist_expr}) AS name_key,
                                 COUNT(*) AS cnt,
                                 COUNT(DISTINCT album) AS album_count
-                            FROM {tracks_table}
+                            FROM tracks
                             WHERE LOWER(COALESCE(artist, '')) LIKE :contains
                                OR LOWER({artist_like}) LIKE :contains
                             GROUP BY {artist_expr}
@@ -539,7 +523,7 @@ async def _api_search_impl() -> Any:
                                     similarity({artist_expr}, :query),
                                     similarity(COALESCE(artist, ''), :query)
                                 ) AS sim
-                            FROM {tracks_table}
+                            FROM tracks
                             WHERE LOWER(COALESCE(album, '')) LIKE :contains
                                OR LOWER({artist_like}) LIKE :contains
                                OR LOWER(COALESCE(artist, '')) LIKE :contains
@@ -606,7 +590,7 @@ async def _api_search_impl() -> Any:
                                     WHEN LOWER(COALESCE(album, '')) LIKE :starts THEN 1
                                     ELSE 2
                                 END AS match_rank
-                            FROM {tracks_table}
+                            FROM tracks
                             WHERE LOWER(COALESCE(album, '')) LIKE :contains
                                OR LOWER({artist_like}) LIKE :contains
                                OR LOWER(COALESCE(artist, '')) LIKE :contains
@@ -717,7 +701,7 @@ async def _api_search_impl() -> Any:
                                 similarity(COALESCE(artist, ''), :query),
                                 similarity({artist_like}, :query)
                             ) AS sim
-                        FROM {tracks_table}
+                        FROM tracks
                         WHERE LOWER(COALESCE(title, '')) LIKE :contains
                            OR LOWER(COALESCE(artist, '')) LIKE :contains
                            OR LOWER({artist_like}) LIKE :contains
@@ -750,7 +734,7 @@ async def _api_search_impl() -> Any:
                                 WHEN LOWER(COALESCE(title, '')) LIKE :contains THEN 2
                                 ELSE 3
                             END AS match_rank
-                        FROM {tracks_table}
+                        FROM tracks
                         WHERE LOWER(COALESCE(title, '')) LIKE :contains
                            OR LOWER(COALESCE(artist, '')) LIKE :contains
                            OR LOWER({artist_like}) LIKE :contains

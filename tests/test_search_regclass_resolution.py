@@ -59,23 +59,25 @@ class TestRegclassResolutionWiring:
         assert "quote_ident(n.nspname) || '.' || quote_ident(c.relname)" in src
         assert "c.oid = to_regclass(:name)" in src
 
-    def test_search_sql_uses_resolved_tracks_table(self):
+    def test_search_sql_uses_bare_tracks_like_browse_pages(self):
         src = _read_source(os.path.join("routes", "misc_routes.py"))
-        # The search templates must run against the resolved schema-qualified
-        # table (not a bare FROM tracks) so the probe / heal / query always
-        # agree on which physical table they touch.
-        assert "FROM {tracks_table}" in src
-        assert "resolve_table_qualified_name" in src
-        assert '"{tracks_table}"' in src or ".replace(\"{tracks_table}\", _tracks_table)" in src
+        # The search templates must run against bare ``FROM tracks`` — the
+        # SAME table the artists/albums/tracks browse pages query (which
+        # provably work with album_artist).  An earlier attempt pinned the
+        # search to the schema-qualified name (public.tracks), which hit a
+        # stale bare table and produced the recurring "column album_artist
+        # does not exist" against FROM public.tracks.
+        assert "FROM tracks" in src
+        assert "FROM {tracks_table}" not in src
 
-    def test_self_heal_alters_qualified_table(self):
+    def test_self_heal_alters_bare_tracks(self):
         src = _read_source(os.path.join("routes", "misc_routes.py"))
-        # The self-heal must ALTER the resolved schema-qualified table — a
-        # bare ALTER TABLE tracks can miss when search_path differs.
+        # The self-heal must ALTER bare ``tracks`` — the same table the
+        # browse pages query.  The qualified-name ALTER (public.tracks) kept
+        # missing the real table.
         heal = src[src.find("def _self_heal_tracks_schema"):src.find("async def _api_search_impl")]
-        assert "resolve_table_qualified_name" in heal
-        assert "ALTER TABLE {qualified}" in heal
-        assert "UPDATE {qualified}" in heal
+        assert "ALTER TABLE tracks ADD COLUMN IF NOT EXISTS {col} {ddl}" in heal
+        assert "UPDATE tracks SET album_artist = artist" in heal
 
     def test_self_heal_runs_alter_unconditionally(self):
         src = _read_source(os.path.join("routes", "misc_routes.py"))
@@ -89,7 +91,7 @@ class TestRegclassResolutionWiring:
         assert "if col in existing:" not in heal
         # The ALTER template runs for every search-critical column via the
         # loop over the 4-column tuple, unconditionally:
-        assert "ALTER TABLE {qualified} ADD COLUMN IF NOT EXISTS {col} {ddl}" in heal
+        assert "ALTER TABLE tracks ADD COLUMN IF NOT EXISTS {col} {ddl}" in heal
         assert '("album_artist", "TEXT"), ("artist", "TEXT")' in heal
 
     def test_self_heal_commits_each_alter_independently(self):
@@ -100,12 +102,13 @@ class TestRegclassResolutionWiring:
         # every search but never persist (repeated errors forever).  Each
         # ALTER and the backfill must run in their own committed db_session.
         heal = src[src.find("def _self_heal_tracks_schema"):src.find("async def _api_search_impl")]
-        # The ALTER loop opens a fresh session per column:
-        assert "with _ds() as session:" in heal
-        assert heal.count("with _ds() as session:") >= 3  # resolve + 4-column loop + backfill
+        # Each ALTER opens its own committed session inside the column loop:
+        loop = heal[heal.find("for col, ddl"):heal.find("Phase 2")]
+        assert "with _ds() as session:" in loop
+        assert "ALTER TABLE tracks ADD COLUMN IF NOT EXISTS {col} {ddl}" in loop
         # The backfill is a separate committed transaction after the ALTERs:
         backfill = heal[heal.find("Phase 2"):]
-        assert "UPDATE {qualified} SET album_artist = artist" in backfill
+        assert "UPDATE tracks SET album_artist = artist" in backfill
         assert "with _ds() as session:" in backfill
 
     def test_search_proactively_heals_missing_columns(self):
@@ -116,7 +119,7 @@ class TestRegclassResolutionWiring:
         probe = src[src.find("_missing_meta = "):]
         assert "_missing_meta" in src
         assert "_self_heal_tracks_schema()" in probe
-        assert "Re-probe" in src or "_tracks_cols = _resolve_tracks_columns(session)" in probe
+        assert "Re-probe" in src or "_tracks_cols = _resolve_tracks_columns(session" in probe
 
     def test_resolve_tracks_columns_only_trusts_non_empty_probe(self):
         src = _read_source(os.path.join("routes", "misc_routes.py"))
