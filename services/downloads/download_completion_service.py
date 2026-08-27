@@ -418,6 +418,56 @@ def _delete_mismatched_download(file_path: str, queue_id: int, reason: str) -> N
         logger.warning("Could not delete mismatched file", queue_id=queue_id, path=file_path, error=str(exc))
 
 
+def _block_peer_for_queue_item(queue_id: int, found_filename: str | None = None) -> None:
+    """Block the Soulseek peer that provided the wrong file for a queue item.
+
+    When a downloaded file fails the completion match, the retry would find
+    the SAME wrong result on Soulseek and download it again — the pipeline's
+    in-memory peer blocklist is only populated on search/download failures in
+    ``download_pipeline_service``, never on post-download mismatch.  Look up
+    the offending transfer (by queue id or remote filename) and block that
+    peer+filename so the next search drops it.
+    """
+    try:
+        from api_clients.slskd_http import get_slskd_client
+        from services.downloads.slskd_service import SlskdService
+
+        client = get_slskd_client()
+        if client is None:
+            return
+        slskd = SlskdService(http_client=client)
+
+        _remote = str(found_filename or "").replace("\\", "/").strip()
+        _remote_norm = _normalize_transfer_key(_remote) if _remote else None
+        _remote_base = os.path.basename(_remote_norm or "") if _remote_norm else None
+
+        for transfer in slskd.get_completed_transfers():
+            username = str(transfer.get("username") or "")
+            remote = str(transfer.get("filename") or "").replace("\\", "/").strip()
+            remote_norm = _normalize_transfer_key(remote) if remote else None
+            remote_base = os.path.basename(remote_norm or "") if remote_norm else None
+            if not username:
+                continue
+            # Match the transfer to this queue item: same remote filename
+            # (or basename), or same local file path.
+            matches = (
+                (_remote_norm and remote_norm == _remote_norm)
+                or (_remote_base and remote_base == _remote_base)
+                or (_remote_base and remote_norm and remote_norm.endswith(f"/{_remote_base}"))
+            )
+            if not matches:
+                continue
+            try:
+                from services.downloads.download_pipeline_service import _block_peer
+                _block_peer(username, remote)
+                logger.warning("Blocked peer after mismatched download", queue_id=queue_id, username=username, filename=remote[:120])
+            except Exception as _be:
+                logger.debug("Peer block skipped", queue_id=queue_id, error=str(_be))
+            return
+    except Exception as exc:
+        logger.debug("Peer-block lookup failed", queue_id=queue_id, error=str(exc))
+
+
 def _extract_duration_seconds(file_path: str) -> Optional[int]:
     try:
         from helpers.metadata_reader import read_mp3_metadata
@@ -1020,6 +1070,7 @@ def check_completed_downloads() -> dict[str, Any]:
                                     _claim_file(abs_path, claimed_files, downloads_dir)
                                 else:
                                     _delete_mismatched_download(abs_path, queue_id, f"metadata mismatch ({match_source})")
+                                    _block_peer_for_queue_item(queue_id, found_fn)
                                     mark_failed(queue_id, "Downloaded file did not match queue item; deleted and rescheduled")
                                     stats["failed"] += 1
                                     log_unified(f"[QUEUE] {item.get('artist') or ''} - {item.get('title') or ''} → failed: downloaded file did not match queue item (deleted + rescheduled)")
@@ -1057,6 +1108,7 @@ def check_completed_downloads() -> dict[str, Any]:
                         is_match, match_source = _file_matches_queue_item(candidate, item, rel)
                         if not is_match:
                             _delete_mismatched_download(candidate, queue_id, f"metadata mismatch for exact filename match ({match_source})")
+                            _block_peer_for_queue_item(queue_id, found_fn)
                             mark_failed(queue_id, "Downloaded file did not match queue item; deleted and rescheduled")
                             stats["failed"] += 1
                             match_found = "__rejected__"
@@ -1070,13 +1122,27 @@ def check_completed_downloads() -> dict[str, Any]:
                     match_found = None
 
                 if match_found is None:
+                    # The remote name recorded when this download was enqueued
+                    # tells us EXACTLY which on-disk file belongs to this queue
+                    # item.  A fuzzy candidate whose basename matches it was
+                    # downloaded for THIS item — a mismatch means it is the
+                    # wrong file and must be removed, not left on disk to be
+                    # re-picked by the watcher or a later retry.
+                    _expected_bases = set()
+                    if found_fn:
+                        _fb = os.path.basename(found_fn)
+                        if _fb:
+                            _expected_bases.add(_fb.lower())
+                            _expected_bases.add(_fb)
+
                     for f in _fuzzy_candidates(fs_index, item, fs_files):
                         rel = f["rel_path"].replace("\\", "/")
                         fn_key = _normalize_transfer_key(rel)
                         if fn_key in claimed_files or os.path.basename(fn_key) in claimed_files:
                             continue
                         candidate = f["full_path"]
-                        
+                        _cand_base = os.path.basename(candidate)
+
                         try:
                             from services.queue.queue_metadata_matcher import _metadata_matches_queue_item
                             meta_state = _metadata_matches_queue_item(candidate, item)
@@ -1084,6 +1150,18 @@ def check_completed_downloads() -> dict[str, Any]:
                             meta_state = None
 
                         if meta_state is False:
+                            # A file that genuinely fails the metadata match is
+                            # WRONG for this queue item — never leave it on
+                            # disk to be re-picked by the watcher or a retry.
+                            if _cand_base.lower() in _expected_bases or _cand_base in _expected_bases:
+                                _delete_mismatched_download(candidate, queue_id, "metadata mismatch")
+                                _block_peer_for_queue_item(queue_id, found_fn)
+                                mark_failed(queue_id, "Downloaded file did not match queue item; deleted and rescheduled")
+                                stats["failed"] += 1
+                                match_found = "__rejected__"
+                                log_unified(f"[QUEUE] {item.get('artist') or ''} - {item.get('title') or ''} → failed: downloaded file did not match queue item (deleted + rescheduled)")
+                                _log_queue_event("failed", f"{item.get('artist') or ''} - {item.get('title') or ''} → failed: downloaded file did not match queue item (deleted + rescheduled)", queue_id)
+                                break
                             continue
                         if meta_state is None:
                             try:
@@ -1092,6 +1170,20 @@ def check_completed_downloads() -> dict[str, Any]:
                             except Exception:
                                 score = 0.0
                             if score < _SLSKD_MIN_ACCEPT_SCORE:
+                                # Sub-threshold fuzzy candidate: if this is the
+                                # file slskd downloaded for THIS item, remove it
+                                # so it cannot be re-picked as a "fresh"
+                                # download that then mismatches again.  Other
+                                # files (torrents, manual drops) are left alone.
+                                if _cand_base.lower() in _expected_bases or _cand_base in _expected_bases:
+                                    _delete_mismatched_download(candidate, queue_id, f"below accept threshold (score={score:.2f})")
+                                    _block_peer_for_queue_item(queue_id, found_fn)
+                                    mark_failed(queue_id, "Downloaded file below acceptance threshold; deleted and rescheduled")
+                                    stats["failed"] += 1
+                                    match_found = "__rejected__"
+                                    log_unified(f"[QUEUE] {item.get('artist') or ''} - {item.get('title') or ''} → failed: downloaded file below acceptance threshold (deleted + rescheduled)")
+                                    _log_queue_event("failed", f"{item.get('artist') or ''} - {item.get('title') or ''} → failed: below acceptance threshold (deleted + rescheduled)", queue_id)
+                                    break
                                 continue
 
                         try:
@@ -1099,6 +1191,15 @@ def check_completed_downloads() -> dict[str, Any]:
                         except Exception:
                             _artist_ok = None
                         if _artist_ok is False:
+                            if _cand_base.lower() in _expected_bases or _cand_base in _expected_bases:
+                                _delete_mismatched_download(candidate, queue_id, "artist mismatch")
+                                _block_peer_for_queue_item(queue_id, found_fn)
+                                mark_failed(queue_id, "Downloaded file artist did not match queue item; deleted and rescheduled")
+                                stats["failed"] += 1
+                                match_found = "__rejected__"
+                                log_unified(f"[QUEUE] {item.get('artist') or ''} - {item.get('title') or ''} → failed: downloaded file artist did not match queue item (deleted + rescheduled)")
+                                _log_queue_event("failed", f"{item.get('artist') or ''} - {item.get('title') or ''} → failed: artist mismatch (deleted + rescheduled)", queue_id)
+                                break
                             continue
 
                         if meta_state is None and _artist_ok is not True:
@@ -1110,6 +1211,13 @@ def check_completed_downloads() -> dict[str, Any]:
                         claimed_files.add(fn_key)
                         claimed_files.add(os.path.basename(fn_key))
                         break
+
+                if match_found == "__rejected__":
+                    # The mismatched download was deleted and the queue item
+                    # requeued (mark_failed → 'queued') — do NOT fall through
+                    # to the stale/reconcile block, which would re-process an
+                    # already-handled item.
+                    continue
 
                 if match_found is None or abs_path is None:
                     if slskd is not None:
@@ -1143,6 +1251,7 @@ def check_completed_downloads() -> dict[str, Any]:
                     if actual_dur and abs(expected_dur - actual_dur) > 20:
                         logger.warning("Duration mismatch — deleting and retrying", queue_id=queue_id, expected=expected_dur, actual=actual_dur)
                         _delete_mismatched_download(abs_path, queue_id, f"duration mismatch: expected {expected_dur}s, got {actual_dur}s")
+                        _block_peer_for_queue_item(queue_id, found_fn)
                         mark_failed(queue_id, f"Pre-copy duration mismatch: expected {expected_dur}s, got {actual_dur}s")
                         stats["failed"] += 1
                         log_unified(f"[QUEUE] {item.get('artist') or ''} - {item.get('title') or ''} → failed: duration mismatch")

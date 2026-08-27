@@ -117,7 +117,7 @@ def _release_artist(artist_name: str) -> None:
 def run_artist_scan_pipeline(
     artist_name: str,
     force: bool = False,
-    progress_callback: Callable[[str, int, int, str | None], None] | None = None,
+    progress_callback: Callable[[str, int, int, str | None, float | None], None] | None = None,
 ) -> None:
     if not _try_claim_artist(artist_name):
         log_unified(f"⏭️ Artist scan already running for: {artist_name} — skipping duplicate trigger")
@@ -131,16 +131,19 @@ def run_artist_scan_pipeline(
 def _run_artist_scan_pipeline_inner(
     artist_name: str,
     force: bool = False,
-    progress_callback: Callable[[str, int, int, str | None], None] | None = None,
+    progress_callback: Callable[[str, int, int, str | None, float | None], None] | None = None,
 ) -> None:
     # Optional per-album progress hook (stage, album_index, total_albums,
-    # item).  The dashboard full-scan orchestration uses it to report a
-    # stage-aware, monotonic overall percentage; standalone artist scans
-    # (artist page) call without it and keep their per-pipeline progress rows.
-    def _cb(stage: str, idx: int, total: int, item: str | None = None) -> None:
+    # item, track_fraction).  The dashboard full-scan orchestration uses it to
+    # report a stage-aware, monotonic overall percentage; standalone artist
+    # scans (artist page) call without it and keep their per-pipeline progress
+    # rows.  ``track_fraction`` (0..1) is the runner's per-track position
+    # within the current album — used to advance the percentage between album
+    # boundaries so a long rate-limited album doesn't freeze the footer.
+    def _cb(stage: str, idx: int, total: int, item: str | None = None, track_fraction: float | None = None) -> None:
         if callable(progress_callback):
             try:
-                progress_callback(stage, idx, total, item or artist_name)
+                progress_callback(stage, idx, total, item or artist_name, track_fraction)
             except Exception:
                 pass
 
@@ -223,13 +226,18 @@ def _run_artist_scan_pipeline_inner(
         # resolution → popularity → singles in that order, so the first
         # quarter of albums map to "Metadata", the last quarter to "Singles
         # Detection" and the middle half to "Popularity".
-        def _stage_band_cb(album_index: int, total_albums: int, current_item: str | None = None) -> None:
+        def _stage_band_cb(album_index: int, total_albums: int, current_item: str | None = None, track_fraction: float | None = None) -> None:
             """Map the runner's (idx, total, item) callback to (stage, ...).
 
             The dashboard's 4-stage progress model (Metadata / Popularity /
             Singles Detection) is derived from the album loop position: the
             first quarter of albums map to "Metadata", the last quarter to
             "Singles Detection", and the middle half to "Popularity".
+
+            ``track_fraction`` (0..1) is forwarded when the runner fires
+            per-track — the full-scan orchestrator uses it to advance the
+            percentage within the album band instead of waiting for the next
+            album boundary.
             """
             band = max(1, (total_albums + 3) // 4)
             if album_index < band:
@@ -238,7 +246,7 @@ def _run_artist_scan_pipeline_inner(
                 stage = "singles"
             else:
                 stage = "popularity"
-            _cb(stage, album_index, total_albums, current_item)
+            _cb(stage, album_index, total_albums, current_item, track_fraction)
 
         run_popularity_scan(
             verbose=True,

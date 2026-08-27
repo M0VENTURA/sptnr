@@ -53,6 +53,13 @@ def _patch_env(monkeypatch, artists, stop_after=None):
                     else ("singles" if _i >= 4 - max(1, (4 + 3) // 4) else "popularity")
                 )
                 progress_callback(_stage, _i, 4, f"{artist} - Album {_i + 1}")
+                # Per-track heartbeat: 3 tracks per album with a fraction.
+                for _ti in range(3):
+                    progress_callback(
+                        _stage, _i, 4,
+                        f"{artist} - Album {_i + 1} — Track {_ti + 1}",
+                        _ti / 2.0,
+                    )
             progress_callback("essentia", 0, 1, artist)
             progress_callback("essentia", 1, 1, artist)
 
@@ -129,6 +136,28 @@ class TestFullScanAsArtistPipeline:
         pp._run_full_scan_as_artist_pipeline(force=True)
 
         assert calls == [("Artist A", True)]
+
+    def test_per_track_heartbeat_updates_current_item(self, monkeypatch):
+        """Per-track callbacks must carry the live track into the DB row's
+        ``current_item`` so the footer shows "now scanning: <track>" instead
+        of freezing on the album name between album boundaries."""
+        pp, recorder, calls = _patch_env(monkeypatch, ["Artist A"])
+
+        pp._run_full_scan_as_artist_pipeline()
+
+        running = [c for c in recorder.calls if c["is_running"]]
+        # The last per-artist boundary write's current_item is the essentia
+        # artist name; the per-track writes are throttled in the simulated
+        # instant timeline, so assert the ALBUM boundary writes carry the
+        # album item (the per-track fraction writes would show "— Track N").
+        album_items = [
+            c["extra"]["current_item"]
+            for c in running
+            if "Album" in str(c["extra"]["current_item"])
+        ]
+        assert len(album_items) == 4  # 4 album boundaries
+        assert album_items[0] == "Artist A - Album 1"
+        assert "Track" not in album_items[0]
 
     def test_stop_request_halts_loop(self, monkeypatch):
         # Stop is checked before each artist: after the 1st artist the 2nd

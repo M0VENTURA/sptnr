@@ -10,6 +10,7 @@ Routes should call this module rather than building scan kwargs inline.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import structlog
@@ -308,10 +309,17 @@ def _run_full_scan_as_artist_pipeline(
             artist_share = (100.0 / total) if total else 100.0
             stage_width = artist_share / 4.0
 
-            def _cb(stage, idx, t, item, _i=i, _base=artist_base, _sw=stage_width, _artist=artist):
+            def _cb(stage, idx, t, item, track_fraction=None, _i=i, _base=artist_base, _sw=stage_width, _artist=artist):
                 try:
                     si = _STAGE_IDX.get(stage, 0)
-                    frac = min(1.0, (int(idx) + 1) / float(t)) if t else 1.0
+                    # Album-boundary callback: fraction is (idx+1)/total.  A
+                    # per-track callback carries ``track_fraction`` (0..1) so
+                    # the percentage advances WITHIN the album band instead of
+                    # freezing until the next album starts.
+                    if track_fraction is not None:
+                        frac = min(1.0, max(0.0, float(track_fraction)))
+                    else:
+                        frac = min(1.0, (int(idx) + 1) / float(t)) if t else 1.0
                     overall = int(_base + si * _sw + frac * _sw)
                     # The final callback for the last artist's last stage must
                     # land exactly on 100% — float truncation (e.g. 99.97 → 99)
@@ -323,23 +331,41 @@ def _run_full_scan_as_artist_pipeline(
                     ):
                         overall = 100
                     overall = max(0, min(100, overall))
-                    write_progress_with_current_artist(
-                        progress_file,
-                        "full_scan",
-                        True,
-                        current_artist=_artist,
-                        extra={
-                            "status": "running",
-                            "mode": "all",
-                            "percent_complete": overall,
-                            "current_stage": _STAGE_LABEL.get(stage, stage),
-                            "current_item": item or _artist,
-                            "processed_artists": _i,
-                            "total_artists": total,
-                        },
-                    )
+
+                    # ── Write throttle ─────────────────────────────────────
+                    # The runner fires this callback per track now (live
+                    # ``current_item`` + ``track_fraction``), so writing the
+                    # DB row on EVERY per-track call would spam one
+                    # session+commit per track (10k+ commits on a large
+                    # library).  Album-boundary / stage-transition callbacks
+                    # (no ``track_fraction``) always persist — they are rare
+                    # and carry the authoritative % step.  Per-track
+                    # callbacks persist at most once every 2s, and the final
+                    # 100% always persists so the footer lands exactly on
+                    # completion.
+                    _is_final = _i == total - 1 and overall >= 100
+                    _is_boundary = track_fraction is None
+                    if _is_final or _is_boundary or time.monotonic() - _cb.last_write >= 2.0:
+                        write_progress_with_current_artist(
+                            progress_file,
+                            "full_scan",
+                            True,
+                            current_artist=_artist,
+                            extra={
+                                "status": "running",
+                                "mode": "all",
+                                "percent_complete": overall,
+                                "current_stage": _STAGE_LABEL.get(stage, stage),
+                                "current_item": item or _artist,
+                                "processed_artists": _i,
+                                "total_artists": total,
+                            },
+                        )
+                        _cb.last_write = time.monotonic()
                 except Exception:
                     pass
+
+            _cb.last_write = 0.0
 
             log_unified(f"[FULL_SCAN] Artist {i + 1}/{total}: {artist}")
             try:

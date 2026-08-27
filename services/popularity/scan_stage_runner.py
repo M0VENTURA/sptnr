@@ -1930,7 +1930,7 @@ def run_scan(
             except Exception as exc:
                 logger.warning("Late bulk track persist failed", artist=artist, album=album, error=str(exc))
 
-            for (_prepared, _tc, _opts, _frozen), track_result in zip(_track_jobs, _track_results_ordered):
+            for _track_i, ((_prepared, _tc, _opts, _frozen), track_result) in enumerate(zip(_track_jobs, _track_results_ordered)):
                 if track_result is not None:
                     results.append(track_result)
                     if not options.get("metadata_only") and isinstance(track_result, dict):
@@ -1941,6 +1941,35 @@ def run_scan(
                         else:
                             log_unified(f"[TRACK_RESULT] '{_tt}' -> Final: {float(_fs or 0.0):.1f} (LF: {float(track_result.get('lastfm_score') or 0.0):.1f} | LB: {float(track_result.get('listenbrainz_score') or 0.0):.1f})")
                 tracks_processed += 1
+
+                # ── Per-track progress heartbeat ───────────────────────────
+                # The album-level ``_progress_cb`` fires once per album (at
+                # album start), so a long rate-limited album leaves the footer
+                # frozen for minutes.  Fire it per track too — the full-scan
+                # orchestrator uses ``current_item`` to render a live
+                # "now scanning: <track>" line, and ``track_fraction`` lets it
+                # advance the percentage WITHIN the album band instead of
+                # waiting for the next album boundary.
+                try:
+                    _track_denom = max(1, len(_track_jobs) - 1)
+                    _track_frac = (_track_i / _track_denom) if len(_track_jobs) > 1 else 1.0
+                    _track_item = f"{current_item} — {_prepared.get('title', '?')}"
+                    if callable(_progress_cb):
+                        try:
+                            _progress_cb(album_index, total_albums, _track_item, _track_frac)
+                        except Exception:
+                            pass
+                    _track_progress = min(100, progress + int(_track_frac * (90 / max(1, total_albums))))
+                    update(
+                        stage="album",
+                        progress=_track_progress,
+                        message=f"Processing {_prepared.get('title', '?')}",
+                        current_item=_track_item,
+                        processed=album_index,
+                        total_items=total_albums,
+                    )
+                except Exception:
+                    pass
 
             _track_failure_ratio = (
                 (len(_track_jobs) - sum(1 for r in _track_results_ordered if r is not None))

@@ -570,7 +570,7 @@ def _select_best_result(
     expected_album: str | None = None,
     expected_duration: int | None = None,
     expected_year: Any = None,
-    min_score: float = 30.0,
+    min_score: float = 45.0,
 ) -> dict[str, Any] | None:
     scored: list[tuple[float, dict]] = []
 
