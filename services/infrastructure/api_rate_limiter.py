@@ -82,6 +82,12 @@ class APIRateLimiter:
             logger.debug("Could not save API rate limiter state", error=str(exc))
 
     def throttle_musicbrainz(self) -> None:
+        # Compute the wait UNDER the lock (atomic claim of the next slot),
+        # then sleep OUTSIDE it: concurrent scan workers (4 per album) must
+        # sleep in parallel instead of serialising on the lock — a worker
+        # holding the lock while sleeping turns a 1 req/s budget into "each
+        # worker waits for every other worker's sleep", which is exactly the
+        # "N of N futures unfinished" album stall.
         with self._mb_lock:
             now = time.time()
             last_request = self.state.get("musicbrainz_last_request", 0.0)

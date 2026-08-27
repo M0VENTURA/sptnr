@@ -368,4 +368,3 @@ class TestDiscogsArtistIdLockNotHeldAcrossIO:
         # And there's a second lock block AFTER the network call (cache write).
         assert body.count("with _discogs_artist_id_lock:") == 2
         assert "_discogs_artist_id_cache[_cache_key]" in body
-
