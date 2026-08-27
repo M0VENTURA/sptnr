@@ -458,8 +458,8 @@ async def _api_search_impl() -> Any:
                                 ELSE 2
                             END AS match_rank,
                             GREATEST(
-                                similarity({artist_expr}, :query),
-                                similarity(COALESCE(artist, ''), :query)
+                                similarity(variant, :query),
+                                similarity(COALESCE(variant, ''), :query)
                             ) AS sim
                         FROM ranked
                         WHERE rn = 1
@@ -561,8 +561,7 @@ async def _api_search_impl() -> Any:
                                 END AS match_rank,
                                 GREATEST(
                                     similarity(COALESCE(album, ''), :query),
-                                    similarity({artist_expr}, :query),
-                                    similarity(COALESCE(artist, ''), :query)
+                                    similarity({artist_expr}, :query)
                                 ) AS sim
                             FROM tracks
                             WHERE LOWER(COALESCE(album, '')) LIKE :contains
