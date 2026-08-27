@@ -891,13 +891,13 @@
       
       const data = await response.json();
       
-      if (!data.results || data.results.length === 0) {
-        resultsDiv.innerHTML = '<p class="text-muted text-center">No tracks found</p>';
-        return;
-      }
-      
-      // Filter to tracks only
-      const tracks = data.results.filter(r => r.type === 'track');
+      // /api/search returns { artists, albums, compilations, live_albums,
+      // eps, singles, tracks } — the tracks array carries the library
+      // matches (each has id/title/artist/album).  The previous code read
+      // data.results (a key this endpoint never returns) and filtered on
+      // r.type (tracks have no type field), so manual track search always
+      // showed "No tracks found" even when matches existed.
+      const tracks = Array.isArray(data.tracks) ? data.tracks : [];
       
       if (tracks.length === 0) {
         resultsDiv.innerHTML = '<p class="text-muted text-center">No tracks found</p>';
