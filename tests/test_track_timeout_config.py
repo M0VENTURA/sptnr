@@ -19,9 +19,9 @@ class TestGetTrackTimeoutSeconds:
     def _cfg(self, value):
         return {"popularity": {"track_timeout_seconds": value}}
 
-    def test_default_is_600(self, monkeypatch):
+    def test_default_is_120(self, monkeypatch):
         monkeypatch.setattr(ch, "get_config", lambda: {})
-        assert ch.get_track_timeout_seconds() == 600
+        assert ch.get_track_timeout_seconds() == 120
 
     def test_custom_value(self, monkeypatch):
         monkeypatch.setattr(ch, "get_config", lambda: self._cfg(900))
@@ -39,20 +39,20 @@ class TestGetTrackTimeoutSeconds:
 
     def test_zero_falls_back_to_default(self, monkeypatch):
         monkeypatch.setattr(ch, "get_config", lambda: self._cfg(0))
-        assert ch.get_track_timeout_seconds() == 600
+        assert ch.get_track_timeout_seconds() == 120
 
     def test_missing_section_falls_back_to_default(self, monkeypatch):
         monkeypatch.setattr(ch, "get_config", lambda: {"popularity": {}})
-        assert ch.get_track_timeout_seconds() == 600
+        assert ch.get_track_timeout_seconds() == 120
 
 
 class TestGetPrefetchBudgetSeconds:
     def _cfg(self, value):
         return {"popularity": {"prefetch_budget_seconds": value}}
 
-    def test_default_is_360(self, monkeypatch):
+    def test_default_is_180(self, monkeypatch):
         monkeypatch.setattr(ch, "get_config", lambda: {})
-        assert ch.get_prefetch_budget_seconds() == 360
+        assert ch.get_prefetch_budget_seconds() == 180
 
     def test_custom_value(self, monkeypatch):
         monkeypatch.setattr(ch, "get_config", lambda: self._cfg(480))
@@ -70,4 +70,4 @@ class TestGetPrefetchBudgetSeconds:
 
     def test_zero_falls_back_to_default(self, monkeypatch):
         monkeypatch.setattr(ch, "get_config", lambda: self._cfg(0))
-        assert ch.get_prefetch_budget_seconds() == 360
+        assert ch.get_prefetch_budget_seconds() == 180

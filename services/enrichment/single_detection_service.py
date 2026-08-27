@@ -876,17 +876,34 @@ def detect_single_for_track(
             
     discogs_promo = bool((dr.get("metadata") or {}).get("is_promo"))
 
-    mr = _detect_musicbrainz(lookup_title, artist, artist_mbid, album_track_count, mb_client=mb_client,
-                             mb_cached_singles=mb_cached_singles,
-                             recording_mbid=recording_mbid)
-    sources.append(mr)
-    if mr["matched"]:
-        musicbrainz_confirmed = True
-        reasons.append("musicbrainz_matched")
-    elif mr.get("error"):
-        reasons.append("mb_unavailable")
-        
-    musicbrainz_promo = bool((mr.get("metadata") or {}).get("is_promo"))
+    # ── Early exit on full-confidence Discogs match ─────────────────────
+    # A Discogs match with confidence >= 0.85 is the strongest single signal
+    # the pipeline has (the final-status logic already treats it as a
+    # definitive high source).  The old system returned at the first
+    # high-confidence source; running the remaining MB / video / Last.fm /
+    # ISRC arms for such tracks adds 2-10+ rate-limited calls each for no
+    # change in the outcome.  Skip them and keep only the lightweight local
+    # checks (radio-edit marker, release-date comparison, LB top-10 context).
+    _discogs_full_confidence = bool(
+        discogs_confirmed and float(dr.get("confidence") or 0) >= 0.85
+    )
+
+    if _discogs_full_confidence:
+        mr = {"source": "musicbrainz", "matched": False, "confidence": 0.0, "metadata": {}}
+        musicbrainz_promo = False
+        sources.append(mr)
+    else:
+        mr = _detect_musicbrainz(lookup_title, artist, artist_mbid, album_track_count, mb_client=mb_client,
+                                 mb_cached_singles=mb_cached_singles,
+                                 recording_mbid=recording_mbid)
+        sources.append(mr)
+        if mr["matched"]:
+            musicbrainz_confirmed = True
+            reasons.append("musicbrainz_matched")
+        elif mr.get("error"):
+            reasons.append("mb_unavailable")
+            
+        musicbrainz_promo = bool((mr.get("metadata") or {}).get("is_promo"))
 
     if dr.get("error"):
         reasons.append("discogs_unavailable")
@@ -915,7 +932,7 @@ def detect_single_for_track(
         radio_edit_found = True
         reasons.append("radio_edit_marker")
 
-    if lastfm_client:
+    if lastfm_client and not _discogs_full_confidence:
         lastfm_confirmed = _detect_lastfm(artist, album or "", lookup_title, lastfm_client)
         if lastfm_confirmed:
             reasons.append("lastfm_confirmed")
@@ -935,7 +952,7 @@ def detect_single_for_track(
             reasons.append("release_date_match")
 
     isrc_single_confirmed = False
-    if isrc:
+    if isrc and not _discogs_full_confidence:
         try:
             if mb_client is None:
                 from api_clients.musicbrainz_http import MusicBrainzHttpClient
@@ -989,7 +1006,7 @@ def detect_single_for_track(
     except Exception:
         zscore_high, zscore_medium = 1.0, 0.6
 
-    _discogs_full_confidence = discogs_confirmed and float(dr.get("confidence") or 0) >= 0.85
+    # ``_discogs_full_confidence`` was computed before the early-exit above.
     _levels = _source_confidence_levels()
     high_sources = 0
     medium_sources = 0

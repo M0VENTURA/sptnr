@@ -683,14 +683,17 @@ def process_track(
         _cfg = get_config() or {}
         _features = _cfg.get("features", {})
         deep_pop_agg = bool(_features.get("deep_popularity_aggregation", False))
-        # Genre enrichment is a core part of metadata scans.  Default ON so
-        # tracks without MBIDs still get genres via the Discogs / heavy MB
-        # recording search fallbacks — otherwise only Navidrome's own genre
-        # field populates and the album page shows every genre as "Navidrome".
-        deep_genre_search = bool(_features.get("deep_genre_search", True))
+        # Deep genre enrichment (MB recording text search + Discogs
+        # search_database + LB per-track tags) costs up to 3 rate-limited
+        # calls (1 req/s each) per genre-less track.  Default OFF so a full
+        # library scan is not dominated by these serialised lookups; genres
+        # still populate from Navidrome's own field plus the album-level
+        # batched LB tags and cached MB recordings.  Users can re-enable via
+        # Config → features.deep_genre_search for deep metadata scans.
+        deep_genre_search = bool(_features.get("deep_genre_search", False))
     except Exception:
         deep_pop_agg = False
-        deep_genre_search = True
+        deep_genre_search = False
 
     metadata_only = bool(options.get("metadata_only"))
     popularity_only = bool(options.get("popularity_only"))

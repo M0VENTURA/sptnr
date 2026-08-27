@@ -1536,21 +1536,20 @@ def get_track_timeout_seconds() -> int:
     The popularity scan runs each album's per-track pipeline on a bounded
     thread pool; ``as_completed(timeout=...)`` waits at most this long for
     the slowest worker before the album finalises with the tracks that DID
-    complete.  A well-documented artist's per-track work spans multiple
-    rate-limited providers (MusicBrainz + Discogs + Last.fm + ListenBrainz),
-    so a too-short deadline silently drops slow-but-legitimate tracks (the
-    A Perfect Circle "Eat the Elephant" case: 4 of 12 futures unfinished at
-    300s → 2 tracks lost).
+    complete.  The default is kept LOW so a hung provider (rate-limit
+    stall, dead connection) costs seconds, not minutes — the old system's
+    key advantage.  Users with slow-but-legitimate per-track work (heavy
+    MusicBrainz/Discogs lookups on large albums) can raise it in config.
 
     Config section: ``popularity.track_timeout_seconds`` in config.yaml.
 
-    Default: 600 (10 min).  Clamped 120-1800.
+    Default: 120 (2 min).  Clamped 120-1800.
     """
     cfg = get_config()
     try:
-        timeout = int((cfg.get("popularity") or {}).get("track_timeout_seconds", 600) or 600)
+        timeout = int((cfg.get("popularity") or {}).get("track_timeout_seconds", 120) or 120)
     except (TypeError, ValueError):
-        timeout = 600
+        timeout = 120
     return max(120, min(timeout, 1800))
 
 
@@ -1561,20 +1560,20 @@ def get_prefetch_budget_seconds() -> int:
     synchronous network calls (Last.fm / ListenBrainz bulk lookups, MusicBrainz
     + Discogs release fetches, missing-release tracklists).  Each runs inside
     ``_bounded_call`` with a hard wall-clock budget; when the budget expires
-    the call is abandoned and its caches stay cold for that album.  Heavy
-    catalogs (dozens of live albums / compilations / re-releases) need the
-    cross-release ListenBrainz tally to breathe — a too-tight budget makes the
-    whole album's bulk work get killed mid-flight.
+    the call is abandoned and its caches stay cold for that album.  The
+    default is kept LOW so a stalled bulk call is abandoned quickly and the
+    scan keeps moving — the old system's key advantage.  Heavy catalogs can
+    raise it in config.
 
     Config section: ``popularity.prefetch_budget_seconds`` in config.yaml.
 
-    Default: 360 (6 min).  Clamped 120-1800.
+    Default: 180 (3 min).  Clamped 120-1800.
     """
     cfg = get_config()
     try:
-        budget = int((cfg.get("popularity") or {}).get("prefetch_budget_seconds", 360) or 360)
+        budget = int((cfg.get("popularity") or {}).get("prefetch_budget_seconds", 180) or 180)
     except (TypeError, ValueError):
-        budget = 360
+        budget = 180
     return max(120, min(budget, 1800))
 
 
