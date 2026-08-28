@@ -368,13 +368,32 @@ def _detect_musicbrainz(title: str, artist: str, artist_mbid: str | None,
                     "metadata": {}, "cached": True}
     try:
         if mb_client is None:
-            from api_clients.musicbrainz_http import MusicBrainzHttpClient
-            mb_client = MusicBrainzHttpClient()
+            # ALWAYS use the SHARED client — a fresh MusicBrainzHttpClient()
+            # here bypasses the process-wide 1 req/s throttle + LRU caches, so
+            # concurrent track workers would slam the API (429 storms → 60s
+            # backoff retries → the 600s per-track hangs seen in the scan log).
+            from services.enrichment.musicbrainz_service import get_shared_mb_client
+            mb_client = get_shared_mb_client()
+
+        # ── Wall-clock budget ─────────────────────────────────────────────
+        # MusicBrainz singles detection can make up to 4 sequential 1 req/s
+        # calls (get_recording + 2× search_release_groups + release date).
+        # Under 429 retry storms those serialise to 60s+ per track, and with
+        # 4 concurrent workers per album the shared turnstile becomes the
+        # bottleneck — exactly the "Singles detection ... 60-100s" + 600s
+        # timeouts in the scan log.  Abandon the MB arm after a hard budget
+        # so a stuck/rate-limited track is released to the next track.
+        import time as _time
+        _MB_BUDGET_S = 45.0
+        _mb_deadline = _time.monotonic() + _MB_BUDGET_S
+
+        def _within_budget() -> bool:
+            return _time.monotonic() < _mb_deadline
 
         matched = False
         promo_only = False
 
-        if recording_mbid and not matched:
+        if recording_mbid and not matched and _within_budget():
             try:
                 _rec = mb_client.get_recording(recording_mbid)
                 if _rec:
@@ -414,13 +433,15 @@ def _detect_musicbrainz(title: str, artist: str, artist_mbid: str | None,
             strip_single_release_suffix(title) or title
         )
         
-        if artist_mbid and hasattr(mb_client, "search_release_groups"):
+        if artist_mbid and hasattr(mb_client, "search_release_groups") and _within_budget() and not matched:
             try:
                 from difflib import SequenceMatcher as _SM
                 target = normalize_title_for_lookup(clean_title)
                 lucene_title = normalize_title_for_lucene_query(clean_title)
                 candidates: list[dict[str, Any]] = []
                 for _pt in ("single", "ep"):
+                    if not _within_budget():
+                        break
                     _found = _cached_mb_release_group_search(
                         f'arid:{artist_mbid} AND primarytype:{_pt} '
                         f'AND releasegroup:"{escape_lucene_special_chars(lucene_title)}"',
@@ -451,13 +472,13 @@ def _detect_musicbrainz(title: str, artist: str, artist_mbid: str | None,
             except Exception as exc:
                 logger.debug("Artist-scoped MB single lookup failed", artist=artist, track=title, error=str(exc))
 
-        if not matched:
+        if not matched and _within_budget():
             from services.enrichment.musicbrainz_service import get_shared_mb_service
             svc = get_shared_mb_service()
             matched = bool(svc.is_single(clean_title, artist, album_track_count=album_track_count))
             
         release_date = None
-        if matched:
+        if matched and _within_budget():
             try:
                 if hasattr(mb_client, "get_single_release_date"):
                     release_date = mb_client.get_single_release_date(title, artist, artist_mbid=artist_mbid)

@@ -874,8 +874,14 @@ def _reconcile_transfer_state(
         local = str(transfer.get("localFilePath") or "")
         landed = _wait_for_transfer_file(found_fn, local)
         if landed:
+            # Return the LANDED PATH (not just False) so the caller can
+            # immediately claim + import it — previously it returned False,
+            # the item stayed 'downloading', and the next cycle's
+            # slskd_completed lookup failed to map the path, so the file was
+            # found-and-re-found every cycle ("Transfer file appeared within
+            # the grace window" repeating forever) without ever being moved.
             logger.info("Transfer file appeared within the grace window", queue_id=queue_id, path=landed)
-            return False
+            return landed
 
         logger.warning(
             "slskd succeeded but no local file found",
@@ -1295,11 +1301,33 @@ def check_completed_downloads() -> dict[str, Any]:
 
                 if match_found is None or abs_path is None:
                     if slskd is not None:
-                        was_failed = _reconcile_transfer_state(item, slskd, active=active_transfers, now=db_now)
-                        if was_failed:
+                        _reconciled = _reconcile_transfer_state(item, slskd, active=active_transfers, now=db_now)
+                        if _reconciled is True:
                             stats["failed"] += 1
                             continue
-                    if _is_stale_queue_item(item, stale_minutes=_STALE_DOWNLOADING_MINUTES, now=db_now):
+                        if isinstance(_reconciled, str) and _reconciled:
+                            # The transfer completed and the file just landed —
+                            # claim it now and fall through to match/import
+                            # instead of waiting for a later cycle.
+                            _landed_path = _reconciled
+                            if os.path.isfile(_landed_path) and not _is_file_claimed(_landed_path, claimed_files, downloads_dir):
+                                try:
+                                    _artist_ok = _file_artist_matches_queue_item(_landed_path, item)
+                                except Exception:
+                                    _artist_ok = None
+                                if _artist_ok is not False:
+                                    is_match, match_source = _file_matches_queue_item(_landed_path, item, None)
+                                    if is_match:
+                                        abs_path = _landed_path
+                                        match_found = os.path.relpath(_landed_path, downloads_dir) if downloads_dir else _landed_path
+                                        match_source = match_source
+                                        _claim_file(_landed_path, claimed_files, downloads_dir)
+                    # Only treat as stale/no-file when we STILL have nothing —
+                    # the landed-path claim above sets abs_path and must fall
+                    # through to the import logic below.
+                    if abs_path is not None and match_found is not None:
+                        pass
+                    elif _is_stale_queue_item(item, stale_minutes=_STALE_DOWNLOADING_MINUTES, now=db_now):
                         _unconfirmed = _matching_file_exists_unconfirmed(item, fs_files, downloads_dir)
                         if _unconfirmed:
                             logger.warning("Stale in downloading but matching file exists — marking for manual review", queue_id=queue_id)
@@ -1314,7 +1342,8 @@ def check_completed_downloads() -> dict[str, Any]:
                         log_unified(f"[QUEUE] {item.get('artist') or ''} - {item.get('title') or ''} → failed: no file found while marked downloading (stale)")
                         _log_queue_event("failed", "No file found while marked downloading (stale)", queue_id)
                         continue
-                    stats["skipped"] += 1
+                    elif abs_path is None:
+                        stats["skipped"] += 1
                     continue
 
                 expected_dur = item.get("duration")

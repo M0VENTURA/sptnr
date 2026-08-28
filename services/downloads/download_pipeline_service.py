@@ -391,20 +391,36 @@ def _build_fallback_search_queries(item: dict, primary_query: str) -> list[str]:
     artist_words = [w for w in effective_artist.split() if w.lower() not in _ARTICLE_WORDS]
     title_words = [w for w in title.split()]
 
+    # ── Fallback explosion guard ──────────────────────────────────────────
+    # The word-drop combinations grow combinatorially: a 5-word title
+    # ("No Encores In a Swan Song") alone generates ~30 title phrases, and
+    # the paired drops multiply that — the search log showed 64-190 queries
+    # per track, EACH waiting up to 60s, so a single un-locatable track
+    # burned 10-60 MINUTES.  Cap the total fallback set so the search for
+    # one track never exceeds a sane bound; the drop-pairs pass only runs
+    # for SHORT titles where it stays small.
+    _MAX_FALLBACKS = 20
+
     if len(artist_words) > 1:
-        for a_phrase in _drop_words(artist_words):
+        for a_phrase in _drop_words(artist_words)[:_MAX_FALLBACKS]:
             _add(f"{a_phrase} - {title}")
 
     if len(title_words) > 1:
-        for t_phrase in _drop_words(title_words):
+        for t_phrase in _drop_words(title_words)[:_MAX_FALLBACKS]:
             _add(f"{effective_artist} - {t_phrase}")
 
-    if len(artist_words) > 1 and len(title_words) > 1:
-        a_drops = _drop_words(artist_words)
-        t_drops = _drop_words(title_words)
+    # Paired artist+title drops multiply quickly — only for SHORT titles
+    # (≤ 3 words) so the product stays small, and always capped.
+    if len(artist_words) > 1 and len(title_words) > 1 and len(title_words) <= 3:
+        a_drops = _drop_words(artist_words)[:_MAX_FALLBACKS]
+        t_drops = _drop_words(title_words)[:6]
         for a_phrase in a_drops:
             for t_phrase in t_drops:
                 _add(f"{a_phrase} - {t_phrase}")
+                if len(fallbacks) >= _MAX_FALLBACKS:
+                    break
+            if len(fallbacks) >= _MAX_FALLBACKS:
+                break
 
     _add(title)
 
@@ -412,7 +428,10 @@ def _build_fallback_search_queries(item: dict, primary_query: str) -> list[str]:
     if stripped_all:
         _add(stripped_all)
 
-    return fallbacks
+    # Hard ceiling: never return more than this many fallback queries — a
+    # track that can't be found in the first N tries is very unlikely to be
+    # found in tries N+1..190, and the 60s wait each costs is pure waste.
+    return fallbacks[:_MAX_FALLBACKS]
 
 
 def _year_mismatch_rejects(filename: str, expected_year: Any) -> bool:

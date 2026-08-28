@@ -475,8 +475,11 @@ _SLSKD_SEARCH_MAX_WAIT_SECONDS = 150
 
 # Reduced maximum wait for fallback queries.  Fallback searches are lower-
 # specificity alternatives tried when the primary query found nothing; a
-# shorter ceiling limits the worst-case per-track search time.
-_SLSKD_FALLBACK_SEARCH_MAX_WAIT_SECONDS = 60
+# shorter ceiling limits the worst-case per-track search time.  Kept SHORT
+# (20s) — the fallback explosion guard caps queries per track, and each
+# fallback waiting 60s still burned 10-60 min/track for un-locatable
+# (often pre-release) tracks in the search log.
+_SLSKD_FALLBACK_SEARCH_MAX_WAIT_SECONDS = 20
 
 
 # Cached SlskdClient instance — config does not change at runtime so we build
