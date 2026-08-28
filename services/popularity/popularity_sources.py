@@ -954,7 +954,19 @@ def get_work_level_listenbrainz_popularity(
     isrc: str = "",
     lb_client: Any = None,
     mb_client: Any = None,
+    work_mbid_hint: str = "",
 ) -> dict[str, Any]:
+    """Work-level aggregated ListenBrainz popularity.
+
+    Division of labour (intentional): MusicBrainz supplies the WORK GRAPH
+    (which recording → which work, all recordings of the work) and
+    ListenBrainz supplies the LISTEN COUNTS — MusicBrainz has no listening
+    data, so the play counts must always come from ListenBrainz.
+
+    ``work_mbid_hint`` lets a caller that already resolved the work MBID
+    (e.g. from the release metadata's embedded work-rels) skip the per-track
+    ``get_recording(work-rels)`` MusicBrainz request — the 1 req/s bottleneck.
+    """
     logger.debug("Fetching Work-level aggregated ListenBrainz popularity")
     if mb_client is None:
         try:
@@ -966,6 +978,7 @@ def get_work_level_listenbrainz_popularity(
     if mb_client is None:
         return _empty_work_lb_result()
 
+    work_mbid = str(work_mbid_hint or "").strip()
     seed_mbids: set[str] = set()
     if primary_mbid:
         seed_mbids.add(primary_mbid)
@@ -977,17 +990,17 @@ def get_work_level_listenbrainz_popularity(
         except Exception:
             pass
 
-    work_mbid = ""
-    for seed_mbid in seed_mbids:
-        try:
-            rec = mb_client.get_recording(seed_mbid, inc="work-rels+artist-credits")
-            if not rec or not rec.get("id"):
-                continue
-            work_mbid = _recording_work_mbid(rec)
-            if work_mbid:
-                break
-        except Exception as exc:
-            logger.debug("Recording work-rels fetch failed", seed_mbid=seed_mbid, error=str(exc))
+    if not work_mbid:
+        for seed_mbid in seed_mbids:
+            try:
+                rec = mb_client.get_recording(seed_mbid, inc="work-rels+artist-credits")
+                if not rec or not rec.get("id"):
+                    continue
+                work_mbid = _recording_work_mbid(rec)
+                if work_mbid:
+                    break
+            except Exception as exc:
+                logger.debug("Recording work-rels fetch failed", seed_mbid=seed_mbid, error=str(exc))
 
     if not work_mbid:
         logger.debug("No Work resolvable for track", artist=artist, track=title)

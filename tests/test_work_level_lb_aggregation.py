@@ -197,3 +197,70 @@ def test_no_same_artist_recordings_returns_zeros(monkeypatch):
     # The seed itself is still summed (its own count), which is the correct
     # floor when no other same-artist recordings exist.
     assert result["mbids"] == ["rec-other"]
+
+
+class TestWorkMbidHintSkipsPerTrackFetch:
+    def test_hint_skips_get_recording(self, monkeypatch):
+        """When ``work_mbid_hint`` is supplied, the per-track
+        ``get_recording(work-rels)`` MusicBrainz call must be SKIPPED —
+        the caller already resolved the work MBID from the release data.
+        This is the 1 req/s bottleneck saving."""
+        from services.popularity import popularity_sources as ps
+
+        calls = {"get_recording": 0, "browse": 0}
+
+        class _CountingMBClient:
+            def get_recording(self, recording_mbid, inc="", timeout=10.0):
+                calls["get_recording"] += 1
+                return _seed_recording()
+
+            def browse_work_recordings(self, work_mbid, inc="artist-credits", limit=100):
+                calls["browse"] += 1
+                return _work_recordings()
+
+        monkeypatch.setattr(ps, "lb_get_recording_popularity_batch", _fake_lb_batch)
+
+        result = ps.get_work_level_listenbrainz_popularity(
+            title="Judith",
+            artist="A Perfect Circle",
+            artist_mbid="art-1",
+            primary_mbid="rec-album",
+            mb_client=_CountingMBClient(),
+            work_mbid_hint="work-judith",  # already known from release work-rels
+        )
+
+        assert result["work_mbid"] == "work-judith"
+        # The work browse still runs (needed for the recording list)…
+        assert calls["browse"] == 1
+        # …but the per-track get_recording(work-rels) call is skipped.
+        assert calls["get_recording"] == 0
+        # Same-artist recordings still summed (cover/live excluded).
+        assert result["total_listen_count"] == 550200 + 1015 + 250500
+
+    def test_no_hint_still_fetches_recording(self, monkeypatch):
+        """Without a hint, the legacy path fetches the recording to resolve
+        the work MBID (backward compatible)."""
+        from services.popularity import popularity_sources as ps
+
+        calls = {"get_recording": 0, "browse": 0}
+
+        class _CountingMBClient:
+            def get_recording(self, recording_mbid, inc="", timeout=10.0):
+                calls["get_recording"] += 1
+                return _seed_recording()
+
+            def browse_work_recordings(self, work_mbid, inc="artist-credits", limit=100):
+                calls["browse"] += 1
+                return _work_recordings()
+
+        monkeypatch.setattr(ps, "lb_get_recording_popularity_batch", _fake_lb_batch)
+
+        ps.get_work_level_listenbrainz_popularity(
+            title="Judith",
+            artist="A Perfect Circle",
+            artist_mbid="art-1",
+            primary_mbid="rec-album",
+            mb_client=_CountingMBClient(),
+        )
+
+        assert calls["get_recording"] == 1

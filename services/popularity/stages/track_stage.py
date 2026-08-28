@@ -1341,12 +1341,22 @@ def process_track(
                         ).strip() or ""
                         _prev_lb = int(listenbrainz_listens or 0)
                         
+                        # If the release metadata already resolved the work MBID
+                        # (from the recording's work-rels embedded in the release
+                        # lookup), pass it as a hint so the work-level path can
+                        # SKIP the per-track get_recording(work-rels) MusicBrainz
+                        # call — one fewer 1 req/s request per track.
+                        _work_mbid_hint = _as_str(
+                            effective_track.get("work_mbid")
+                            or effective_track.get("musicbrainz_workid")
+                        ).strip() or ""
                         agg_lb = get_work_level_listenbrainz_popularity(
                             title=sd_title,
                             artist=sd_artist,
                             artist_mbid=_sd_artist_mbid,
                             primary_mbid=_sd_rec_mbid or "",
                             isrc=_sd_isrc or "",
+                            work_mbid_hint=_work_mbid_hint,
                         )
                         agg_total = _as_int((agg_lb or {}).get("total_listen_count") or 0)
                         _agg_source = "Work-level"
