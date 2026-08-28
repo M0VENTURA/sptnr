@@ -1322,6 +1322,25 @@ def check_completed_downloads() -> dict[str, Any]:
                                         match_found = os.path.relpath(_landed_path, downloads_dir) if downloads_dir else _landed_path
                                         match_source = match_source
                                         _claim_file(_landed_path, claimed_files, downloads_dir)
+                                    else:
+                                        # The landed file does NOT match this
+                                        # queue item — it is the WRONG download
+                                        # (e.g. a different track from the same
+                                        # single).  Delete it + block the peer +
+                                        # requeue so it cannot loop forever being
+                                        # re-found every cycle.
+                                        _delete_mismatched_download(_landed_path, queue_id, f"landed file mismatch ({match_source})")
+                                        _block_peer_for_queue_item(queue_id, found_fn)
+                                        mark_failed(queue_id, "Downloaded file did not match queue item; deleted and rescheduled")
+                                        stats["failed"] += 1
+                                        continue
+                                else:
+                                    # Artist mismatch on the landed file.
+                                    _delete_mismatched_download(_landed_path, queue_id, "landed file artist mismatch")
+                                    _block_peer_for_queue_item(queue_id, found_fn)
+                                    mark_failed(queue_id, "Downloaded file artist did not match queue item; deleted and rescheduled")
+                                    stats["failed"] += 1
+                                    continue
                     # Only treat as stale/no-file when we STILL have nothing —
                     # the landed-path claim above sets abs_path and must fall
                     # through to the import logic below.
