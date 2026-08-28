@@ -526,6 +526,8 @@ def write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
                     "ASIN", "SCRIPT", "DISCSUBTITLE", "COPYRIGHT", "LANGUAGE",
                     "EXPLICITSTATUS", "MUSICBRAINZ ALBUMTYPE",
                     "MUSICBRAINZ ALBUMSTATUS", "MUSICBRAINZ RELEASECOUNTRY",
+                    "IS COVER", "ORIGINAL COVER ARTIST", "MUSICBRAINZ WORK ID",
+                    "MUSICBRAINZ GENRES",
                 }:
                     _clear_txxx_variants(tag_obj, _generic_txxx)
                     if value is not None and str(value).strip() != "":
@@ -570,6 +572,9 @@ _VORBIS_FIELD_MAP: Dict[str, str] = {
     "musicbrainz_workid": "MUSICBRAINZ_WORKID",
     "musicbrainz_albumtype": "RELEASETYPE",
     "musicbrainz_albumstatus": "RELEASESTATUS",
+    "musicbrainz_genres": "GENRE",
+    "original_cover_artist": "ORIGINAL_COVER_ARTIST",
+    "is_cover": "IS_COVER",
 }
 
 
@@ -795,6 +800,9 @@ _COLUMN_TO_TAG_FIELD: dict[str, str] = {
     "musicbrainz_workid": "musicbrainz_workid",
     "musicbrainz_albumtype": "musicbrainz_albumtype",
     "musicbrainz_albumstatus": "musicbrainz_albumstatus",
+    "musicbrainz_genres": "musicbrainz_genres",
+    "is_cover": "is_cover",
+    "original_cover_artist": "original_cover_artist",
     "replaygain_track_gain": "replaygain_track_gain",
     "replaygain_track_peak": "replaygain_track_peak",
     "replaygain_album_gain": "replaygain_album_gain",
@@ -863,6 +871,18 @@ def update_file_metadata(file_path: str, metadata: Dict[str, Any]) -> bool:
 
     if metadata.get("release_mbid"):
         tag_updates["musicbrainz_albumid"] = metadata.get("release_mbid")
+
+    # MusicBrainz enrichment carried through the queue row's metadata JSONB.
+    if metadata.get("writer"):
+        tag_updates["writer"] = metadata.get("writer")
+    if metadata.get("is_cover") in (1, True, "1", "true", "True"):
+        tag_updates["is_cover"] = "1"
+    if metadata.get("original_cover_artist"):
+        tag_updates["original_cover_artist"] = metadata.get("original_cover_artist")
+    if metadata.get("musicbrainz_genres"):
+        tag_updates["musicbrainz_genres"] = metadata.get("musicbrainz_genres")
+    if metadata.get("work_mbid"):
+        tag_updates["musicbrainz_workid"] = metadata.get("work_mbid")
 
     return write_tags_to_file(file_path, tag_updates)
 

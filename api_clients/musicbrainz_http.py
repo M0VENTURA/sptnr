@@ -76,7 +76,7 @@ _LAST_MB_REQUEST_TIME = 0.0
 
 _RECORDING_INC_SUPERSET = "artist-credits+releases+work-rels+recording-rels+artist-rels+genres+tags"
 _ISRC_INC_SUPERSET = "artist-credits+releases+work-rels"
-_RELEASE_INC_SUPERSET = "recordings+artist-credits+media+release-groups+labels"
+_RELEASE_INC_SUPERSET = "recordings+artist-credits+media+release-groups+labels+work-rels+recording-rels+genres"
 
 
 class _LruCache:

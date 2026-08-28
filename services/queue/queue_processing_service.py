@@ -11,6 +11,7 @@ Handles post-download queue processing and organisation:
 from __future__ import annotations
 
 import difflib
+import json
 import os
 import re
 from pathlib import Path
@@ -342,6 +343,26 @@ def add_release_tracks_to_queue(
 
                 search_query = f"{track_artist} - {track_title}"
 
+                # Writer / cover / genre metadata from the MusicBrainz release
+                # lookup — stored in the queue row's ``metadata`` JSONB so it
+                # survives to import and can be written to the tracks table
+                # and the audio file tags after download.
+                _mb_meta: dict[str, Any] = {}
+                if track.get("writer"):
+                    _mb_meta["writer"] = track["writer"]
+                if track.get("work_mbid"):
+                    _mb_meta["work_mbid"] = track["work_mbid"]
+                if track.get("work_title"):
+                    _mb_meta["work_title"] = track["work_title"]
+                if track.get("work_artist"):
+                    _mb_meta["work_artist"] = track["work_artist"]
+                if track.get("is_cover"):
+                    _mb_meta["is_cover"] = True
+                    if track.get("original_cover_artist"):
+                        _mb_meta["original_cover_artist"] = track["original_cover_artist"]
+                if track.get("musicbrainz_genres"):
+                    _mb_meta["musicbrainz_genres"] = track["musicbrainz_genres"]
+
                 result = session.execute(
                     text("""
                         INSERT INTO download_queue
@@ -349,6 +370,7 @@ def add_release_tracks_to_queue(
                             artist, album, title, search_query, source, status,
                             release_id, import_group, track_number, disc_number,
                             album_artist, recording_mbid, duration, year, release_year,
+                            metadata,
                             created_at, updated_at
                         )
                         VALUES
@@ -356,6 +378,7 @@ def add_release_tracks_to_queue(
                             :artist, :album, :title, :search_query, :source, 'queued',
                             :release_id, :import_group, :track_number, :disc_number,
                             :album_artist, :recording_mbid, :duration, :year, :release_year,
+                            :metadata,
                             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                         )
                         RETURNING id
@@ -375,6 +398,7 @@ def add_release_tracks_to_queue(
                         "duration": duration,
                         "year": str(year) if year else None,
                         "release_year": year,
+                        "metadata": json.dumps(_mb_meta) if _mb_meta else "{}",
                     },
                 )
                 

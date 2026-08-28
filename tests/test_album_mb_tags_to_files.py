@@ -163,3 +163,54 @@ class TestApplyMbidToAlbumFansOutToFiles:
         for _path, tags in written:
             assert tags.get("musicbrainz_albumid") == "729beb45-1c4c-4da9-816a-fc4007ff7507"
             assert tags.get("musicbrainz_releasegroupid") == "f3efc4af-6e09-4ea6-b059-15f3b2852fec"
+
+
+class TestCoverConvention:
+    """A cover detected via the release picker must be renamed to
+    'Title (Original Artist Cover)' and tagged with the 'Cover' genre —
+    the SAME convention as the standalone cover-detection area."""
+
+    def test_cover_title_build_convention(self):
+        """'{title} ({original_artist} Cover)' is the canonical rename."""
+        from services.enrichment.cover_detector_impl import CoverDetector
+
+        title = CoverDetector._build_cover_title("Valhalla Calling", "Miracle of Sound")
+        assert title == "Valhalla Calling (Miracle of Sound Cover)"
+
+    def test_update_file_metadata_writes_cover_and_writer(self, monkeypatch):
+        """update_file_metadata must write writer / is_cover /
+        original_cover_artist / work MBID / MB genres to the file tags."""
+        from services.metadata import tag_file_service as tfs
+
+        written = {}
+
+        def _fake_write_tags_to_file(path, tags):
+            written.update(tags)
+            return True
+
+        monkeypatch.setattr(tfs, "write_tags_to_file", _fake_write_tags_to_file)
+
+        assert tfs.update_file_metadata(
+            "/fake/song.mp3",
+            {
+                "title": "Valhalla Calling",
+                "artist": "Feuerschwanz",
+                "album": "Warriors",
+                "album_artist": "Feuerschwanz",
+                "year": "2024",
+                "track_number": "12",
+                "recording_mbid": "3893fd62-7e54-4532-abb1-4024936418a4",
+                "release_mbid": "217ab767-2c30-44dd-9f68-cc44960a8b7d",
+                "writer": "Gavin Dunne",
+                "is_cover": 1,
+                "original_cover_artist": "Miracle of Sound",
+                "work_mbid": "bb840885-a39d-4a2a-ac84-76684d5edd89",
+                "musicbrainz_genres": "Folk Metal",
+            },
+        ) is True
+
+        assert written.get("writer") == "Gavin Dunne"
+        assert written.get("is_cover") == "1"
+        assert written.get("original_cover_artist") == "Miracle of Sound"
+        assert written.get("musicbrainz_workid") == "bb840885-a39d-4a2a-ac84-76684d5edd89"
+        assert written.get("musicbrainz_genres") == "Folk Metal"

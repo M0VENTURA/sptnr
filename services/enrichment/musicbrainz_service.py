@@ -824,7 +824,7 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> dict[str, Any] | None
     try:
         data = get_shared_mb_client().get_release(
             release_id,
-            inc="recordings+artist-credits+release-groups",
+            inc="recordings+artist-credits+release-groups+work-rels+genres",
         )
 
         if not data:
@@ -855,7 +855,7 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> dict[str, Any] | None
             for track in media.get("tracks", []):
                 recording = track.get("recording", {})
 
-                release_info["tracks"].append({
+                track_info: dict[str, Any] = {
                     "disc_number": disc_index,
                     "track_number": track.get("position"),
                     "title": track.get("title") or recording.get("title"),
@@ -866,7 +866,75 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> dict[str, Any] | None
                         if recording.get("artist-credit")
                         else release_info.get("artist_credit") or release_info.get("artist")
                     ),
-                })
+                }
+
+                # ── Recording work relationships (writers + covers) ──────
+                # The release lookup now requests ``work-rels``, so each
+                # recording carries its work relations.  A "recording of"
+                # work relation means the recording IS a performance of that
+                # work; the work's own relations name the WRITERS.  A track
+                # whose work is by a different artist is a COVER.
+                writers: list[str] = []
+                work_mbid: str | None = None
+                work_title: str | None = None
+                work_artist: str | None = None
+                is_cover = False
+                try:
+                    for rel in recording.get("relations") or []:
+                        rel_type = str(rel.get("type") or "").lower()
+                        work = rel.get("work") or {}
+                        if rel_type in ("performance", "recording of") and work:
+                            work_mbid = work.get("id")
+                            work_title = work.get("title")
+                            # The work's composer/writer relations.
+                            for work_rel in work.get("relations") or []:
+                                wrt = str(work_rel.get("type") or "").lower()
+                                if wrt in ("composer", "writer", "lyricist"):
+                                    wtarget = work_rel.get("artist") or {}
+                                    if wtarget.get("name"):
+                                        writers.append(str(wtarget["name"]))
+                            # The work's artist credit — a cover when it
+                            # differs from the recording/release artist.
+                            work_credit = work.get("artist-credit") or []
+                            if work_credit:
+                                work_artist = primary_album_artist(work_credit)
+                    if writers:
+                        track_info["writer"] = ", ".join(dict.fromkeys(writers))
+                    if work_mbid:
+                        track_info["work_mbid"] = work_mbid
+                    if work_title:
+                        track_info["work_title"] = work_title
+                    if work_artist:
+                        track_info["work_artist"] = work_artist
+                        release_artist_norm = _normalise_artist_key(
+                            track_info.get("artist") or release_info.get("artist") or ""
+                        )
+                        work_artist_norm = _normalise_artist_key(work_artist)
+                        if (
+                            release_artist_norm
+                            and work_artist_norm
+                            and release_artist_norm != work_artist_norm
+                        ):
+                            is_cover = True
+                    if is_cover:
+                        track_info["is_cover"] = True
+                        track_info["original_cover_artist"] = work_artist
+                except Exception as _rel_exc:
+                    logger.debug("Work-relation parse failed", recording=recording.get("id"), error=str(_rel_exc))
+
+                # ── Recording genres from MusicBrainz ────────────────────
+                try:
+                    mb_genres = [
+                        str(g.get("name") or "").strip()
+                        for g in (recording.get("genres") or [])
+                        if str(g.get("name") or "").strip()
+                    ]
+                    if mb_genres:
+                        track_info["musicbrainz_genres"] = ", ".join(dict.fromkeys(mb_genres))
+                except Exception:
+                    pass
+
+                release_info["tracks"].append(track_info)
 
         try:
             from api_clients.coverartarchive import get_release_front_image_bytes
@@ -881,6 +949,12 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> dict[str, Any] | None
     except Exception as e:
         logger.error("MB RELEASE metadata error", error=str(e), exc_info=True)
         return None
+
+
+def _normalise_artist_key(value: str) -> str:
+    """Lowercase, strip punctuation and collapse whitespace for artist compare."""
+    import re as _re
+    return _re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
 
 
 def resolve_release_id(release_id: str) -> str:

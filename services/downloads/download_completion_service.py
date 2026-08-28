@@ -541,6 +541,32 @@ def _apply_stored_metadata(item: dict[str, Any], file_path: str) -> None:
     release_mbid = item.get("release_mbid") or item.get("release_id")
     if release_mbid:
         meta["release_mbid"] = release_mbid
+
+    # ── Stored MusicBrainz enrichment (writer / cover / genres) ──────────
+    # ``add_release_tracks_to_queue`` persisted the per-recording work-rels
+    # (writer + cover attribution) and MB genres in the queue row's
+    # ``metadata`` JSONB.  Apply them to the file tags so the imported track
+    # carries them; the tracks-table write happens in the scan/upsert path.
+    try:
+        _stored = item.get("metadata") or {}
+        if isinstance(_stored, str):
+            import json as _json
+            try:
+                _stored = _json.loads(_stored) or {}
+            except Exception:
+                _stored = {}
+        if isinstance(_stored, dict):
+            if _stored.get("writer"):
+                meta["writer"] = str(_stored["writer"])
+            if _stored.get("is_cover"):
+                meta["is_cover"] = 1
+                if _stored.get("original_cover_artist"):
+                    meta["original_cover_artist"] = str(_stored["original_cover_artist"])
+            if _stored.get("musicbrainz_genres"):
+                meta["musicbrainz_genres"] = str(_stored["musicbrainz_genres"])
+    except Exception as _stored_exc:
+        logger.debug("Stored MB metadata parse failed", queue_id=item.get("id"), error=str(_stored_exc))
+
     if not meta:
         return
 

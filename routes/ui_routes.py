@@ -1333,6 +1333,10 @@ async def album_detail(album_path: str) -> Any:
         _mb_albumstatus = release_values.get("releasestatus") or ""
         _mb_releasecountry = release_values.get("releasecountry") or ""
         _mb_originalyear = release_values.get("originalyear") or ""
+        # recording_mbid → {writer, is_cover, original_cover_artist,
+        # musicbrainz_genres, work_mbid} — used to update covers + writers on
+        # every track of the album when saving from the release picker.
+        _mb_track_map: dict[str, dict[str, Any]] = {}
         if album_mbid:
             try:
                 from services.enrichment.musicbrainz_service import (
@@ -1368,6 +1372,26 @@ async def album_detail(album_path: str) -> Any:
                             _mb_originalyear = (
                                 ((_raw.get("release-group") or {}).get("first-release-date") or "")
                             )[:4]
+
+                    # Per-recording enrichment: the enriched fetch includes
+                    # writer / cover / genre data per track.
+                    for _mt in (_mb_release.get("tracks") or []):
+                        _rmbid = str(_mt.get("recording_mbid") or "").strip()
+                        if not _rmbid:
+                            continue
+                        _entry: dict[str, Any] = {}
+                        if _mt.get("writer"):
+                            _entry["writer"] = _mt["writer"]
+                        if _mt.get("is_cover"):
+                            _entry["is_cover"] = True
+                            if _mt.get("original_cover_artist"):
+                                _entry["original_cover_artist"] = _mt["original_cover_artist"]
+                        if _mt.get("musicbrainz_genres"):
+                            _entry["musicbrainz_genres"] = _mt["musicbrainz_genres"]
+                        if _mt.get("work_mbid"):
+                            _entry["work_mbid"] = _mt["work_mbid"]
+                        if _entry:
+                            _mb_track_map[_rmbid] = _entry
             except Exception as _mb_exc:
                 logger.debug("Album MB backfill failed", error=str(_mb_exc))
 
@@ -1401,6 +1425,40 @@ async def album_detail(album_path: str) -> Any:
                 payload["releasecountry"] = _mb_releasecountry
             if _mb_originalyear:
                 payload["originalyear"] = _mb_originalyear
+
+            # ── Per-track MusicBrainz enrichment (writer / cover / genre) ─
+            # Tracks that have a related WORK (via the recording's work-rels)
+            # get their writer(s) updated; tracks whose work is by a DIFFERENT
+            # artist are covers and are marked ``is_cover`` with the original
+            # artist attributed.  MB genres are also applied per recording.
+            _cover_original_artist: str | None = None
+            _cover_renamed_title: str | None = None
+            if _mb_track_map:
+                _rec_mbid = str(track.get("recording_mbid") or "").strip()
+                _mb_tt = _mb_track_map.get(_rec_mbid)
+                if _mb_tt:
+                    if _mb_tt.get("writer") and not track_composer:
+                        payload["writer"] = _mb_tt["writer"]
+                    if _mb_tt.get("is_cover"):
+                        payload["is_cover"] = 1
+                        _cover_original_artist = str(_mb_tt.get("original_cover_artist") or "").strip()
+                        if _cover_original_artist:
+                            payload["original_cover_artist"] = _cover_original_artist
+                    if _mb_tt.get("musicbrainz_genres"):
+                        payload["musicbrainz_genres"] = _mb_tt["musicbrainz_genres"]
+                    if _mb_tt.get("work_mbid"):
+                        payload["musicbrainz_workid"] = _mb_tt["work_mbid"]
+
+            # ── Cover rename + genre (same convention as the cover-detection
+            #    area) ─────────────────────────────────────────────────────
+            # A confirmed cover is renamed to "Title (Original Artist Cover)"
+            # and gets the "Cover" genre, matching the standalone cover
+            # detector so the whole library uses one convention.
+            if payload.get("is_cover") and _cover_original_artist:
+                _cur_title = str(track.get("title") or "").strip()
+                if _cur_title and "cover)" not in _cur_title.lower():
+                    _cover_renamed_title = f"{_cur_title} ({_cover_original_artist} Cover)"
+                    payload["title"] = _cover_renamed_title
 
             if release_year:
                 payload["year"] = release_year
@@ -1479,6 +1537,15 @@ async def album_detail(album_path: str) -> Any:
             if _resolved_file:
                 try:
                     _file_tags = build_tag_updates(payload)
+                    # Cover convention: add the "Cover" genre to the file
+                    # tags (mirrors the standalone cover-detection area).
+                    if payload.get("is_cover"):
+                        _existing_genres = _file_tags.get("genres") or _file_tags.get("genre")
+                        if isinstance(_existing_genres, list):
+                            if "cover" not in [str(g).lower() for g in _existing_genres]:
+                                _file_tags["genre"] = "; ".join([str(g) for g in _existing_genres] + ["Cover"])
+                        else:
+                            _file_tags["genre"] = "Cover"
                     # Single-disc strip: build_tag_updates drops EMPTY values,
                     # so push disc_number="" explicitly to clear the frame.
                     if _strip_disc_numbers:
