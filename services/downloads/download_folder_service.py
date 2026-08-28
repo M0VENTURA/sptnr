@@ -173,21 +173,50 @@ def _is_torrents_root(name: str) -> bool:
     return str(name or "").strip().lower() == "torrents"
 
 
-def _iter_matched_folder_candidates(downloads_dir: str, archive_dir: str) -> list[tuple[str, str]]:
+def _is_disc_subfolder(name: str) -> bool:
+    """True when *name* is a CD/DISC subfolder (cd1, cd2, disc1, disk2…).
+
+    These are discs of ONE album — their audio belongs to the PARENT folder
+    match, not a separate match of its own.
+    """
+    lowered = str(name or "").strip().lower()
+    return bool(re.match(r"^(cd|disc|disk)\s*\d+$", lowered))
+
+
+def _iter_matched_folder_candidates(downloads_dir: str, archive_dir: str, max_depth: int = 3) -> list[tuple[str, str]]:
+    """Yield ``(folder_abs, display_name)`` for the Matched Folders list.
+
+    Recursively walks the downloads root so EVERY folder containing audio is
+    its own candidate (previously only top-level folders were surfaced, so
+    nested album folders like ``/downloads/Band/2024 - Album/`` were never
+    matched individually).  CD/DISC subfolders (cd1, cd2, disc1…) are NOT
+    separate candidates — their audio is part of the parent album match.
+
+    The torrents root is flattened one level (each torrent album folder is a
+    candidate) so matching one torrent never merges the whole directory.
+    """
     candidates: list[tuple[str, str]] = []
+    archive_norm = os.path.normpath(archive_dir)
+    root_norm = os.path.normpath(downloads_dir)
+
+    def _is_skipped(full: str, name: str) -> bool:
+        if name.startswith(".") or name.startswith("__"):
+            return True
+        if os.path.normpath(full) == archive_norm:
+            return True
+        return False
+
     try:
         entries = sorted(os.listdir(downloads_dir))
     except Exception as exc:
         logger.debug("listdir failed", downloads_dir=downloads_dir, error=str(exc))
         return candidates
-        
+
     for entry in entries:
         full = os.path.join(downloads_dir, entry)
         if not os.path.isdir(full):
             continue
-        if entry.startswith(".") or entry.startswith("__"):
-            continue
-        if os.path.normpath(full) == os.path.normpath(archive_dir):
+        if _is_skipped(full, entry):
             continue
         if _is_torrents_root(entry):
             try:
@@ -199,14 +228,85 @@ def _iter_matched_folder_candidates(downloads_dir: str, archive_dir: str) -> lis
                 sub_full = os.path.join(full, sub)
                 if not os.path.isdir(sub_full):
                     continue
-                if sub.startswith(".") or sub.startswith("__"):
+                if _is_skipped(sub_full, sub):
                     continue
-                if os.path.normpath(sub_full) == os.path.normpath(archive_dir):
+                if _is_disc_subfolder(sub):
+                    candidates.append((full, entry))
                     continue
                 candidates.append((sub_full, sub))
             continue
-        candidates.append((full, entry))
+
+        # ── Recursive subfolder discovery ────────────────────────────────
+        # A top-level folder may contain nested album folders
+        # (``Band/2024 - Album/01 - Track.flac``).  Surface EACH subfolder
+        # that contains audio as its own candidate, EXCEPT cd/disc
+        # subfolders which belong to the parent.  The top folder itself is
+        # also a candidate only when it has audio DIRECTLY (not just inside
+        # nested album subfolders) — those albums are separate matches.
+        def _has_audio_direct(folder_abs: str) -> bool:
+            """True when *folder_abs* has audio files in it directly (no
+            recursion — subfolder audio belongs to the subfolder's own
+            match)."""
+            try:
+                for name in os.listdir(folder_abs):
+                    p = os.path.join(folder_abs, name)
+                    if os.path.isfile(p) and os.path.splitext(name)[1].lower() in SUPPORTED_AUDIO_FORMATS:
+                        return True
+            except Exception:
+                pass
+            return False
+
+        def _has_audio_recursive(folder_abs: str) -> bool:
+            try:
+                for f in _get_files_in_folder(folder_abs):
+                    if f.get("is_audio"):
+                        return True
+            except Exception:
+                pass
+            return False
+
+        _top_dirs = _top_subdirs(full)
+        _top_has_disc = any(_is_disc_subfolder(d) for d in _top_dirs)
+
+        # Walk subfolders (bounded depth) surfacing album folders.
+        found_nested = False
+        base_parts = os.path.normpath(full).split(os.sep)
+        try:
+            for root, dirs, _names in os.walk(full):
+                depth = len(os.path.normpath(root).split(os.sep)) - len(base_parts)
+                if depth >= max_depth:
+                    dirs[:] = []
+                    continue
+                # Prune disc subfolders: they belong to their parent.
+                dirs[:] = [d for d in dirs if not _is_disc_subfolder(d) and not d.startswith(".") and not d.startswith("__")]
+                for d in list(dirs):
+                    sub_full = os.path.join(root, d)
+                    if os.path.normpath(sub_full) == archive_norm:
+                        dirs.remove(d)
+                        continue
+                    if _has_audio_recursive(sub_full):
+                        candidates.append((sub_full, d))
+                        found_nested = True
+        except Exception as exc:
+            logger.debug("Matched-folder recursive walk failed", path=full, error=str(exc))
+
+        # The top folder is its own match when it has audio DIRECTLY, OR when
+        # its only subfolders are cd/disc (their audio is part of it).
+        if _has_audio_direct(full) or (_top_has_disc and _has_audio_recursive(full)):
+            candidates.append((full, entry))
+
     return candidates
+
+
+def _top_subdirs(folder_abs: str) -> list[str]:
+    """Return the immediate subdirectory names of *folder_abs*."""
+    try:
+        return [
+            e for e in os.listdir(folder_abs)
+            if os.path.isdir(os.path.join(folder_abs, e))
+        ]
+    except Exception:
+        return []
 
 
 def _iter_torrent_album_candidates(downloads_dir: str, archive_dir: str) -> list[tuple[str, str]]:

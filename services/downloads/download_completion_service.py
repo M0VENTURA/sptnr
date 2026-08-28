@@ -152,7 +152,19 @@ def _wait_for_transfer_file(found_filename: str, local_file_path: str) -> Option
 
     # Recursive fallback: walk the downloads root (shallow) looking for the
     # basename anywhere under it — covers slskd's nested-directory saves and
-    # any path-mapping drift between slskd and the app.
+    # any path-mapping drift between slskd and the app.  The match is
+    # Unicode-tolerant: files with accented names ("Le cimetière marin.flac")
+    # may land with different normalization (NFC/NFD) or stripped accents on
+    # disk, so compare the NFC-normalised AND accent-stripped basenames.
+    import unicodedata as _ud
+
+    def _norm_key(name: str) -> str:
+        n = _ud.normalize("NFC", name)
+        stripped = _ud.normalize("NFKD", n)
+        stripped = "".join(c for c in stripped if not _ud.combining(c))
+        return stripped.lower()
+
+    _base_key = _norm_key(base)
     if monitored and os.path.isdir(monitored) and base:
         try:
             _depth_limited = True
@@ -162,9 +174,10 @@ def _wait_for_transfer_file(found_filename: str, local_file_path: str) -> Option
                     # "music/Artist/Album" layout without scanning the whole
                     # library on every poll.
                     _dirs[:] = [d for d in _dirs if _root.count(os.sep) - monitored.count(os.sep) < 3]
-                if base in _files:
-                    candidates.append(os.path.join(_root, base))
-                    break
+                for _fname in _files:
+                    if _norm_key(_fname) == _base_key:
+                        candidates.append(os.path.join(_root, _fname))
+                        break
         except Exception:
             pass
 
@@ -180,6 +193,23 @@ def _wait_for_transfer_file(found_filename: str, local_file_path: str) -> Option
                 pass
         _time.sleep(_FILE_ARRIVAL_POLL_SECONDS)
     return None
+
+
+def _accent_stripped_key(name: str) -> str:
+    """Lowercased, accent-stripped key for tolerant filename matching.
+
+    Accented filenames ("Le cimetière marin.flac") can land with different
+    Unicode normalization (NFC vs NFD) or with accents stripped ("Le cimetiere
+    marin.flac") depending on the peer/OS.  Comparing this key tolerates all
+    three.
+    """
+    try:
+        import unicodedata as _ud
+        nfc = _ud.normalize("NFC", str(name or ""))
+        stripped = "".join(c for c in _ud.normalize("NFKD", nfc) if not _ud.combining(c))
+        return stripped.lower().strip()
+    except Exception:
+        return str(name or "").lower().strip()
 
 
 def _is_stale_queue_item(
@@ -223,6 +253,12 @@ def _build_download_index(fs_files: list[dict[str, Any]]) -> dict[str, Any]:
             by_rel_norm.setdefault(norm, f)
         base = os.path.basename(rel)
         by_basename.setdefault(base.lower(), []).append(f)
+        # Accent-stripped basename key so accented files ("Le cimetière
+        # marin.flac") are found even when the queue's found_filename uses a
+        # different accent normalization (NFC/NFD) or stripped accents.
+        _stripped = _accent_stripped_key(base)
+        if _stripped and _stripped != base.lower():
+            by_basename.setdefault(_stripped, []).append(f)
         if _tokenize_meaningful is not None:
             for token in set(_tokenize_meaningful(base)):
                 by_token.setdefault(token, []).append(f)
@@ -1008,9 +1044,21 @@ def check_completed_downloads() -> dict[str, Any]:
                         else:
                             _cand_base = os.path.basename(remote_norm)
                             if _cand_base:
+                                import unicodedata as _ud
+                                _base_key = _ud.normalize("NFC", _cand_base).lower()
+                                _base_stripped = "".join(
+                                    c for c in _ud.normalize("NFKD", _base_key) if not _ud.combining(c)
+                                ).lower()
                                 for _root, _dirs, _files in os.walk(downloads_dir):
-                                    if _cand_base in _files:
-                                        resolved_local = os.path.join(_root, _cand_base)
+                                    for _fname in _files:
+                                        _fn_key = _ud.normalize("NFC", _fname).lower()
+                                        _fn_stripped = "".join(
+                                            c for c in _ud.normalize("NFKD", _fn_key) if not _ud.combining(c)
+                                        ).lower()
+                                        if _fn_key == _base_key or _fn_stripped == _base_stripped:
+                                            resolved_local = os.path.join(_root, _fname)
+                                            break
+                                    if resolved_local and os.path.isfile(resolved_local):
                                         break
                     if resolved_local and os.path.isfile(resolved_local):
                         if remote_norm:
@@ -1167,6 +1215,11 @@ def check_completed_downloads() -> dict[str, Any]:
                             exact_candidates.append(hit)
                     if found_basename:
                         exact_candidates.extend(fs_index["by_basename"].get(found_basename.lower(), []))
+                        # Accent-stripped key so accented filenames match even
+                        # when the found_filename normalizes accents differently.
+                        _stripped = _accent_stripped_key(found_basename)
+                        if _stripped and _stripped != found_basename.lower():
+                            exact_candidates.extend(fs_index["by_basename"].get(_stripped, []))
 
                     seen_paths: set[str] = set()
                     for f in exact_candidates:
@@ -1177,14 +1230,12 @@ def check_completed_downloads() -> dict[str, Any]:
                         rel = f["rel_path"].replace("\\", "/")
                         if _is_file_claimed(candidate, claimed_files, downloads_dir):
                             continue
-                            
                         try:
                             _artist_ok = _file_artist_matches_queue_item(candidate, item)
                         except Exception:
                             _artist_ok = None
                         if _artist_ok is False:
                             continue
-                            
                         is_match, match_source = _file_matches_queue_item(candidate, item, rel)
                         if not is_match:
                             _delete_mismatched_download(candidate, queue_id, f"metadata mismatch for exact filename match ({match_source})")
