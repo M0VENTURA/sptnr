@@ -142,3 +142,51 @@ class TestAlbumArtistsAndEdgeCases:
             "Various Artists - The Fall - Compilation.flac"
         )
         assert _score_result(candidate, "Various Artists", "The Fall") >= 30.0
+
+
+class TestWrongAlbumRejection:
+    """A file from the WRONG ALBUM must be rejected even when the artist
+    matches — searching "Lament for the Hollow" (from *Obscured Horizons*)
+    must never download "07 - Yesterday's Fire" from a different release."""
+
+    def test_same_artist_different_album_rejected(self):
+        candidate = _candidate(
+            "The Eternal - When The Circle Of Light Begins To Fade - 07 - Yesterday's Fire.flac"
+        )
+        assert _score_result(
+            candidate,
+            "The Eternal", "Lament for the Hollow",
+            expected_album="Obscured Horizons",
+        ) == 0.0
+
+    def test_folder_album_mismatch_rejected(self):
+        """Album in the parent folder (basename has only a track number)."""
+        candidate = _candidate(
+            "music/The Eternal [AUS]/2013 - When The Circle Of Light Begins To Fade/07 - Yesterday's Fire.flac"
+        )
+        assert _score_result(
+            candidate,
+            "The Eternal", "Lament for the Hollow",
+            expected_album="Obscured Horizons",
+        ) == 0.0
+
+    def test_correct_album_still_passes(self):
+        candidate = _candidate(
+            "The Eternal - Obscured Horizons - 01 - Lament for the Hollow.flac"
+        )
+        assert _score_result(
+            candidate,
+            "The Eternal", "Lament for the Hollow",
+            expected_album="Obscured Horizons",
+        ) >= 30.0
+
+    def test_track_number_only_basename_parses_title(self):
+        """'07 - Yesterday's Fire.flac' must parse '07' as the track number,
+        NOT the artist (previously the artist gate gave folder-artist credit
+        and let wrong files through)."""
+        from services.downloads.download_pipeline_service import _parse_filename_parts
+
+        parts = _parse_filename_parts("07 - Yesterday's Fire.flac")
+        assert parts["artist"] is None
+        assert parts["title"] == "Yesterday's Fire"
+        assert parts["has_track_number"] is True

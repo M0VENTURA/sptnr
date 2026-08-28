@@ -88,6 +88,53 @@ class TestGetReadyForProcessingExcludesPassiveSources:
         assert "Active Artist" in artists
 
 
+class TestCrossSourceDedupe:
+    """The same song added via different entry points must not pile up as
+    multiple searchable queue rows ("20 versions of one song")."""
+
+    def test_soulseek_then_musicbrainz_dedupes(self):
+        from db.repositories.queue import insert_queue_item, get_queue_item
+
+        first = insert_queue_item(artist="Radiohead", title="Creep", album="Pablo Honey", source="soulseek")
+        assert first.get("already_queued") is not True
+        qid = first.get("id")
+
+        # Adding the SAME track via the MusicBrainz flow must dedupe (the
+        # old ``source = :source`` check created a second searchable row).
+        second = insert_queue_item(
+            artist="Radiohead", title="Creep", album="Pablo Honey",
+            source="musicbrainz", release_mbid="abc-123",
+        )
+        assert second.get("already_queued") is True
+        assert int(second.get("id")) == int(qid)
+
+        # Still exactly one row.
+        from db.repositories.queue import get_queue_status_counts
+        counts = get_queue_status_counts() or {}
+        assert int(counts.get("queued") or 0) == 1
+
+    def test_discovered_and_soulseek_stay_separate(self):
+        """A local/discovered file row and a searchable row for the same
+        track are different concerns — the disk file must not suppress a
+        legitimate search, and vice versa."""
+        from db.repositories.queue import insert_queue_item
+
+        local = insert_queue_item(
+            artist="Radiohead", title="Creep", album="Pablo Honey",
+            source="discovered", status="unmatched",
+            file_path="/downloads/Radiohead/creep.mp3", found_filename="creep.mp3",
+        )
+        assert local.get("already_queued") is not True
+
+        search = insert_queue_item(
+            artist="Radiohead", title="Creep", album="Pablo Honey",
+            source="soulseek",
+        )
+        # Different (artist, title) dedupe buckets: local rows don't suppress
+        # searchable rows and vice versa.
+        assert search.get("already_queued") is not True
+
+
 class TestWordDropFallbackQueries:
     def test_artist_and_title_word_drops(self):
         """The fallback builder produces the progressively-dropped-word

@@ -59,7 +59,7 @@ def record_scan(
                 )
             else:
                 # Update the most recent 'started' row for this scan_type/artist
-                session.execute(
+                updated = session.execute(
                     text("""
                         UPDATE scan_history
                         SET status = :status,
@@ -83,6 +83,29 @@ def record_scan(
                         "completed_at": datetime.utcnow(),
                     },
                 )
+                # If NO matching 'started' row exists (e.g. the scan was
+                # launched by a path that never recorded 'started', or the
+                # started row was written with a different artist), INSERT the
+                # completion as its own row so the scan history is never
+                # silently lost.  The dashboard renders any non-failed
+                # _SCAN_SESSION_ row as a completed session.
+                if updated.rowcount == 0:
+                    session.execute(
+                        text("""
+                            INSERT INTO scan_history
+                                (scan_type, status, message, artist, album, started_at, completed_at)
+                            VALUES (:scan_type, :status, :message, :artist, :album,
+                                    :completed_at, :completed_at)
+                        """),
+                        {
+                            "scan_type": scan_type,
+                            "status": status,
+                            "message": message,
+                            "artist": artist,
+                            "album": album,
+                            "completed_at": datetime.utcnow(),
+                        },
+                    )
     except Exception as exc:
         logger.exception(
             "Failed to record scan history",

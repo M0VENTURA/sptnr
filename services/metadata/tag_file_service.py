@@ -506,6 +506,31 @@ def write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
                     )
                 )
 
+            else:
+                # ── Generic TXXX fallback ──────────────────────────────────
+                # Standard MusicBrainz / album fields that have no native ID3
+                # frame (releasetype, releasestatus, releasecountry,
+                # originalyear, originaldate, tracktotal, disctotal, media,
+                # label, catalog, barcode, asin, script, discsubtitle, ...)
+                # must be written as TXXX frames — Navidrome reads these
+                # back and uses them to group/merge albums.  Previously they
+                # were SILENTLY DROPPED for MP3 files, so tracks that never
+                # received MB enrichment stayed missing the album-level tags
+                # and Navidrome split the album.  Write them under their
+                # canonical MusicBrainz TXXX description (uppercase, spaces).
+                _generic_txxx = str(field).replace("_", " ").upper()
+                if _generic_txxx in {
+                    "RELEASETYPE", "RELEASESTATUS", "RELEASECOUNTRY",
+                    "ORIGINALYEAR", "ORIGINALDATE", "TRACKTOTAL", "DISCTOTAL",
+                    "MEDIA", "LABEL", "CATALOG", "CATALOGNUMBER", "BARCODE",
+                    "ASIN", "SCRIPT", "DISCSUBTITLE", "COPYRIGHT", "LANGUAGE",
+                    "EXPLICITSTATUS", "MUSICBRAINZ ALBUMTYPE",
+                    "MUSICBRAINZ ALBUMSTATUS", "MUSICBRAINZ RELEASECOUNTRY",
+                }:
+                    _clear_txxx_variants(tag_obj, _generic_txxx)
+                    if value is not None and str(value).strip() != "":
+                        tag_obj.add(TXXX(encoding=3, desc=_generic_txxx, text=[str(value)]))
+
         save()
         return True
 

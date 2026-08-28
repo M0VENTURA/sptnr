@@ -130,14 +130,40 @@ def _parse_filename_parts(filename: str) -> dict[str, str | None]:
             result["artist"] = parts[0]
             result["title"] = parts[-1]
     elif len(parts) == 2:
-        result["artist"] = parts[0]
-        result["title"] = parts[1]
+        # "07 - Yesterday's Fire" — the first segment is a TRACK NUMBER, not an
+        # artist.  Treating "07" as the artist polluted the artist-evidence
+        # gate (any filename with the real artist in a parent folder then
+        # passed) and let wrong-album files through.  When the first segment
+        # is purely numeric it is a track number and the second is the title.
+        first = parts[0]
+        if re.match(r"^\d{1,3}$", first):
+            result["title"] = parts[1]
+            result["has_track_number"] = True
+        else:
+            result["artist"] = parts[0]
+            result["title"] = parts[1]
 
-    if not result["artist"]:
+    if not result["artist"] and not result["title"]:
         fallback = re.match(r"^(\d{1,3})\s+(.+)", name)
         if fallback:
             result["title"] = fallback.group(2).strip()
             result["has_track_number"] = True
+
+    # Album from the parent folder when the basename has no album segment
+    # (e.g. "music/The Eternal [AUS]/2013 - When The Circle Of Light Begins
+    # To Fade/07 - Yesterday's Fire.flac" → album from the folder).  This lets
+    # the album gate reject a file pulled from the WRONG release even when the
+    # basename is just "07 - Track.flac".  Skip generic folder names.
+    if not result["album"]:
+        try:
+            _parent = filename.replace("\\", "/").rsplit("/", 1)[0] if "/" in filename.replace("\\", "/") else ""
+            _folder = _parent.rsplit("/", 1)[-1].strip() if _parent else ""
+            if _folder and not re.match(r"^\d{1,3}$", _folder):
+                _lower_folder = _folder.lower()
+                if _lower_folder not in ("downloads", "music", "inbox", "completed", "torrents", "original"):
+                    result["album"] = _folder
+        except Exception:
+            pass
 
     return result
 
@@ -509,8 +535,37 @@ def _score_result(
     elif _normalise(expected_title) in _normalise(filename):
         score += 15
 
+    # ── Hard ALBUM gate ──────────────────────────────────────────────────
+    # A candidate whose filename explicitly names a DIFFERENT album than the
+    # expected one is the wrong file — e.g. searching "Lament for the Hollow"
+    # (from *Obscured Horizons*) must never download "07 - Yesterday's Fire"
+    # from "When The Circle Of Light Begins To Fade" just because the artist
+    # matches and quality bonuses clear the floor.  The title gate already
+    # blocks most of these, but a coincidental title overlap (same word,
+    # edition annotation) can slip through; the album is the definitive
+    # signal.  Only an exact/near-exact title match is allowed to override
+    # an album mismatch (the candidate may be a single pulled from a
+    # different compilation, or the filename album may be a variant label).
     if expected_album:
+        parsed_album = str(parts.get("album") or "").strip()
         album_score = _similarity(str(parts.get("album") or ""), expected_album)
+        if parsed_album:
+            album_mismatch = (
+                album_score < 0.6
+                and _normalise(expected_album) not in _normalise(filename)
+                and not _normalise(parsed_album) in _normalise(expected_album)
+            )
+            if album_mismatch and title_score < 0.85:
+                logger.debug(
+                    "Rejected candidate — album mismatch",
+                    filename=filename[:180],
+                    expected_album=expected_album,
+                    parsed_album=parsed_album,
+                    album_score=round(album_score, 2),
+                    title_score=round(title_score, 2),
+                )
+                return 0.0
+
         if album_score > 0.6:
             score += 20 * min(1.0, album_score)
         elif _normalise(expected_album) in _normalise(filename):

@@ -371,10 +371,8 @@ function updateRecentScans() {
     .then(r => r.json())
     .then(data => {
       const payload = data.scans || [];
-      if (payload.length > 0) {
-        _lastRecentScansPayload = payload;
-        renderRecentScans(_currentScanningAlbum ? [_currentScanningAlbum].concat(payload) : payload);
-      }
+      _lastRecentScansPayload = payload;
+      renderRecentScans(_currentScanningAlbum ? [_currentScanningAlbum].concat(payload) : payload);
     })
     .catch(error => console.error("Error fetching recent scans:", error));
 }

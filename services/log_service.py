@@ -366,7 +366,13 @@ def get_log_file_content(name: str, lines: int | str = 500):
         if all_lines:
             log_lines = _read_all_lines(log_path)
         else:
-            log_lines = _read_last_lines(log_path, lines)
+            # For unified_scan.log, read a LARGER window than requested so the
+            # scan-activity filter (which drops queue/scheduler noise) still
+            # has scan lines to show.  Reading exactly ``lines`` and then
+            # filtering can yield nothing when the tail is dominated by
+            # watcher/queue churn even though a scan just ran.
+            read_window = lines * 6 if name == "unified_scan.log" else lines
+            log_lines = _read_last_lines(log_path, read_window)
         if name == "unified_scan.log":
             noise_pattern = _scheduler_noise_filter()
             scan_pattern = _scan_activity_filter()

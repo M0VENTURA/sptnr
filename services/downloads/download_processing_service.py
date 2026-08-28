@@ -202,6 +202,11 @@ def queue_force_start(queue_id: int) -> Dict[str, Any]:
             return {"success": False, "error": "Item already has a downloaded file — use Transfer or Match instead"}
         if str(item.get("status") or "").lower() in ("completed", "imported", "in_collection"):
             return {"success": False, "error": "Item is already completed"}
+        # Local/discovered items (files already in matched folders) must never
+        # be forced into the Soulseek search pipeline — that creates a
+        # duplicate download of a file we already have on disk.
+        if str(item.get("source") or "").lower() in ("local", "discovered"):
+            return {"success": False, "error": "Item is a local/discovered file — use Transfer or Match instead of searching"}
 
         updated = update_queue_item(
             queue_id,
@@ -229,6 +234,7 @@ def queue_requeue_all_unmatched() -> Dict[str, Any]:
                     SET status = 'queued',
                         updated_at = CURRENT_TIMESTAMP
                     WHERE status = 'unmatched'
+                      AND LOWER(COALESCE(source, '')) NOT IN ('local', 'discovered')
                 """)
             )
             count = int(result.rowcount or 0)

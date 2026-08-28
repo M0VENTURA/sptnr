@@ -309,6 +309,37 @@ def add_release_tracks_to_queue(
                     logger.info("Skipping existing library track", artist=track_artist, title=track_title)
                     continue
 
+                # ── Per-track dedupe against ANY active queue row ─────────
+                # The release-level guard above only catches rows sharing the
+                # SAME import_group/release_id.  The same track can already be
+                # active under a DIFFERENT import group (matched-folder flows,
+                # manual adds, upcoming-releases, a previous release ID) —
+                # without this check the raw INSERT below would create yet
+                # another soulseek row, piling up "20 versions of one song".
+                # Match on normalized (artist, title) across all active
+                # statuses and any source.
+                _dup_row = session.execute(
+                    text("""
+                        SELECT id FROM download_queue
+                        WHERE LOWER(COALESCE(artist, '')) = LOWER(:artist)
+                          AND LOWER(COALESCE(title, '')) = LOWER(:title)
+                          AND status IN
+                            ('queued', 'searching', 'downloading', 'processing',
+                             'moving', 'unmatched', 'completed', 'imported',
+                             'in_collection', 'matched')
+                        ORDER BY created_at ASC
+                        LIMIT 1
+                    """),
+                    {"artist": track_artist, "title": track_title},
+                ).fetchone()
+                if _dup_row is not None:
+                    logger.info(
+                        "Skipping track — already active in queue",
+                        artist=track_artist, title=track_title,
+                        existing_queue_id=_dup_row[0],
+                    )
+                    continue
+
                 search_query = f"{track_artist} - {track_title}"
 
                 result = session.execute(

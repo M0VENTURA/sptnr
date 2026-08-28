@@ -132,17 +132,27 @@ def insert_queue_item(
         return {"success": False, "error": "Artist and title are required"}
 
     with db_session() as session:
+        # Dedupe on normalized (artist, title) across ALL active statuses and
+        # ANY source.  Previously the dedupe required ``source = :source``, so
+        # adding the same song via different entry points (Soulseek search,
+        # MusicBrainz release, playlist import, upcoming releases) created
+        # multiple rows for the same track — "20 versions of one song".
+        # Local/discovered rows are still kept separate (they represent files
+        # already on disk, never a search) — a searchable insert only dedupes
+        # against other searchable rows, and a local insert only against other
+        # local rows.
+        _is_local = str(source or "").lower() in ("local", "discovered")
         existing = session.execute(
             text("""
                 SELECT * FROM download_queue
                 WHERE LOWER(artist) = LOWER(:artist)
                   AND LOWER(title) = LOWER(:title)
-                  AND source = :source
-                  AND status IN ('queued', 'searching', 'downloading', 'completed', 'unmatched', 'imported', 'in_collection')
+                  AND status IN ('queued', 'searching', 'downloading', 'completed', 'unmatched', 'imported', 'in_collection', 'matched', 'processing', 'moving')
+                  AND (LOWER(COALESCE(source, '')) IN ('local', 'discovered')) = :is_local
                 ORDER BY created_at ASC
                 LIMIT 1
             """),
-            {"artist": artist, "title": title, "source": source},
+            {"artist": artist, "title": title, "is_local": _is_local},
         ).fetchone()
 
         if existing is not None:
@@ -483,6 +493,7 @@ def requeue_queue_item(queue_id: int) -> dict[str, Any] | None:
                     UPDATE download_queue
                     SET status = CASE
                             WHEN file_path IS NOT NULL THEN 'unmatched'
+                            WHEN LOWER(COALESCE(source, '')) IN ('local', 'discovered') THEN 'unmatched'
                             ELSE 'queued'
                         END,
                         retry_count = 0,

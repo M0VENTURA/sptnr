@@ -446,7 +446,13 @@ async def dashboard() -> Any:
                     WHERE updated_at >= CURRENT_TIMESTAMP - INTERVAL '14 days'
                       AND album IS NOT NULL AND TRIM(album) <> ''
                       AND file_path IS NOT NULL AND TRIM(file_path) <> ''
-                    GROUP BY COALESCE(NULLIF(album_artist, ''), artist), album
+                    GROUP BY
+                        COALESCE(NULLIF(album_artist, ''), artist),
+                        album,
+                        COALESCE(
+                            NULLIF(SUBSTRING(COALESCE(year, '') FROM '^[0-9]{4}'), ''),
+                            NULLIF(CAST(release_year AS TEXT), '')
+                        )
                     ORDER BY added_at DESC
                     LIMIT 12
                 """))
@@ -1235,17 +1241,32 @@ async def album_detail(album_path: str) -> Any:
         )
         tracks = [dict(r._mapping) for r in result.fetchall()]
 
+    def _track_year(t: dict[str, Any]) -> int | None:
+        raw = str(t.get("year") or "").strip()
+        if raw[:4].isdigit():
+            return int(raw[:4])
+        try:
+            rv = int(t.get("release_year") or 0) or None
+            return rv
+        except (TypeError, ValueError):
+            return None
+
+    # ── Same-name albums across years ────────────────────────────────────
+    # When the URL has NO year segment and the (artist, album) matches tracks
+    # from MULTIPLE distinct years (a band re-releasing an album, or two
+    # different albums sharing a name), the tracks are NOT merged into one
+    # page — each year is its own album.  Default to the most recent year so
+    # the page matches the latest release; a year selector links to the
+    # year-scoped URLs (``/album/<artist>/<album>/<year>``).
+    all_album_years = sorted(
+        {y for y in (_track_year(t) for t in tracks) if y is not None},
+        reverse=True,
+    )
+    if album_year_filter is None:
+        if len(all_album_years) > 1:
+            album_year_filter = all_album_years[0]
+
     if album_year_filter is not None and tracks:
-        def _track_year(t: dict[str, Any]) -> int | None:
-            raw = str(t.get("year") or "").strip()
-            if raw[:4].isdigit():
-                return int(raw[:4])
-            try:
-                rv = int(t.get("release_year") or 0) or None
-                return rv
-            except (TypeError, ValueError):
-                return None
-                
         year_tracks = [t for t in tracks if _track_year(t) == album_year_filter]
         if year_tracks:
             tracks = year_tracks
@@ -1298,6 +1319,58 @@ async def album_detail(album_path: str) -> Any:
             # tracks untouched.
             _strip_disc_numbers = bool(_disc_total_raw)
 
+        # ── MusicBrainz album-artist backfill ─────────────────────────────
+        # The release picker populates ``album_mbid`` (release) + the release
+        # group MBID, but NOT the album-artist MBID / release type / status /
+        # country — so saving writes only a subset of the MB tags, and tracks
+        # that never got MB-enriched stay missing the album-level tags
+        # Navidrome needs to merge them into one album.  When a release MBID
+        # is present, fetch the release's artist credit and backfill the
+        # album-artist MBID (plus other MB album fields) onto EVERY track so
+        # the file tags are complete and consistent.
+        _mb_albumartist_mbid = ""
+        _mb_albumtype = album_type
+        _mb_albumstatus = release_values.get("releasestatus") or ""
+        _mb_releasecountry = release_values.get("releasecountry") or ""
+        _mb_originalyear = release_values.get("originalyear") or ""
+        if album_mbid:
+            try:
+                from services.enrichment.musicbrainz_service import (
+                    build_artist_credit_string,
+                    fetch_musicbrainz_release_metadata,
+                    primary_album_artist,
+                )
+                _mb_release = fetch_musicbrainz_release_metadata(album_mbid)
+                if _mb_release:
+                    # Re-fetch raw release for artist-credit MBIDs (the
+                    # metadata helper returns display names only).
+                    from services.enrichment.musicbrainz_service import get_shared_mb_client
+                    _raw = get_shared_mb_client().get_release(
+                        album_mbid, inc="artist-credits+release-groups",
+                    )
+                    if _raw:
+                        _credit = _raw.get("artist-credit") or []
+                        if _credit:
+                            _first = _credit[0]
+                            _art = _first.get("artist") or {}
+                            if isinstance(_art, dict):
+                                _mb_albumartist_mbid = str(_art.get("id") or "")
+                        if not _mb_albumtype:
+                            _mb_albumtype = (
+                                ((_raw.get("release-group") or {}).get("primary-type") or "")
+                                or album_type
+                            )
+                        if not _mb_albumstatus:
+                            _mb_albumstatus = str(_raw.get("status") or "")
+                        if not _mb_releasecountry:
+                            _mb_releasecountry = str(_raw.get("country") or "")
+                        if not _mb_originalyear:
+                            _mb_originalyear = (
+                                ((_raw.get("release-group") or {}).get("first-release-date") or "")
+                            )[:4]
+            except Exception as _mb_exc:
+                logger.debug("Album MB backfill failed", error=str(_mb_exc))
+
         updated_count = 0
         reverted_live_count = 0
         file_sync_failures = 0
@@ -1315,6 +1388,19 @@ async def album_detail(album_path: str) -> Any:
             if new_artist and new_artist != (track.get("album_artist") or track.get("artist")):
                 payload["album_artist"] = new_artist
                 payload["artist"] = new_artist
+
+            # Backfilled MB album metadata — applied to EVERY track so the
+            # audio files carry the complete, consistent tag set.
+            if _mb_albumartist_mbid:
+                payload["musicbrainz_albumartistid"] = _mb_albumartist_mbid
+            if _mb_albumtype:
+                payload["musicbrainz_albumtype"] = _mb_albumtype
+            if _mb_albumstatus:
+                payload["musicbrainz_albumstatus"] = _mb_albumstatus
+            if _mb_releasecountry:
+                payload["releasecountry"] = _mb_releasecountry
+            if _mb_originalyear:
+                payload["originalyear"] = _mb_originalyear
 
             if release_year:
                 payload["year"] = release_year
@@ -1666,6 +1752,8 @@ async def album_detail(album_path: str) -> Any:
         album_artist_mbid=album_artist_mbid,
         is_album_favourite=is_album_favourite,
         slskd_config=cfg.get("slskd", {}),
+        all_album_years=all_album_years,
+        active_album_year=album_year_filter,
     )
 
 

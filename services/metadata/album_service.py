@@ -526,10 +526,68 @@ def apply_genres_to_album(artist: str, album: str, genres: list[str]) -> dict[st
 # =============================================================================
 
 def apply_mbid_to_album(artist: str, album: str, mbid: str, rg_mbid: str, cover_url: str) -> dict[str, Any]:
+    """Apply a MusicBrainz album/release-group ID to every track in an album.
+
+    Writes BOTH the database columns AND the physical audio file tags — the
+    fan-out requirement: Navidrome reads FILE tags, so a DB-only update leaves
+    the album split on Navidrome even though Popularr shows it merged.
+    """
     rows = update_album_mbid_fields(
         artist=artist, album=album, mbid=mbid, rg_mbid=rg_mbid, cover_url=cover_url,
     )
-    return {"success": rows > 0, "rows_updated": rows}
+
+    # Fan out to the audio files: Navidrome keys albums on the file tags
+    # (``musicbrainz_albumid`` / ``musicbrainz_albumartistid`` / ``album``),
+    # so the DB update alone never merges the album on Navidrome.
+    file_updated = 0
+    file_failed = 0
+    try:
+        from services.metadata.tag_file_service import (
+            resolve_music_file_path,
+            update_file_tags,
+        )
+        from db.engine import db_session as _db_session
+        from sqlalchemy import text as _text
+
+        with _db_session() as session:
+            result = session.execute(
+                _text("""
+                    SELECT file_path FROM tracks
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+                      AND album = :album
+                      AND file_path IS NOT NULL
+                """),
+                {"artist": artist, "album": album},
+            ).fetchall() or []
+
+        for (file_path,) in result:
+            resolved = resolve_music_file_path(str(file_path or ""))
+            if not resolved:
+                file_failed += 1
+                continue
+            tags: dict[str, Any] = {
+                "musicbrainz_albumid": mbid,
+                "musicbrainz_album_mbid": mbid,
+            }
+            if rg_mbid:
+                tags["musicbrainz_releasegroupid"] = rg_mbid
+            try:
+                if update_file_tags(resolved, tags):
+                    file_updated += 1
+                else:
+                    file_failed += 1
+            except Exception as _tag_exc:
+                logger.debug("Album MBID file-tag write failed", file=resolved, error=str(_tag_exc))
+                file_failed += 1
+    except Exception as exc:
+        logger.debug("Album MBID file-tag fan-out failed", error=str(exc))
+
+    return {
+        "success": rows > 0,
+        "rows_updated": rows,
+        "files_updated": file_updated,
+        "files_failed": file_failed,
+    }
 
 
 def apply_discogs_id_to_album(artist: str, album: str, discogs_id: str, is_single: bool) -> dict[str, Any]:

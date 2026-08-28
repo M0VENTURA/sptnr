@@ -96,6 +96,19 @@
                     <h1 class="h5 fw-bold mb-0 album-hero-title text-truncate pe-4">
                         {{ album_name }}{% if album_data and album_data.album_year %} <span class="text-muted fw-normal" style="font-size:0.85rem;">({{ album_data.album_year }})</span>{% endif %}
                     </h1>
+                    {% if all_album_years and all_album_years|length > 1 %}
+                    <!-- Same-name albums across years: pick the edition -->
+                    <div class="d-flex align-items-center gap-2 mt-1 flex-wrap">
+                        <small class="text-muted" style="font-size:0.7rem;">Edition:</small>
+                        {% for y in all_album_years %}
+                            {% if y == active_album_year %}
+                                <span class="badge bg-success text-success-emphasis border border-success" style="font-size:0.7rem;">{{ y }}</span>
+                            {% else %}
+                                <a href="/album/{{ artist_name|path_segment }}/{{ album_name|path_segment }}/{{ y }}" class="badge bg-dark text-muted border border-secondary text-decoration-none" style="font-size:0.7rem;" title="View the {{ y }} edition">{{ y }}</a>
+                            {% endif %}
+                        {% endfor %}
+                    </div>
+                    {% endif %}
                     <div class="small text-muted mb-1 album-hero-sub">
                         by <a href="{{ url_for('ui.artist_detail', name=artist_name) }}" class="text-success text-decoration-none fw-semibold">{{ artist_name }}</a>
                         {% if album_data and album_data.avg_stars is not none and album_data.avg_stars != '' %}

@@ -111,7 +111,15 @@ _FILE_ARRIVAL_POLL_SECONDS = 10
 
 
 def _wait_for_transfer_file(found_filename: str, local_file_path: str) -> Optional[str]:
-    """Poll up to ~30s for a just-completed transfer to appear on disk."""
+    """Poll up to ~30s for a just-completed transfer to appear on disk.
+
+    slskd preserves the REMOTE directory structure when saving, so a remote
+    ``music/Artist/Album/01 - Track.flac`` lands at
+    ``<downloads>/music/Artist/Album/01 - Track.flac`` (nested), NOT flattened
+    to ``<downloads>/01 - Track.flac``.  Previously only the flat basename and
+    the (often empty) ``localFilePath`` were checked, so a genuinely-completed
+    transfer was reported "no local file found" and re-downloaded forever.
+    """
     import time as _time
 
     monitored = _monitored_downloads_dir()
@@ -119,8 +127,12 @@ def _wait_for_transfer_file(found_filename: str, local_file_path: str) -> Option
     _found = str(found_filename or "").replace("\\", "/").strip()
     base = os.path.basename(_found)
     
-    if monitored and monitored != "?" and base:
-        candidates.append(os.path.join(monitored, base))
+    if monitored and monitored != "?":
+        if base:
+            candidates.append(os.path.join(monitored, base))
+        # The full remote-relative path under the downloads root.
+        if _found and not _found.startswith("/"):
+            candidates.append(os.path.join(monitored, _found))
     if local_file_path:
         candidates.append(str(local_file_path).replace("\\", "/"))
         
@@ -137,6 +149,24 @@ def _wait_for_transfer_file(found_filename: str, local_file_path: str) -> Option
                     break
     except Exception:
         pass
+
+    # Recursive fallback: walk the downloads root (shallow) looking for the
+    # basename anywhere under it — covers slskd's nested-directory saves and
+    # any path-mapping drift between slskd and the app.
+    if monitored and os.path.isdir(monitored) and base:
+        try:
+            _depth_limited = True
+            for _root, _dirs, _files in os.walk(monitored):
+                if _depth_limited:
+                    # Keep the walk shallow-ish (3 levels) — enough for the
+                    # "music/Artist/Album" layout without scanning the whole
+                    # library on every poll.
+                    _dirs[:] = [d for d in _dirs if _root.count(os.sep) - monitored.count(os.sep) < 3]
+                if base in _files:
+                    candidates.append(os.path.join(_root, base))
+                    break
+        except Exception:
+            pass
 
     if not candidates:
         return None
@@ -931,12 +961,30 @@ def check_completed_downloads() -> dict[str, Any]:
                 for transfer in slskd.get_completed_transfers():
                     local = str(transfer.get("localFilePath") or "").replace("\\", "/").strip()
                     remote = str(transfer.get("filename") or "").replace("\\", "/").strip()
-                    if local and os.path.isfile(local):
-                        remote_norm = _normalize_transfer_key(remote)
+                    remote_norm = _normalize_transfer_key(remote)
+                    # Resolve the on-disk location.  slskd sometimes reports an
+                    # empty ``localFilePath`` even though the file landed — it
+                    # preserves the REMOTE directory structure under the
+                    # downloads root (``music/Artist/Album/01 - Track.flac``).
+                    # Fall back to that remote-relative path so the transfer is
+                    # not dropped from the completed map.
+                    resolved_local = local
+                    if (not resolved_local or not os.path.isfile(resolved_local)) and downloads_dir and remote_norm:
+                        _candidate = os.path.join(downloads_dir, remote)
+                        if os.path.isfile(_candidate):
+                            resolved_local = _candidate
+                        else:
+                            _cand_base = os.path.basename(remote_norm)
+                            if _cand_base:
+                                for _root, _dirs, _files in os.walk(downloads_dir):
+                                    if _cand_base in _files:
+                                        resolved_local = os.path.join(_root, _cand_base)
+                                        break
+                    if resolved_local and os.path.isfile(resolved_local):
                         if remote_norm:
-                            slskd_completed[remote_norm] = local
-                            slskd_completed[os.path.basename(remote_norm)] = local
-                        slskd_completed[os.path.basename(local).lower()] = local
+                            slskd_completed[remote_norm] = resolved_local
+                            slskd_completed[os.path.basename(remote_norm)] = resolved_local
+                        slskd_completed[os.path.basename(resolved_local).lower()] = resolved_local
                 logger.debug("Queried slskd completed transfers", count=len(slskd_completed))
             except Exception as exc:
                 logger.debug("Could not query slskd completed transfers", error=str(exc))

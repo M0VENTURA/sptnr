@@ -101,6 +101,14 @@ def apply_mbid_match_batch(
                         import_group = :import_group,
                         status = CASE
                             WHEN TRIM(COALESCE(status, '')) = '' OR status = 'matched' THEN 'queued'
+                            -- Local/discovered rows (files found in matched
+                            -- folders) must NEVER be pushed into the search
+                            -- pipeline: keep them as 'unmatched' so the
+                            -- 'queued' status cannot be picked up by
+                            -- force-start / requeue flows and spawn a
+                            -- duplicate Soulseek search for a file we already
+                            -- have on disk.
+                            WHEN LOWER(COALESCE(source, '')) IN ('local', 'discovered') THEN 'unmatched'
                             WHEN status = 'unmatched' AND TRIM(COALESCE(file_path, '')) != '' THEN 'matched'
                             WHEN status = 'unmatched' THEN 'queued'
                             ELSE status

@@ -129,6 +129,7 @@
                                 <td class="text-truncate" style="max-width: 220px;" title="{{ al.album }}">
                                     <a href="{{ url_for('ui.album_detail', album_path=al.artist ~ '/' ~ al.album ~ (('/' ~ al.album_year) if al.album_year else '')) }}" class="text-decoration-none">
                                         {{ al.album }}
+                                        {% if al.album_year %}<span class="text-muted" style="font-size:0.75rem;">({{ al.album_year }})</span>{% endif %}
                                         {% if al.album_type %}<span class="badge bg-secondary-subtle text-secondary-emphasis ms-1">{{ al.album_type }}</span>{% endif %}
                                     </a>
                                 </td>
