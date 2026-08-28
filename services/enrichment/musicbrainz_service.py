@@ -412,6 +412,17 @@ class MusicBrainzService:
             "confidence": confidence,
             "writer": ", ".join(dict.fromkeys(writers)) if writers else "",
             "work_mbid": work_mbid or "",
+            # MusicBrainz genres from the recording (batch now requests
+            # ``genres``) — lets track_stage fill musicbrainz_genres from the
+            # album batch WITHOUT a per-track get_recording(genres+tags) call
+            # (a 1 req/s MB call that timed out under contention and left the
+            # genre columns empty → album/artist pages showed only Essentia +
+            # Navidrome).
+            "genres": [
+                str(g.get("name") or "").strip()
+                for g in (recording.get("genres") or [])
+                if str(g.get("name") or "").strip()
+            ] or [],
         }
 
     def lookup_album_metadata(
@@ -456,7 +467,9 @@ class MusicBrainzService:
                         # fires — matches fall back to pure title similarity.
                         # ``work-rels`` lets the batch carry per-recording
                         # WRITERS, avoiding a second per-track composer call.
-                        inc="releases+work-rels",
+                        # ``genres`` lets the batch carry per-recording MB
+                        # genres, avoiding a per-track genre lookup.
+                        inc="releases+work-rels+genres",
                     )
                 except Exception as exc:
                     logger.debug("Album batch search failed", chunk_start=chunk_start, error=str(exc))

@@ -1491,7 +1491,31 @@ def process_track(
                     
                     if _rg_mbid in _MB_RG_GENRE_CACHE:
                         mb_genres, mb_tags = _MB_RG_GENRE_CACHE[_rg_mbid]
-                        
+
+                    # ── Album-batch genre fast-path ───────────────────────
+                    # The album MB batch now carries each recording's genres
+                    # (search inc="...genres").  Use them WITHOUT a per-track
+                    # get_release_group/get_recording(genres+tags) 1 req/s
+                    # call — the per-track genre fetch timed out under the
+                    # shared MusicBrainz turnstile contention and left the
+                    # genre columns empty (pages showed only Essentia +
+                    # Navidrome).
+                    if not mb_genres and not mb_tags:
+                        _batch_mb = options.get("mb_batch_metadata") or {}
+                        _batch_entry = _batch_mb.get(f"{str(artist or '').casefold()}::{str(title or '').casefold()}")
+                        if _batch_entry and (_batch_entry.get("genres") or _batch_entry.get("musicbrainz_genres")):
+                            _batch_genre_names = (
+                                _batch_entry.get("genres")
+                                or _batch_entry.get("musicbrainz_genres")
+                                or []
+                            )
+                            if isinstance(_batch_genre_names, str):
+                                try:
+                                    _batch_genre_names = json.loads(_batch_genre_names)
+                                except Exception:
+                                    _batch_genre_names = [_batch_genre_names]
+                            mb_genres = [{"name": g} for g in _batch_genre_names if str(g or "").strip()]
+
                     if not mb_genres and not mb_tags:
                         _rec_mbid = str(
                             (mb_data or {}).get("recording_mbid")
@@ -1541,8 +1565,13 @@ def process_track(
                 except Exception as e:
                     logger.debug("MusicBrainz genre fetch failed", track_id=track_id, error=str(e))
 
-            # GATED Discogs Genres
-            if deep_genre_search and title and artist and (not _has_source_genres("discogs_genres") or _force_meta):
+            # Discogs Genres — ungated when a token is configured (was gated
+            # behind deep_genre_search, so Discogs genres NEVER populated on
+            # normal scans and the pages showed only Essentia + Navidrome).
+            # Cached per (artist, title) so the 0.35 s/req Discogs lookup is
+            # cheap on repeat scans.  The heavy per-track MB text search
+            # below remains gated by deep_genre_search.
+            if title and artist and (not _has_source_genres("discogs_genres") or _force_meta):
                 try:
                     from api_clients.discogs_http import DiscogsHttpClient
                     from helpers.config_helpers import get_config as _get_discogs_cfg
