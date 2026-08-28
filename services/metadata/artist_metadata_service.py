@@ -272,7 +272,15 @@ def set_image(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
 
 
 def update_ids(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
-    """Update artist ID columns on all of an artist's tracks."""
+    """Update artist ID columns on all of an artist's tracks.
+
+    NOTE: ``lastfm_artist_mbid`` / ``spotify_artist_id`` are legacy columns
+    that do NOT exist in the current ``tracks`` schema (only
+    ``musicbrainz_artistid``, ``musicbrainz_albumartistid`` and
+    ``discogs_artist_id`` do).  Writing them previously raised
+    "column does not exist" — the MBID from the Edit-Artist-IDs form lands
+    in ``musicbrainz_artistid`` instead.
+    """
     artist = str(payload.get("artist") or "").strip()
     if not artist:
         return {"success": False, "error": "Missing artist name"}, 400
@@ -282,9 +290,7 @@ def update_ids(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
     for idx, (column, key) in enumerate(
         (
             ("musicbrainz_artistid", "musicbrainz_artist_id"),
-            ("lastfm_artist_mbid", "lastfm_artist_mbid"),
             ("discogs_artist_id", "discogs_artist_id"),
-            ("spotify_artist_id", "spotify_artist_id"),
         )
     ):
         value = str(payload.get(key) or "").strip()
@@ -312,7 +318,6 @@ def update_ids(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
             "rows_updated": rows_updated,
             "updated": {
                 "musicbrainz_artist_id": str(payload.get("musicbrainz_artist_id") or "").strip() or None,
-                "lastfm_artist_mbid": str(payload.get("lastfm_artist_mbid") or "").strip() or None,
                 "discogs_artist_id": str(payload.get("discogs_artist_id") or "").strip() or None,
             },
         }, 200
@@ -373,7 +378,9 @@ def lookup_ids(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
     bind_values: dict[str, Any] = {}
     _bind_idx = 0
     if musicbrainz_id:
-        updates.extend([f"musicbrainz_artistid = :v{_bind_idx}", f"lastfm_artist_mbid = :v{_bind_idx}"])
+        # ``lastfm_artist_mbid`` is a legacy column that does NOT exist in
+        # the current schema — the MBID is stored in ``musicbrainz_artistid``.
+        updates.append(f"musicbrainz_artistid = :v{_bind_idx}")
         bind_values[f"v{_bind_idx}"] = musicbrainz_id
         _bind_idx += 1
     if discogs_id:

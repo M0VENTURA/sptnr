@@ -584,12 +584,22 @@ def _resolve_track_mb_metadata(
             if recording_mbid and not _from_batch:
                 _existing_writer = _as_str(track.get("writer") or "")
                 if not _existing_writer or _existing_writer.strip().lower() in ("[]", "null", "none", ""):
-                    try:
-                        writers = mb_service.get_composers_for_recording(recording_mbid)
-                        if writers:
-                            payload["writer"] = json.dumps(writers)
-                    except Exception as exc:
-                        logger.debug("Composer fetch failed", track_id=track_id, error=str(exc))
+                    # ── Writer from the batch's work-rels first ───────────
+                    # The album MB batch now embeds per-recording WRITERS
+                    # (from the recording's work-rels, via the release
+                    # lookup's ``work-rels`` include).  Use that instead of a
+                    # second per-track ``get_composers_for_recording``
+                    # MusicBrainz call (the 1 req/s bottleneck).
+                    _batch_writer = _as_str((mb_data or {}).get("writer") or "")
+                    if _batch_writer:
+                        payload["writer"] = _batch_writer
+                    else:
+                        try:
+                            writers = mb_service.get_composers_for_recording(recording_mbid)
+                            if writers:
+                                payload["writer"] = json.dumps(writers)
+                        except Exception as exc:
+                            logger.debug("Composer fetch failed", track_id=track_id, error=str(exc))
             
             if mb_data.get("title"):
                 payload["musicbrainz_title"] = mb_data["title"]

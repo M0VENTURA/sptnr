@@ -5,7 +5,6 @@ Extracted from the old monolithic app.py.
 
 from __future__ import annotations
 
-import unicodedata
 import re
 from typing import Any
 
@@ -23,24 +22,55 @@ from helpers.normalization_service import normalize_title_for_lucene_query
 logger = structlog.get_logger(__name__)
 
 
-_ALBUM_SCOPE_WHERE = (
-    "LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist) "
-    "AND LOWER(COALESCE(album, '')) = LOWER(:album)"
-)
+def _title_match_key(title: str) -> str:
+    """Normalise a title for missing-track matching.
+
+    Unlike the old ``[^a-z0-9]+`` strip (which erased ALL Hangul/CJK and
+    over-collapsed distinct Korean titles — e.g. "락 (樂) (LALALALA)" and
+    "사각지대 (BLIND SPOT)" both became near-empty keys), this preserves
+    non-ASCII script characters while stripping punctuation/whitespace and
+    normalising case.  Both the MB title and the library title go through
+    the SAME key, so Korean / CJK titles match precisely.
+    """
+    if not title:
+        return ""
+    import unicodedata as _ud
+    value = _ud.normalize("NFKC", str(title)).lower().strip()
+    # Keep letters/digits across ALL scripts (incl. Hangul/CJK); drop
+    # punctuation, brackets and whitespace.
+    value = re.sub(r"[^\w\uAC00-\uD7AF\u4E00-\u9FFF\u3040-\u30FF]+", "", value, flags=re.UNICODE)
+    return value.strip()
+
+
+def _album_key(album: str) -> str:
+    """Normalise an album name for scope matching (strip a leading year)."""
+    value = str(album or "").strip()
+    # "2024 - 樂-STAR" → "樂-STAR"; "2024 樂-STAR" → "樂-STAR".
+    value = re.sub(r"^(?:19|20)\d{2}\s*[-–—]?\s+", "", value).strip()
+    return value.lower()
 
 
 def get_library_tracks(artist: str, album: str) -> list[dict[str, Any]]:
-    """Get all library tracks for a specific artist/album."""
+    """Get all library tracks for a specific artist/album.
+
+    The album is matched tolerantly: a library album carrying a leading year
+    prefix ("2024 - 樂-STAR") still matches the requested album ("樂-STAR").
+    """
+    album_key = _album_key(album)
     with db_session() as session:
-        result = session.execute(
+        rows = session.execute(
             text(
-                f"SELECT id, title, track_number, disc_number, file_path, duration FROM tracks "
-                f"WHERE {_ALBUM_SCOPE_WHERE} "
+                "SELECT id, title, track_number, disc_number, file_path, duration, album, album_artist, artist FROM tracks "
+                "WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist) "
                 "ORDER BY COALESCE(disc_number, '1'), track_number"
             ),
-            {"artist": artist, "album": album},
-        )
-        return [dict(r) for r in result.mappings().all()]
+            {"artist": artist},
+        ).mappings().all()
+    return [
+        dict(r)
+        for r in rows
+        if _album_key(str(r.get("album") or "")) == album_key
+    ]
 
 
 def get_missing_tracks(artist: str, album: str) -> dict[str, Any]:
@@ -52,23 +82,33 @@ def get_missing_tracks(artist: str, album: str) -> dict[str, Any]:
     tracks that are still missing AND not rejected (``ignored = FALSE``).
     """
     with db_session() as session:
-        row = session.execute(
+        album_key = _album_key(album)
+
+        def _rows_in_album(rows):
+            return [
+                dict(r) for r in rows
+                if _album_key(str(r.get("album") or "")) == album_key
+            ]
+
+        mb_row = session.execute(
             text(
-                "SELECT musicbrainz_album_mbid FROM tracks "
-                f"WHERE {_ALBUM_SCOPE_WHERE} "
-                "AND musicbrainz_album_mbid IS NOT NULL AND TRIM(musicbrainz_album_mbid) != '' LIMIT 1"
+                "SELECT musicbrainz_album_mbid, album FROM tracks "
+                "WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist) "
+                "AND musicbrainz_album_mbid IS NOT NULL AND TRIM(musicbrainz_album_mbid) != ''"
             ),
-            {"artist": artist, "album": album},
-        ).fetchone()
-        mb_mbid = row[0] if row else None
+            {"artist": artist},
+        ).mappings().all()
+        mb_row = next((r for r in mb_row if _album_key(str(r.get("album") or "")) == album_key), None)
+        mb_mbid = mb_row[0] if mb_row else None
 
         library_rows = session.execute(
             text(
-                "SELECT id, title, track_number, disc_number, mbid FROM tracks "
-                f"WHERE {_ALBUM_SCOPE_WHERE}"
+                "SELECT id, title, track_number, disc_number, mbid, album FROM tracks "
+                "WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)"
             ),
-            {"artist": artist, "album": album},
+            {"artist": artist},
         ).mappings().all()
+        library_rows = _rows_in_album(library_rows)
         library_count = len(library_rows)
 
     if not mb_mbid:
@@ -103,26 +143,66 @@ def get_missing_tracks(artist: str, album: str) -> dict[str, Any]:
     for r in library_rows:
         title = r.get("title") or ""
         if title:
-            norm = unicodedata.normalize("NFKD", title).lower()
-            norm = re.sub(r"[^a-z0-9]+", " ", norm).strip()
-            lib_norm.add(norm)
+            lib_norm.add(_title_match_key(title))
         disc = int(r.get("disc_number") or 1) if r.get("disc_number") not in (None, "", "0", 0) else 1
         tn = str(r.get("track_number") or "").strip()
         if tn:
             lib_by_position[(disc, tn)] = title or ""
+
+    # ── Download-queue coverage ───────────────────────────────────────────
+    # A track that has been IMPORTED (download finished), is currently
+    # downloading, or is QUEUED for this album is NOT "missing" — it is
+    # already handled.  Without this, a freshly-downloaded track stayed on
+    # the missing list until a re-scan because the library-match could fail
+    # on title/album normalisation.
+    queued_keys: set[str] = set()
+    queued_by_position: set[tuple[int, str]] = set()
+    try:
+        from db.engine import db_session as _q_session
+        from sqlalchemy import text as _q_text
+        _album_norm = _album_key(album)
+        with _q_session() as session:
+            q_rows = session.execute(
+                _q_text("""
+                    SELECT title, track_number, disc_number, status, album
+                    FROM download_queue
+                    WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)
+                      AND status IN ('queued', 'searching', 'downloading',
+                                     'processing', 'moving', 'imported',
+                                     'in_collection', 'matched', 'completed')
+                """),
+                {"artist": artist},
+            ).mappings().all() or []
+        for q in q_rows:
+            # Match the queue row's album against the requested album, tolerating
+            # a leading year prefix ("2024 - 樂-STAR" ≈ "樂-STAR").
+            q_album = str(q.get("album") or "").strip()
+            if q_album and _album_key(q_album) != _album_norm:
+                continue
+            qt = q.get("title") or ""
+            if qt:
+                queued_keys.add(_title_match_key(qt))
+            qtn = str(q.get("track_number") or "").strip()
+            qd = int(q.get("disc_number") or 1) if q.get("disc_number") not in (None, "", "0", 0) else 1
+            if qtn:
+                queued_by_position.add((qd, qtn))
+    except Exception as _qexc:
+        logger.debug("Download-queue coverage check failed", error=str(_qexc))
 
     missing = []
     for mt in mb_tracks:
         mb_title = mt.get("title", "")
         if not mb_title:
             continue
-        norm = unicodedata.normalize("NFKD", mb_title).lower()
-        norm = re.sub(r"[^a-z0-9]+", " ", norm).strip()
+        norm = _title_match_key(mb_title)
 
         mb_disc = int(mt.get("disc_number") or 1)
         mb_num = str(mt.get("track_number") or "").strip()
         position_occupied = bool(mb_num and (mb_disc, mb_num) in lib_by_position)
         if position_occupied or norm in lib_norm:
+            continue
+        # Not missing when the track is queued/downloading/imported.
+        if norm in queued_keys or (mb_num and (mb_disc, mb_num) in queued_by_position):
             continue
 
         missing.append({
@@ -252,24 +332,30 @@ def _rejected_missing_titles(artist: str, album: str) -> set[tuple[str, int, str
 
 def get_title_mismatches(artist: str, album: str) -> dict[str, Any]:
     """Compare library track titles against the full MusicBrainz release tracklist."""
+    album_key = _album_key(album)
     with db_session() as session:
-        row = session.execute(
+        mb_rows = session.execute(
             text(
-                "SELECT musicbrainz_album_mbid FROM tracks "
-                f"WHERE {_ALBUM_SCOPE_WHERE} "
-                "AND musicbrainz_album_mbid IS NOT NULL AND TRIM(musicbrainz_album_mbid) != '' LIMIT 1"
+                "SELECT musicbrainz_album_mbid, album FROM tracks "
+                "WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist) "
+                "AND musicbrainz_album_mbid IS NOT NULL AND TRIM(musicbrainz_album_mbid) != ''"
             ),
-            {"artist": artist, "album": album},
-        ).fetchone()
-        mb_mbid = row[0] if row else None
+            {"artist": artist},
+        ).mappings().all()
+        mb_rows = [r for r in mb_rows if _album_key(str(r.get("album") or "")) == album_key]
+        mb_mbid = mb_rows[0][0] if mb_rows else None
 
         library_rows = session.execute(
             text(
-                "SELECT id, title, track_number, disc_number, duration FROM tracks "
-                f"WHERE {_ALBUM_SCOPE_WHERE}"
+                "SELECT id, title, track_number, disc_number, duration, album FROM tracks "
+                "WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)"
             ),
-            {"artist": artist, "album": album},
+            {"artist": artist},
         ).mappings().all()
+        library_rows = [
+            dict(r) for r in library_rows
+            if _album_key(str(r.get("album") or "")) == album_key
+        ]
 
     if not mb_mbid:
         return {"mismatches": [], "mismatch_count": 0, "library_count": len(library_rows)}
@@ -308,9 +394,9 @@ def get_title_mismatches(artist: str, album: str) -> dict[str, Any]:
         if lib_entry:
             lib_title = lib_entry.get("title", "")
             if lib_title:
-                lib_norm = re.sub(r"[^a-z0-9]+", " ", lib_title.lower()).strip()
-                mb_norm = re.sub(r"[^a-z0-9]+", " ", mb_title.lower()).strip()
-                if lib_norm != mb_norm:
+                # Unicode-preserving comparison — Korean/CJK titles match
+                # precisely instead of being erased by an ASCII-only strip.
+                if _title_match_key(lib_title) != _title_match_key(mb_title):
                     dur_tolerance = 5
                     lib_dur = lib_entry.get("duration")
                     mb_dur = mt.get("duration")

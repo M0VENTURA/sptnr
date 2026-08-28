@@ -368,6 +368,30 @@ class MusicBrainzService:
 
         release = (recording.get("releases") or [None])[0]
 
+        # ── Writer(s) from the recording's work-rels ──────────────────────
+        # The recording's "performance"/"recording of" relation points to its
+        # WORK; the work's own composer/writer/lyricist relations name the
+        # writers.  Extracting them here means the album batch supplies the
+        # writer WITHOUT a second per-track get_composers_for_recording call.
+        writers: list[str] = []
+        work_mbid: str | None = None
+        try:
+            for rel in recording.get("relations") or []:
+                if not isinstance(rel, dict):
+                    continue
+                rel_type = str(rel.get("type") or "").lower()
+                work = rel.get("work") or {}
+                if rel_type in ("performance", "recording of") and work:
+                    work_mbid = str(work.get("id") or "") or None
+                    for work_rel in work.get("relations") or []:
+                        wrt = str((work_rel or {}).get("type") or "").lower()
+                        if wrt in ("composer", "writer", "lyricist"):
+                            wtarget = (work_rel or {}).get("artist") or {}
+                            if isinstance(wtarget, dict) and wtarget.get("name"):
+                                writers.append(str(wtarget["name"]))
+        except Exception as _wexc:
+            logger.debug("Work-rels writer extraction failed", recording=mbid, error=str(_wexc))
+
         return {
             "title": recording.get("title"),
             "artist": rec_artist,
@@ -386,6 +410,8 @@ class MusicBrainzService:
             ),
             "recording_mbid": mbid,
             "confidence": confidence,
+            "writer": ", ".join(dict.fromkeys(writers)) if writers else "",
+            "work_mbid": work_mbid or "",
         }
 
     def lookup_album_metadata(
@@ -428,7 +454,9 @@ class MusicBrainzService:
                         # Without this include, the field is absent from the
                         # search response and album anchoring silently never
                         # fires — matches fall back to pure title similarity.
-                        inc="releases",
+                        # ``work-rels`` lets the batch carry per-recording
+                        # WRITERS, avoiding a second per-track composer call.
+                        inc="releases+work-rels",
                     )
                 except Exception as exc:
                     logger.debug("Album batch search failed", chunk_start=chunk_start, error=str(exc))

@@ -1304,14 +1304,18 @@ async def album_detail(album_path: str) -> Any:
         # Disc Total drives per-track disc_number:
         # - disctotal > 1  → multi-disc release; leave each track's disc_number
         #   as-is (or re-derive below when a value is present), it is valid.
-        # - disctotal == 1 (or empty/"1") → SINGLE-disc: strip disc_number from
-        #   every track so Navidrome/file tags don't carry a bogus "1/x".
+        # - disctotal <= 1 (or empty/"0"/"1") → SINGLE-disc: strip disc_number
+        #   from every track so Navidrome/file tags don't carry a bogus "1/x"
+        #   or "0/x" disc position (the reported "disc 1 and disc 0" split).
         _disc_total_raw = release_values.get("disctotal") or ""
         _strip_disc_numbers = False
         _multi_disc = False
         try:
             _disc_total = int(_disc_total_raw)
             _multi_disc = _disc_total > 1
+            # A "0" or "1" (or negative/absurd) disctotal is a SINGLE disc —
+            # never a multi-disc release.  Empty disctotal defaults to
+            # single-disc stripping too (the overwhelming case).
             _strip_disc_numbers = _disc_total <= 1
         except (TypeError, ValueError):
             # Empty or non-numeric disctotal: if it was explicitly provided as
@@ -1497,12 +1501,17 @@ async def album_detail(album_path: str) -> Any:
             # field is TEXT; an empty string clears the frame on file write).
             if _strip_disc_numbers:
                 _cur_disc = str(track.get("disc_number") or "").strip()
-                if _cur_disc:
+                # A "0" disc is a bogus single-disc value — always clear it.
+                if _cur_disc and _cur_disc != "0":
+                    payload["disc_number"] = ""
+                elif _cur_disc == "0":
                     payload["disc_number"] = ""
             elif _multi_disc:
                 # Multi-disc: ensure every track has a non-empty disc_number
-                # (default to "1" when unset) so the album displays correctly.
-                if not str(track.get("disc_number") or "").strip():
+                # (default to "1" when unset, and never "0") so the album
+                # displays correctly.
+                _cur_disc = str(track.get("disc_number") or "").strip()
+                if not _cur_disc or _cur_disc == "0":
                     payload["disc_number"] = "1"
 
             if genres_str:
@@ -1690,6 +1699,7 @@ async def album_detail(album_path: str) -> Any:
         safe_int(track.get("disc_number"))
         for track in tracks
         if safe_int(track.get("disc_number")) is not None
+        and safe_int(track.get("disc_number")) >= 1
     ]
 
     singles_count = sum(
@@ -1759,7 +1769,12 @@ async def album_detail(album_path: str) -> Any:
 
     tracks_by_disc: dict[int, list[dict[str, Any]]] = {}
     for track in tracks:
-        disc_number = safe_int(track.get("disc_number")) or 1
+        # Normalise a bogus disc_number of 0 (bad source tags / imports) to
+        # disc 1 — a "0" disc must never render as its own "disc 0" group on
+        # a single-disc album (the reported "disc 1 and disc 0" split).
+        disc_number = safe_int(track.get("disc_number"))
+        if not disc_number or disc_number < 1:
+            disc_number = 1
         tracks_by_disc.setdefault(disc_number, []).append(track)
 
     album_genres = collect_album_genres()
