@@ -289,6 +289,7 @@ def start_library_scan(
     artist_filter: str | None = None,
     resume: bool = True,
     force: bool = False,
+    restart: bool = False,
 ) -> dict[str, Any]:
     """Start a full library scan with optional filtering and resume.
 
@@ -300,11 +301,19 @@ def start_library_scan(
         artist_filter: If set, scan only this artist (not yet implemented).
         resume: If True, resume from the last checkpoint; if False, start fresh.
         force: If True, force re-scan even if data hasn't changed.
+        restart: If True, clear the checkpoint and start from the BEGINNING
+            (a plain restart skips recently-scanned items via the normal
+            change-detection / skip windows; a forced restart re-scans
+            everything).  A forced scan WITHOUT restart resumes from the last
+            checkpoint in forced mode.
 
     Returns:
         A dict with ``success`` and ``message`` keys.
     """
-    if not resume or force:
+    # Restart (or explicit non-resume) starts from the top — clear any
+    # checkpoint so the next scan does not resume mid-library.  A forced scan
+    # WITHOUT restart keeps the checkpoint and resumes in forced mode.
+    if restart or not resume:
         from services.scanning.scan_state import clear_scan_checkpoint
         clear_scan_checkpoint()
 
@@ -323,7 +332,7 @@ def start_library_scan(
 
     # Full library scan.
     try:
-        run_full_library_scan(force=force)
+        run_full_library_scan(force=force, restart=restart)
     except Exception as exc:
         logger.error("Full library scan failed", error=str(exc))
         return {"success": False, "message": f"Full scan failed: {exc}"}
@@ -335,6 +344,7 @@ def _validated_resume_artist(
     artists: list[tuple[str, Any]],
     checkpoint_path: str | None,
     force: bool,
+    restart: bool = False,
 ) -> str | None:
     """Resolve the resume artist, clearing stale checkpoints that would truncate a scan.
 
@@ -345,8 +355,16 @@ def _validated_resume_artist(
     scan that never advances past the first letter).  When the checkpoint
     artist is not present in the current index the checkpoint is cleared so
     the scan starts from the top and continues through the whole library.
+
+    A RESTART always returns ``None`` (start from the top) regardless of
+    force — ``restart`` clears the checkpoint in ``start_library_scan``; this
+    also guards direct calls that pass ``restart=True``.  A forced scan
+    WITHOUT restart still resumes from the checkpoint in forced mode.
     """
-    checkpoint = load_scan_checkpoint(checkpoint_path) if not force else {}
+    if restart:
+        return None
+
+    checkpoint = load_scan_checkpoint(checkpoint_path)
     resume_from = checkpoint.get("last_scanned_artist")
     if not resume_from:
         return None
@@ -368,7 +386,7 @@ def _validated_resume_artist(
     return str(resume_from)
 
 
-def run_full_library_scan(force: bool = False):
+def run_full_library_scan(force: bool = False, restart: bool = False):
     progress = get_library_progress_path()
     checkpoint_path = get_library_checkpoint_path()
 
@@ -378,10 +396,11 @@ def run_full_library_scan(force: bool = False):
 
         artists = list((build_artist_index() or {}).items())
 
-        # A forced scan always starts from the top of the library — a resume
-        # checkpoint left behind by a single-artist scan must never truncate
-        # it (legacy: force disables the timestamp/score skips).
-        resume_from = _validated_resume_artist(artists, checkpoint_path, force)
+        # A RESTART always starts from the top of the library.  A forced scan
+        # WITHOUT restart resumes from the last checkpoint in forced mode —
+        # the checkpoint left behind by a previous scan must NOT truncate it,
+        # but a forced RESUME intentionally continues from where it stopped.
+        resume_from = _validated_resume_artist(artists, checkpoint_path, force, restart)
 
         resume_mode = bool(resume_from)
 

@@ -381,11 +381,29 @@ def _run_full_scan_as_artist_pipeline(
                     artist=artist,
                     error=str(_aexc),
                 )
+
+            # Persist the resume checkpoint so a stopped/failed "All" scan can
+            # RESUME from this artist next time (unless restart was requested —
+            # restart clears the checkpoint in the route before starting).
+            try:
+                from services.scanning.scan_state import save_artist_scan_checkpoint
+                save_artist_scan_checkpoint(artist, progress_file)
+            except Exception:
+                pass
     except Exception as exc:
         status = "error"
         logger.exception("[FULL_SCAN] Artist loop failed", error=str(exc))
         raise
     finally:
+        # A completed full scan clears the checkpoint so the NEXT scan starts
+        # from the top (no stale resume point).  A stopped/failed scan keeps it
+        # so the next run resumes where it left off.
+        try:
+            from services.scanning.scan_state import clear_scan_checkpoint
+            if status == "complete":
+                clear_scan_checkpoint(progress_file)
+        except Exception:
+            pass
         write_progress_with_current_artist(
             progress_file,
             "full_scan",

@@ -44,8 +44,8 @@ function escapeHtml(str) {
   } catch (_) {}
 })();
 
-async function startPopularityScan(m, force) {
-  await postJSON("/api/popularity/run", { mode: m || "popularity", force: !!force });
+async function startPopularityScan(m, force, restart) {
+  await postJSON("/api/popularity/run", { mode: m || "popularity", force: !!force, restart: !!restart });
 }
 
 async function stopPopularityScan() {
@@ -53,10 +53,13 @@ async function stopPopularityScan() {
 }
 
 // Runs the popularity scan selected in the dashboard selector with the
-// current Force checkbox state.  No scan starts until Run is pressed.
+// current Force / Restart checkbox states.  No scan starts until Run is
+// pressed.  Restart clears the resume checkpoint so the scan begins from the
+// top (skipping recently-scanned items unless Force is also checked).
 async function runDashboardPopularityScan() {
   const mode = document.getElementById("popScanSelector")?.value || "popularity";
   const force = !!document.getElementById("popScanForce")?.checked;
+  const restart = !!document.getElementById("popScanRestart")?.checked;
   const btn = document.getElementById("popScanRunBtn");
   const original = btn ? btn.innerHTML : "";
   if (btn) {
@@ -64,7 +67,7 @@ async function runDashboardPopularityScan() {
     btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Starting…';
   }
   try {
-    await startPopularityScan(mode, force);
+    await startPopularityScan(mode, force, restart);
   } catch (e) {
     console.error("Error starting popularity scan:", e);
   } finally {

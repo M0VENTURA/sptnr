@@ -12,7 +12,7 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
-                <input type="hidden" id="editTrackId">
+                <input type="hidden" id="simpleEditTrackId">
                 <input type="hidden" id="editTrackCurrentField">
                 <div class="mb-3">
                     <label for="editTrackValue" class="form-label" id="editTrackLabel"></label>
@@ -135,8 +135,16 @@
                             <input type="text" class="form-control" id="editTrackWriterField" name="writer">
                         </div>
                         <div class="col-md-6">
+                            <label for="editTrackComposerField" class="form-label">Composer</label>
+                            <input type="text" class="form-control" id="editTrackComposerField" name="composer">
+                        </div>
+                        <div class="col-md-6">
                             <label for="editTrackWorkField" class="form-label">Work/Composition</label>
                             <input type="text" class="form-control" id="editTrackWorkField" name="work">
+                        </div>
+                        <div class="col-md-6">
+                            <label for="editTrackCommentField" class="form-label">Comment</label>
+                            <input type="text" class="form-control" id="editTrackCommentField" name="comment">
                         </div>
                         <div class="col-md-3">
                             <label for="editTrackTrackNumberField" class="form-label">Track Number</label>

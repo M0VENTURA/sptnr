@@ -305,6 +305,34 @@ async def api_popularity_run_compat():
         mode = "singles"
 
     force = bool(params.force or raw.get("force", False))
+    restart = bool(getattr(params, "restart", False) or raw.get("restart", False))
+
+    # Resume semantics:
+    #   default  → resume from the last checkpoint (skip already-scanned
+    #              artists; recently-scanned items stay skipped)
+    #   restart  → start from the top (skipping recently-scanned items
+    #              unless force is also set)
+    #   force    → resume from the checkpoint in FORCED mode (re-scan
+    #              everything from the resume point, ignore skip windows)
+    #   force+restart → start from the top in FORCED mode
+    # The dashboard "All" scan checkpoints under ``full_scan``; the other
+    # modes checkpoint under ``popularity_scan``.
+    resume_from = None
+    _checkpoint_scan_type = "full_scan" if mode == "all" else "popularity_scan"
+    _checkpoint_path = get_scan_progress_path(_checkpoint_scan_type)
+    if not restart:
+        try:
+            from services.scanning.scan_state import load_scan_checkpoint
+            _cp = load_scan_checkpoint(_checkpoint_path)
+            resume_from = _cp.get("last_scanned_artist") or None
+        except Exception:
+            resume_from = None
+    else:
+        try:
+            from services.scanning.scan_state import clear_scan_checkpoint
+            clear_scan_checkpoint(_checkpoint_path)
+        except Exception:
+            pass
 
     # Record "started" only AFTER the duplicate guards below — a rejected
     # start (already-running / stale DB state) must not leave an orphaned
@@ -371,8 +399,12 @@ async def api_popularity_run_compat():
 
         def _worker():
             try:
-                log_unified(f"[POPULARITY] Worker starting mode={mode} force={force}")
-                run_popularity_mode(mode=mode, force_rescan=force)
+                log_unified(f"[POPULARITY] Worker starting mode={mode} force={force} restart={restart} resume_from={resume_from or 'top'}")
+                run_popularity_mode(
+                    mode=mode,
+                    force_rescan=force,
+                    resume_from=resume_from,
+                )
                 log_unified(f"[POPULARITY] Worker finished mode={mode}")
             except Exception as exc:
                 # A daemon-thread exception would otherwise be swallowed by

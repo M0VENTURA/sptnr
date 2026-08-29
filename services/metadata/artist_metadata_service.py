@@ -7,6 +7,7 @@ can ``import metadata_service as metadata``.
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from typing import Any
@@ -435,8 +436,25 @@ def _catalogue_artist_names(conn: Any, names: list[str]) -> set[str]:
         return set()
 
 
+def _norm_artist_key(name: str) -> str:
+    """Punctuation/case-tolerant artist key for in-collection matching.
+
+    Last.fm / ListenBrainz similar-artist names frequently differ from the
+    stored library name by punctuation, "The" prefixes, or whitespace
+    ("Beatles, The" vs "The Beatles" vs "beatles").  Comparing normalised
+    keys makes the similar-artists section correctly identify artists that
+    are ALREADY in the collection instead of re-suggesting them.
+    """
+    value = str(name or "").lower().strip()
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    value = re.sub(r"\bthe\b", "", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
 def _annotate_similar_artist(entries: list[Any], in_collection: set[str]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
+    # Pre-compute normalised keys of owned artists once.
+    owned_keys = {_norm_artist_key(n) for n in in_collection}
     for entry in entries or []:
         if isinstance(entry, str):
             name = entry.strip()
@@ -450,7 +468,8 @@ def _annotate_similar_artist(entries: list[Any], in_collection: set[str]) -> lis
             continue
         annotated["name"] = name
         annotated.setdefault("match", 0.0)
-        annotated["in_collection"] = name.lower() in in_collection
+        key = _norm_artist_key(name)
+        annotated["in_collection"] = bool(key and key in owned_keys)
         result.append(annotated)
     return result
 

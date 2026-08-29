@@ -1306,7 +1306,8 @@ async def album_detail(album_path: str) -> Any:
         #   as-is (or re-derive below when a value is present), it is valid.
         # - disctotal <= 1 (or empty/"0"/"1") → SINGLE-disc: strip disc_number
         #   from every track so Navidrome/file tags don't carry a bogus "1/x"
-        #   or "0/x" disc position (the reported "disc 1 and disc 0" split).
+        #   or "0/x" disc position (the reported "disc 1 and disc 0" split AND
+        #   the "one track has disc 1, the rest are empty — keeps the 1" bug).
         _disc_total_raw = release_values.get("disctotal") or ""
         _strip_disc_numbers = False
         _multi_disc = False
@@ -1322,6 +1323,28 @@ async def album_detail(album_path: str) -> Any:
             # a single value, treat as single-disc (strip); otherwise leave
             # tracks untouched.
             _strip_disc_numbers = bool(_disc_total_raw)
+
+        # ── Disc-number inference when disctotal is empty ─────────────────
+        # An album whose tracks only carry disc 1 (or mixed "1" + empty) is a
+        # SINGLE-disc release — the stray "1" must be cleared so it does not
+        # keep rendering/being stored.  Only actual multi-disc evidence
+        # (any track with disc_number > 1) keeps the disc numbers.
+        if not _disc_total_raw and not _multi_disc:
+            try:
+                _max_track_disc = max(
+                    (int(str(t.get("disc_number") or "").split("/")[0].strip() or 0)
+                     for t in tracks
+                     if str(t.get("disc_number") or "").strip()),
+                    default=0,
+                )
+            except Exception:
+                _max_track_disc = 0
+            if _max_track_disc <= 1:
+                # Mixed "1"/empty disc numbers on an album with no disctotal
+                # set = single-disc: strip the bogus "1"s.
+                _strip_disc_numbers = True
+            elif _max_track_disc > 1:
+                _multi_disc = True
 
         # ── MusicBrainz album-artist backfill ─────────────────────────────
         # The release picker populates ``album_mbid`` (release) + the release
@@ -1654,17 +1677,39 @@ async def album_detail(album_path: str) -> Any:
             "listenbrainz_genres", "essentia_genres", "mood",
         ]
 
+        # Consolidation: apply the same synonym normalisation the genre
+        # aggregation service uses (e.g. "Hip Hop" → "hip-hop", "R&B" /
+        # "Rhythm and Blues" → "rnb") so the album page never shows
+        # near-duplicate genre chips ("Hip Hop" + "Hip-Hop", "R&B" + "RnB").
+        try:
+            from services.enrichment.genre_aggregation_service import (
+                is_admin_genre,
+                is_junk_genre,
+                normalize_genre,
+            )
+        except Exception:
+            is_admin_genre = lambda g: False
+            is_junk_genre = lambda g: False
+            normalize_genre = lambda g: str(g or "").lower().strip()
+
         genres: list[str] = []
         seen: set[str] = set()
 
         for row in tracks:
             for field in genre_fields:
                 for genre in split_tag_values(row.get(field)):
-                    key = genre.lower()
-                    if key in seen:
+                    if is_admin_genre(genre) or is_junk_genre(genre):
+                        continue
+                    # Canonical display name (synonym-resolved, original case
+                    # preserved where possible).
+                    canon = normalize_genre(genre)
+                    # Dedupe key ignores separators/punctuation so
+                    # "hip-hop" == "hip hop" == "hiphop".
+                    key = re.sub(r"[^a-z0-9]+", "", canon)
+                    if not key or key in seen:
                         continue
                     seen.add(key)
-                    genres.append(genre)
+                    genres.append(genre if genre else canon)
         return genres
 
     def safe_float(value: Any) -> float | None:

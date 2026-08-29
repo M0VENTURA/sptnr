@@ -2802,7 +2802,7 @@ var _pageData = window._pageData || {};
     // Track inline editing functions
     function editTrackTitle(trackId, currentTitle) {
         const modal = new bootstrap.Modal(document.getElementById('simpleEditTrackModal'));
-        document.getElementById('editTrackId').value = trackId;
+        document.getElementById('simpleEditTrackId').value = trackId;
         document.getElementById('editTrackCurrentField').value = 'title';
         document.getElementById('editTrackLabel').textContent = 'Track Title';
         document.getElementById('editTrackValue').value = currentTitle;
@@ -2812,7 +2812,7 @@ var _pageData = window._pageData || {};
 
     function editTrackArtist(trackId, currentArtist) {
         const modal = new bootstrap.Modal(document.getElementById('simpleEditTrackModal'));
-        document.getElementById('editTrackId').value = trackId;
+        document.getElementById('simpleEditTrackId').value = trackId;
         document.getElementById('editTrackCurrentField').value = 'artist';
         document.getElementById('editTrackLabel').textContent = 'Track Artist';
         const displayValue = currentArtist && currentArtist !== '—' ? currentArtist : '';
@@ -2822,7 +2822,7 @@ var _pageData = window._pageData || {};
     }
 
     function saveEditedTrack() {
-        const trackId = document.getElementById('editTrackId').value;
+        const trackId = document.getElementById('simpleEditTrackId').value;
         const field = document.getElementById('editTrackCurrentField').value;
         const value = document.getElementById('editTrackValue').value.trim();
         

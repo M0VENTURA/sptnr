@@ -63,6 +63,10 @@
                                 <input class="form-check-input" type="checkbox" id="popScanForce" name="force" value="1">
                                 <label class="form-check-label small" for="popScanForce">Forced</label>
                             </div>
+                            <div class="form-check form-check-inline mb-0" title="Restart from the beginning (a plain restart skips recently-scanned items; with Forced it re-scans everything)">
+                                <input class="form-check-input" type="checkbox" id="popScanRestart" name="restart" value="1">
+                                <label class="form-check-label small" for="popScanRestart">Restart</label>
+                            </div>
                             <button id="popScanRunBtn" onclick="runDashboardPopularityScan()" class="btn btn-primary btn-sm py-1 px-3" style="min-height:44px;"><i class="bi bi-play-fill"></i> Run</button>
                             <span class="vr mx-1 d-none d-sm-inline-block"></span>
                             <button class="btn btn-outline-danger btn-sm py-1 flex-shrink-0" onclick="stopAllScans()" title="Stop all scans">

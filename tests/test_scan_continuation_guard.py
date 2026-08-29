@@ -180,7 +180,44 @@ class TestValidatedResumeArtist:
 
         assert resume == "Muse"
 
-    def test_force_ignores_checkpoint(self):
+    def test_force_resumes_from_checkpoint(self):
+        """A FORCED scan (no restart) resumes from the last checkpoint in
+        forced mode — it must NOT clear/ignore the resume point (previously
+        force cleared the checkpoint and always restarted from the top)."""
+        _fresh_db()
+        with db_engine_mod.db_session() as session:
+            session.execute(text("""
+                INSERT INTO scan_states (scan_type, is_running, status, last_scanned_artist)
+                VALUES ('library', FALSE, 'idle', 'Muse')
+            """))
+
+        from services.scanning.pipeline import _validated_resume_artist
+
+        artists = [("A Day to Remember", {"id": "1"}), ("Muse", {"id": "2"})]
+        resume = _validated_resume_artist(artists, "library", force=True)
+
+        # Forced resumes from the checkpoint — only RESTART goes to the top.
+        assert resume == "Muse"
+
+    def test_restart_ignores_checkpoint(self):
+        """A RESTART (with or without force) always starts from the top —
+        the checkpoint is ignored so the whole library is revisited."""
+        _fresh_db()
+        with db_engine_mod.db_session() as session:
+            session.execute(text("""
+                INSERT INTO scan_states (scan_type, is_running, status, last_scanned_artist)
+                VALUES ('library', FALSE, 'idle', 'Muse')
+            """))
+
+        from services.scanning.pipeline import _validated_resume_artist
+
+        artists = [("A Day to Remember", {"id": "1"}), ("Muse", {"id": "2"})]
+        assert _validated_resume_artist(artists, "library", force=False, restart=True) is None
+        assert _validated_resume_artist(artists, "library", force=True, restart=True) is None
+
+    def test_stale_checkpoint_cleared_on_forced_resume(self):
+        """A stale checkpoint (artist gone) is cleared even in forced-resume
+        mode so the forced scan does not stall in skip mode."""
         _fresh_db()
         with db_engine_mod.db_session() as session:
             session.execute(text("""
@@ -194,3 +231,8 @@ class TestValidatedResumeArtist:
         resume = _validated_resume_artist(artists, "library", force=True)
 
         assert resume is None
+        with db_engine_mod.db_session() as session:
+            row = session.execute(
+                text("SELECT last_scanned_artist FROM scan_states WHERE scan_type = 'library'")
+            ).fetchone()
+            assert row[0] is None

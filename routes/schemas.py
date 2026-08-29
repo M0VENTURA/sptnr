@@ -35,5 +35,6 @@ class ScanRequest(BaseModel):
     """Validate popularity scan request."""
     mode: str = Field(default="popularity", pattern=r"^(popularity|singles|metadata|all)$")
     force: bool = Field(default=False)
+    restart: bool = Field(default=False)
     artist: str | None = Field(default=None)
     album: str | None = Field(default=None)

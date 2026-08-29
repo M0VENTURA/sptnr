@@ -41,8 +41,9 @@ async def scan_start() -> Any:
     scan_type = form.get("scan_type", "full")
     artist = (form.get("artist") or "").strip()
     force = form_bool(form.get("force"))
+    restart = form_bool(form.get("restart"))
 
-    logger.info("Scan start requested", scan_type=scan_type, artist=artist, force=force)
+    logger.info("Scan start requested", scan_type=scan_type, artist=artist, force=force, restart=restart)
 
     # -------------------------------------------------
     # Artist-only scan
@@ -68,6 +69,14 @@ async def scan_start() -> Any:
 
     # -------------------------------------------------
     # Full/library scan
+    #
+    # Resume semantics (default): continue from the last checkpoint, skipping
+    # artists already scanned and recently-scanned items.
+    #   restart (no force): start from the BEGINNING, still skipping
+    #       recently-scanned items (change detection / skip windows apply).
+    #   force (no restart): RESUME from the last checkpoint in FORCED mode
+    #       (re-scan everything from the resume point, ignoring skip windows).
+    #   force + restart: start from the beginning in FORCED mode.
     # -------------------------------------------------
     if scan_type in {"full", "force"}:
         with scan_lock:
@@ -75,12 +84,20 @@ async def scan_start() -> Any:
                 await flash("A scan is already running", "warning")
                 return redirect(url_for("ui.dashboard"))
 
+            # The ``force`` checkbox (or the legacy ``force`` scan type) is a
+            # FORCED RESUME by default — the ``restart`` checkbox is what
+            # restarts from the top.  ``scan_type == "force"`` alone is thus a
+            # forced resume, matching the requested semantics.
+            _force = force or scan_type == "force"
+            _restart = restart
+
             def _full_scan_worker() -> None:
                 try:
                     start_library_scan(
                         artist_filter=None,
                         resume=True,
-                        force=(scan_type == "force"),
+                        force=_force,
+                        restart=_restart,
                     )
                 finally:
                     clear_runtime("library")
@@ -88,7 +105,10 @@ async def scan_start() -> Any:
             thread = run_async(_full_scan_worker)
             set_runtime("library", {"thread": thread, "type": "library"})
 
-        await flash(f"Scan started: {scan_type}", "success")
+        mode_desc = "forced restart" if _restart and _force else (
+            "restart" if _restart else ("forced resume" if _force else "resume")
+        )
+        await flash(f"Scan started: {scan_type} ({mode_desc})", "success")
         return redirect(url_for("ui.dashboard"))
 
     # -------------------------------------------------

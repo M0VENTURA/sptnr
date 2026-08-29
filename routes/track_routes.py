@@ -60,9 +60,17 @@ def _trigger_navidrome_scan() -> bool:
 
 
 def _coerce_optional_int(value: Any, allow_prefix: bool = False) -> int | None:
-    """Return an int for numeric input, otherwise None."""
+    """Return an int for numeric input, otherwise None.
+
+    JSON booleans map to 1/0 so BIGINT flag columns (``is_cover``, ``is_live``,
+    ``is_remix``, ``alternate_take``, …) accept the album/track edit modals'
+    checkbox values — previously ``True``/``False`` were ``str()``-ed to
+    ``"True"``/``"False"`` and coerced to None, silently nulling the flags.
+    """
     if value is None:
         return None
+    if isinstance(value, bool):
+        return 1 if value else 0
     text_val = str(value).strip()
     if not text_val:
         return None

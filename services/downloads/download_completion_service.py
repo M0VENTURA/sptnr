@@ -10,7 +10,15 @@ Matching precedence (highest first):
    that maps the remote filename to the exact on-disk location (no walk).
 2. Exact filename match — ``found_filename`` (or its basename) against the
    downloads folder walk.
-3. Fuzzy match — ``_score_soulseek_candidate`` + metadata verification so
+3. Basename-anywhere match — the queue's ``found_filename`` BASENAME is
+   matched against every audio file under the downloads tree (and torrents /
+   sibling roots), IGNORING the folder path entirely.  The comparison strips
+   accents AND punctuation, so the Aephanemer "Utopie" loop's root cause is
+   handled: the peer's remote ``Par‐delà le mur des siècles (instrumental)``
+   (U+2010 hyphen + accents + parens) matches the on-disk
+   ``par-dela le mur des siecles instrumental`` regardless of which folder or
+   peer it came from.
+4. Fuzzy match — ``_score_soulseek_candidate`` + metadata verification so
    wrong-version / false-positive files are rejected instead of imported.
 
 After a match is found the file is verified against the queue item's expected
@@ -185,7 +193,9 @@ def _wait_for_transfer_file(found_filename: str, local_file_path: str) -> Option
     # any path-mapping drift between slskd and the app.  The match is
     # Unicode-tolerant: files with accented names ("Le cimetière marin.flac")
     # may land with different normalization (NFC/NFD) or stripped accents on
-    # disk, so compare the NFC-normalised AND accent-stripped basenames.
+    # disk, so compare the NFC-normalised AND accent-stripped basenames, PLUS
+    # the punctuation-stripped key ("Par‐delà le mur des siècles" vs
+    # "par-dela le mur des siecles") so hyphen/paren drift never blocks it.
     import unicodedata as _ud
 
     def _norm_key(name: str) -> str:
@@ -195,6 +205,7 @@ def _wait_for_transfer_file(found_filename: str, local_file_path: str) -> Option
         return stripped.lower()
 
     _base_key = _norm_key(base)
+    _base_punct = _punctuation_stripped_key(base)
     search_roots: set[str] = set()
     if monitored and os.path.isdir(monitored) and monitored != "?":
         search_roots.add(monitored)
@@ -232,7 +243,10 @@ def _wait_for_transfer_file(found_filename: str, local_file_path: str) -> Option
                         and d.lower() != "original"
                     ]
                     for _fname in _files:
-                        if _norm_key(_fname) == _base_key:
+                        if (
+                            _norm_key(_fname) == _base_key
+                            or (_base_punct and _punctuation_stripped_key(_fname) == _base_punct)
+                        ):
                             candidates.append(os.path.join(_root, _fname))
                             break
             except Exception:
@@ -269,6 +283,31 @@ def _accent_stripped_key(name: str) -> str:
         return str(name or "").lower().strip()
 
 
+def _punctuation_stripped_key(name: str) -> str:
+    """Lowercased, accent- AND punctuation-stripped key for basename matching.
+
+    The Aephanemer "Utopie" loop: the queue's ``found_filename`` uses the
+    PEER's remote path (``Par‐delà le mur des siècles`` — U+2010 hyphen +
+    accents), while the file lands on disk with a DIFFERENT peer's spelling
+    (``Par-dela le mur des siecles`` — ASCII hyphen, no accents, no parens).
+    Exact / lowercase / accent-stripped keys all fail because the *hyphen
+    characters and parentheses differ*.
+
+    This key strips EVERYTHING that is not a letter or digit, so
+    ``Par‐delà le mur des siècles (instrumental)`` and
+    ``par-dela le mur des siecles instrumental`` collapse to the same
+    ``pardelalemurdessieclesinstrumental`` and the file is found no matter
+    which folder or peer it came from.
+    """
+    try:
+        import unicodedata as _ud
+        nfc = _ud.normalize("NFC", str(name or ""))
+        stripped = "".join(c for c in _ud.normalize("NFKD", nfc) if not _ud.combining(c))
+        return "".join(c for c in stripped.lower() if c.isalnum())
+    except Exception:
+        return "".join(c for c in str(name or "").lower() if c.isalnum())
+
+
 def _is_stale_queue_item(
     item: dict[str, Any],
     stale_minutes: int = 10,
@@ -296,6 +335,7 @@ def _is_stale_queue_item(
 def _build_download_index(fs_files: list[dict[str, Any]]) -> dict[str, Any]:
     by_rel_norm: dict[str, dict[str, Any]] = {}
     by_basename: dict[str, list[dict[str, Any]]] = {}
+    by_punct: dict[str, list[dict[str, Any]]] = {}
     by_token: dict[str, list[dict[str, Any]]] = {}
 
     try:
@@ -316,6 +356,13 @@ def _build_download_index(fs_files: list[dict[str, Any]]) -> dict[str, Any]:
         _stripped = _accent_stripped_key(base)
         if _stripped and _stripped != base.lower():
             by_basename.setdefault(_stripped, []).append(f)
+        # Punctuation-stripped key ("Par‐delà le mur des siècles (instrumental)"
+        # == "par-dela le mur des siecles instrumental") — the Aephanemer
+        # loop's real cause: peers spell the SAME track differently, so a
+        # basename-only match must ignore hyphens/parens/accents entirely.
+        _punct = _punctuation_stripped_key(base)
+        if _punct:
+            by_punct.setdefault(_punct, []).append(f)
         if _tokenize_meaningful is not None:
             for token in set(_tokenize_meaningful(base)):
                 by_token.setdefault(token, []).append(f)
@@ -323,6 +370,7 @@ def _build_download_index(fs_files: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "by_rel_norm": by_rel_norm,
         "by_basename": by_basename,
+        "by_punct": by_punct,
         "by_token": by_token,
     }
 
@@ -351,6 +399,16 @@ def _fuzzy_candidates(
     seen: dict[str, dict[str, Any]] = {}
     for token in tokens:
         for f in token_index.get(token, []):
+            seen.setdefault(f["full_path"], f)
+
+    # Punctuation-stripped basename fallback: a file whose basename collapses
+    # to the SAME key as the queue title ("Par‐delà le mur des siècles
+    # (instrumental)" vs on-disk "par-dela le mur des siecles instrumental")
+    # is a basename-anywhere candidate — the folder path is ignored entirely.
+    punct_index = fs_index.get("by_punct") or {}
+    title_key = _punctuation_stripped_key(normalize_core_title(item.get("title") or ""))
+    if title_key:
+        for f in punct_index.get(title_key, []):
             seen.setdefault(f["full_path"], f)
 
     if seen:
@@ -1117,6 +1175,7 @@ def check_completed_downloads() -> dict[str, Any]:
                                 _base_stripped = "".join(
                                     c for c in _ud.normalize("NFKD", _base_key) if not _ud.combining(c)
                                 ).lower()
+                                _base_punct = _punctuation_stripped_key(_cand_base)
                                 # Search the downloads root PLUS the torrents
                                 # dir / sibling ``torrents`` roots — slskd's
                                 # complete-directory can differ from the app's
@@ -1147,7 +1206,11 @@ def check_completed_downloads() -> dict[str, Any]:
                                             _fn_stripped = "".join(
                                                 c for c in _ud.normalize("NFKD", _fn_key) if not _ud.combining(c)
                                             ).lower()
-                                            if _fn_key == _base_key or _fn_stripped == _base_stripped:
+                                            if (
+                                                _fn_key == _base_key
+                                                or _fn_stripped == _base_stripped
+                                                or (_base_punct and _punctuation_stripped_key(_fname) == _base_punct)
+                                            ):
                                                 resolved_local = os.path.join(_root, _fname)
                                                 break
                                         if resolved_local and os.path.isfile(resolved_local):
@@ -1170,22 +1233,48 @@ def check_completed_downloads() -> dict[str, Any]:
                 )
                 _archive_dir = resolve_original_archive_dir()
                 _archive_name = _original_archive_subfolder_name()
-                
-                for root, dirs, files in os.walk(downloads_dir):
-                    dirs[:] = [
-                        d for d in dirs
-                        if d != _archive_name
-                        and os.path.normpath(os.path.join(root, d)) != _archive_dir
-                    ]
-                    for filename in sorted(files):
-                        ext = os.path.splitext(filename)[1].lower()
-                        if ext not in (".mp3", ".flac", ".m4a", ".ogg", ".wav", ".aac", ".wma", ".opus"):
-                            continue
-                        full_path = os.path.join(root, filename)
-                        fs_files.append({
-                            "full_path": full_path,
-                            "rel_path": os.path.relpath(full_path, downloads_dir),
-                        })
+
+                # Walk the downloads root PLUS the torrents dir / sibling
+                # ``torrents`` roots — slskd's complete-directory can differ
+                # from the app's downloads dir, and the basename-anywhere
+                # matcher must find files wherever they landed.
+                _walk_roots: set[str] = {downloads_dir}
+                try:
+                    from services.downloads.download_scan_service import resolve_torrents_dir
+                    _walk_roots.add(resolve_torrents_dir())
+                except Exception:
+                    pass
+                _parent = os.path.dirname(os.path.normpath(downloads_dir))
+                for _cand_dir in ("torrents", "Torrents", "TORRENTS"):
+                    _sib = os.path.join(_parent, _cand_dir)
+                    if os.path.isdir(_sib):
+                        _walk_roots.add(_sib)
+
+                seen_paths: set[str] = set()
+                for _walk_root in _walk_roots:
+                    if not os.path.isdir(_walk_root):
+                        continue
+                    for root, dirs, files in os.walk(_walk_root):
+                        dirs[:] = [
+                            d for d in dirs
+                            if d != _archive_name
+                            and os.path.normpath(os.path.join(root, d)) != _archive_dir
+                            and not d.startswith(".")
+                            and not d.startswith("__")
+                            and d.lower() != "original"
+                        ]
+                        for filename in sorted(files):
+                            ext = os.path.splitext(filename)[1].lower()
+                            if ext not in (".mp3", ".flac", ".m4a", ".ogg", ".wav", ".aac", ".wma", ".opus"):
+                                continue
+                            full_path = os.path.join(root, filename)
+                            if full_path in seen_paths:
+                                continue
+                            seen_paths.add(full_path)
+                            fs_files.append({
+                                "full_path": full_path,
+                                "rel_path": os.path.relpath(full_path, downloads_dir),
+                            })
                 logger.debug("Filesystem walk completed", count=len(fs_files))
             except Exception as exc:
                 logger.debug("Filesystem walk failed", error=str(exc))
@@ -1193,6 +1282,7 @@ def check_completed_downloads() -> dict[str, Any]:
         fs_index = _build_download_index(fs_files) if fs_files else {
             "by_rel_norm": {},
             "by_basename": {},
+            "by_punct": {},
             "by_token": {},
         }
 
@@ -1321,6 +1411,14 @@ def check_completed_downloads() -> dict[str, Any]:
                         _stripped = _accent_stripped_key(found_basename)
                         if _stripped and _stripped != found_basename.lower():
                             exact_candidates.extend(fs_index["by_basename"].get(_stripped, []))
+                        # Punctuation-stripped basename ("Par‐delà le mur des
+                        # siècles (instrumental)" == "par-dela le mur des siecles
+                        # instrumental") — finds the file ANYWHERE under the
+                        # downloads tree by basename alone, ignoring the folder
+                        # path entirely (the reported Aephanemer loop).
+                        _punct = _punctuation_stripped_key(found_basename)
+                        if _punct:
+                            exact_candidates.extend(fs_index["by_punct"].get(_punct, []))
 
                     seen_paths: set[str] = set()
                     for f in exact_candidates:

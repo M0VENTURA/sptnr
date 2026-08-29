@@ -54,6 +54,73 @@ class _FakeSlskd:
         return True
 
 
+class TestPunctuationTolerantBasenameMatch:
+    """The Aephanemer "Utopie" loop's real cause: the peer's remote filename
+    uses a U+2010 hyphen + accents + parens (``Par‐delà le mur des siècles
+    (instrumental)``) while the file lands on disk with a DIFFERENT peer's
+    ASCII spelling (``Par-dela le mur des siecles instrumental``).  The
+    basename matcher must ignore the folder path AND punctuation so the file
+    is found anywhere under the downloads tree."""
+
+    def test_punctuation_stripped_key_collapses_variants(self):
+        assert dcs._punctuation_stripped_key(
+            "Par‐delà le mur des siècles (instrumental).flac"
+        ) == dcs._punctuation_stripped_key("Par-dela le mur des siecles instrumental.flac")
+        assert dcs._punctuation_stripped_key(
+            "Le Cimetière marin (instrumental).flac"
+        ) == dcs._punctuation_stripped_key("Le cimetiere marin instrumental.flac")
+
+    def test_wait_for_transfer_file_finds_hyphen_drift(self, monkeypatch):
+        """A file whose on-disk basename differs ONLY by hyphen/paren/accents
+        from the queue's found_filename must be found by the walk."""
+        root = tempfile.mkdtemp()
+        try:
+            deep = os.path.join(root, "music", "Aephanemer", "2025 - Utopie")
+            os.makedirs(deep, exist_ok=True)
+            target = os.path.join(deep, "Aephanemer - Utopie - 04 Par-dela le mur des siecles.flac")
+            open(target, "w").close()
+
+            monkeypatch.setattr(dcs, "_monitored_downloads_dir", lambda: root)
+            # Queue's found_filename uses U+2010 hyphens + accents + a
+            # different folder — every exact key fails; punctuation key wins.
+            result = dcs._wait_for_transfer_file(
+                "music/Aephanemer/[2025] Utopie/Aephanemer - Utopie - 04 Par‐delà le mur des siècles.flac",
+                "",
+            )
+            assert result == target
+        finally:
+            import shutil
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_download_index_punct_key_finds_file_anywhere(self):
+        """_build_download_index keys files by punctuation-stripped basename,
+        so a queue found_filename that differs only in hyphen/paren/accents
+        resolves to the on-disk file regardless of its folder."""
+        fs_files = [
+            {"full_path": "/downloads/Aephanemer/2025 - Utopie/Aephanemer - Utopie - 04 Par-dela le mur des siecles.flac",
+             "rel_path": "Aephanemer/2025 - Utopie/Aephanemer - Utopie - 04 Par-dela le mur des siecles.flac"},
+        ]
+        index = dcs._build_download_index(fs_files)
+        punct_key = dcs._punctuation_stripped_key(
+            "Aephanemer - Utopie - 04 Par‐delà le mur des siècles.flac"
+        )
+        hits = index["by_punct"].get(punct_key, [])
+        assert len(hits) == 1
+        assert hits[0]["full_path"].endswith("Par-dela le mur des siecles.flac")
+
+    def test_fuzzy_candidates_punct_fallback(self):
+        """_fuzzy_candidates must surface a basename that matches the queue
+        title after punctuation stripping, even when no token index hits."""
+        fs_files = [
+            {"full_path": "/downloads/x/Aephanemer - Utopie - 15 Contrepoint instrumental.flac",
+             "rel_path": "x/Aephanemer - Utopie - 15 Contrepoint instrumental.flac"},
+        ]
+        index = dcs._build_download_index(fs_files)
+        item = {"title": "Contrepoint (instrumental)", "artist": "Aephanemer"}
+        candidates = dcs._fuzzy_candidates(index, item, fs_files)
+        assert any(c["full_path"].endswith("Contrepoint instrumental.flac") for c in candidates)
+
+
 class TestDeepFileSearch:
     def test_nested_music_artist_album_file_is_found_with_path_drift(self, monkeypatch):
         """A file at ``<root>/music/Artist/Album/01 - Track.flac`` must be
