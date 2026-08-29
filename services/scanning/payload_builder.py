@@ -71,6 +71,7 @@ EXTRACTED_STRING_FIELDS = (
     "albumsort", "artistsort", "albumartistsort", "albumartistssort", "artistssort",
     "composersort", "lyricistsort", "artists", "albumartists", "encodedby", "encodersettings",
     "website", "license", "isrc", "comment",
+    "is_cover", "original_cover_artist", "musicbrainz_genres",
 )
 
 EXTRACTED_DIRECT_FIELDS = (

@@ -219,6 +219,14 @@ def extract_track_metadata(
         "musicbrainz_artist_id": get_tag_value("musicbrainz_artist_id", "musicbrainz_artistid") or "",
         "musicbrainz_albumartistid": get_tag_value("musicbrainz_albumartistid", "musicbrainz_albumartist_id") or "",
         "musicbrainz_workid": get_tag_value("musicbrainz_workid", "musicbrainz_work_id") or "",
+        # ── MusicBrainz enrichment read back from file tags ───────────────
+        # The download-completion import writes these to the file tags
+        # (``IS COVER`` / ``ORIGINAL COVER ARTIST`` / ``MUSICBRAINZ GENRES``
+        # TXXX/Vorbis frames); a later Navidrome import must read them back
+        # into the tracks table so the enrichment is not lost.
+        "is_cover": get_tag_value("is_cover", "IS_COVER") or "",
+        "original_cover_artist": get_tag_value("original_cover_artist", "ORIGINAL_COVER_ARTIST") or "",
+        "musicbrainz_genres": get_tag_value("musicbrainz_genres", "MUSICBRAINZ_GENRES", "MUSICBRAINZ GENRES") or "",
         "releasetype": get_tag_value("releasetype", "release_type", "albumtype") or "",
         "releasestatus": get_tag_value("releasestatus", "release_status", "musicbrainz_albumstatus") or "",
         "releasecountry": get_tag_value("releasecountry", "release_country", "musicbrainz_releasecountry") or "",

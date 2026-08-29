@@ -160,6 +160,97 @@ class TestApplyStoredMetadata:
         dcs._apply_stored_metadata(item, "/downloads/x.mp3")
         assert written["meta"]["release_mbid"] == "rel-abc"
 
+    def test_persists_mb_enrichment_to_track_row_when_file_known(self, monkeypatch):
+        """The reported bug: imported tracks lost the MusicBrainz metadata
+        they were matched with.  ``_apply_stored_metadata`` must ALSO write
+        the stored writer/cover/genre/work MBID enrichment to the matching
+        tracks row (not just the file tags), so the library shows it without
+        waiting for a Navidrome rescan."""
+        written_file = {}
+
+        def fake_update_file_metadata(path, meta):
+            written_file["meta"] = meta
+            return True
+
+        monkeypatch.setattr("services.metadata.tag_file_service.update_file_metadata", fake_update_file_metadata)
+
+        saved_rows: list[dict] = []
+        import db.repositories.tracks as track_repo
+
+        def fake_insert_or_update_track(track_id, data):
+            saved_rows.append({"id": track_id, **data})
+
+        monkeypatch.setattr(track_repo, "insert_or_update_track", fake_insert_or_update_track)
+        # The imported file already exists as a tracks row (found by path).
+        monkeypatch.setattr(
+            dcs,
+            "_resolve_track_id_for_import",
+            lambda **kw: "track-abc",
+        )
+
+        item = {
+            "id": 9,
+            "artist": "Aephanemer",
+            "title": "Contrepoint",
+            "album": "Utopie",
+            "album_artist": "Aephanemer",
+            "year": "2025",
+            "track_number": "15",
+            "disc_number": "1",
+            "recording_mbid": "rec-abc",
+            "release_mbid": "rel-xyz",
+            "metadata": '{"writer": "M. Goyat", "is_cover": true, '
+                        '"original_cover_artist": "Original Artist", '
+                        '"musicbrainz_genres": "melodic death metal", '
+                        '"work_mbid": "work-123"}',
+        }
+        dcs._apply_stored_metadata(item, "/music/Aephanemer/2025 - Utopie/15 - Contrepoint.flac")
+
+        assert saved_rows, "expected a tracks-row write"
+        row = saved_rows[0]
+        assert row["id"] == "track-abc"
+        assert row["writer"] == "M. Goyat"
+        assert row["is_cover"] == 1
+        assert row["original_cover_artist"] == "Original Artist"
+        assert row["musicbrainz_genres"] == "melodic death metal"
+        assert row["musicbrainz_workid"] == "work-123"
+        assert row["recording_mbid"] == "rec-abc"
+        assert row["release_mbid"] == "rel-xyz"
+
+    def test_no_track_row_no_db_write(self, monkeypatch):
+        """When no tracks row exists for the imported file, the file tags are
+        still written but the DB persist is skipped (the next Navidrome scan
+        creates the row)."""
+        written_file = {}
+
+        def fake_update_file_metadata(path, meta):
+            written_file["meta"] = meta
+            return True
+
+        monkeypatch.setattr("services.metadata.tag_file_service.update_file_metadata", fake_update_file_metadata)
+
+        import db.repositories.tracks as track_repo
+        saved_rows: list[dict] = []
+
+        def fake_insert_or_update_track(track_id, data):
+            saved_rows.append({"id": track_id, **data})
+
+        monkeypatch.setattr(track_repo, "insert_or_update_track", fake_insert_or_update_track)
+        monkeypatch.setattr(dcs, "_resolve_track_id_for_import", lambda **kw: None)
+
+        item = {
+            "id": 10,
+            "artist": "A",
+            "title": "T",
+            "album": "Al",
+            "recording_mbid": "rec-1",
+            "release_mbid": "rel-2",
+        }
+        dcs._apply_stored_metadata(item, "/music/A/2000 - Al/01 - T.flac")
+
+        assert saved_rows == []
+        assert written_file["meta"]["recording_mbid"] == "rec-1"
+
 
 # ---------------------------------------------------------------------------
 # _move_and_import

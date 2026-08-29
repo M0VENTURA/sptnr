@@ -692,12 +692,22 @@ def _apply_stored_metadata(item: dict[str, Any], file_path: str) -> None:
     release_mbid = item.get("release_mbid") or item.get("release_id")
     if release_mbid:
         meta["release_mbid"] = release_mbid
+    if item.get("musicbrainz_artistid"):
+        meta["musicbrainz_artistid"] = item.get("musicbrainz_artistid")
+    if item.get("musicbrainz_albumartistid"):
+        meta["musicbrainz_albumartistid"] = item.get("musicbrainz_albumartistid")
+    if item.get("musicbrainz_releasegroupid"):
+        meta["musicbrainz_releasegroupid"] = item.get("musicbrainz_releasegroupid")
 
     # ── Stored MusicBrainz enrichment (writer / cover / genres) ──────────
     # ``add_release_tracks_to_queue`` persisted the per-recording work-rels
     # (writer + cover attribution) and MB genres in the queue row's
     # ``metadata`` JSONB.  Apply them to the file tags so the imported track
-    # carries them; the tracks-table write happens in the scan/upsert path.
+    # carries them, AND to the tracks table so the DB row immediately has the
+    # enrichment (the reported bug: imported tracks lost the MB metadata they
+    # were matched with because the tracks-table write only happened during a
+    # later Navidrome scan, and the extractor never read cover/genres back).
+    _stored: dict[str, Any] = {}
     try:
         _stored = item.get("metadata") or {}
         if isinstance(_stored, str):
@@ -715,6 +725,8 @@ def _apply_stored_metadata(item: dict[str, Any], file_path: str) -> None:
                     meta["original_cover_artist"] = str(_stored["original_cover_artist"])
             if _stored.get("musicbrainz_genres"):
                 meta["musicbrainz_genres"] = str(_stored["musicbrainz_genres"])
+            if _stored.get("work_mbid"):
+                meta["musicbrainz_workid"] = str(_stored["work_mbid"])
     except Exception as _stored_exc:
         logger.debug("Stored MB metadata parse failed", queue_id=item.get("id"), error=str(_stored_exc))
 
@@ -725,7 +737,96 @@ def _apply_stored_metadata(item: dict[str, Any], file_path: str) -> None:
         from services.metadata.tag_file_service import update_file_metadata
         update_file_metadata(file_path, meta)
     except Exception as exc:
-        logger.debug("Could not apply stored metadata", queue_id=item.get("id"), path=file_path, error=str(exc))
+        logger.debug("Could not apply stored metadata to file", queue_id=item.get("id"), path=file_path, error=str(exc))
+
+    # ── Persist the MB enrichment to the tracks table ────────────────────
+    # The just-moved file may not be re-scanned immediately; write the stored
+    # MB metadata straight to the matching tracks row so the library shows it
+    # (writer / cover / genres / work MBID / album MBID) without waiting for
+    # a Navidrome import.
+    try:
+        _db_payload: dict[str, Any] = {}
+        _mb_cols = {
+            "writer", "is_cover", "original_cover_artist", "musicbrainz_genres",
+            "musicbrainz_workid", "recording_mbid", "release_mbid",
+            "musicbrainz_artistid", "musicbrainz_albumartistid",
+            "musicbrainz_releasegroupid",
+        }
+        for _col in _mb_cols:
+            if meta.get(_col) not in (None, ""):
+                _db_payload[_col] = meta[_col]
+
+        if recording_mbid or release_mbid:
+            # Find the track row by MBID first (most reliable), then by the
+            # just-moved file path.
+            _track_id = _resolve_track_id_for_import(
+                file_path=file_path,
+                recording_mbid=recording_mbid,
+                release_mbid=release_mbid,
+                artist=meta.get("artist"),
+                title=meta.get("title"),
+            )
+            if _track_id:
+                _db_payload["id"] = _track_id
+                from db.repositories.tracks import insert_or_update_track
+                insert_or_update_track(_track_id, _db_payload)
+                logger.info(
+                    "Applied stored MusicBrainz metadata to track row",
+                    queue_id=item.get("id"),
+                    track_id=_track_id,
+                    fields=sorted(_db_payload),
+                )
+    except Exception as exc:
+        logger.debug("Could not persist MB metadata to tracks table", queue_id=item.get("id"), error=str(exc))
+
+
+def _resolve_track_id_for_import(
+    *,
+    file_path: str,
+    recording_mbid: str | None,
+    release_mbid: str | None,
+    artist: str | None,
+    title: str | None,
+) -> str | None:
+    """Find the tracks-table id for a just-imported file.
+
+    Resolution order:
+    1. Exact file_path match (the file was moved into the library).
+    2. recording_mbid match.
+    3. (artist, title) match.
+    Returns None when no row exists yet (the next Navidrome scan creates it).
+    """
+    try:
+        with db_session() as session:
+            if file_path:
+                row = session.execute(
+                    text("SELECT id FROM tracks WHERE file_path = :p LIMIT 1"),
+                    {"p": file_path},
+                ).fetchone()
+                if row:
+                    return str(row[0])
+            if recording_mbid:
+                row = session.execute(
+                    text("SELECT id FROM tracks WHERE recording_mbid = :m LIMIT 1"),
+                    {"m": recording_mbid},
+                ).fetchone()
+                if row:
+                    return str(row[0])
+            if artist and title:
+                row = session.execute(
+                    text("""
+                        SELECT id FROM tracks
+                        WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:a)
+                          AND LOWER(title) = LOWER(:t)
+                        LIMIT 1
+                    """),
+                    {"a": artist, "t": title},
+                ).fetchone()
+                if row:
+                    return str(row[0])
+    except Exception:
+        pass
+    return None
 
 
 def _move_and_import(item: dict[str, Any], abs_path: str, match_source: str) -> dict[str, Any]:
