@@ -219,21 +219,46 @@ def _iter_matched_folder_candidates(downloads_dir: str, archive_dir: str, max_de
         if _is_skipped(full, entry):
             continue
         if _is_torrents_root(entry):
-            try:
-                sub_entries = sorted(os.listdir(full))
-            except Exception as exc:
-                logger.debug("torrents listdir failed", path=full, error=str(exc))
-                sub_entries = []
-            for sub in sub_entries:
-                sub_full = os.path.join(full, sub)
-                if not os.path.isdir(sub_full):
-                    continue
-                if _is_skipped(sub_full, sub):
-                    continue
-                if _is_disc_subfolder(sub):
-                    candidates.append((full, entry))
-                    continue
-                candidates.append((sub_full, sub))
+            # The torrents root commonly holds per-BAND folders that contain
+            # multiple album subfolders ("Ignea - (ex - Parallax)/2017 - The
+            # Sign of Faith/02. Alexandria.mp3").  Recurse the SAME way as the
+            # non-torrents branch so each ALBUM subfolder is its own match —
+            # never the whole band folder merged into one.
+            def _collect_torrent_albums(folder_abs: str, depth: int) -> None:
+                if depth >= max_depth:
+                    return
+                try:
+                    sub_entries = sorted(os.listdir(folder_abs))
+                except Exception as exc:
+                    logger.debug("torrents listdir failed", path=folder_abs, error=str(exc))
+                    return
+                has_audio_direct = False
+                try:
+                    for _n in sub_entries:
+                        _p = os.path.join(folder_abs, _n)
+                        if os.path.isfile(_p) and os.path.splitext(_n)[1].lower() in SUPPORTED_AUDIO_FORMATS:
+                            has_audio_direct = True
+                            break
+                except Exception:
+                    pass
+                if has_audio_direct:
+                    candidates.append((folder_abs, os.path.basename(folder_abs)))
+                    return
+                # No direct audio → recurse into subfolders as albums.
+                for sub in sub_entries:
+                    sub_full = os.path.join(folder_abs, sub)
+                    if not os.path.isdir(sub_full):
+                        continue
+                    if _is_skipped(sub_full, sub):
+                        continue
+                    if _is_disc_subfolder(sub):
+                        # A disc subfolder belongs to its parent album — if the
+                        # parent has audio it was already added; otherwise
+                        # surface the parent.
+                        continue
+                    _collect_torrent_albums(sub_full, depth + 1)
+
+            _collect_torrent_albums(full, 0)
             continue
 
         # ── Recursive subfolder discovery ────────────────────────────────
