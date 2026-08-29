@@ -56,6 +56,36 @@ def _log_queue_event(event_type: str, message: str, queue_id: int | None) -> Non
 _STALE_DOWNLOADING_MINUTES = 60
 _SLSKD_ACTIVE_STATE_TIMEOUT_MINUTES = 60
 _SLSKD_REMOTELY_QUEUED_TIMEOUT_MINUTES = 60
+#: A transfer that slskd reports as succeeded but whose file never appeared
+#: on disk.  The file may still be flushing/renaming, so the item is kept
+#: ``downloading`` and polled for this long BEFORE it is failed for retry —
+#: failing immediately caused the infinite re-download loop (download a file
+#: that "succeeded" but was not found → requeue → search picks a DIFFERENT
+#: file → repeat).
+_SLSKD_SUCCEEDED_NOT_FOUND_TIMEOUT_MINUTES = 15
+
+
+def _refresh_downloading_item(queue_id: int) -> dict[str, Any] | None:
+    """Re-fetch a downloading item FRESH; ``None`` when it is no longer
+    ``downloading`` (a retry already requeued + re-downloaded it).
+
+    ``check_completed_downloads`` snapshots the downloading rows at cycle
+    start.  While the cycle runs, the search pipeline can requeue an item and
+    download a NEW file for it (the old transfer "succeeded but was not
+    found" → mark_failed → requeue → re-download).  Processing the STALE row
+    then double-fails the item with the OLD ``found_filename`` — the reported
+    infinite "slskd transfer succeeded but local file not found — retrying"
+    loop.  Re-fetching per item keeps the completion cycle in sync.
+    """
+    try:
+        with db_session() as session:
+            row = session.execute(
+                text("SELECT * FROM download_queue WHERE id = :qid AND status = 'downloading'"),
+                {"qid": queue_id},
+            ).fetchone()
+            return dict(row._mapping) if row else None
+    except Exception:
+        return None
 
 
 # =============================================================================
@@ -150,7 +180,7 @@ def _wait_for_transfer_file(found_filename: str, local_file_path: str) -> Option
     except Exception:
         pass
 
-    # Recursive fallback: walk the downloads root (shallow) looking for the
+    # Recursive fallback: walk the downloads root (deep) looking for the
     # basename anywhere under it — covers slskd's nested-directory saves and
     # any path-mapping drift between slskd and the app.  The match is
     # Unicode-tolerant: files with accented names ("Le cimetière marin.flac")
@@ -165,21 +195,48 @@ def _wait_for_transfer_file(found_filename: str, local_file_path: str) -> Option
         return stripped.lower()
 
     _base_key = _norm_key(base)
-    if monitored and os.path.isdir(monitored) and base:
+    search_roots: set[str] = set()
+    if monitored and os.path.isdir(monitored) and monitored != "?":
+        search_roots.add(monitored)
+        # slskd may save under a sibling ``torrents`` root or the configured
+        # torrents subfolder when its complete-directory differs from the
+        # app's downloads dir — search those too.
         try:
-            _depth_limited = True
-            for _root, _dirs, _files in os.walk(monitored):
-                if _depth_limited:
-                    # Keep the walk shallow-ish (3 levels) — enough for the
-                    # "music/Artist/Album" layout without scanning the whole
-                    # library on every poll.
-                    _dirs[:] = [d for d in _dirs if _root.count(os.sep) - monitored.count(os.sep) < 3]
-                for _fname in _files:
-                    if _norm_key(_fname) == _base_key:
-                        candidates.append(os.path.join(_root, _fname))
-                        break
+            from services.downloads.download_scan_service import resolve_torrents_dir
+            search_roots.add(resolve_torrents_dir())
         except Exception:
             pass
+        _parent = os.path.dirname(os.path.normpath(monitored))
+        for _cand in ("torrents", "Torrents", "TORRENTS"):
+            _sibling = os.path.join(_parent, _cand)
+            if os.path.isdir(_sibling):
+                search_roots.add(_sibling)
+
+    if search_roots and base:
+        # Deep-enough to reach ``music/Artist/Album/file.flac`` (depth 4 from
+        # the downloads root) and ``music/music/...`` double-nested layouts
+        # without scanning the whole library.
+        _DEPTH_LIMIT = 8
+        for _root_dir in search_roots:
+            try:
+                _depth_limit = _DEPTH_LIMIT
+                for _root, _dirs, _files in os.walk(_root_dir):
+                    _rel_depth = _root.count(os.sep) - _root_dir.count(os.sep)
+                    if _rel_depth >= _depth_limit:
+                        _dirs[:] = []
+                        continue
+                    # Prune hidden/dunder dirs and the FLAC conversion archive.
+                    _dirs[:] = [
+                        d for d in _dirs
+                        if not d.startswith(".") and not d.startswith("__")
+                        and d.lower() != "original"
+                    ]
+                    for _fname in _files:
+                        if _norm_key(_fname) == _base_key:
+                            candidates.append(os.path.join(_root, _fname))
+                            break
+            except Exception:
+                pass
 
     if not candidates:
         return None
@@ -920,25 +977,36 @@ def _reconcile_transfer_state(
             return landed
 
         logger.warning(
-            "slskd succeeded but no local file found",
+            "slskd succeeded but no local file found (will keep polling)",
             queue_id=queue_id,
             local_file_path=local or "(empty)",
             found_filename=found_fn,
             monitored_dir=_monitored_downloads_dir(),
         )
-        _remember_failed_peer(transfer)
-        try:
-            transfer_id = str(transfer.get("id") or "")
-            username = str(transfer.get("username") or "")
-            if transfer_id and username:
-                slskd.cancel_download(username, transfer_id, remove=True)
-        except Exception as exc:
-            logger.debug("Could not remove stale transfer", queue_id=queue_id, error=str(exc))
-            
-        from db.repositories.queue import mark_failed
-        mark_failed(queue_id, "slskd transfer succeeded but local file not found")
-        _log_queue_event("failed", "slskd transfer succeeded but local file not found — retrying", queue_id)
-        return True
+        # A succeeded transfer whose file has NOT appeared is usually a
+        # slskd flush/rename delay — the file may land moments later.  Do
+        # NOT cancel the transfer + mark_failed immediately: that was the
+        # infinite re-download loop (each retry's search picked a DIFFERENT
+        # file, which also "succeeded" without appearing → requeue → …).
+        # Keep the item 'downloading' so a later cycle claims the file the
+        # moment it lands; only after the grace period is it failed for a
+        # (much slower) retry.
+        if _is_stale_queue_item(item, stale_minutes=_SLSKD_SUCCEEDED_NOT_FOUND_TIMEOUT_MINUTES, now=now):
+            logger.warning("Succeeded transfer never produced a local file — failing for retry", queue_id=queue_id)
+            _remember_failed_peer(transfer)
+            try:
+                transfer_id = str(transfer.get("id") or "")
+                username = str(transfer.get("username") or "")
+                if transfer_id and username:
+                    slskd.cancel_download(username, transfer_id, remove=True)
+            except Exception as exc:
+                logger.debug("Could not remove stale transfer", queue_id=queue_id, error=str(exc))
+
+            from db.repositories.queue import mark_failed
+            mark_failed(queue_id, "slskd transfer succeeded but local file not found")
+            _log_queue_event("failed", "slskd transfer succeeded but local file not found — retrying", queue_id)
+            return True
+        return False
 
     if state == slskd.STATE_QUEUED_REMOTELY:
         if _is_stale_queue_item(item, stale_minutes=_SLSKD_REMOTELY_QUEUED_TIMEOUT_MINUTES, now=now):
@@ -1049,17 +1117,41 @@ def check_completed_downloads() -> dict[str, Any]:
                                 _base_stripped = "".join(
                                     c for c in _ud.normalize("NFKD", _base_key) if not _ud.combining(c)
                                 ).lower()
-                                for _root, _dirs, _files in os.walk(downloads_dir):
-                                    for _fname in _files:
-                                        _fn_key = _ud.normalize("NFC", _fname).lower()
-                                        _fn_stripped = "".join(
-                                            c for c in _ud.normalize("NFKD", _fn_key) if not _ud.combining(c)
-                                        ).lower()
-                                        if _fn_key == _base_key or _fn_stripped == _base_stripped:
-                                            resolved_local = os.path.join(_root, _fname)
+                                # Search the downloads root PLUS the torrents
+                                # dir / sibling ``torrents`` roots — slskd's
+                                # complete-directory can differ from the app's
+                                # downloads dir.
+                                _search_roots = {downloads_dir}
+                                try:
+                                    from services.downloads.download_scan_service import resolve_torrents_dir
+                                    _search_roots.add(resolve_torrents_dir())
+                                except Exception:
+                                    pass
+                                _parent = os.path.dirname(os.path.normpath(downloads_dir))
+                                for _cand_dir in ("torrents", "Torrents", "TORRENTS"):
+                                    _sib = os.path.join(_parent, _cand_dir)
+                                    if os.path.isdir(_sib):
+                                        _search_roots.add(_sib)
+                                for _sr in _search_roots:
+                                    if not os.path.isdir(_sr):
+                                        continue
+                                    for _root, _dirs, _files in os.walk(_sr):
+                                        # Prune hidden/dunder + archive dirs.
+                                        _dirs[:] = [
+                                            d for d in _dirs
+                                            if not d.startswith(".") and not d.startswith("__")
+                                            and d.lower() != "original"
+                                        ]
+                                        for _fname in _files:
+                                            _fn_key = _ud.normalize("NFC", _fname).lower()
+                                            _fn_stripped = "".join(
+                                                c for c in _ud.normalize("NFKD", _fn_key) if not _ud.combining(c)
+                                            ).lower()
+                                            if _fn_key == _base_key or _fn_stripped == _base_stripped:
+                                                resolved_local = os.path.join(_root, _fname)
+                                                break
+                                        if resolved_local and os.path.isfile(resolved_local):
                                             break
-                                    if resolved_local and os.path.isfile(resolved_local):
-                                        break
                     if resolved_local and os.path.isfile(resolved_local):
                         if remote_norm:
                             slskd_completed[remote_norm] = resolved_local
@@ -1145,6 +1237,15 @@ def check_completed_downloads() -> dict[str, Any]:
         for item in downloading:
             try:
                 queue_id = item.get("id")
+
+                # Re-fetch the row: the cycle snapshot may be stale (a retry
+                # already requeued + re-downloaded this item), and processing
+                # the stale row double-fails it → infinite re-download loop.
+                fresh = _refresh_downloading_item(queue_id)
+                if fresh is None:
+                    stats["skipped"] += 1
+                    continue
+                item = fresh
 
                 _item_source = str(item.get("source") or "").lower()
                 if _item_source in ("local", "discovered"):

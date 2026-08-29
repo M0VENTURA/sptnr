@@ -183,17 +183,149 @@ def _is_disc_subfolder(name: str) -> bool:
     return bool(re.match(r"^(cd|disc|disk)\s*\d+$", lowered))
 
 
+def _folder_has_album_subfolders(folder_abs: str, archive_dir: str) -> bool:
+    """True when *folder_abs* contains non-disc subfolders holding audio.
+
+    Operating on such a folder as ONE unit would MERGE multiple albums (the
+    reported "Matched Folders still merging everything under /torrents" bug):
+    a band folder like ``/torrents/Ignea - (ex - Parallax)/`` holds one
+    album subfolder per year, and matching/deleting/moving it as a whole
+    touches every album.  Such folders must be refused by the
+    match/associate/delete actions so only the per-album candidates are used.
+    """
+    try:
+        archive_norm = os.path.normpath(archive_dir) if archive_dir else ""
+        for sub in os.listdir(folder_abs):
+            if sub.startswith(".") or sub.startswith("__"):
+                continue
+            if _is_disc_subfolder(sub):
+                continue
+            sub_full = os.path.join(folder_abs, sub)
+            if not os.path.isdir(sub_full):
+                continue
+            if archive_norm and os.path.normpath(sub_full) == archive_norm:
+                continue
+            for f in _get_files_in_folder(sub_full):
+                if f.get("is_audio"):
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def _assert_single_album_folder(folder_abs: str, downloads_dir: str, archive_dir: str) -> str | None:
+    """Return an error message when *folder_abs* must NOT be operated on as a
+    single album (it would merge multiple albums), else ``None``."""
+    if _is_torrents_root(os.path.basename(folder_abs or "")):
+        return "Refusing to operate on the torrents root itself — it contains multiple albums"
+    if _folder_has_album_subfolders(folder_abs, archive_dir):
+        return "This folder contains multiple album subfolders — match each album separately"
+    return None
+
+
+def _collect_album_folders(folder_abs: str, max_depth: int = 3) -> list[tuple[str, str]]:
+    """Return ``(album_abs, display_name)`` for every folder at/below
+    *folder_abs* that holds audio DIRECTLY — i.e. its own album.
+
+    CD/DISC subfolders (cd1, cd2, disc1…) belong to their parent album and
+    are NEVER separate candidates; a folder whose ONLY audio lives in
+    cd/disc subfolders is itself the album.  Hidden/dunder dirs and the FLAC
+    conversion archive are pruned at every level.
+
+    The torrents root and band folders are flattened by this same helper:
+    a band folder (``Ignea - (ex - Parallax)/``) has no direct audio, so the
+    recursion surfaces each ALBUM subfolder as its own candidate — matching
+    one album never merges the whole directory.  A folder with direct audio
+    that ALSO holds sibling album subfolders (a band folder with a stray
+    track) yields BOTH its own entry and the subfolder entries, so nothing
+    is silently merged.
+    """
+    found: list[tuple[str, str]] = []
+    try:
+        archive_norm = os.path.normpath(resolve_original_archive_dir())
+    except Exception:
+        archive_norm = ""
+
+    def _recurse(folder: str, depth: int) -> None:
+        if depth > max_depth:
+            return
+        try:
+            sub_entries = sorted(os.listdir(folder))
+        except Exception as exc:
+            logger.debug("album-folder listdir failed", path=folder, error=str(exc))
+            return
+
+        def _has_direct_audio(names: list[str]) -> bool:
+            for name in names:
+                try:
+                    p = os.path.join(folder, name)
+                    if os.path.isfile(p) and os.path.splitext(name)[1].lower() in SUPPORTED_AUDIO_FORMATS:
+                        return True
+                except Exception:
+                    pass
+            return False
+
+        def _has_disc_audio(disc_names: list[str]) -> bool:
+            for name in disc_names:
+                disc = os.path.join(folder, name)
+                if not os.path.isdir(disc):
+                    continue
+                try:
+                    for fname in os.listdir(disc):
+                        p = os.path.join(disc, fname)
+                        if os.path.isfile(p) and os.path.splitext(fname)[1].lower() in SUPPORTED_AUDIO_FORMATS:
+                            return True
+                except Exception:
+                    pass
+            return False
+
+        disc_names = [s for s in sub_entries if _is_disc_subfolder(s)]
+        has_direct_audio = _has_direct_audio(sub_entries)
+        disc_has_audio = bool(disc_names) and _has_disc_audio(disc_names)
+
+        if has_direct_audio or (disc_has_audio and not has_direct_audio):
+            found.append((folder, os.path.basename(folder)))
+            # A folder with direct audio may STILL hold sibling album
+            # subfolders (a band folder with a stray track + album
+            # subfolders) — recurse so they are surfaced separately instead
+            # of being merged into this entry.
+
+        for sub in sub_entries:
+            if sub.startswith(".") or sub.startswith("__"):
+                continue
+            if _is_disc_subfolder(sub):
+                continue
+            sub_full = os.path.join(folder, sub)
+            if not os.path.isdir(sub_full):
+                continue
+            if archive_norm and os.path.normpath(sub_full) == archive_norm:
+                continue
+            _recurse(sub_full, depth + 1)
+
+    _recurse(folder_abs, 0)
+
+    # De-duplicate by absolute path (a folder can be reached twice when a
+    # disc-only parent also contains a nested album).
+    seen: set[str] = set()
+    unique: list[tuple[str, str]] = []
+    for folder, name in found:
+        key = os.path.normpath(folder)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append((folder, name))
+    return unique
+
+
 def _iter_matched_folder_candidates(downloads_dir: str, archive_dir: str, max_depth: int = 3) -> list[tuple[str, str]]:
     """Yield ``(folder_abs, display_name)`` for the Matched Folders list.
 
     Recursively walks the downloads root so EVERY folder containing audio is
     its own candidate (previously only top-level folders were surfaced, so
     nested album folders like ``/downloads/Band/2024 - Album/`` were never
-    matched individually).  CD/DISC subfolders (cd1, cd2, disc1…) are NOT
-    separate candidates — their audio is part of the parent album match.
-
-    The torrents root is flattened one level (each torrent album folder is a
-    candidate) so matching one torrent never merges the whole directory.
+    matched individually, and the torrents root merged every album under it
+    into one entry).  CD/DISC subfolders (cd1, cd2, disc1…) are NOT separate
+    candidates — their audio is part of the parent album match.
     """
     candidates: list[tuple[str, str]] = []
     archive_norm = os.path.normpath(archive_dir)
@@ -218,149 +350,34 @@ def _iter_matched_folder_candidates(downloads_dir: str, archive_dir: str, max_de
             continue
         if _is_skipped(full, entry):
             continue
-        if _is_torrents_root(entry):
-            # The torrents root commonly holds per-BAND folders that contain
-            # multiple album subfolders ("Ignea - (ex - Parallax)/2017 - The
-            # Sign of Faith/02. Alexandria.mp3").  Recurse the SAME way as the
-            # non-torrents branch so each ALBUM subfolder is its own match —
-            # never the whole band folder merged into one.
-            def _collect_torrent_albums(folder_abs: str, depth: int) -> None:
-                if depth >= max_depth:
-                    return
-                try:
-                    sub_entries = sorted(os.listdir(folder_abs))
-                except Exception as exc:
-                    logger.debug("torrents listdir failed", path=folder_abs, error=str(exc))
-                    return
-                has_audio_direct = False
-                try:
-                    for _n in sub_entries:
-                        _p = os.path.join(folder_abs, _n)
-                        if os.path.isfile(_p) and os.path.splitext(_n)[1].lower() in SUPPORTED_AUDIO_FORMATS:
-                            has_audio_direct = True
-                            break
-                except Exception:
-                    pass
-                if has_audio_direct:
-                    candidates.append((folder_abs, os.path.basename(folder_abs)))
-                    return
-                # No direct audio → recurse into subfolders as albums.
-                for sub in sub_entries:
-                    sub_full = os.path.join(folder_abs, sub)
-                    if not os.path.isdir(sub_full):
-                        continue
-                    if _is_skipped(sub_full, sub):
-                        continue
-                    if _is_disc_subfolder(sub):
-                        # A disc subfolder belongs to its parent album — if the
-                        # parent has audio it was already added; otherwise
-                        # surface the parent.
-                        continue
-                    _collect_torrent_albums(sub_full, depth + 1)
-
-            _collect_torrent_albums(full, 0)
-            continue
-
-        # ── Recursive subfolder discovery ────────────────────────────────
-        # A top-level folder may contain nested album folders
-        # (``Band/2024 - Album/01 - Track.flac``).  Surface EACH subfolder
-        # that contains audio as its own candidate, EXCEPT cd/disc
-        # subfolders which belong to the parent.  The top folder itself is
-        # also a candidate only when it has audio DIRECTLY (not just inside
-        # nested album subfolders) — those albums are separate matches.
-        def _has_audio_direct(folder_abs: str) -> bool:
-            """True when *folder_abs* has audio files in it directly (no
-            recursion — subfolder audio belongs to the subfolder's own
-            match)."""
-            try:
-                for name in os.listdir(folder_abs):
-                    p = os.path.join(folder_abs, name)
-                    if os.path.isfile(p) and os.path.splitext(name)[1].lower() in SUPPORTED_AUDIO_FORMATS:
-                        return True
-            except Exception:
-                pass
-            return False
-
-        def _has_audio_recursive(folder_abs: str) -> bool:
-            try:
-                for f in _get_files_in_folder(folder_abs):
-                    if f.get("is_audio"):
-                        return True
-            except Exception:
-                pass
-            return False
-
-        _top_dirs = _top_subdirs(full)
-        _top_has_disc = any(_is_disc_subfolder(d) for d in _top_dirs)
-
-        # Walk subfolders (bounded depth) surfacing album folders.
-        found_nested = False
-        base_parts = os.path.normpath(full).split(os.sep)
-        try:
-            for root, dirs, _names in os.walk(full):
-                depth = len(os.path.normpath(root).split(os.sep)) - len(base_parts)
-                if depth >= max_depth:
-                    dirs[:] = []
-                    continue
-                # Prune disc subfolders: they belong to their parent.
-                dirs[:] = [d for d in dirs if not _is_disc_subfolder(d) and not d.startswith(".") and not d.startswith("__")]
-                for d in list(dirs):
-                    sub_full = os.path.join(root, d)
-                    if os.path.normpath(sub_full) == archive_norm:
-                        dirs.remove(d)
-                        continue
-                    if _has_audio_recursive(sub_full):
-                        candidates.append((sub_full, d))
-                        found_nested = True
-        except Exception as exc:
-            logger.debug("Matched-folder recursive walk failed", path=full, error=str(exc))
-
-        # The top folder is its own match when it has audio DIRECTLY, OR when
-        # its only subfolders are cd/disc (their audio is part of it).
-        if _has_audio_direct(full) or (_top_has_disc and _has_audio_recursive(full)):
-            candidates.append((full, entry))
+        candidates.extend(_collect_album_folders(full, max_depth=max_depth))
 
     return candidates
 
 
-def _top_subdirs(folder_abs: str) -> list[str]:
-    """Return the immediate subdirectory names of *folder_abs*."""
-    try:
-        return [
-            e for e in os.listdir(folder_abs)
-            if os.path.isdir(os.path.join(folder_abs, e))
-        ]
-    except Exception:
-        return []
+def _iter_torrent_album_candidates(downloads_dir: str, archive_dir: str, max_depth: int = 3) -> list[tuple[str, str]]:
+    """Albums under the torrents root (recursive — band folders flattened).
 
-
-def _iter_torrent_album_candidates(downloads_dir: str, archive_dir: str) -> list[tuple[str, str]]:
+    Uses the SAME recursion as ``_collect_album_folders`` so the Refresh
+    Matches endpoint migrates root/band-level associations down to the exact
+    per-album rows the Matched Folders list shows.
+    """
     try:
         entries = sorted(os.listdir(downloads_dir))
     except Exception as exc:
         logger.debug("torrent-root listdir failed", downloads_dir=downloads_dir, error=str(exc))
         return []
-        
-    albums: list[tuple[str, str]] = []
+
     for entry in entries:
         if not _is_torrents_root(entry):
             continue
         root = os.path.join(downloads_dir, entry)
         try:
-            sub_entries = sorted(os.listdir(root))
+            return _collect_album_folders(root, max_depth=max_depth)
         except Exception as exc:
-            logger.debug("torrents listdir failed", path=root, error=str(exc))
-            sub_entries = []
-        for sub in sub_entries:
-            sub_full = os.path.join(root, sub)
-            if not os.path.isdir(sub_full):
-                continue
-            if sub.startswith(".") or sub.startswith("__"):
-                continue
-            if os.path.normpath(sub_full) == os.path.normpath(archive_dir):
-                continue
-            albums.append((sub_full, sub))
-    return albums
+            logger.debug("torrents album collection failed", path=root, error=str(exc))
+            return []
+    return []
 
 
 def _resolve_folder_match(
@@ -379,18 +396,36 @@ def _resolve_folder_match(
             logger.debug("match lookup failed", error=str(exc))
             return None
 
-    stored = match_rows.get(os.path.normpath(folder_abs))
+    norm = os.path.normpath(folder_abs)
+    stored = match_rows.get(norm)
     if stored:
         return stored
 
-    try:
-        parent = os.path.dirname(os.path.normpath(folder_abs))
+    # Torrent-root descendants may inherit a BAND-level (or root-level)
+    # association recorded before the flattening (``/torrents/Band`` row
+    # applies to every album subfolder below it).  Walk up the ancestors,
+    # checking each for a stored row, and stop AT the torrents root itself —
+    # never above it, and never for standalone top-level folders (they are
+    # their own matches).
+    def _is_under_torrents_root(path: str) -> bool:
+        parent = os.path.dirname(path)
+        while parent and parent != os.path.dirname(parent):
+            if _is_torrents_root(os.path.basename(parent)):
+                return True
+            parent = os.path.dirname(parent)
+        return False
+
+    if not _is_under_torrents_root(norm):
+        return None
+
+    parent = os.path.dirname(norm)
+    while parent and parent != os.path.dirname(parent):
+        stored = match_rows.get(parent)
+        if stored:
+            return stored
         if _is_torrents_root(os.path.basename(parent)):
-            stored = match_rows.get(os.path.normpath(parent))
-            if stored:
-                return stored
-    except Exception:
-        pass
+            break
+        parent = os.path.dirname(parent)
     return None
 
 
@@ -467,8 +502,25 @@ def get_unmatched_folders() -> dict[str, Any]:
         return {"success": False, "error": str(exc), "folders": []}
 
 
+def _path_is_ancestor(ancestor: str, descendant: str) -> bool:
+    try:
+        anc = os.path.normpath(ancestor)
+        desc = os.path.normpath(descendant)
+        if anc == desc:
+            return False
+        return os.path.commonpath([anc, desc]) == anc
+    except Exception:
+        return False
+
+
 def refresh_folder_matches() -> dict[str, Any]:
-    """Re-sync stored folder → release associations."""
+    """Re-sync stored folder → release associations.
+
+    Migrates pre-flattening rows that point at the torrents ROOT (or a band
+    folder above the albums) down to one row per album subfolder, then
+    deletes the stale ancestor row.  Rows that are already at album level are
+    left untouched.
+    """
     try:
         from db.repositories.folder_match_repository import (
             delete_folder_match,
@@ -481,16 +533,23 @@ def refresh_folder_matches() -> dict[str, Any]:
         matches = get_all_folder_matches()
         details: list[dict[str, Any]] = []
         updated = 0
-        
+
+        albums = _iter_torrent_album_candidates(downloads_dir, archive_dir)
+        album_by_norm = {os.path.normpath(a): a for a, _name in albums}
+
         for m in matches:
             folder_path = os.path.normpath(str(m.get("folder_path") or ""))
-            if not os.path.basename(folder_path) or not _is_torrents_root(os.path.basename(folder_path)):
-                continue
             if not os.path.isdir(folder_path):
                 continue
-
-            albums = _iter_torrent_album_candidates(downloads_dir, archive_dir)
             if not albums:
+                continue
+            # Only rows at/above the album level (the torrents root or a
+            # band folder that holds album subfolders) are migrated.  A row
+            # that IS an album folder is already correct.
+            if folder_path in album_by_norm:
+                continue
+            migratable = any(_path_is_ancestor(folder_path, norm) for norm in album_by_norm)
+            if not migratable:
                 continue
 
             release_mbid = m.get("release_mbid") or ""
@@ -529,7 +588,11 @@ def delete_download_folder(folder_path: str) -> dict[str, Any]:
             return {"success": False, "error": f"Unsafe folder path for deletion: {folder_path}"}
         if not os.path.isdir(folder_abs):
             return {"success": False, "error": f"Folder not found: {folder_path}"}
-            
+
+        guard = _assert_single_album_folder(folder_abs, downloads_abs, resolve_original_archive_dir())
+        if guard:
+            return {"success": False, "error": guard}
+
         shutil.rmtree(folder_abs)
         logger.info("Deleted download folder", folder=folder_abs)
         return {"success": True, "deleted": folder_abs}
@@ -591,6 +654,10 @@ def delete_folder_track(folder_path: str, file_name: str) -> dict[str, Any]:
     if not folder_abs or not os.path.isdir(folder_abs):
         return {"success": False, "error": f"Folder not found: {folder_path}"}
 
+    guard = _assert_single_album_folder(folder_abs, downloads_abs or "", resolve_original_archive_dir())
+    if guard:
+        return {"success": False, "error": guard}
+
     base = os.path.basename(file_name or "")
     if not base:
         return {"success": False, "error": "No file name provided"}
@@ -619,6 +686,10 @@ def move_folder_track_to_library(folder_path: str, file_name: str) -> dict[str, 
     folder_abs, downloads_abs = _resolve_folder_abs(folder_path)
     if not folder_abs or not os.path.isdir(folder_abs):
         return {"success": False, "error": f"Folder not found: {folder_path}"}
+
+    guard = _assert_single_album_folder(folder_abs, downloads_abs or "", resolve_original_archive_dir())
+    if guard:
+        return {"success": False, "error": guard}
 
     base = os.path.basename(file_name or "")
     if not base:
@@ -764,6 +835,10 @@ def associate_folder_to_release(folder_path: str, mb_id: str) -> dict[str, Any]:
         if not os.path.isdir(folder_abs):
             return {"success": False, "error": f"Folder not found: {folder_path}"}
 
+        guard = _assert_single_album_folder(folder_abs, downloads_abs, resolve_original_archive_dir())
+        if guard:
+            return {"success": False, "error": guard}
+
         from api_clients.musicbrainz_http import MusicBrainzHttpClient
         from db.repositories.folder_match_repository import upsert_folder_match
         from services.enrichment.musicbrainz_service import primary_album_artist
@@ -824,6 +899,10 @@ def match_folder_to_release(folder_path: str, mb_id: str) -> dict[str, Any]:
             return {"success": False, "error": f"Unsafe folder path: {folder_path}"}
         if not os.path.isdir(folder_abs):
             return {"success": False, "error": f"Folder not found: {folder_path}"}
+
+        guard = _assert_single_album_folder(folder_abs, downloads_abs, resolve_original_archive_dir())
+        if guard:
+            return {"success": False, "error": guard}
 
         from api_clients.musicbrainz_http import MusicBrainzHttpClient
         from helpers.config_helpers import get_config
