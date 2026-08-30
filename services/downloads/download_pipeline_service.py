@@ -524,23 +524,44 @@ def _score_result(
         title_score = 0.6
 
     # HARD TITLE GATE: a candidate whose title shares no meaningful
-    # similarity with the expected track must be rejected outright — the
-    # artist + lossless + free-slot bonuses alone can otherwise clear the
-    # 30-point floor for a completely WRONG song (e.g. searching "The
-    # Allfather Awakens" pulled in a 2006 "Cry of the Black Birds" FLAC
-    # from a different album).  A title score of 0.0 must never be rescued
-    # by quality/perf bonuses.
-    #
-    # Accept when the title matches OR the expected title's words appear in
-    # the full filename (covers "Artist - Album - Track" layouts where the
-    # parsed title segment is partial).
+    # similarity with the expected track must be rejected outright.
     title_ok = title_score >= 0.35
-    if not title_ok and exp_word_count >= 2:
-        norm_filename = _normalise(filename)
-        title_words = re.findall(r"[a-z0-9]+", _normalise(expected_title))
-        significant = [w for w in title_words if len(w) >= 3]
-        if significant:
-            title_ok = all(w in norm_filename for w in significant)
+
+    # ── Hangul / CJK title gate fix ──────────────────────────────────────
+    # Pure-Hangul tracks (Stray Kids "일상", "타", "비행기") failed with
+    # ``no_qualifying_result`` even though Soulseek returned 39-101 real
+    # candidates.  Two causes:
+    #   1. ``re.findall(r"[a-z0-9]+")`` drops Hangul entirely → the ASCII
+    #      word fallback found nothing (``exp_word_count == 0``,
+    #      ``significant == []``) and the bracket-stripped core comparison
+    #      was never attempted.
+    #   2. Korean candidates frequently carry annotations ("일상 (Korean
+    #      Ver.)", "미친 놈 (Ex)") that drop the raw SequenceMatcher ratio
+    #      below 0.35 → the HARD TITLE GATE rejected every candidate.
+    # Compare the BRACKET-STRIPPED core titles (normalize_core_title keeps
+    # Hangul intact) so "(Korean Ver.)" / "(Ex)" annotations don't sink the
+    # match.
+    if not title_ok:
+        from helpers.normalization_service import normalize_core_title as _nct
+        _cand_core = _nct(str(parts.get("title") or ""))
+        _exp_core = _nct(expected_title)
+        if _cand_core and _exp_core:
+            core_score = _similarity(_cand_core, _exp_core)
+            if core_score >= 0.6:
+                title_score = max(title_score, core_score)
+                title_ok = True
+            elif _exp_core in _cand_core or _cand_core in _exp_core:
+                # Substring containment ("토끼와 거북이" in a longer
+                # annotated candidate) is strong evidence.
+                title_score = max(title_score, 0.7)
+                title_ok = True
+        # Final fallback: Hangul/CJK expected title present in the raw
+        # filename (the candidate may parse its title segment poorly).
+        if not title_ok and re.search(r"[\uAC00-\uD7AF\u4E00-\u9FFF]", expected_title or ""):
+            if _normalise(expected_title) in _normalise(filename):
+                title_ok = True
+                title_score = max(title_score, 0.7)
+
     if not title_ok:
         logger.debug(
             "Rejected candidate — title mismatch",

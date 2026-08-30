@@ -45,14 +45,35 @@ def _tokenize_meaningful(value: str):
     - punctuation (via normalize_string)
     - short tokens
     - common stopwords
+
+    Hangul / CJK-aware: Latin tokens shorter than 3 chars are treated as
+    noise (``it``, ``a``, ``no`` …), but SINGLE and DOUBLE Hangul/CJK
+    characters are meaningful words/particles and must be kept.  A Korean
+    title like ``일상`` (2 chars) or ``타`` (1 char) previously produced an
+    EMPTY token list → every Soulseek candidate scored 0.0 → the track
+    always ended ``no_qualifying_result`` despite 39-101 real candidates.
     """
     stop_words = {"the", "and", "of", "a", "an", "to", "in", "on", "for", "with"}
 
     normalized = normalize_string(value)
 
+    def _is_cjk(token: str) -> bool:
+        # Hangul syllables (AC00–D7AF), Hangul Jamo (1100–11FF), CJK
+        # ideographs (4E00–9FFF, 3400–4DBF), Hiragana/Katakana (3040–30FF),
+        # CJK punctuation block (3000–303F).
+        return any(
+            (0xAC00 <= ord(ch) <= 0xD7AF)
+            or (0x1100 <= ord(ch) <= 0x11FF)
+            or (0x3130 <= ord(ch) <= 0x318F)
+            or (0x4E00 <= ord(ch) <= 0x9FFF)
+            or (0x3400 <= ord(ch) <= 0x4DBF)
+            or (0x3040 <= ord(ch) <= 0x30FF)
+            for ch in token
+        )
+
     return [
         t for t in normalized.split()
-        if len(t) >= 3 and t not in stop_words
+        if (len(t) >= 3 or _is_cjk(t)) and t not in stop_words
     ]
 
 
