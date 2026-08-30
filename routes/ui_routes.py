@@ -2652,6 +2652,11 @@ async def logs() -> Any:
         "search.log",
         "access.log",
         "error.log",
+        # The alert→toast shim (main.js) records every converted UI alert
+        # here; the queue worker process (entrypoint) redirects its stdout to
+        # queue_processor.log.  Both belong on the /logs page.
+        "client.log",
+        "queue_processor.log",
     }
     log_dir = resolve_log_dir()
     log_files = []
