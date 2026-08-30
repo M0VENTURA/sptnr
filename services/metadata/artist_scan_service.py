@@ -186,14 +186,19 @@ def _persist_missing_releases(artist: str, missing_items: list[dict[str, Any]]) 
 
 
 def _cleanup_imported_releases() -> int:
-    """Remove cached missing releases that have since been imported into the library."""
+    """Remove cached missing releases that have since been imported into the library.
+
+    Matches on NORMALISED album title (punctuation/case-insensitive) so a
+    missing "Queen Dies (Single)" row is removed once the "Queen Dies" album
+    exists — the reported singles staying "Missing" after being added.
+    """
     with db_session() as session:
         result = session.execute(text("""
             DELETE FROM missing_releases mr
             WHERE EXISTS (
                 SELECT 1 FROM tracks t
                 WHERE LOWER(COALESCE(NULLIF(t.album_artist, ''), t.artist)) = LOWER(mr.artist)
-                  AND LOWER(TRIM(t.album)) = LOWER(TRIM(mr.title))
+                  AND LOWER(REGEXP_REPLACE(TRIM(t.album), '[^a-z0-9]+', ' ', 'g')) = LOWER(REGEXP_REPLACE(TRIM(mr.title), '[^a-z0-9]+', ' ', 'g'))
             )
         """))
         return result.rowcount or 0

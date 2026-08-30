@@ -1623,6 +1623,19 @@ async def album_detail(album_path: str) -> Any:
                         _cover_bytes = _b64.b64decode(_b64p)
                     except Exception:
                         _cover_bytes = None
+                elif str(cover_url).startswith("http"):
+                    # A plain HTTP(S) cover URL — download the image directly
+                    # (the reported gap: a URL-set cover never reached the
+                    # album page image or the audio files because only data:
+                    # URLs and CAA-via-MBID were handled).
+                    import httpx as _httpx
+                    try:
+                        _resp = _httpx.get(cover_url, timeout=10)
+                        if _resp.status_code == 200 and _resp.content:
+                            _cover_bytes = _resp.content
+                            _cover_mime = _resp.headers.get("content-type", "image/jpeg") or "image/jpeg"
+                    except Exception as _http_exc:
+                        logger.debug("Album cover URL download failed", url=cover_url, error=str(_http_exc))
                 elif album_mbid:
                     # Prefer Cover Art Archive via the release MBID.
                     from api_clients.coverartarchive import get_release_front_image_bytes
@@ -1631,7 +1644,7 @@ async def album_detail(album_path: str) -> Any:
                         from api_clients.coverartarchive import get_release_group_front_image_bytes
                         _cover_bytes = get_release_group_front_image_bytes(album_rg_mbid, size="500")
                 if _cover_bytes:
-                    save_album_art_to_db(artist_name, album_name, _cover_bytes, source="musicbrainz", mime_type=_cover_mime)
+                    save_album_art_to_db(artist_name, album_name, _cover_bytes, source="url", mime_type=_cover_mime)
                     _cover_embedded = apply_album_art_to_tracks(
                         new_artist or artist_name,
                         new_title or album_name,

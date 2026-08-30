@@ -150,6 +150,31 @@ def _parse_secondary_types(raw: Any) -> list[str]:
     return []
 
 
+def _compose_album_type(primary_type: str, secondary_types: list[str]) -> str:
+    """Compose the app's ``album_type`` string from MB primary+secondary types.
+
+    Matches the frontend's ``_buildAlbumType`` convention: primary stays the
+    base, and a meaningful secondary (compilation / live / remix / soundtrack /
+    spoken word / demo / dj-mix / mixtape) is appended as ``primary+secondary``
+    so the album page's type selector can apply it ("album+compilation",
+    "album+live", …).
+    """
+    primary = str(primary_type or "Album").strip().lower() or "album"
+    if primary == "album":
+        primary = "album"
+    secondary = secondary_types or []
+    meaningful = [
+        s for s in secondary
+        if s.lower() in {
+            "compilation", "live", "remix", "soundtrack", "spokenword",
+            "demo", "dj-mix", "mixtape", "interview", "audiobook", "ep",
+        }
+    ]
+    if meaningful:
+        return f"{primary}+{meaningful[0].lower()}"
+    return primary
+
+
 def _artist_lookup_candidates(artist: str) -> list[str]:
     candidates: list[str] = []
     seen: set[str] = set()
@@ -897,6 +922,13 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> dict[str, Any] | None
             "original_date": rg.get("first-release-date") or data.get("date") or "",
             "original_year": (
                 (rg.get("first-release-date") or data.get("date") or "")[:4]
+            ),
+            # Album type from the release-group primary/secondary types so
+            # "Update All Tracks" can apply the MB "Album Type" (album / EP /
+            # single / live / compilation …) to the local tracks + files.
+            "album_type": _compose_album_type(
+                str(rg.get("primary-type") or "Album"),
+                _secondary_types,
             ),
         }
 
@@ -1720,6 +1752,7 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict[s
             "release_group_mbid": rg_mbid,
             "release_mbid": release_id,
             "mb_album_artist_mbid": str(mb_release.get("album_artist_mbid") or ""),
+            "mb_albumtype": str(mb_release.get("album_type") or ""),
             "mb_disc_count": int(mb_release.get("disc_count") or 0),
             "mb_artist_credit": str(mb_release.get("artist_credit") or ""),
             "comparison": comparison,

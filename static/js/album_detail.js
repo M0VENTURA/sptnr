@@ -1344,8 +1344,14 @@ var _pageData = window._pageData || {};
             trackTable.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
 
-        // If a MusicBrainz release group MBID is provided, compare MB tracks with library
-        const mbCompareId = releaseGroupMbid || mbid;
+        // If a MusicBrainz release group MBID is provided, compare MB tracks
+        // with library.  PREFER the CONCRETE release the user picked (mbid)
+        // over the release-group: comparing via the group re-resolves an
+        // auto-picked "best release" which can be a DIFFERENT edition
+        // (EP/instrumental/live vs the album) — the reported "picked a song
+        // that's not on the release" mismatch.  The release's tracklist is
+        // the exact one the user chose.
+        const mbCompareId = mbid || releaseGroupMbid;
         if (mbCompareId) {
             compareMBTracksWithLibrary(mbCompareId);
         }
@@ -1908,8 +1914,9 @@ var _pageData = window._pageData || {};
 
         // Album-level MusicBrainz fields from the comparison — applied to
         // EVERY track + file so the album metadata (title/artist/year/
-        // release MBID / cover) is updated too (the reported gap where only
-        // per-track fields changed).
+        // release MBID / album TYPE / cover) is updated too (the reported
+        // gap where only per-track fields changed, e.g. "Album Type" was
+        // never applied).
         const albumMeta = mbComparisonData || {};
         const applyAlbum = {
             album: albumMeta.mb_title,
@@ -1919,6 +1926,12 @@ var _pageData = window._pageData || {};
             musicbrainz_releasegroupid: albumMeta.mb_release_group_mbid || albumMeta.release_group_mbid,
             musicbrainz_albumartistid: albumMeta.mb_album_artist_mbid || '',
         };
+        if (albumMeta.mb_albumtype) {
+            // "Album Type" from the MB release-group primary/secondary types
+            // (album / EP / single / album+compilation / album+live …).
+            applyAlbum.musicbrainz_albumtype = albumMeta.mb_albumtype;
+            applyAlbum.spotify_album_type = albumMeta.mb_albumtype;
+        }
 
         let updated = 0, failed = 0;
         for (const trackComp of tracksToUpdate) {
@@ -1939,7 +1952,15 @@ var _pageData = window._pageData || {};
             // metadata is backfilled even when the title/number matched.
             if (trackComp.mb_writer) payload.writer = trackComp.mb_writer;
             if (trackComp.mb_work_mbid) payload.musicbrainz_workid = trackComp.mb_work_mbid;
-            if (trackComp.mb_musicbrainz_genres) payload.genres = trackComp.mb_musicbrainz_genres;
+            if (trackComp.mb_musicbrainz_genres) {
+                // MB genres land in BOTH the combined ``genres`` column AND
+                // the per-source ``musicbrainz_genres`` column so the album
+                // page's "Detected Genres" (Last.fm / Discogs / MusicBrainz /
+                // … per source) shows them — the reported "only Navidrome
+                // genres show" gap.
+                payload.genres = trackComp.mb_musicbrainz_genres;
+                payload.musicbrainz_genres = trackComp.mb_musicbrainz_genres;
+            }
             if (trackComp.mb_is_cover) payload.is_cover = true;
             if (trackComp.mb_original_cover_artist) payload.original_cover_artist = trackComp.mb_original_cover_artist;
 

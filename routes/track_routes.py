@@ -377,12 +377,13 @@ async def api_track_update_metadata() -> Any:
         with db_session() as session:
             allowed_fields = {
                 "title", "artist", "album", "album_artist", "writer", "work",
-                "genres", "stars", "is_single", "single_confidence",
+                "genres", "musicbrainz_genres", "stars", "is_single", "single_confidence",
                 "year", "track_number", "disc_number", "mbid", "isrc",
                 "is_cover", "original_cover_artist", "alternate_take", "is_compilation",
                 "is_live", "is_acoustic", "is_remix",
                 "musicbrainz_albumid", "musicbrainz_artistid", "musicbrainz_albumartistid",
                 "musicbrainz_releasegroupid", "musicbrainz_releasetrackid", "musicbrainz_workid",
+                "musicbrainz_albumtype", "spotify_album_type",
             }
             updates = {}
             for field in allowed_fields:

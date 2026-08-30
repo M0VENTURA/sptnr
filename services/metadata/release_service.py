@@ -10,6 +10,7 @@ All data comes from ``musicbrainz_releases`` / ``musicbrainz_release_tracks`` ta
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import structlog
@@ -47,12 +48,38 @@ def get_release_details(release_id: str) -> dict[str, Any] | None:
 
 
 def get_cached_missing_releases(artist: str) -> tuple[dict[str, Any], int]:
-    """Return cached missing releases for an artist."""
+    """Return cached missing releases for an artist.
+
+    Rows whose release title now EXISTS in the library are filtered out (and
+    deleted) so a single/album added since the last missing-releases scan
+    disappears from the "Missing" list immediately — the reported "some
+    singles missing releases aren't disappearing when the release is added
+    and it will show multiple copies".
+    """
     if not artist:
         return {"success": False, "error": "Artist is required"}, 400
 
     try:
+        # Normalisation shared with the missing-release builder: strip
+        # edition markers / punctuation so "Queen Dies (Single)" ≈ "Queen
+        # Dies" and a library album named slightly differently still matches.
+        def _norm(value: str) -> str:
+            return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+
         with db_session() as session:
+            # Library album titles for this artist (normalised).
+            lib_albums = {
+                _norm(str(r[0] or ""))
+                for r in session.execute(
+                    text("""
+                        SELECT DISTINCT album FROM tracks
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+                    """),
+                    {"artist": artist},
+                ).fetchall() or []
+                if r[0]
+            }
+
             result = session.execute(
                 text("""
                     SELECT release_id, title, primary_type, first_release_date,
@@ -65,6 +92,21 @@ def get_cached_missing_releases(artist: str) -> tuple[dict[str, Any], int]:
             )
             rows = [dict(r._mapping) for r in result.fetchall()]
 
+            # Drop + delete cached rows already in the library.
+            still_missing = []
+            for r in rows:
+                title_norm = _norm(str(r.get("title") or ""))
+                if title_norm and title_norm in lib_albums:
+                    try:
+                        session.execute(
+                            text("DELETE FROM missing_releases WHERE release_id = :rid AND artist = :artist"),
+                            {"rid": r.get("release_id", ""), "artist": artist},
+                        )
+                    except Exception:
+                        pass
+                    continue
+                still_missing.append(r)
+
         return {
             "artist": artist,
             "missing": [
@@ -76,7 +118,7 @@ def get_cached_missing_releases(artist: str) -> tuple[dict[str, Any], int]:
                     "cover_art_url": r.get("cover_art_url", ""),
                     "category": r.get("category", "Album"),
                     "last_checked": str(r.get("last_checked", "")),
-                } for r in rows
+                } for r in still_missing
             ],
             "from_cache": True
         }, 200
