@@ -90,7 +90,7 @@ def run_navidrome_import_scan(
         # written MusicBrainz tags / new files are fully ingested by
         # Navidrome before we read them back, so the import sees the latest
         # state instead of a mid-scan snapshot.
-        if nav_client and not force_rescan:
+        if nav_client:
             try:
                 log_unified("Navidrome Import - Triggering remote Navidrome scan (waiting for completion)…")
                 nav_client.trigger_and_wait_for_scan()

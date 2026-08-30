@@ -22,13 +22,28 @@ logger = structlog.get_logger(__name__)
 
 @navidrome_bp.route("/api/navidrome/scan/start", methods=["POST"])
 def api_start_navidrome_scan() -> Any:
-    """Trigger a Navidrome server-side library rescan."""
+    """Trigger a Navidrome server-side library rescan (MANUAL).
+
+    This is the only remaining remote ``startScan`` path — the automatic
+    per-tag-write triggers were removed (they paused the server and locked
+    the database).  The single automatic sync runs before the full Navidrome
+    import and waits for completion.  This manual endpoint triggers + waits
+    so the caller can rely on the scan being finished when it returns.
+    """
     client = get_navidrome_client()
     if not client:
         return jsonify({"success": False, "error": "Navidrome not configured"})
-        
-    success = client.start_scan()
-    return jsonify({"success": success, "message": "Scan started" if success else "Failed to start scan"})
+
+    try:
+        completed = client.trigger_and_wait_for_scan()
+    except Exception as exc:
+        logger.error("Navidrome manual scan failed", error=str(exc), exc_info=True)
+        return jsonify({"success": False, "error": str(exc)})
+
+    return jsonify({
+        "success": completed,
+        "message": "Scan completed" if completed else "Scan start failed or timed out",
+    })
 
 
 @navidrome_bp.route("/api/navidrome/scan/status", methods=["GET"])

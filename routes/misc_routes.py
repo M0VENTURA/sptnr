@@ -16,7 +16,6 @@ import structlog
 from quart import Blueprint, jsonify, request, Response
 from sqlalchemy import text
 
-from api_clients.navidrome import NavidromeClient
 from db.engine import db_session
 from db.repositories.genres import log_genre_update
 from db.repositories.scan_repository import (
@@ -42,33 +41,14 @@ misc_api_bp = Blueprint("misc_api", __name__, url_prefix="/api")
 
 
 def _trigger_scan_after_tag_write() -> bool:
-    """Trigger a Navidrome library rescan after audio-file tags were rewritten.
+    """REMOVED: remote Navidrome auto-syncs are disabled.
 
-    Navidrome's "mapped tags" index only refreshes when its scanner re-reads
-    the file; a plain tag write (even with a fresh mtime) is not picked up
-    until a scan runs.  Returns True optimistically when at least one
-    Navidrome user is configured; the scan itself runs in a daemon thread.
+    Previously this fired a Navidrome ``startScan`` in a daemon thread after
+    every genre/tag write, repeatedly pausing the server and locking the
+    database.  The ONLY automatic remote sync now runs once, BEFORE the full
+    Navidrome import (see ``run_navidrome_import_scan`` →
+    ``trigger_and_wait_for_scan``), and waits for completion before importing.
     """
-    cfg = get_config() or {}
-    users = cfg.get("navidrome_users") or []
-    if not users and cfg.get("navidrome"):
-        users = [cfg["navidrome"]]
-    configured = [
-        u for u in users
-        if u.get("base_url") and u.get("user") and u.get("pass")
-    ]
-    if not configured:
-        return False
-
-    def _run() -> None:
-        try:
-            for u in configured:
-                if NavidromeClient(u["base_url"], u["user"], u["pass"]).start_scan():
-                    return
-        except Exception as exc:
-            logger.debug("Navidrome scan trigger failed", error=str(exc))
-
-    threading.Thread(target=_run, daemon=True).start()
     return True
 
 
@@ -1350,18 +1330,9 @@ async def api_remove_genres() -> Any:
                 logger.debug("Audit log failed", error=str(exc))
 
         def _trigger_scan() -> None:
-            try:
-                cfg = get_config() or {}
-                users = cfg.get("navidrome_users") or []
-                if not users and cfg.get("navidrome"):
-                    users = [cfg["navidrome"]]
-                for u in users:
-                    if u.get("base_url") and u.get("user") and u.get("pass"):
-                        client = NavidromeClient(u["base_url"], u["user"], u["pass"])
-                        client.start_scan()
-                        break
-            except Exception as exc:
-                logger.debug("Navidrome scan trigger failed", error=str(exc))
+            # REMOVED: remote Navidrome auto-sync disabled (see
+            # _trigger_scan_after_tag_write) — the full import syncs once.
+            return None
 
         threading.Thread(target=_trigger_scan, daemon=True).start()
         return jsonify({
@@ -1502,17 +1473,9 @@ async def api_apply_genres() -> Any:
                 logger.debug("Audit log failed", error=str(exc))
 
         def _trigger_scan() -> None:
-            try:
-                cfg = get_config() or {}
-                users = cfg.get("navidrome_users") or []
-                if not users and cfg.get("navidrome"):
-                    users = [cfg["navidrome"]]
-                for u in users:
-                    if u.get("base_url") and u.get("user") and u.get("pass"):
-                        NavidromeClient(u["base_url"], u["user"], u["pass"]).start_scan()
-                        break
-            except Exception as exc:
-                logger.debug("Navidrome scan trigger failed", error=str(exc))
+            # REMOVED: remote Navidrome auto-sync disabled (see
+            # _trigger_scan_after_tag_write) — the full import syncs once.
+            return None
 
         threading.Thread(target=_trigger_scan, daemon=True).start()
         return jsonify({"success": True, "affected_tracks": affected,

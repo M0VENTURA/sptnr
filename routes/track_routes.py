@@ -12,7 +12,6 @@ from quart import Blueprint, Response, jsonify, request, send_file
 from sqlalchemy import text
 
 from api_clients.lrclib import fetch_lyrics
-from api_clients.navidrome import NavidromeClient
 from db.engine import db_session
 from helpers.config_helpers import get_config
 from services.enrichment.musicbrainz_service import get_shared_mb_client
@@ -25,37 +24,16 @@ track_bp = Blueprint("track_api", __name__, url_prefix="/api/track")
 
 
 def _trigger_navidrome_scan() -> bool:
-    """Best-effort trigger of a Navidrome server-side library rescan.
+    """REMOVED: remote Navidrome auto-syncs are disabled.
 
-    Called after file tags are rewritten so Navidrome re-reads the frames
-    and refreshes its mapped-tag index.  Returns True optimistically when at
-    least one Navidrome user is configured (the actual scan runs in a
-    daemon thread; failures are logged at DEBUG — a scan trigger is a
-    nicety, never a reason to fail the request).
+    Previously this fired a Navidrome ``startScan`` in a daemon thread after
+    every file-tag write, which repeatedly paused the server and locked the
+    database.  The ONLY automatic remote sync now runs once, BEFORE the full
+    Navidrome import (see ``run_navidrome_import_scan`` →
+    ``trigger_and_wait_for_scan``), and waits for completion before importing.
+    Navidrome picks up the tag changes on its next scan; no per-write trigger
+    is needed.
     """
-    import threading
-
-    cfg = get_config() or {}
-    users = cfg.get("navidrome_users") or []
-    if not users and cfg.get("navidrome"):
-        users = [cfg["navidrome"]]
-    configured = [
-        u for u in users
-        if u.get("base_url") and u.get("user") and u.get("pass")
-    ]
-    if not configured:
-        return False
-
-    def _run() -> None:
-        try:
-            for u in configured:
-                client = NavidromeClient(u["base_url"], u["user"], u["pass"])
-                if client.start_scan():
-                    return
-        except Exception as exc:
-            logger.debug("Navidrome scan trigger failed", error=str(exc))
-
-    threading.Thread(target=_run, daemon=True).start()
     return True
 
 
