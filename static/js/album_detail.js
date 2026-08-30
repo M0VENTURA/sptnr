@@ -1896,7 +1896,7 @@ var _pageData = window._pageData || {};
             ? mbComparisonData.comparison.filter(c => c.needs_update && c.library_track_id)
             : _getTracksFromDOM();
         if (tracksToUpdate.length === 0) return;
-        if (!confirm(`Update metadata for ${tracksToUpdate.length} track(s) from MusicBrainz?\n\nThis will update the database and MP3 file tags.`)) return;
+        if (!confirm(`Update metadata for ${tracksToUpdate.length} track(s) from MusicBrainz?\n\nThis will update the database and audio file tags (FLAC/MP3).`)) return;
 
         let banner = document.getElementById('mb-compare-banner');
         if (banner) {
@@ -1906,15 +1906,42 @@ var _pageData = window._pageData || {};
             </div>`;
         }
 
+        // Album-level MusicBrainz fields from the comparison — applied to
+        // EVERY track + file so the album metadata (title/artist/year/
+        // release MBID / cover) is updated too (the reported gap where only
+        // per-track fields changed).
+        const albumMeta = mbComparisonData || {};
+        const applyAlbum = {
+            album: albumMeta.mb_title,
+            album_artist: albumMeta.mb_artist,
+            year: albumMeta.mb_year,
+            musicbrainz_albumid: albumMeta.mb_release_mbid || albumMeta.release_mbid,
+            musicbrainz_releasegroupid: albumMeta.mb_release_group_mbid || albumMeta.release_group_mbid,
+            musicbrainz_albumartistid: albumMeta.mb_album_artist_mbid || '',
+        };
+
         let updated = 0, failed = 0;
         for (const trackComp of tracksToUpdate) {
             const trackId = String(trackComp.library_track_id);
-            const payload = { track_id: trackId, sync_to_file: true, clear_mb_pending: true };
+            const payload = {
+                track_id: trackId,
+                sync_to_file: true,
+                clear_mb_pending: true,
+                ...applyAlbum,
+            };
             if (trackComp.diff_fields.includes('title')) payload.title = trackComp.mb_title;
             if (trackComp.diff_fields.includes('track_number')) payload.track_number = String(trackComp.mb_track_number);
             if (trackComp.diff_fields.includes('year')) payload.year = String(trackComp.mb_year);
             if (trackComp.mb_recording_id) payload.mbid = trackComp.mb_recording_id;
             if (trackComp.diff_fields.includes('disc_number')) payload.disc_number = trackComp.mb_disc_number;
+            // Full per-track enrichment (the reported "composers, etc."
+            // gap) — applied whenever the MB data has a value, so missing
+            // metadata is backfilled even when the title/number matched.
+            if (trackComp.mb_writer) payload.writer = trackComp.mb_writer;
+            if (trackComp.mb_work_mbid) payload.musicbrainz_workid = trackComp.mb_work_mbid;
+            if (trackComp.mb_musicbrainz_genres) payload.genres = trackComp.mb_musicbrainz_genres;
+            if (trackComp.mb_is_cover) payload.is_cover = true;
+            if (trackComp.mb_original_cover_artist) payload.original_cover_artist = trackComp.mb_original_cover_artist;
 
             try {
                 const resp = await fetch('/api/track/update-metadata', {
@@ -1942,9 +1969,33 @@ var _pageData = window._pageData || {};
             if (progressEl) progressEl.textContent = updated + failed;
         }
 
+        // Album cover art: fetch from Cover Art Archive via the release MBID
+        // and embed into every track file (the reported "cover not updating"
+        // on MB lookup).
+        if (updated > 0 && (albumMeta.mb_release_mbid || albumMeta.release_mbid)) {
+            try {
+                const releaseId = albumMeta.mb_release_mbid || albumMeta.release_mbid;
+                const artResp = await fetch('/api/album/set-art', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        artist: albumMeta.mb_artist || _pageData.artistName,
+                        album: albumMeta.mb_title || _pageData.albumName,
+                        image_url: `https://coverartarchive.org/release/${encodeURIComponent(releaseId)}/front-500`,
+                    })
+                });
+                const artResult = await artResp.json();
+                if (artResult.success) {
+                    updated++; // count as a success signal (cover embedded)
+                }
+            } catch (_e) {
+                // Cover failure is non-fatal.
+            }
+        }
+
         const type = failed > 0 ? 'warning' : 'success';
         const icon = failed > 0 ? 'exclamation-triangle-fill' : 'check-circle-fill';
-        const msg = `Updated ${updated} track(s)` + (failed > 0 ? `, ${failed} failed.` : ' successfully.');
+        const msg = `Updated ${updated} track(s)` + (failed > 0 ? `, ${failed} failed.` : ' successfully (including album metadata + cover art).');
         _showMBCompareBanner(`<i class="bi bi-${icon} me-2"></i>${escapeHtml(msg)}`, type, true);
 
         if (updated > 0) {

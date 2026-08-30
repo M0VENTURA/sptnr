@@ -528,6 +528,7 @@ def write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
                     "MUSICBRAINZ ALBUMSTATUS", "MUSICBRAINZ RELEASECOUNTRY",
                     "IS COVER", "ORIGINAL COVER ARTIST", "MUSICBRAINZ WORK ID",
                     "MUSICBRAINZ GENRES",
+                    "ISWC", "ORIGINAL TITLE", "LYRICIST",
                 }:
                     _clear_txxx_variants(tag_obj, _generic_txxx)
                     if value is not None and str(value).strip() != "":
@@ -742,6 +743,8 @@ _COLUMN_TO_TAG_FIELD: dict[str, str] = {
     "musicbrainz_trackid": "mbid",
     "beets_mbid": "mbid",
     "isrc": "isrc",
+    "iswc": "iswc",
+    "original_title": "original_title",
     "bpm": "bpm",
     "titlesort": "titlesort",
     "albumsort": "albumsort",
@@ -875,14 +878,22 @@ def update_file_metadata(file_path: str, metadata: Dict[str, Any]) -> bool:
     # MusicBrainz enrichment carried through the queue row's metadata JSONB.
     if metadata.get("writer"):
         tag_updates["writer"] = metadata.get("writer")
+    if metadata.get("composer"):
+        tag_updates["composer"] = metadata.get("composer")
+    if metadata.get("lyricist"):
+        tag_updates["lyricist"] = metadata.get("lyricist")
     if metadata.get("is_cover") in (1, True, "1", "true", "True"):
         tag_updates["is_cover"] = "1"
     if metadata.get("original_cover_artist"):
         tag_updates["original_cover_artist"] = metadata.get("original_cover_artist")
+    if metadata.get("original_title"):
+        tag_updates["original_title"] = metadata.get("original_title")
     if metadata.get("musicbrainz_genres"):
         tag_updates["musicbrainz_genres"] = metadata.get("musicbrainz_genres")
     if metadata.get("work_mbid"):
         tag_updates["musicbrainz_workid"] = metadata.get("work_mbid")
+    if metadata.get("iswc"):
+        tag_updates["iswc"] = metadata.get("iswc")
 
     return write_tags_to_file(file_path, tag_updates)
 

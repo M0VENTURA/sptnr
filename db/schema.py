@@ -242,6 +242,10 @@ COLUMN_REGISTRY: dict[str, dict[str, str]] = {
         "is_live": "BIGINT DEFAULT 0", "is_acoustic": "BIGINT DEFAULT 0", "is_remix": "BIGINT DEFAULT 0",
         "album_context_live": "BIGINT DEFAULT 0", "alternate_take": "BIGINT DEFAULT 0", 
         "is_compilation": "BIGINT DEFAULT 0",
+        # MusicBrainz work/credits metadata (composer/lyricist/iswc/original
+        # title — the MB lookup checklist: links the underlying composition,
+        # names the songwriters, and names the original song for covers).
+        "iswc": "TEXT", "lyricist": "TEXT", "original_title": "TEXT",
         
         # Single Detection
         "single_confidence": "TEXT", "single_confidence_score": "DOUBLE PRECISION",

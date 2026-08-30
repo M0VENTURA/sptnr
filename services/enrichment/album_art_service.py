@@ -16,7 +16,10 @@ from quart import Response
 import structlog
 from sqlalchemy import text
 
-from api_clients.coverartarchive import get_release_group_front_image_bytes
+from api_clients.coverartarchive import (
+    get_release_front_image_bytes,
+    get_release_group_front_image_bytes,
+)
 from api_clients.discogs_http import DiscogsHttpClient
 from api_clients.musicbrainz_http import MusicBrainzHttpClient
 from db.engine import db_session
@@ -81,6 +84,23 @@ def fetch_album_art_from_musicbrainz(artist_name: str, album_name: str) -> bytes
         release_group_mbid = release_groups[0].get("id")
         if not release_group_mbid:
             return None
+
+        # Prefer a CONCRETE release's Cover Art Archive art (per-release
+        # front art is populated more often than the release-group's).  Browse
+        # the group's releases and try each; fall back to the group front.
+        try:
+            releases = musicbrainz.browse_releases_for_group(release_group_mbid, inc="", limit=10)
+            for rel in releases or []:
+                rel_id = rel.get("id")
+                if not rel_id:
+                    continue
+                cover = get_release_front_image_bytes(rel_id)
+                if cover:
+                    logger.info("Fetched MusicBrainz/CAA art from release", release_id=rel_id, artist=artist_name, album=album_name)
+                    return cover
+        except Exception as exc:
+            logger.debug("CAA release-browse art fetch failed", error=str(exc))
+
         return get_release_group_front_image_bytes(release_group_mbid)
     except Exception as exc:
         logger.debug("Failed to fetch album art from MusicBrainz/CAA", error=str(exc))
@@ -287,15 +307,22 @@ def apply_album_art_to_tracks(artist_name: str, album_name: str, image_data: byt
         logger.debug("Failed to query tracks for album-art apply", error=str(exc))
         rows = []
 
-    from services.metadata.tag_file_service import write_tags_to_file
+    from services.metadata.tag_file_service import resolve_music_file_path, write_tags_to_file
 
     updated = 0
     for row in rows:
         mapping = getattr(row, "_mapping", None)
-        file_path = str((mapping.get("file_path") if mapping else row_get(row, "file_path", 1)) or "").strip()
-        if not file_path or not os.path.exists(file_path):
+        if mapping is not None:
+            file_path = str(mapping.get("file_path") or "").strip()
+        else:
+            # Legacy tuple row: (id, file_path).
+            file_path = str(row[1] or "").strip() if len(row) > 1 else ""
+        if not file_path:
             continue
-        if write_tags_to_file(file_path, {"cover_art_data": image_data, "cover_art_mime": mime_type}):
+        resolved = resolve_music_file_path(file_path) or file_path
+        if not os.path.exists(resolved):
+            continue
+        if write_tags_to_file(resolved, {"cover_art_data": image_data, "cover_art_mime": mime_type}):
             updated += 1
     return updated
 
@@ -353,9 +380,28 @@ def download_and_save_album_art(artist: str, album: str, image_data: bytes, sour
 
 def search_album_art_external(artist: str, album: str, source: str = "musicbrainz") -> tuple[dict, int]:
     """Search for album art from the specified external source."""
+    # Discogs art search requires the configured token — the previous code
+    # hardcoded ``token=""`` so the Discogs source always returned
+    # "No album art found" (the reported bug).
+    try:
+        from helpers.config_helpers import get_config
+        _cfg = get_config() or {}
+        _discogs_cfg = (_cfg.get("api_integrations") or {}).get("discogs") or {}
+        _discogs_token = str(_discogs_cfg.get("token") or "").strip()
+    except Exception:
+        _discogs_token = ""
+
+    def _mb_search() -> bytes | None:
+        data = fetch_album_art_from_musicbrainz(artist, album)
+        if data:
+            return data
+        # CAA fallback via the release-GROUP front image is covered inside
+        # fetch_album_art_from_musicbrainz; nothing extra here.
+        return None
+
     sources = {
-        "musicbrainz": ("MusicBrainz", lambda: fetch_album_art_from_musicbrainz(artist, album)),
-        "discogs": ("Discogs", lambda: fetch_album_art_from_discogs(artist, album, token="")),
+        "musicbrainz": ("MusicBrainz", lambda: _mb_search()),
+        "discogs": ("Discogs", lambda: fetch_album_art_from_discogs(artist, album, token=_discogs_token)),
         "applemusic": ("Apple Music", lambda: fetch_album_art_from_itunes(artist, album)),
         "itunes": ("Apple Music", lambda: fetch_album_art_from_itunes(artist, album)),
         "audiodb": ("AudioDB", lambda: fetch_album_art_from_audiodb(artist, album)),
@@ -394,7 +440,7 @@ def search_album_art_external(artist: str, album: str, source: str = "musicbrain
 
 
 def set_album_art_from_url(artist: str, album: str, image_url: str) -> dict[str, Any]:
-    """Download image from URL and save to database."""
+    """Download image from URL and save to database + embed into track files."""
     try:
         if str(image_url or "").startswith("data:"):
             header, _, b64_payload = image_url.partition(",")
@@ -412,18 +458,42 @@ def set_album_art_from_url(artist: str, album: str, image_url: str) -> dict[str,
 
         saved = save_album_art_to_db(artist, album, image_data, source="url", mime_type=mime_type)
         if saved:
-            return {"success": True, "message": "Album art saved from URL"}
+            # Embed into the album's audio files (the JS expects
+            # ``files_updated`` so it can report how many files got art).
+            files_updated = 0
+            try:
+                files_updated = apply_album_art_to_tracks(artist, album, image_data, mime_type)
+            except Exception as exc:
+                logger.debug("URL art embed failed", artist=artist, album=album, error=str(exc))
+            return {
+                "success": True,
+                "message": "Album art saved from URL",
+                "files_updated": files_updated,
+            }
         return {"success": False, "error": "Failed to save album art"}
     except Exception as exc:
         return {"success": False, "error": str(exc)}
 
 
 def set_album_art_from_upload(artist: str, album: str, image_data: bytes, mime_type: str) -> dict[str, Any]:
-    """Save uploaded image data to database."""
-    saved = save_album_art_to_db(artist, album, image_data, source="upload", mime_type=mime_type)
-    if saved:
-        return {"success": True, "message": "Album art saved from upload"}
-    return {"success": False, "error": "Failed to save album art"}
+    """Save uploaded image data to database + embed into track files."""
+    try:
+        saved = save_album_art_to_db(artist, album, image_data, source="upload", mime_type=mime_type)
+        if not saved:
+            return {"success": False, "error": "Failed to save album art"}
+        files_updated = 0
+        try:
+            files_updated = apply_album_art_to_tracks(artist, album, image_data, mime_type)
+        except Exception as exc:
+            # Embedding failure is non-fatal — the art is saved in the DB.
+            logger.debug("Upload art embed failed", artist=artist, album=album, error=str(exc))
+        return {
+            "success": True,
+            "message": "Album art saved from upload",
+            "files_updated": files_updated,
+        }
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
 
 
 __all__ = [

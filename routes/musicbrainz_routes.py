@@ -692,6 +692,13 @@ async def api_musicbrainz_search() -> Any:
                     logger.debug("Unquoted releasegroup fallback failed", error=str(exc))
 
             if not raw_groups and artist and not artist_only:
+                # The strict ``artist:"X" AND releasegroup:"Y"`` query can
+                # return 0 when the local album title has edition markers /
+                # spelling drift.  Fall back to an ARTIST-scoped search but
+                # then filter CLIENT-SIDE by fuzzy album-title similarity so
+                # the album relevance is preserved (previously this dropped to
+                # artist-only and returned ALL the artist's releases — the
+                # reported "only the artist field seems to be used" bug).
                 try:
                     artist_only_query = f'artist:"{_esc(artist)}"'
                     raw_fallback = client.get("release-group/", params={
@@ -701,9 +708,32 @@ async def api_musicbrainz_search() -> Any:
                     })
                     raw_groups = (
                         raw_fallback.get("release-groups", [])
-                        if isinstance(_rg_fallback.get("release-groups"), list)
+                        if isinstance(raw_fallback.get("release-groups"), list)
                         else []
                     )
+                    if raw_groups and album:
+                        import difflib as _difflib
+                        album_norm = re.sub(r"[^a-z0-9]+", " ", album.lower()).strip()
+                        album_core = re.sub(r"\s*[\(\[].+$", "", album_norm).strip()
+
+                        def _rg_similarity(rg: dict[str, Any]) -> float:
+                            title = str(rg.get("title") or "").lower()
+                            t_norm = re.sub(r"[^a-z0-9]+", " ", title).strip()
+                            t_core = re.sub(r"\s*[\(\[].+$", "", t_norm).strip()
+                            best = max(
+                                _difflib.SequenceMatcher(None, album_norm, t_norm).ratio(),
+                                _difflib.SequenceMatcher(None, album_core, t_core).ratio(),
+                            )
+                            # Bonus for substring containment (edition markers).
+                            if album_core and (album_core in t_norm or t_core in album_norm):
+                                best = max(best, 0.85)
+                            return best
+
+                        raw_groups = [
+                            rg for rg in raw_groups
+                            if _rg_similarity(rg) >= 0.45
+                        ]
+                        raw_groups.sort(key=_rg_similarity, reverse=True)
                 except Exception as exc:
                     logger.debug("Artist-only fallback failed", error=str(exc))
 

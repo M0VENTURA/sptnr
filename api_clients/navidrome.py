@@ -639,6 +639,67 @@ class NavidromeClient:
             logger.error("Failed to get Navidrome scan status", error=str(exc))
             return {"success": False, "error": str(exc)}
 
+    def trigger_and_wait_for_scan(
+        self,
+        *,
+        poll_interval_seconds: float = 5.0,
+        max_wait_seconds: float = 1800.0,
+    ) -> bool:
+        """Trigger a Navidrome library rescan and WAIT for it to complete.
+
+        Navidrome's ``startScan`` is asynchronous — it returns immediately
+        while the scan runs in the background.  This method initiates the
+        scan and then polls ``getScanStatus`` (every ``poll_interval_seconds``,
+        up to ``max_wait_seconds``) until ``scanning`` is False, so callers
+        can safely proceed to import/read the freshly-updated library.
+
+        The reported issue: remote syncs were fired repeatedly from every
+        file-tag write, pausing the server and locking the database.  This
+        helper centralises the sync-and-wait so the ONLY automatic sync runs
+        once, BEFORE the full Navidrome import, and completes before any
+        import work begins.
+
+        Returns True when the scan finished (or was not running at all);
+        False on timeout or API failure.
+        """
+        import time as _time
+
+        try:
+            if not self.start_scan():
+                logger.warning("Navidrome startScan failed — proceeding without remote sync")
+                return False
+
+            # Give Navidrome a moment to flip the scanning flag.
+            _time.sleep(min(2.0, poll_interval_seconds))
+
+            deadline = _time.time() + max_wait_seconds
+            while _time.time() < deadline:
+                try:
+                    status = self.get_scan_status()
+                except Exception as exc:
+                    logger.warning(
+                        "Navidrome getScanStatus failed during wait",
+                        error=str(exc),
+                    )
+                    status = {}
+                if status.get("success") and not status.get("scanning"):
+                    logger.info(
+                        "Navidrome remote scan complete",
+                        count=status.get("count"),
+                        last_scan=status.get("lastScan"),
+                    )
+                    return True
+                _time.sleep(poll_interval_seconds)
+
+            logger.warning(
+                "Navidrome remote scan did not finish within timeout",
+                max_wait_seconds=max_wait_seconds,
+            )
+            return False
+        except Exception as exc:
+            logger.warning("Navidrome trigger_and_wait_for_scan failed", error=str(exc))
+            return False
+
     def ping(self) -> bool:
         try:
             data = self._get_subsonic_response("ping", timeout=10)

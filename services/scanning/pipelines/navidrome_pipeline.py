@@ -82,6 +82,25 @@ def run_navidrome_import_scan(
                 password=nav_config.get("pass"),
             )
 
+        # ── Remote Navidrome sync BEFORE the import ───────────────────────
+        # Trigger ONE Navidrome server-side library scan and WAIT for it to
+        # finish before importing.  This is the ONLY automatic remote sync:
+        # the frequent per-tag-write triggers were removed (they paused the
+        # server and locked the database).  The wait ensures the freshly
+        # written MusicBrainz tags / new files are fully ingested by
+        # Navidrome before we read them back, so the import sees the latest
+        # state instead of a mid-scan snapshot.
+        if nav_client and not force_rescan:
+            try:
+                log_unified("Navidrome Import - Triggering remote Navidrome scan (waiting for completion)…")
+                nav_client.trigger_and_wait_for_scan()
+                log_unified("Navidrome Import - Remote Navidrome scan finished")
+            except Exception as exc:
+                logger.warning(
+                    "Remote Navidrome sync failed — proceeding with import",
+                    error=str(exc),
+                )
+
         # Check scan marker — skip if nothing changed since last run
         current_marker: int | None = None
         current_last_scan: Any = None

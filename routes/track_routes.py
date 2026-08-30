@@ -401,7 +401,7 @@ async def api_track_update_metadata() -> Any:
                 "title", "artist", "album", "album_artist", "writer", "work",
                 "genres", "stars", "is_single", "single_confidence",
                 "year", "track_number", "disc_number", "mbid", "isrc",
-                "is_cover", "alternate_take", "is_compilation",
+                "is_cover", "original_cover_artist", "alternate_take", "is_compilation",
                 "is_live", "is_acoustic", "is_remix",
                 "musicbrainz_albumid", "musicbrainz_artistid", "musicbrainz_albumartistid",
                 "musicbrainz_releasegroupid", "musicbrainz_releasetrackid", "musicbrainz_workid",

@@ -531,10 +531,41 @@ def apply_mbid_to_album(artist: str, album: str, mbid: str, rg_mbid: str, cover_
     Writes BOTH the database columns AND the physical audio file tags — the
     fan-out requirement: Navidrome reads FILE tags, so a DB-only update leaves
     the album split on Navidrome even though Popularr shows it merged.
+
+    When a cover URL (or a resolvable release/release-group MBID) is present,
+    the cover art is DOWNLOADED from Cover Art Archive and embedded into every
+    track file (and stored in the album_art table) — the reported gap where a
+    MusicBrainz lookup "updated the metadata but not the cover art".
     """
     rows = update_album_mbid_fields(
         artist=artist, album=album, mbid=mbid, rg_mbid=rg_mbid, cover_url=cover_url,
     )
+
+    # ── Cover art: download + embed ──────────────────────────────────────
+    # A ``cover_url`` on the form is a CAA URL string; the album page's
+    # ``cover_art_url`` column holds it but the IMAGE is never fetched.  When
+    # a release or release-group MBID is known, pull the actual bytes from
+    # Cover Art Archive and store + embed them.
+    cover_bytes: bytes | None = None
+    cover_mime = "image/jpeg"
+    try:
+        from api_clients.coverartarchive import (
+            get_release_front_image_bytes,
+            get_release_group_front_image_bytes,
+        )
+        if mbid:
+            cover_bytes = get_release_front_image_bytes(mbid, size="500")
+        if cover_bytes is None and rg_mbid:
+            cover_bytes = get_release_group_front_image_bytes(rg_mbid, size="500")
+    except Exception as exc:
+        logger.debug("Cover-art fetch failed", release_mbid=mbid, rg_mbid=rg_mbid, error=str(exc))
+
+    if cover_bytes:
+        try:
+            from services.enrichment.album_art_service import save_album_art_to_db
+            save_album_art_to_db(artist, album, cover_bytes, source="musicbrainz", mime_type=cover_mime)
+        except Exception as exc:
+            logger.debug("Cover-art DB save failed", artist=artist, album=album, error=str(exc))
 
     # Fan out to the audio files: Navidrome keys albums on the file tags
     # (``musicbrainz_albumid`` / ``musicbrainz_albumartistid`` / ``album``),
@@ -571,6 +602,9 @@ def apply_mbid_to_album(artist: str, album: str, mbid: str, rg_mbid: str, cover_
             }
             if rg_mbid:
                 tags["musicbrainz_releasegroupid"] = rg_mbid
+            if cover_bytes:
+                tags["cover_art_data"] = cover_bytes
+                tags["cover_art_mime"] = cover_mime
             try:
                 if update_file_tags(resolved, tags):
                     file_updated += 1
@@ -587,6 +621,7 @@ def apply_mbid_to_album(artist: str, album: str, mbid: str, rg_mbid: str, cover_
         "rows_updated": rows,
         "files_updated": file_updated,
         "files_failed": file_failed,
+        "cover_art_applied": bool(cover_bytes),
     }
 
 

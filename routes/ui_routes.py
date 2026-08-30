@@ -1601,6 +1601,46 @@ async def album_detail(album_path: str) -> Any:
                 except Exception as revert_err:
                     logger.debug("Live-state revert failed", track_id=track_id, error=str(revert_err))
 
+        # ── Album-level cover art: download + embed ──────────────────────
+        # The MB lookup fills ``cover_art_url`` (a CAA URL string).  Saving
+        # the album must actually DOWNLOAD the image and embed it into the
+        # track files (and store it in album_art) so Navidrome picks it up on
+        # the next scan — previously only the URL string was stored.
+        _cover_embedded = False
+        if cover_url:
+            try:
+                from services.enrichment.album_art_service import (
+                    apply_album_art_to_tracks,
+                    save_album_art_to_db,
+                )
+                _cover_bytes: bytes | None = None
+                _cover_mime = "image/jpeg"
+                if str(cover_url).startswith("data:"):
+                    import base64 as _b64
+                    _header, _, _b64p = cover_url.partition(",")
+                    _cover_mime = _header[5:].split(";")[0] or "image/jpeg"
+                    try:
+                        _cover_bytes = _b64.b64decode(_b64p)
+                    except Exception:
+                        _cover_bytes = None
+                elif album_mbid:
+                    # Prefer Cover Art Archive via the release MBID.
+                    from api_clients.coverartarchive import get_release_front_image_bytes
+                    _cover_bytes = get_release_front_image_bytes(album_mbid, size="500")
+                    if _cover_bytes is None and album_rg_mbid:
+                        from api_clients.coverartarchive import get_release_group_front_image_bytes
+                        _cover_bytes = get_release_group_front_image_bytes(album_rg_mbid, size="500")
+                if _cover_bytes:
+                    save_album_art_to_db(artist_name, album_name, _cover_bytes, source="musicbrainz", mime_type=_cover_mime)
+                    _cover_embedded = apply_album_art_to_tracks(
+                        new_artist or artist_name,
+                        new_title or album_name,
+                        _cover_bytes,
+                        _cover_mime,
+                    ) > 0
+            except Exception as _cover_exc:
+                logger.debug("Album save cover embed failed", artist=artist_name, album=album_name, error=str(_cover_exc))
+
         if updated_count > 0:
             await flash(f"Album metadata saved — {updated_count} track(s) updated.", "success")
         if file_sync_failures > 0:
@@ -1611,6 +1651,8 @@ async def album_detail(album_path: str) -> Any:
             )
         if reverted_live_count > 0:
             await flash(f"Removed \"(Live)\"/\"(Acoustic)\" suffixes from {reverted_live_count} track(s).", "info")
+        if _cover_embedded:
+            await flash("🎨 Album cover art downloaded and embedded into track files.", "success")
             
         if updated_count == 0 and reverted_live_count == 0 and file_sync_failures == 0:
             await flash("No changes were made.", "info")

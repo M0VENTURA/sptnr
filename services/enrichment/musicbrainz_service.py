@@ -879,6 +879,12 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> dict[str, Any] | None
             or (data.get("date") or "")[:4]
         )
 
+        # ── Release-level metadata (the user's master checklist) ─────────
+        # secondary-types drives the ``compilation`` flag ("Various Artists"
+        # soundtracks / compilations stay in one entry); the ORIGINAL release
+        # date comes from the release-group's first-release-date so remasters
+        # sort by when the album FIRST debuted, not the reissue date.
+        _secondary_types = _parse_secondary_types(rg.get("secondary-types"))
         release_info: dict[str, Any] = {
             "release_title": data.get("title"),
             "release_year": release_year,
@@ -886,11 +892,27 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> dict[str, Any] | None
             "disc_count": len(data.get("media", [])),
             "tracks": [],
             "release_mbid": data.get("id"),
+            "release_group_mbid": rg.get("id") or "",
+            "compilation": 1 if "compilation" in _secondary_types else 0,
+            "original_date": rg.get("first-release-date") or data.get("date") or "",
+            "original_year": (
+                (rg.get("first-release-date") or data.get("date") or "")[:4]
+            ),
         }
 
         if data.get("artist-credit"):
             release_info["artist"] = primary_album_artist(data["artist-credit"])
             release_info["artist_credit"] = build_artist_credit_string(data["artist-credit"])
+            # Album-artist MBID from the PRIMARY credit — links aliases and
+            # featured collaborations back to the primary band's page.
+            _first_credit = (data.get("artist-credit") or [{}])[0] or {}
+            _first_artist = _first_credit.get("artist") or {}
+            if isinstance(_first_artist, dict):
+                release_info["album_artist_mbid"] = str(_first_artist.get("id") or "")
+
+        # Absolute sequential track number across all discs (handles local
+        # libraries numbered 1..22 across two discs, or tagged per-disc).
+        _absolute_track_number = 1
 
         for disc_index, media in enumerate(data.get("media", []), start=1):
             for track in media.get("tracks", []):
@@ -899,6 +921,10 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> dict[str, Any] | None
                 track_info: dict[str, Any] = {
                     "disc_number": disc_index,
                     "track_number": track.get("position"),
+                    # The absolute sequential number (medium position offset
+                    # by all previous discs) — lets locally-numbered 1..22
+                    # libraries match multi-disc releases without disc tags.
+                    "absolute_track_number": _absolute_track_number,
                     "title": track.get("title") or recording.get("title"),
                     "recording_mbid": recording.get("id"),
                     "duration": track.get("length"),
@@ -908,6 +934,7 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> dict[str, Any] | None
                         else release_info.get("artist_credit") or release_info.get("artist")
                     ),
                 }
+                _absolute_track_number += 1
 
                 # ── Recording work relationships (writers + covers) ──────
                 # The release lookup now requests ``work-rels``, so each
@@ -916,9 +943,12 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> dict[str, Any] | None
                 # work; the work's own relations name the WRITERS.  A track
                 # whose work is by a different artist is a COVER.
                 writers: list[str] = []
+                composers: list[str] = []
+                lyricists: list[str] = []
                 work_mbid: str | None = None
                 work_title: str | None = None
                 work_artist: str | None = None
+                work_iswc: str | None = None
                 is_cover = False
                 try:
                     for rel in recording.get("relations") or []:
@@ -927,24 +957,34 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> dict[str, Any] | None
                         if rel_type in ("performance", "recording of") and work:
                             work_mbid = work.get("id")
                             work_title = work.get("title")
+                            work_iswc = str(work.get("iswc") or "").strip() or None
                             # The work's composer/writer relations.
                             for work_rel in work.get("relations") or []:
                                 wrt = str(work_rel.get("type") or "").lower()
-                                if wrt in ("composer", "writer", "lyricist"):
-                                    wtarget = work_rel.get("artist") or {}
-                                    if wtarget.get("name"):
-                                        writers.append(str(wtarget["name"]))
+                                wtarget = work_rel.get("artist") or {}
+                                if wrt == "composer" and wtarget.get("name"):
+                                    composers.append(str(wtarget["name"]))
+                                elif wrt in ("writer", "lyricist") and wtarget.get("name"):
+                                    lyricists.append(str(wtarget["name"]))
+                                if wrt in ("composer", "writer", "lyricist") and wtarget.get("name"):
+                                    writers.append(str(wtarget["name"]))
                             # The work's artist credit — a cover when it
                             # differs from the recording/release artist.
                             work_credit = work.get("artist-credit") or []
                             if work_credit:
                                 work_artist = primary_album_artist(work_credit)
+                    if composers:
+                        track_info["composer"] = ", ".join(dict.fromkeys(composers))
+                    if lyricists:
+                        track_info["lyricist"] = ", ".join(dict.fromkeys(lyricists))
                     if writers:
                         track_info["writer"] = ", ".join(dict.fromkeys(writers))
                     if work_mbid:
                         track_info["work_mbid"] = work_mbid
                     if work_title:
                         track_info["work_title"] = work_title
+                    if work_iswc:
+                        track_info["iswc"] = work_iswc
                     if work_artist:
                         track_info["work_artist"] = work_artist
                         release_artist_norm = _normalise_artist_key(
@@ -960,6 +1000,10 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> dict[str, Any] | None
                     if is_cover:
                         track_info["is_cover"] = True
                         track_info["original_cover_artist"] = work_artist
+                        # originaltitle = the WORK title (the song being
+                        # covered), not the local cover's title.
+                        if work_title:
+                            track_info["original_title"] = work_title
                 except Exception as _rel_exc:
                     logger.debug("Work-relation parse failed", recording=recording.get("id"), error=str(_rel_exc))
 
@@ -1441,6 +1485,18 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict[s
                 "mb_year": mb_year,
                 "mb_duration": None,
                 "mb_duration_sec": int(mb_duration_sec) if mb_duration_sec else None,
+                # Full MusicBrainz enrichment for this recording — carried so
+                # "Update All Tracks" can apply composer / writer / genres /
+                # cover / work MBID to the local track + file tags (the
+                # reported gap: only title/track/year/mbid were applied).
+                "mb_writer": mb_track.get("writer") or "",
+                "mb_work_mbid": mb_track.get("work_mbid") or "",
+                "mb_work_title": mb_track.get("work_title") or "",
+                "mb_work_artist": mb_track.get("work_artist") or "",
+                "mb_is_cover": bool(mb_track.get("is_cover")),
+                "mb_original_cover_artist": mb_track.get("original_cover_artist") or "",
+                "mb_musicbrainz_genres": mb_track.get("musicbrainz_genres") or "",
+                "mb_artist_credit": mb_track.get("artist") or "",
                 "library_track_id": None,
                 "library_title": None,
                 "library_track_number": None,
@@ -1583,6 +1639,16 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict[s
                 "mb_year": mb_year,
                 "mb_duration": None,
                 "mb_duration_sec": int(mb_duration_sec) if mb_duration_sec else None,
+                # Full MusicBrainz enrichment for this recording (see the
+                # matched entry above).
+                "mb_writer": mb_track.get("writer") or "",
+                "mb_work_mbid": mb_track.get("work_mbid") or "",
+                "mb_work_title": mb_track.get("work_title") or "",
+                "mb_work_artist": mb_track.get("work_artist") or "",
+                "mb_is_cover": bool(mb_track.get("is_cover")),
+                "mb_original_cover_artist": mb_track.get("original_cover_artist") or "",
+                "mb_musicbrainz_genres": mb_track.get("musicbrainz_genres") or "",
+                "mb_artist_credit": mb_track.get("artist") or "",
                 "library_track_id": best_lib["id"],
                 "library_title": best_lib.get("title", ""),
                 "library_track_number": best_lib.get("track_number"),
@@ -1649,8 +1715,13 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict[s
             "mb_title": mb_release_title,
             "mb_year": mb_year,
             "mb_artist": str(mb_release.get("artist") or ""),
+            "mb_release_mbid": str(mb_release.get("release_mbid") or release_id or ""),
+            "mb_release_group_mbid": rg_mbid,
             "release_group_mbid": rg_mbid,
             "release_mbid": release_id,
+            "mb_album_artist_mbid": str(mb_release.get("album_artist_mbid") or ""),
+            "mb_disc_count": int(mb_release.get("disc_count") or 0),
+            "mb_artist_credit": str(mb_release.get("artist_credit") or ""),
             "comparison": comparison,
             "extra_tracks": extra_tracks,
             "tracks_needing_update": tracks_needing_update,
