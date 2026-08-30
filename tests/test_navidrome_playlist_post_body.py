@@ -141,7 +141,7 @@ def test_update_playlist_removes_existing_entries():
     assert body.get("songIdToAdd") == ["a", "b", "c"]
 
 
-def test_update_playlist_empty_empties_playlist():
+def test_update_playlist_empties_playlist():
     """Empty song list = remove every entry, add nothing."""
     session = _FakeSession()
     client = _FakeClient(session, current_count=4)
@@ -153,6 +153,56 @@ def test_update_playlist_empty_empties_playlist():
     body = _body_dict(body)
     assert [int(v) for v in body.get("songIndexToRemove", [])] == [0, 1, 2, 3]
     assert "songIdToAdd" not in body
+
+
+class _NonJsonResponse(_FakeResponse):
+    """A 2xx response whose body is NOT JSON (Navidrome sometimes returns an
+    HTML/plain body for mutation endpoints)."""
+
+    def __init__(self, body: str):
+        super().__init__(200)
+        self._body = body
+        self.content = body.encode("utf-8")
+        self.text = body
+
+    def json(self):
+        import json
+        raise json.JSONDecodeError("Expecting value", self.text, 0)
+
+
+class _NonJsonSession:
+    def __init__(self, body: str):
+        self._body = body
+        self.posted = []
+
+    def post(self, url, data=None, **kwargs):
+        self.posted.append((url, dict(data or {}), kwargs))
+        return _NonJsonResponse(self._body)
+
+    def get(self, url, params=None, **kwargs):
+        raise AssertionError("must not GET")
+
+
+def test_update_playlist_non_json_2xx_treated_as_success():
+    """Regression: Navidrome's updatePlaylist returned a non-JSON 2xx body,
+    and ``_post_subsonic_response`` raised JSONDecodeError → every playlist
+    sync logged "Navidrome updatePlaylist POST failed".  A 2xx with a
+    non-JSON body is a SUCCESS for a mutation endpoint — it must return
+    ``{"status": "ok"}`` without error."""
+    import json
+
+    from api_clients.navidrome import NavidromeClient
+
+    session = _NonJsonSession("<html><body>ok</body></html>")
+    client = _FakeClient(session)
+
+    # Directly exercise the POST path (bypasses fetch_playlist).
+    data = client._post_subsonic_response("updatePlaylist", playlistId="p1", songIdToAdd=["a"])
+    assert data.get("status") == "ok"
+
+    # And through update_playlist_songs (which asserts ok).
+    ok = client.update_playlist_songs("playlist-1", ["a"])
+    assert ok is True
 
 
 def test_create_playlist_uses_post_body():

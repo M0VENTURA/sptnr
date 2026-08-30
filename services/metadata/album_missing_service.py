@@ -99,7 +99,10 @@ def get_missing_tracks(artist: str, album: str) -> dict[str, Any]:
             {"artist": artist},
         ).mappings().all()
         mb_row = next((r for r in mb_row if _album_key(str(r.get("album") or "")) == album_key), None)
-        mb_mbid = mb_row[0] if mb_row else None
+        # ``mb_row`` is a RowMapping — index by COLUMN NAME, never by integer
+        # position (``mb_row[0]`` raised "Could not locate column in row for
+        # column '0'").
+        mb_mbid = str(mb_row.get("musicbrainz_album_mbid") or "") if mb_row else None
 
         library_rows = session.execute(
             text(

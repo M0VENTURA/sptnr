@@ -21,6 +21,7 @@ Responsibilities moved out:
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import random
 import re
@@ -110,11 +111,27 @@ def _coerce_modified_ts(value: Any) -> int | None:
 
 def _log_throttled_error(endpoint: str, exc: Exception, prefix: str = "Navidrome request failed") -> None:
     """Throttle repeated failures per endpoint to avoid log spam when offline."""
+    # Transient timeouts (server busy mid-scan, connection stall) are expected
+    # and non-fatal — log them at WARNING so error.log stays clean of the
+    # repeated "timed out" noise (the reported getScanStatus / setRating
+    # ReadTimeout spam during Navidrome scans).  Hard failures (auth, 4xx/5xx)
+    # stay at ERROR.
+    _transient = type(exc).__name__ in (
+        "ReadTimeout",
+        "ConnectTimeout",
+        "WriteTimeout",
+        "Timeout",
+        "ConnectionError",
+        "ConnectError",
+        "RemoteProtocolError",
+    )
+    _level = "warning" if _transient else "error"
+
     _now = time.time()
     _last = _nav_error_log_ts.get(endpoint, 0.0)
     if _now - _last >= _NAV_ERROR_LOG_COOLDOWN_SECONDS:
         _nav_error_log_ts[endpoint] = _now
-        logger.error(
+        getattr(logger, _level)(
             prefix,
             endpoint=endpoint,
             error=str(exc),
@@ -243,7 +260,17 @@ class NavidromeClient:
                 if not response.content or not response.text.strip():
                     return {}
 
-                result = response.json().get("subsonic-response", {}) or {}
+                try:
+                    result = response.json().get("subsonic-response", {}) or {}
+                except (json.JSONDecodeError, ValueError):
+                    # A 2xx with a non-JSON body (HTML error page, bare text)
+                    # is treated as an empty response, not a hard failure.
+                    logger.debug(
+                        "Navidrome endpoint returned non-JSON 2xx body — treating as empty",
+                        endpoint=endpoint,
+                        body=(response.text or "")[:120],
+                    )
+                    return {}
 
                 if not result:
                     logger.warning("Navidrome returned empty subsonic-response", endpoint=endpoint)
@@ -285,13 +312,30 @@ class NavidromeClient:
             if not response.content or not response.text.strip():
                 return {"status": "ok"}
 
-            result = response.json().get("subsonic-response", {}) or {}
+            try:
+                result = response.json().get("subsonic-response", {}) or {}
+            except (json.JSONDecodeError, ValueError):
+                # Navidrome sometimes returns a 2xx with a NON-JSON body (an
+                # HTML error page, a bare "ok" string, or a whitespace-padded
+                # response) for mutation endpoints.  The mutation itself
+                # succeeded (HTTP 2xx) — surface it as success instead of a
+                # noisy JSONDecodeError every few minutes.
+                logger.debug(
+                    "Navidrome mutation endpoint returned non-JSON 2xx body — treating as success",
+                    endpoint=endpoint,
+                    body=(response.text or "")[:120],
+                )
+                return {"status": "ok"}
+
             if result.get("status") == "failed":
                 if self._maybe_fallback_to_password_auth(result, endpoint):
                     _body = self._build_params(**params)
                     response = self.session.post(url, data=_body, timeout=timeout)
                     response.raise_for_status()
-                    result = response.json().get("subsonic-response", {}) or {}
+                    try:
+                        result = response.json().get("subsonic-response", {}) or {}
+                    except (json.JSONDecodeError, ValueError):
+                        result = {"status": "ok"}
                     if result.get("status") == "failed":
                         _log_subsonic_status(result, endpoint)
                 else:
@@ -503,7 +547,15 @@ class NavidromeClient:
                 files={"coverArt": ("cover.jpg", image_bytes, mime_type)},
                 timeout=30,
             )
-            data = response.json()
+            response.raise_for_status()
+            # Navidrome can return a 2xx with an empty / non-JSON body for
+            # mutation endpoints — treat that as success.
+            if not response.content or not response.text.strip():
+                return True
+            try:
+                data = response.json()
+            except (json.JSONDecodeError, ValueError):
+                return True
             envelope = data.get("subsonic-response", {}) or {}
             if envelope.get("status") == "failed":
                 _log_subsonic_status(envelope, "updatePlaylist(cover)")

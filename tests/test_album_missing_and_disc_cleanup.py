@@ -68,7 +68,38 @@ class TestGetLibraryTracksLenientAlbum:
         assert tracks[0]["title"] == "락 (樂) (LALALALA)"
 
 
-class TestDiscNumberCleanup:
+class TestGetMissingTracksRowMapping:
+    def test_stored_mbid_uses_column_name_not_index(self, db_session, monkeypatch):
+        """Regression: ``get_missing_tracks`` raised "Could not locate column
+        in row for column '0'" because it indexed a RowMapping by integer
+        position.  It must read the MBID via the column name."""
+        from sqlalchemy import text
+        db_session.execute(text(
+            "CREATE TABLE IF NOT EXISTS tracks (id TEXT PRIMARY KEY, artist TEXT, "
+            "album_artist TEXT, album TEXT, title TEXT, track_number TEXT, "
+            "disc_number TEXT, file_path TEXT, duration REAL, mbid TEXT, "
+            "musicbrainz_album_mbid TEXT)"
+        ))
+        db_session.execute(text(
+            "INSERT INTO tracks (id, artist, album_artist, album, title, track_number, "
+            "disc_number, musicbrainz_album_mbid) "
+            "VALUES ('t1', 'Artist', 'Artist', 'Album', 'Song', '1', '1', 'rel-mbid-1') "
+            "ON CONFLICT DO NOTHING"
+        ))
+        db_session.commit()
+
+        # Patch the MB fetch so no network call happens; the stored-MBID path
+        # must resolve and NOT raise the RowMapping index error.
+        monkeypatch.setattr(
+            ams, "fetch_musicbrainz_release_metadata",
+            lambda mbid: {"tracks": [], "release_year": "2024"} if mbid == "rel-mbid-1" else None,
+        )
+        monkeypatch.setattr(ams, "_persist_missing_tracks", lambda *a, **k: None)
+        monkeypatch.setattr(ams, "_rejected_missing_titles", lambda *a, **k: set())
+
+        result = ams.get_missing_tracks("Artist", "Album")
+        assert result["missing_count"] == 0
+        assert result["mb_total"] == 0
     def test_disc_zero_normalised_to_one(self):
         """A bogus disc_number of 0 must be treated as disc 1 — never its
         own 'disc 0' group (mirrors the album page's tracks_by_disc logic)."""
