@@ -399,6 +399,20 @@ async def api_popularity_run_compat():
 
         def _worker():
             try:
+                # ── Clear STALE stop flags before the scan runs ──────────
+                # A previous "Stop" left ``scan_states.stop_requested=True``
+                # on the scan type; without clearing it here the new scan is
+                # IMMEDIATELY stopped again (the reported "any scan after
+                # Stop is stopped at once").  Clear both the "all" full-scan
+                # flag and the per-mode popularity flag.
+                try:
+                    from services.scanning.scan_state import clear_stop_request
+                    for _st in ("full_scan", "popularity_scan", "singles_scan",
+                                "metadata_lookup_scan"):
+                        clear_stop_request(_st)
+                except Exception as _clear_exc:
+                    logger.debug("Stop-flag clear failed before scan", error=str(_clear_exc))
+
                 log_unified(f"[POPULARITY] Worker starting mode={mode} force={force} restart={restart} resume_from={resume_from or 'top'}")
                 run_popularity_mode(
                     mode=mode,

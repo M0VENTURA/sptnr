@@ -390,6 +390,17 @@ def run_full_library_scan(force: bool = False, restart: bool = False):
     progress = get_library_progress_path()
     checkpoint_path = get_library_checkpoint_path()
 
+    # ── Clear STALE stop flags ───────────────────────────────────────────
+    # A previous "Stop" left ``scan_states.stop_requested=True`` on the
+    # library scan; without clearing it here the new scan immediately halts
+    # on the first ``is_stop_requested(progress)`` check (the reported
+    # "any scan after Stop is immediately stopped again").
+    try:
+        from services.scanning.scan_state import clear_stop_request
+        clear_stop_request(progress)
+    except Exception as exc:
+        logger.debug("[SCAN_PIPELINE] Stop-flag clear failed", error=str(exc))
+
     record_scan("full", "started", message="Full library scan")
     try:
         write_progress_with_current_artist(progress, "library_scan", True)

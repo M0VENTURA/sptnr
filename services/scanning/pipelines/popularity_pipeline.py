@@ -227,6 +227,19 @@ def _run_full_scan_as_artist_pipeline(
 
     progress_file = get_scan_progress_path("full_scan")
 
+    # ── Clear STALE stop flags before starting ───────────────────────────
+    # A previous "Stop" click leaves ``scan_states.stop_requested=True`` on
+    # this scan type.  Nothing cleared it when a NEW "All" scan started, so
+    # the loop's first ``is_stop_requested(full_scan)`` check immediately
+    # halted — after doing exactly ONE artist (the resume point): the
+    # reported "resume only does the current artist and stops", and "any
+    # scan after Stop is immediately stopped again".
+    try:
+        from services.scanning.scan_state import clear_stop_request
+        clear_stop_request(progress_file)
+    except Exception as exc:
+        logger.debug("[FULL_SCAN] Stop-flag clear failed", error=str(exc))
+
     try:
         artists = get_all_artists()
     except Exception as exc:
