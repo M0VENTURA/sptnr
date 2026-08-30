@@ -6,9 +6,13 @@ All functions now use SQLAlchemy ``db_session()`` internally.
 
 from __future__ import annotations
 
+import logging
+import os
 from typing import Any
 from sqlalchemy import text
 from db.engine import db_session
+
+logger = logging.getLogger(__name__)
 
 
 # -----------------------------------------------------------------------------
@@ -261,6 +265,35 @@ def fetch_track_for_delete(conn: Any = None, track_id: str = "") -> tuple | None
 def merge_album_names(conn: Any = None, artist: str = "", source_albums: list[str] | None = None, canonical_name: str = "") -> int:
     if not source_albums:
         return 0
+
+    # ── File-tag sync ────────────────────────────────────────────────────
+    # Navidrome keys albums on the FILE tags, so merging album names must
+    # rewrite the ``album`` tag on every affected audio file — a DB-only
+    # update leaves Navidrome showing the OLD album names (the reported
+    # "artist/album save only updates the database, not the files" gap).
+    _file_rows: list[tuple[str, str, str]] = []  # (old_file_path, artist, title)
+    try:
+        from services.metadata.tag_file_service import (
+            resolve_music_file_path,
+            update_file_tags,
+        )
+        with db_session() as session:
+            _rows = session.execute(
+                text(f"""
+                    SELECT file_path, artist, title FROM tracks
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+                      AND album IN ({', '.join([f':s{i}' for i in range(len(source_albums))])})
+                """),
+                {"artist": artist, **{f"s{i}": s for i, s in enumerate(source_albums)}},
+            ).fetchall() or []
+            for row in _rows:
+                mapping = getattr(row, "_mapping", None)
+                fp = str((mapping.get("file_path") if mapping else row[0]) or "").strip()
+                title = str((mapping.get("title") if mapping else row[2]) or "").strip()
+                _file_rows.append((fp, title, canonical_name))
+    except Exception as exc:
+        logger.debug("Merge-album file rows load failed", artist=artist, error=str(exc))
+
     with db_session() as session:
         placeholders = ", ".join([f":s{i}" for i in range(len(source_albums))])
         params: dict[str, Any] = {"canonical": canonical_name, "artist": artist}
@@ -271,7 +304,19 @@ def merge_album_names(conn: Any = None, artist: str = "", source_albums: list[st
             WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
               AND album IN ({placeholders})
         """), params)
-        return result.rowcount or 0
+        rows_updated = result.rowcount or 0
+
+    # Rewrite the file album tags (best-effort; a missing/unresolvable file
+    # is not fatal).
+    for fp, title, album_name in _file_rows:
+        try:
+            resolved = resolve_music_file_path(fp) or fp
+            if resolved and os.path.exists(resolved):
+                update_file_tags(resolved, {"album": album_name})
+        except Exception as exc:
+            logger.debug("Merge-album file tag write failed", file=fp, error=str(exc))
+
+    return rows_updated
 
 
 
@@ -287,6 +332,27 @@ def count_album_disc_numbers(conn: Any = None, artist: str = "", album: str = ""
 
 
 def clear_album_disc_numbers(conn: Any = None, artist: str = "", album: str = "") -> int:
+    # ── File-tag sync ────────────────────────────────────────────────────
+    # Clearing disc_number in the DB must also clear the file tag frame so
+    # Navidrome (which reads file tags) stops showing a spurious disc.
+    _file_rows: list[str] = []
+    try:
+        from services.metadata.tag_file_service import (
+            resolve_music_file_path,
+            update_file_tags,
+        )
+        with db_session() as session:
+            result = session.execute(text("""
+                SELECT file_path FROM tracks
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+                  AND album = :album
+                  AND disc_number IS NOT NULL
+                  AND TRIM(CAST(disc_number AS TEXT)) != ''
+            """), {"artist": artist, "album": album})
+            _file_rows = [str(r[0] or "").strip() for r in result.fetchall() or [] if r[0]]
+    except Exception as exc:
+        logger.debug("Clear-disc file rows load failed", artist=artist, album=album, error=str(exc))
+
     with db_session() as session:
         result = session.execute(text("""
             UPDATE tracks
@@ -294,7 +360,17 @@ def clear_album_disc_numbers(conn: Any = None, artist: str = "", album: str = ""
             WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
               AND album = :album
         """), {"artist": artist, "album": album})
-        return result.rowcount or 0
+        rows_updated = result.rowcount or 0
+
+    for fp in _file_rows:
+        try:
+            resolved = resolve_music_file_path(fp) or fp
+            if resolved and os.path.exists(resolved):
+                update_file_tags(resolved, {"disc_number": ""})
+        except Exception as exc:
+            logger.debug("Clear-disc file tag write failed", file=fp, error=str(exc))
+
+    return rows_updated
 
 
 def artist_track_count(conn: Any = None, artist: str = "") -> int:
