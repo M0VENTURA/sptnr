@@ -177,6 +177,21 @@ _ASYNC_SESSION_FACTORY: async_sessionmaker[AsyncSession] | None = None
 _MIGRATION_ADVISORY_LOCK_KEY = 0x504F50524C52  # "POPRLR" as an int
 
 
+def _build_connect_args(url: str) -> dict[str, Any]:
+    """Return DBAPI connect_args for the given URL.
+
+    Only PostgreSQL gets a bounded ``connect_timeout`` — a recovering/
+    offline Postgres would otherwise block forever on a half-open TCP
+    connection (the reported scan stall where the worker printed "Artist
+    scan started: X" then never advanced after a backend crash-restart).
+    SQLite (test/dev in-memory DB) does not accept ``connect_timeout``, so
+    it is omitted for non-postgres URLs.
+    """
+    if str(url).startswith("postgresql"):
+        return {"connect_timeout": 10}
+    return {}
+
+
 def get_engine() -> Engine:
     """Return the singleton SQLAlchemy engine."""
     global _ENGINE
@@ -191,6 +206,7 @@ def get_engine() -> Engine:
         "pool_timeout": db_settings.db_pool_timeout,
         "pool_pre_ping": True,
         "pool_recycle": db_settings.db_pool_recycle_seconds,
+        "connect_args": _build_connect_args(db_settings.sync_url),
     }
 
     _ENGINE = create_engine(db_settings.sync_url, **kwargs)
@@ -217,6 +233,7 @@ def get_async_engine() -> AsyncEngine:
         "pool_timeout": db_settings.db_pool_timeout,
         "pool_pre_ping": True,
         "pool_recycle": db_settings.db_pool_recycle_seconds,
+        "connect_args": _build_connect_args(db_settings.async_url),
     }
 
     _ASYNC_ENGINE = create_async_engine(db_settings.async_url, **kwargs)
@@ -236,10 +253,23 @@ def get_async_session_factory() -> async_sessionmaker[AsyncSession]:
 # ---------------------------------------------------------------------------
 
 def _is_transient_db_error(exc: BaseException) -> bool:
-    """Return True for connection-level DB errors worth retrying."""
+    """Return True for connection-level DB errors worth retrying.
+
+    Includes PostgreSQL crash-recovery phrases ("database system was
+    interrupted", "in recovery mode", "terminating connection") so a pooled
+    connection killed by a backend crash is treated as transient: the engine
+    is disposed and the next acquisition retries against a fresh pool.
+    """
     if isinstance(exc, (OperationalError, InterfaceError)):
         return True
-    
+
+    try:
+        from db.utils import is_transient_pg_startup_error
+        if is_transient_pg_startup_error(exc):
+            return True
+    except Exception:
+        pass
+
     orig = getattr(exc, "orig", None)
     if orig is not None:
         cls_name = type(orig).__name__.lower()
@@ -247,8 +277,20 @@ def _is_transient_db_error(exc: BaseException) -> bool:
     return False
 
 
+# Number of acquisition attempts + backoff for transient DB errors.
+# PostgreSQL crash-recovery can take 10-30s ("database system was
+# interrupted ... in recovery mode"); the retry must ride through that
+# window or every session acquisition fails and the scan worker dies with a
+# "connection ... failed: FATAL: the database system is in recovery mode"
+# error right after the server comes back up.
+# Backoff: 0.5s, 1s, 2s, 4s, 8s, 10s (capped) - ~25s total across 6 attempts.
+_DB_RETRY_ATTEMPTS = 6
+_DB_RETRY_BASE_SECONDS = 0.5
+_DB_RETRY_MAX_SECONDS = 10.0
+
+
 @contextmanager
-def db_session(retries: int = 2) -> Generator[Session, None, None]:
+def db_session(retries: int = _DB_RETRY_ATTEMPTS) -> Generator[Session, None, None]:
     """Sync context manager yielding a Session, auto-committing on success."""
     def _acquire_session() -> Session:
         return get_session_factory()()
@@ -264,7 +306,7 @@ def db_session(retries: int = 2) -> Generator[Session, None, None]:
 
     session = Retrying(
         stop=stop_after_attempt(max(1, retries)),
-        wait=wait_exponential(multiplier=0.2, exp_base=2, min=0.2, max=2.0),
+        wait=wait_exponential(multiplier=_DB_RETRY_BASE_SECONDS, exp_base=2, min=0.3, max=_DB_RETRY_MAX_SECONDS),
         retry=retry_if_exception(_is_transient_db_error),
         reraise=True,
         before_sleep=_dispose_before_retry,
@@ -283,7 +325,7 @@ def db_session(retries: int = 2) -> Generator[Session, None, None]:
 
 
 @asynccontextmanager
-async def async_db_session(retries: int = 2) -> AsyncGenerator[AsyncSession, None]:
+async def async_db_session(retries: int = _DB_RETRY_ATTEMPTS) -> AsyncGenerator[AsyncSession, None]:
     """Async context manager yielding an AsyncSession (asyncpg)."""
     async def _acquire_session() -> AsyncSession:
         return get_async_session_factory()()
@@ -298,7 +340,7 @@ async def async_db_session(retries: int = 2) -> AsyncGenerator[AsyncSession, Non
 
     session = await AsyncRetrying(
         stop=stop_after_attempt(max(1, retries)),
-        wait=wait_exponential(multiplier=0.2, exp_base=2, min=0.2, max=2.0),
+        wait=wait_exponential(multiplier=_DB_RETRY_BASE_SECONDS, exp_base=2, min=0.3, max=_DB_RETRY_MAX_SECONDS),
         retry=retry_if_exception(_is_transient_db_error),
         reraise=True,
         before_sleep=_dispose_before_retry,
