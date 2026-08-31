@@ -246,6 +246,22 @@ def _run_full_scan_as_artist_pipeline(
         log_unified(f"[FULL_SCAN] Failed to load artist list: {exc}")
         logger.exception("[FULL_SCAN] get_all_artists failed", error=str(exc))
         record_scan("all", "failed", message=f"full scan failed: {exc}", artist="_SCAN_SESSION_", album="all")
+        # The full_scan progress row was NEVER marked running here (the
+        # failure is before ``write_progress(... True)``), but a PREVIOUS
+        # crashed scan may have left it running — or the row may carry a
+        # stale running flag from an interrupted attempt.  Clear it so the
+        # dashboard doesn't show "still running" and the next scan isn't
+        # blocked by is_popularity_scan_active().
+        try:
+            from services.scanning import scan_state as _scan_state
+            _scan_state.write_progress_with_current_artist(
+                progress_file,
+                "full_scan",
+                False,
+                extra={"status": "failed", "mode": "all", "exit_code": 1, "error": str(exc)},
+            )
+        except Exception as _clear_exc:
+            logger.debug("[FULL_SCAN] Failed to clear full_scan progress row", error=str(_clear_exc))
         return
     total = len(artists)
 
@@ -293,6 +309,11 @@ def _run_full_scan_as_artist_pipeline(
     )
 
     status = "complete"
+    # Per-artist failure / abandonment records, keyed by artist name, carried
+    # on the full_scan progress row so the dashboard can show an investigation
+    # banner (the reported need: when an artist is abandoned after the budget,
+    # surface the reason instead of silently continuing).
+    _abandoned_artists: dict[str, list[dict[str, Any]]] = {}
     # Stage bands for the overall percentage.  Each artist contributes an
     # equal share; within an artist the four stages (Metadata, Popularity,
     # Singles Detection, Essentia) each take a quarter of that share.  The
@@ -381,19 +402,75 @@ def _run_full_scan_as_artist_pipeline(
             _cb.last_write = 0.0
 
             log_unified(f"[FULL_SCAN] Artist {i + 1}/{total}: {artist}")
+            # Bound each artist's pipeline with a hard wall-clock budget so
+            # a HUNG artist (a stuck API/DNS/DB call that the per-track
+            # timeouts don't catch) cannot freeze the whole scan.  The
+            # reported freeze: the dashboard kept showing the scan running
+            # with a live-but-stuck worker thread — the runtime self-heal
+            # correctly refuses to clear a live owner, so the scan never
+            # recovered.  Abandon the artist after the budget and move on.
+            _artist_budget = 1800  # 30 min per artist default
             try:
+                from helpers.config_helpers import get_feature
+                _artist_budget = int(get_feature("full_scan_artist_timeout_seconds", 1800) or 1800)
+            except Exception:
+                pass
+
+            def _run_one_artist() -> None:
                 run_artist_scan_pipeline(artist, force=force, progress_callback=_cb)
+
+            from services.popularity.scan_stage_runner import _bounded_call_report
+            _artist_report = _bounded_call_report(
+                _run_one_artist,
+                seconds=_artist_budget,
+                label=f"artist pipeline '{artist}'",
+            )
+            if _artist_report.get("ok"):
                 log_unified(f"[FULL_SCAN] Artist {i + 1}/{total} done: {artist}")
-            except Exception as _aexc:
-                # run_artist_scan_pipeline swallows most errors internally, but
-                # a raised one must not silently end the whole scan loop as if
-                # it completed.
-                log_unified(f"[FULL_SCAN] Artist {i + 1}/{total} FAILED: {artist} — {_aexc}")
-                logger.warning(
-                    "[FULL_SCAN] Artist failed",
-                    artist=artist,
-                    error=str(_aexc),
+            else:
+                # Record the failure/abandonment reason so the dashboard can
+                # show an investigation banner instead of silently moving on.
+                _abandoned = bool(_artist_report.get("abandoned"))
+                _reason = str(_artist_report.get("reason") or "unknown")
+                log_unified(
+                    f"[FULL_SCAN] Artist {i + 1}/{total} "
+                    f"{'ABANDONED' if _abandoned else 'FAILED'}: {artist} — {_reason}"
                 )
+                logger.warning(
+                    "[FULL_SCAN] Artist %s",
+                    "abandoned (budget exceeded)" if _abandoned else "failed",
+                    artist=artist,
+                    reason=_reason,
+                )
+                # Persist to the full_scan progress row so /api/scan-progress
+                # carries it; the dashboard banner reads scan.abandoned_artists.
+                try:
+                    _abandoned_list: list[dict[str, Any]] = list(
+                        _abandoned_artists.get(artist) or []
+                    )
+                    _abandoned_artists.setdefault(artist, [])
+                    _abandoned_artists[artist].append({
+                        "abandoned": _abandoned,
+                        "reason": _reason,
+                        "budget_seconds": _artist_report.get("budget_seconds") if _abandoned else None,
+                        "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    })
+                    write_progress_with_current_artist(
+                        progress_file,
+                        "full_scan",
+                        True,
+                        current_artist=artist,
+                        extra={
+                            "status": "running",
+                            "mode": "all",
+                            "percent_complete": 5 + int((i / total) * 90),
+                            "current_stage": "Metadata",
+                            "current_item": f"{artist} (abandoned)",
+                            "abandoned_artists": _abandoned_artists,
+                        },
+                    )
+                except Exception as _rec_exc:
+                    logger.debug("[FULL_SCAN] Abandoned-artist record failed", error=str(_rec_exc))
 
             # Persist the resume checkpoint so a stopped/failed "All" scan can
             # RESUME from this artist next time (unless restart was requested —

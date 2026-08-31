@@ -723,8 +723,36 @@ function updateActiveScans() {
       panel.style.display = "";
       body.innerHTML = active.map(scan => {
         const pct = Math.min(scan.percent_complete ?? scan.progress ?? 0, 100);
+        // ── Abandoned / failed artists banner ────────────────────────────
+        // The full-scan orchestrator records per-artist failures and budget
+        // abandons on the progress row (scan.abandoned_artists).  Surface
+        // them so the operator can investigate instead of the scan silently
+        // moving past a hung artist.
+        let bannerHtml = "";
+        const abandoned = scan.abandoned_artists || {};
+        const abandonedEntries = Object.entries(abandoned);
+        if (abandonedEntries.length > 0) {
+          const rows = abandonedEntries.map(([artistName, records]) => {
+            const recs = Array.isArray(records) ? records : [];
+            const reasons = recs.map(r => {
+              const reason = r && r.reason ? String(r.reason) : "unknown";
+              const tag = r && r.abandoned ? '<span class="badge bg-warning text-dark ms-1">abandoned</span>' : '<span class="badge bg-danger ms-1">failed</span>';
+              return `<div class="ms-2 small">${tag} <code>${escapeHtml(reason)}</code></div>`;
+            }).join("");
+            return `<div class="mb-1">
+              <i class="bi bi-exclamation-triangle-fill text-warning me-1"></i><strong>${escapeHtml(artistName)}</strong>
+              ${reasons}
+            </div>`;
+          }).join("");
+          bannerHtml = `<div class="alert alert-warning py-2 px-3 mb-2" style="font-size:.85rem;">
+            <div class="fw-semibold mb-1"><i class="bi bi-hourglass-split me-1"></i>Artists skipped / abandoned — investigate</div>
+            ${rows}
+            <div class="text-muted small mt-1">These artists were abandoned after the per-artist time budget or raised an error; their tracks were not fully scanned.</div>
+          </div>`;
+        }
         return `
           <div class="mb-2">
+            ${bannerHtml}
             <div class="d-flex justify-content-between align-items-center mb-1">
               <span><i class="bi bi-activity me-1"></i><strong>${escapeHtml(SCAN_TYPE_DISPLAY_NAMES[scan.scan_type] || scan.scan_type)}</strong>
               ${scan.current_stage ? `<span class="badge bg-info ms-2" style="font-size:0.7rem;">${escapeHtml(scan.current_stage)}</span>` : ''}

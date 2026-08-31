@@ -368,3 +368,37 @@ class TestDiscogsArtistIdLockNotHeldAcrossIO:
         # And there's a second lock block AFTER the network call (cache write).
         assert body.count("with _discogs_artist_id_lock:") == 2
         assert "_discogs_artist_id_cache[_cache_key]" in body
+
+
+class TestBoundedCallReport:
+    """``_bounded_call_report`` must report WHY a bounded unit failed or was
+    abandoned so the dashboard can show an investigation banner."""
+
+    def test_ok_completion(self):
+        from services.popularity.scan_stage_runner import _bounded_call_report
+
+        report = _bounded_call_report(lambda: None, seconds=10, label="x")
+        assert report == {"ok": True}
+
+    def test_raised_exception_reports_reason(self):
+        from services.popularity.scan_stage_runner import _bounded_call_report
+
+        def _boom():
+            raise RuntimeError("disk full")
+
+        report = _bounded_call_report(_boom, seconds=10, label="x")
+        assert report["ok"] is False
+        assert not report.get("abandoned", False)
+        assert "disk full" in report["reason"]
+
+    def test_timeout_reports_abandoned(self):
+        from services.popularity.scan_stage_runner import _bounded_call_report
+
+        def _hang():
+            time.sleep(5)
+
+        report = _bounded_call_report(_hang, seconds=0.2, label="hang")
+        assert report["ok"] is False
+        assert report["abandoned"] is True
+        assert "budget" in report["reason"].lower()
+        assert report["budget_seconds"] == 0

@@ -78,6 +78,11 @@ def _normalise_entry(scan_type: str, state: dict[str, Any]) -> dict[str, Any]:
         "status": state.get("status"),
         "message": state.get("message"),
         "last_updated": state.get("last_updated"),
+
+        # Per-artist failure / abandonment records (full-scan orchestrator
+        # writes these when a bounded artist pipeline exceeds its budget or
+        # raises) — the dashboard shows an investigation banner.
+        "abandoned_artists": state.get("abandoned_artists") or {},
     }
 
 

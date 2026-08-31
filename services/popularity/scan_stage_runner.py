@@ -141,6 +141,53 @@ def _bounded_call_result(fn, seconds: float, label: str, default: Any = None) ->
     return _box["result"]
 
 
+def _bounded_call_report(fn, seconds: float, label: str) -> dict[str, Any]:
+    """Run ``fn()`` under a hard budget, returning a status report.
+
+    Returns:
+        ``{"ok": True}`` on completion.
+        ``{"ok": False, "reason": "<exception>"}`` when the call raised.
+        ``{"ok": False, "abandoned": True, "reason": "budget exceeded ...",
+          "budget_seconds": <s>}`` when the call exceeded the time budget and
+        was abandoned (the daemon thread keeps running in the background).
+
+    Lets an orchestrator record WHY a bounded unit (e.g. one artist's scan
+    pipeline) failed or was abandoned, so the dashboard can show an
+    investigation banner instead of silently continuing.
+    """
+    import threading
+
+    if seconds is None or seconds <= 0:
+        try:
+            fn()
+            return {"ok": True}
+        except BaseException as exc:  # noqa: BLE001
+            return {"ok": False, "reason": str(exc)}
+
+    _done = threading.Event()
+    _box: dict[str, Any] = {"exc": None}
+
+    def _runner() -> None:
+        try:
+            fn()
+        except BaseException as exc:  # noqa: BLE001
+            _box["exc"] = exc
+        finally:
+            _done.set()
+
+    _thread = threading.Thread(target=_runner, name=f"bounded-{label[:40]}", daemon=True)
+    _thread.start()
+    if not _done.wait(seconds):
+        _reason = f"budget exceeded ({int(seconds)}s) — abandoned, scan continues"
+        logger.warning("Budget exceeded — abandoned, scan continues", task=label, budget_seconds=seconds)
+        return {"ok": False, "abandoned": True, "reason": _reason, "budget_seconds": int(seconds)}
+    if _box["exc"] is not None:
+        _reason = str(_box["exc"])
+        logger.warning("Bounded call failed", task=label, error=_reason)
+        return {"ok": False, "reason": _reason}
+    return {"ok": True}
+
+
 def _duration_seconds(value: Any) -> float | None:
     """Best-effort track duration in seconds (None when unknown/zero)."""
     try:

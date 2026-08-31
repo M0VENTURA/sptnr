@@ -518,7 +518,14 @@ class NavidromeClient:
     def delete_playlist(self, playlist_id: str) -> bool:
         try:
             data = self._get_subsonic_response("deletePlaylist", timeout=30, id=playlist_id)
-            return data.get("status") == "ok"
+            # Navidrome returns a 2xx with an EMPTY body for deletePlaylist
+            # (like other mutation endpoints).  ``_get_subsonic_response``
+            # returns {} for that — which is SUCCESS, not failure.  The old
+            # ``data.get("status") == "ok"`` check made the dedupe/sweep
+            # think every delete failed (so it logged "Could not delete
+            # orphaned playlist" and the duplicate stayed in the UI on the
+            # next fetch, even though the HTTP delete was accepted).
+            return not data or data.get("status") == "ok"
         except Exception as exc:
             logger.error("Failed to delete playlist", playlist_id=playlist_id, error=str(exc))
             return False
@@ -531,7 +538,8 @@ class NavidromeClient:
                 playlistId=playlist_id,
                 public="true" if public else "false",
             )
-            return data.get("status") == "ok"
+            # Empty-body-success contract (mutation endpoints).
+            return not data or data.get("status") == "ok"
         except Exception as exc:
             logger.error("Failed to update playlist public status", playlist_id=playlist_id, public=public, error=str(exc))
             return False
@@ -575,7 +583,8 @@ class NavidromeClient:
                 playlistId=playlist_id,
                 name=name,
             )
-            return data.get("status") == "ok"
+            # Same empty-body-success contract as delete_playlist.
+            return not data or data.get("status") == "ok"
         except Exception as exc:
             logger.error("Failed to rename playlist", playlist_id=playlist_id, error=str(exc))
             return False
