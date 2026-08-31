@@ -20,6 +20,15 @@ _VALID_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 # so a runtime set_log_level() toggle can raise/lower its level.
 _UNIFIED_FILE_HANDLER = None
 
+# Size-capped log rotation.  The old ``TimedRotatingFileHandler`` (midnight
+# only, no size cap) let a DEBUG run grow debug.log to 64 MB+ in a single day
+# (the httpcore/httpx request trace is emitted at DEBUG for EVERY request).
+# Each file handler now rotates at ``_LOG_MAX_BYTES`` with ``_LOG_BACKUP_COUNT``
+# backups — a 20 MB × 5 cap keeps ~120 MB per file at most and never grows
+# without bound.
+_LOG_MAX_BYTES = 20 * 1024 * 1024  # 20 MB
+_LOG_BACKUP_COUNT = 5
+
 
 def _resolve_log_level() -> str:
     """Resolve the configured root log level (default ``INFO``)."""
@@ -313,10 +322,10 @@ def _setup_standard_logging(service_name: str, log_dir: str, use_structlog: bool
         },
         "handlers": {
             "unified_file": {
-                "class": "logging.handlers.TimedRotatingFileHandler",
+                "class": "logging.handlers.RotatingFileHandler",
                 "filename": os.path.join(log_dir, "unified_scan.log"),
-                "when": "midnight",
-                "backupCount": 7,
+                "maxBytes": _LOG_MAX_BYTES,
+                "backupCount": _LOG_BACKUP_COUNT,
                 "encoding": "utf-8",
                 "formatter": "unified",
                 "filters": ["unified_filter"],
@@ -327,46 +336,46 @@ def _setup_standard_logging(service_name: str, log_dir: str, use_structlog: bool
                 "level": root_level,
             },
             "info_file": {
-                "class": "logging.handlers.TimedRotatingFileHandler",
+                "class": "logging.handlers.RotatingFileHandler",
                 "filename": os.path.join(log_dir, "info.log"),
-                "when": "midnight",
-                "backupCount": 7,
+                "maxBytes": _LOG_MAX_BYTES,
+                "backupCount": _LOG_BACKUP_COUNT,
                 "encoding": "utf-8",
                 "formatter": "verbose",
                 "level": "INFO",
             },
             "debug_file": {
-                "class": "logging.handlers.TimedRotatingFileHandler",
+                "class": "logging.handlers.RotatingFileHandler",
                 "filename": os.path.join(log_dir, "debug.log"),
-                "when": "midnight",
-                "backupCount": 7,
+                "maxBytes": _LOG_MAX_BYTES,
+                "backupCount": _LOG_BACKUP_COUNT,
                 "encoding": "utf-8",
                 "formatter": "verbose",
                 "level": "DEBUG",
             },
             "error_file": {
-                "class": "logging.handlers.TimedRotatingFileHandler",
+                "class": "logging.handlers.RotatingFileHandler",
                 "filename": os.path.join(log_dir, "error.log"),
-                "when": "midnight",
-                "backupCount": 7,
+                "maxBytes": _LOG_MAX_BYTES,
+                "backupCount": _LOG_BACKUP_COUNT,
                 "encoding": "utf-8",
                 "formatter": "verbose",
                 "level": "ERROR",
             },
             "queue_file": {
-                "class": "logging.handlers.TimedRotatingFileHandler",
+                "class": "logging.handlers.RotatingFileHandler",
                 "filename": os.path.join(log_dir, "queue.log"),
-                "when": "midnight",
-                "backupCount": 7,
+                "maxBytes": _LOG_MAX_BYTES,
+                "backupCount": _LOG_BACKUP_COUNT,
                 "encoding": "utf-8",
                 "formatter": "unified",
                 "level": "INFO",
             },
             "search_file": {
-                "class": "logging.handlers.TimedRotatingFileHandler",
+                "class": "logging.handlers.RotatingFileHandler",
                 "filename": os.path.join(log_dir, "search.log"),
-                "when": "midnight",
-                "backupCount": 7,
+                "maxBytes": _LOG_MAX_BYTES,
+                "backupCount": _LOG_BACKUP_COUNT,
                 "encoding": "utf-8",
                 "formatter": "unified",
                 "level": "INFO",

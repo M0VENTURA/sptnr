@@ -1085,6 +1085,9 @@ def run_scan(
     _essential_featured_rows: list | None = None
     _essential_playlists_done: set[str] = set()
     _section_artist: str | None = None
+    # Tracks which artist the Pass-1 pre-scan has already run for (so it
+    # runs ONCE per artist, not before every album of the same artist).
+    _pre_scan_done_artist: str | None = None
 
     def _close_artist_section(artist_name: str | None) -> None:
         nonlocal _essential_featured_rows, _essential_playlists_done
@@ -1156,53 +1159,72 @@ def run_scan(
         artist = album_row.get("artist") or ""
 
         if artist and artist != _section_artist:
-            _close_artist_section(_section_artist)
-            _section_artist = artist
+            # Normalize for the section comparison so cosmetic variants
+            # ("Atreyu" vs "Atreyu " / different casing) don't re-trigger the
+            # Pass-1 pre-scan + artist-section close for EVERY album of the
+            # same artist — the reported scan that logged the pre-scan before
+            # each of 7 albums (wasteful DB re-reads + per-album essentials
+            # close) instead of once.
+            _artist_norm = str(artist).strip().lower()
+            _section_norm = str(_section_artist or "").strip().lower()
+            if _artist_norm != _section_norm:
+                _close_artist_section(_section_artist)
+                _section_artist = artist
 
+        # Pass-1 artist pre-scan — runs ONCE per artist (when the section
+        # artist changes), NOT before every album.  Previously it sat inside
+        # an unconditional ``if artist:`` so the same artist re-triggered it
+        # per album (the "Pass-1 artist pre-scan: Atreyu — 90 catalogue
+        # score(s)" line repeated before albums 1, 2, 3 ... of the same
+        # artist), and with cosmetic artist variants each repeat also closed
+        # the artist section (essentials + star flush) per album.
         if artist:
-            try:
-                _section_albums = [_ar for _ar in albums if (_ar.get("artist") or "") == artist]
-                _section_titles: set[str] = set()
-                _pre_scores: list[float] = []
-                _pre_listens: list[float] = []
-                
-                for _ar in _section_albums:
-                    for _t in (_ar.get("tracks") or []):
-                        _t_title = str(_t.get("title") or "").strip().lower()
-                        _section_titles.add(_t_title)
-                        _score = float(_t.get("final_score") or _t.get("popularity") or _t.get("popularity_score") or 0)
-                        if _score > 0:
-                            _pre_scores.append(_score)
-                        _lf = float(_t.get("lastfm_listeners") or 0)
-                        if _lf > 0:
-                            _pre_listens.append(_lf)
-                            
-                _pre_scores += _load_artist_db_scores(artist, _section_titles)
+            _artist_key_norm = str(artist).strip().casefold()
+            if _pre_scan_done_artist != _artist_key_norm:
+                _pre_scan_done_artist = _artist_key_norm
                 try:
-                    _pre_listens += _load_artist_db_listeners(artist, _section_titles)
+                    _section_albums = [_ar for _ar in albums if (_ar.get("artist") or "") == artist]
+                    _section_titles: set[str] = set()
+                    _pre_scores: list[float] = []
+                    _pre_listens: list[float] = []
+                    
+                    for _ar in _section_albums:
+                        for _t in (_ar.get("tracks") or []):
+                            _t_title = str(_t.get("title") or "").strip().lower()
+                            _section_titles.add(_t_title)
+                            _score = float(_t.get("final_score") or _t.get("popularity") or _t.get("popularity_score") or 0)
+                            if _score > 0:
+                                _pre_scores.append(_score)
+                            _lf = float(_t.get("lastfm_listeners") or 0)
+                            if _lf > 0:
+                                _pre_listens.append(_lf)
+                                
+                    _pre_scores += _load_artist_db_scores(artist, _section_titles)
+                    try:
+                        _pre_listens += _load_artist_db_listeners(artist, _section_titles)
+                    except Exception as exc:
+                        logger.debug("Pass-1 listen baseline failed", artist=artist, error=str(exc))
+                        
+                    _pre_primary = strip_featured_artist(artist)
+                    if len(_pre_scores) >= ALBUM_RELATIVE_MIN_ALBUM_TRACKS:
+                        options["artist_stats_override"] = list(_pre_scores)
+                    else:
+                        options.pop("artist_stats_override", None)
+                        
+                    if len(_pre_listens) >= ALBUM_RELATIVE_MIN_ALBUM_TRACKS:
+                        options["artist_listen_override"] = list(_pre_listens)
+                    else:
+                        options.pop("artist_listen_override", None)
+                        
+                    log_unified(
+                        f"[scan_runner] Pass-1 artist pre-scan: {_pre_primary} — "
+                        f"{len(_pre_scores)} catalogue score(s), "
+                        f"{len(_pre_listens)} listen(s) pre-loaded for artist_z"
+                    )
                 except Exception as exc:
-                    logger.debug("Pass-1 listen baseline failed", artist=artist, error=str(exc))
-                    
-                _pre_primary = strip_featured_artist(artist)
-                if len(_pre_scores) >= ALBUM_RELATIVE_MIN_ALBUM_TRACKS:
-                    options["artist_stats_override"] = list(_pre_scores)
-                else:
+                    logger.debug("Pass-1 artist pre-scan failed", artist=artist, error=str(exc))
                     options.pop("artist_stats_override", None)
-                    
-                if len(_pre_listens) >= ALBUM_RELATIVE_MIN_ALBUM_TRACKS:
-                    options["artist_listen_override"] = list(_pre_listens)
-                else:
                     options.pop("artist_listen_override", None)
-                    
-                log_unified(
-                    f"[scan_runner] Pass-1 artist pre-scan: {_pre_primary} — "
-                    f"{len(_pre_scores)} catalogue score(s), "
-                    f"{len(_pre_listens)} listen(s) pre-loaded for artist_z"
-                )
-            except Exception as exc:
-                logger.debug("Pass-1 artist pre-scan failed", artist=artist, error=str(exc))
-                options.pop("artist_stats_override", None)
-                options.pop("artist_listen_override", None)
 
         album = album_row.get("album") or ""
         tracks = album_row.get("tracks") or []
