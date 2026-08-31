@@ -1234,6 +1234,18 @@ async function removeMbDownload(downloadId) {
 
 let currentSlskdSearchId = null;
 let slskdPollInterval = null;
+// Grace-attempt counter for the Soulseek-tab polling (searchSoulseek →
+// pollSlskdSearchResults): how many complete-with-0-files polls we've
+// tolerated while waiting for late-arriving results.
+let _slskdCompleteGraceCount = 0;
+
+// Manual-search grace polling: slskd flips a search to a terminal state
+// ("Completed, TimedOut") while responses are STILL streaming in.  When the
+// first poll after completion returns 0 files, keep polling for this many
+// more attempts (1.5s each ≈ 12s) so late-arriving results surface instead
+// of the modal declaring "No files found" (the reported manual searches that
+// showed 0 results yet had real files the user could download).
+const _SLSKD_COMPLETE_GRACE_POLLS = 8;
 
 async function searchSoulseek(event) {
   if (event && event.preventDefault) event.preventDefault();
@@ -1291,11 +1303,26 @@ async function pollSlskdSearchResults() {
     const isComplete = data.isComplete || false;
     const state = data.state || 'Searching';
 
+    // ── Grace polling for late-arriving results ─────────────────────────
+    // slskd flips a search to "Completed, TimedOut" while responses are
+    // STILL streaming in.  Stopping at the first isComplete + 0-files poll
+    // made the Soulseek tab / queue-item manual search say "No results
+    // found" even though real files landed moments later (the reported
+    // manual searches that showed 0 results yet had downloadable files).
+    // Keep polling for a few more attempts before declaring empty.  This
+    // mirrors the modal flow's `_SLSKD_COMPLETE_GRACE_POLLS` behaviour.
+    _slskdCompleteGraceCount = _slskdCompleteGraceCount || 0;
     if (isComplete && results.length === 0) {
+      if (_slskdCompleteGraceCount < _SLSKD_COMPLETE_GRACE_POLLS) {
+        _slskdCompleteGraceCount++;
+        return; // interval keeps firing; grace attempts are consumed
+      }
       resultsEl.innerHTML = `<div class="alert alert-info"><i class="bi bi-info-circle"></i> Search complete (${state}). No results found.</div>`;
       if (slskdPollInterval) { clearInterval(slskdPollInterval); slskdPollInterval = null; }
+      _slskdCompleteGraceCount = 0;
       return;
     }
+    _slskdCompleteGraceCount = 0;
 
     let html = '<div class="table-responsive"><table class="table table-hover"><thead><tr><th>File</th><th class="text-center">User</th><th class="text-center">Size</th><th class="text-center">Bitrate</th><th class="text-center">Action</th></tr></thead><tbody>';
     results.forEach(r => {
@@ -1588,7 +1615,17 @@ async function pollSoulseekManualSearchResults(searchId, attempt, transientError
     }
     renderSoulseekManualSearchResults(results);
 
-    if (!isComplete && attempt < 60) {
+    // Grace polling after slskd reports the search "complete" with zero
+    // files.  slskd flips a search to "Completed, TimedOut" while responses
+    // are STILL streaming in (peers answer after the timeout fired) — the
+    // reported manual searches that showed "0 results" even though the
+    // search had real results (the user could select and download them).
+    // Stopping at the first isComplete=0 poll made the modal say "No files
+    // found" (and the search log record "0 results") even though files were
+    // on their way.  Keep polling for a short grace window so late-arriving
+    // responses surface; only give up once the grace is exhausted.
+    const _graceExhausted = isComplete && results.length === 0 && attempt >= _SLSKD_COMPLETE_GRACE_POLLS;
+    if ((!isComplete || (isComplete && results.length === 0 && !_graceExhausted)) && attempt < 60) {
       state.pollTimer = setTimeout(() => {
         pollSoulseekManualSearchResults(searchId, attempt + 1, 0);
       }, 1500);

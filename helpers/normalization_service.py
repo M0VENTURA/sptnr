@@ -192,12 +192,28 @@ def strip_remaster_suffix(value: str) -> str:
 
 
 _ALBUM_EDITION_STRIP_RE = re.compile(
-    r"\s*[\(\[]\s*(?:clean|explicit|deluxe(?:\s+edition)?|special\s+edition|"
-    r"expanded\s+edition|extended\s+edition|"
+    r"\s*[\(\[]\s*(?:clean|explicit|deluxe(?:\s+edition)?|deluxe\s+version|"
+    r"special\s+edition|expanded\s+edition|extended\s+edition|"
     r"(?:\d+\s*(?:year\s*)?)?anniversary(?:\s+edition)?|"
     r"reissue|limited\s+edition|collector(?:'s)?\s+edition|super\s+deluxe|"
-    r"standard\s+edition|digital\s+edition|remaster(?:ed)?(?:\s+edition)?)"
+    r"standard\s+edition|digital\s+edition|remaster(?:ed)?(?:\s+edition)?|"
+    r"mastered\s+for\s+(?:itunes|apple\s+digital\s+masters)|"
+    r"(?:bmg\s+)?club\s+edition|"
+    r"(?:\d[\d,]*\s*枚限定生産特装盤|限定生産|完全生産限定|初回限定|"
+    r"完全受注生産|数量限定|期間限定|予約限定|"
+    r"limited\s+production(?:\s+edition)?|first\s+press(?:\s+edition)?|"
+    r"premium\s+edition|special\s+price))"
     r"\s*[\)\]]\s*$",
+    re.IGNORECASE,
+)
+
+# A trailing pair of IDENTICAL parenthetical markers, e.g. "(5,000枚限定生産
+# 特装盤) (5,000枚限定生産特装盤)" or "(mastered for iTunes) (mastered for
+# iTunes)".  Tag sources that duplicate an edition marker once per re-tag
+# produce this shape for markers NOT in the keyword list above — the generic
+# rule collapses them regardless of language/content.
+_REPEATED_TRAILING_MARKER_RE = re.compile(
+    r"\s*(\([^()]*\))\s*\(\1\)\s*$",
     re.IGNORECASE,
 )
 
@@ -211,13 +227,19 @@ def strip_album_edition_marker(value: str) -> str:
     Machine (reissue) (reissue) (reissue)" collapses to the clean release
     title — some tag sources duplicate the marker once per re-tag.  A bare
     "(reissue)" / "(anniversary)" is an edition marker too, so it is
-    stripped (previously only "anniversary edition" matched and "reissue"
-    was not matched at all).
+    stripped.  Also handles:
+      - "mastered for iTunes" / "(BMG club edition)" / "(deluxe version)"
+      - Japanese limited-edition markers: "(5,000枚限定生産特装盤)",
+        "(完全生産限定盤)", "(初回限定盤)" ...
+      - ANY repeated identical trailing marker (generic dedup — catches
+        markers outside the keyword list regardless of language).
     """
     cleaned = value or ""
     prev = None
     for _ in range(8):  # bounded loop — never hang on pathological input
         stripped = _ALBUM_EDITION_STRIP_RE.sub("", cleaned).strip()
+        # Generic dedup of an identical repeated trailing marker.
+        stripped = _REPEATED_TRAILING_MARKER_RE.sub("", stripped).strip()
         if stripped == cleaned or stripped == prev:
             break
         prev = cleaned

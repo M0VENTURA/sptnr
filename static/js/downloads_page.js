@@ -134,20 +134,43 @@ function pollSlskdResults() {
       document.getElementById('slskdResponseCount').textContent = responseCount + ' response' + (responseCount !== 1 ? 's' : '');
       document.getElementById('slskdResultCount').textContent = totalFiles + ' file' + (totalFiles !== 1 ? 's' : '');
       
+      // Grace window: slskd flips a search to a terminal state ("Completed,
+      // TimedOut") while responses are STILL streaming in.  Stopping at the
+      // first terminal poll with 0 files showed "No results found" even
+      // though real files were on the way (the reported manual searches that
+      // showed 0 but had downloadable results).  Keep polling for a short
+      // grace after a terminal 0-result poll.
       if (isComplete) {
-        document.getElementById('slskdStatusText').textContent = 'Search completed - ' + state;
-        if (slskdPollInterval) {
-          clearInterval(slskdPollInterval);
-          slskdPollInterval = null;
+        if (totalFiles > 0) {
+          document.getElementById('slskdStatusText').textContent = 'Search completed - ' + state;
+          if (slskdPollInterval) {
+            clearInterval(slskdPollInterval);
+            slskdPollInterval = null;
+          }
+        } else {
+          // Terminal but still 0 files — grace-poll up to 8 more times (8s)
+          // before declaring "no results".
+          const grace = Number(window._slskdTerminalGrace || 0) + 1;
+          window._slskdTerminalGrace = grace;
+          if (grace >= 8) {
+            document.getElementById('slskdStatusText').textContent = 'Search completed - ' + state;
+            if (slskdPollInterval) {
+              clearInterval(slskdPollInterval);
+              slskdPollInterval = null;
+            }
+          } else {
+            document.getElementById('slskdStatusText').textContent = 'Searching... (' + responseCount + ' responses, ' + totalFiles + ' files) — waiting for late responses';
+          }
         }
       } else {
+        window._slskdTerminalGrace = 0;
         document.getElementById('slskdStatusText').textContent = `Searching... (${responseCount} responses, ${totalFiles} files)`;
       }
       
       // Display user responses
       if (Object.keys(slskdResponsesData).length > 0) {
         displaySlskdResponses();
-      } else if (isComplete) {
+      } else if (isComplete && Number(window._slskdTerminalGrace || 0) >= 8) {
         document.getElementById('slskdResults').innerHTML = `
           <div class="alert alert-info">
             <i class="bi bi-info-circle"></i> No results found.

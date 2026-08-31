@@ -223,16 +223,29 @@ def slskd_search_results(search_id: str) -> Any:
 
         with _manual_search_lock:
             state_entry = _manual_search_state.get(search_id)
-            if state_entry is not None and count != state_entry.get("last_result_count", -1):
-                state_entry["last_result_count"] = count
-                _log_manual_search_event(
-                    search_type="manual",
-                    query=state_entry.get("query") or search_id,
-                    result_count=count,
-                    notes="results_returned",
-                )
-            if is_complete and search_id in _manual_search_state:
-                _manual_search_state.pop(search_id, None)
+            if state_entry is not None:
+                # Log whenever the result count CHANGES (including the first
+                # non-zero count after a "Completed, TimedOut" terminal flag —
+                # slskd keeps streaming responses past the timeout, and the
+                # frontend grace-polls so this route is hit again).
+                if count != state_entry.get("last_result_count", -1):
+                    state_entry["last_result_count"] = count
+                    _log_manual_search_event(
+                        search_type="manual",
+                        query=state_entry.get("query") or search_id,
+                        result_count=count,
+                        notes="results_returned",
+                    )
+                # Keep the state alive through the frontend's grace window so
+                # late-arriving results get logged.  Pop only when the search
+                # is complete AND we either have results or have already
+                # observed the terminal state once (a second terminal poll
+                # means the frontend stopped grace-polling).
+                if is_complete:
+                    _term_count = state_entry.get("_terminal_seen", 0) + 1
+                    state_entry["_terminal_seen"] = _term_count
+                    if _term_count >= 2 or count > 0:
+                        _manual_search_state.pop(search_id, None)
 
         return jsonify({
             "results": results,
