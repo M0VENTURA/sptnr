@@ -416,6 +416,26 @@ function buildConfigObject() {
         }
       }
     ),
+    metadata_update: Object.assign(
+      {},
+      (window.pageConfig && window.pageConfig.metadata_update) || {},
+      {
+        album_name_source: getValue('metadata_update_album_name_source', 'album'),
+        album_name_update_target: getValue('metadata_update_album_name_target', 'db'),
+        update_on_files: Object.assign(
+          {},
+          ((window.pageConfig && window.pageConfig.metadata_update && window.pageConfig.metadata_update.update_on_files) || {}),
+          {
+            album_name: getChecked('metadata_update_field_album_name', false),
+            year: getChecked('metadata_update_field_year', false),
+            album_artist: getChecked('metadata_update_field_album_artist', false),
+            genres: getChecked('metadata_update_field_genres', false),
+            cover_art: getChecked('metadata_update_field_cover_art', false),
+            lyrics: getChecked('metadata_update_field_lyrics', false)
+          }
+        )
+      }
+    ),
     popularity: Object.assign(
       {},
       (window.pageConfig && window.pageConfig.popularity) || {},

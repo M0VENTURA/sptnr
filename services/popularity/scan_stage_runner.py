@@ -45,6 +45,7 @@ from services.scanning.scan_state import (
     is_stop_requested,
     save_artist_scan_checkpoint,
     write_progress_with_current_artist,
+    get_scan_progress_path,
 )
 from services.scanning.scan_history_service import record_scan, was_album_scanned
 from services.catalog.album_classification_service import (
@@ -872,6 +873,12 @@ def run_scan(
     _artist_pending_albums: dict[str, list[dict[str, Any]]] = {}
     _artist_db_rows_cache: dict[str, list[Any]] = {}
 
+    # Album-name renames collected during the album loop, applied AFTER the
+    # artist section's star-rating finalise (deferral is required — renaming
+    # tracks rows mid-loop would make the finalise's ``album = :album``
+    # queries find nothing).
+    _deferred_album_renames: dict[str, list[dict[str, Any]]] = {}
+
     def _load_artist_db_scores(artist: str, scanned_titles: set[str]) -> list[float]:
         db_rows: list[tuple[str, str]] = []
         try:
@@ -1086,6 +1093,45 @@ def run_scan(
                 _flush_artist_star_ratings(artist_name)
             except BaseException as exc:
                 logger.debug("Deferred star-rating flush failed", artist=artist_name, error=str(exc))
+
+            # Apply the artist's deferred album-name renames NOW — the star
+            # ratings have been finalised against the ORIGINAL album names,
+            # so renaming the tracks rows afterwards is safe and the
+            # cleaned names persist for the next scan.
+            try:
+                _renames = _deferred_album_renames.pop(artist_name, []) or []
+                from services.metadata.album_name_update_service import (
+                    apply_album_name_update,
+                )
+                for _name_update in _renames:
+                    try:
+                        _old = str(_name_update.get("album") or "")
+                        _new = str(_name_update.get("new_name") or "")
+                        _res = apply_album_name_update(
+                            artist=artist_name,
+                            album=_old,
+                            new_name=_new,
+                        )
+                        if _res.get("changed"):
+                            log_unified(
+                                f"[ALBUM_NAME] '{artist_name} - {_old}' → '{_new}' "
+                                f"(reason={_name_update.get('reason')}, "
+                                f"db={_res.get('db_updated')}, "
+                                f"files={_res.get('files_updated')})"
+                            )
+                    except Exception as exc:
+                        logger.debug(
+                            "[ALBUM_NAME] Deferred rename failed",
+                            artist=artist_name,
+                            album=_name_update.get("album"),
+                            error=str(exc),
+                        )
+            except Exception as exc:
+                logger.debug(
+                    "[ALBUM_NAME] Deferred rename batch failed",
+                    artist=artist_name,
+                    error=str(exc),
+                )
                 
         _essential_playlists_done, _essential_featured_rows = _close_artist_essential_section(
             artist_name,
@@ -1383,9 +1429,21 @@ def run_scan(
 
         if effective_stop_file and artist and artist != last_checkpoint_artist:
             try:
+                # The row's scan-type label follows the file being written:
+                # a dedicated popularity scan writes "popularity_scan", but
+                # when an ORCHESTRATOR drives this runner (dashboard "All"
+                # full scan passes stop_progress_file=full_scan) the row is
+                # the full-scan row — labelling it "popularity_scan" created
+                # the phantom "Popularity Scan 0/?" active marker next to the
+                # real "Full Scan" row on the dashboard.
+                _row_scan_type = (
+                    "full_scan"
+                    if effective_stop_file == get_scan_progress_path("full_scan")
+                    else "popularity_scan"
+                )
                 write_progress_with_current_artist(
                     effective_stop_file,
-                    "popularity_scan",
+                    _row_scan_type,
                     True,
                     current_artist=artist,
                     extra={"status": "running", "percent_complete": progress, "current_item": current_item},
@@ -2035,6 +2093,45 @@ def run_scan(
                         )
                 except Exception as exc:
                     logger.debug("Album tag sync failed", artist=artist, album=album, error=str(exc))
+
+            # ── Album-name cleaning (metadata_update config) ──────────────
+            # The user's request: with "missing releases" and singles the
+            # album name should be cleaned up during the Popularity Scan —
+            # repeated edition markers ("(reissue) (reissue) (reissue)",
+            # "(10 Year Anniversary)" x4) are stripped, optionally using the
+            # MusicBrainz release title, and the result is written to the DB
+            # (always) and the audio file tags (when configured).
+            #
+            # IMPORTANT: only the RESOLUTION runs here — the DB + file write
+            # is deferred until the artist section closes.  Applying the
+            # rename immediately would rename the tracks rows BEFORE the
+            # artist-section star-rating finalise (``_flush_artist_star_
+            # ratings``) queries them by ``album = :album`` — the queries
+            # would find 0 rows and the album would never get its ★ ratings.
+            # Singles-only passes never finalise albums the same way and
+            # skip windows make repeated cleaning wasteful — skipped.
+            if not _mode_singles:
+                try:
+                    from services.metadata.album_name_update_service import (
+                        resolve_album_name,
+                    )
+                    _new_name, _reason = resolve_album_name(
+                        artist=artist,
+                        album=album,
+                    )
+                    if _reason and _new_name and _new_name != album:
+                        _deferred_album_renames.setdefault(artist, []).append({
+                            "album": album,
+                            "new_name": _new_name,
+                            "reason": _reason,
+                        })
+                except Exception as exc:
+                    logger.debug(
+                        "[ALBUM_NAME] Cleaning skipped",
+                        artist=artist,
+                        album=album,
+                        error=str(exc),
+                    )
 
             try:
                 record_scan(scan_type, "completed", message=f"{scan_type} scan: {artist} - {album}", artist=artist, album=album)

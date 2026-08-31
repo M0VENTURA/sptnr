@@ -61,6 +61,7 @@ from services.scanning.scan_state import (
     get_navidrome_progress_path,
     get_library_progress_path,
     get_navidrome_checkpoint_path,
+    get_scan_progress_path,
     write_progress_with_current_artist,
     is_stop_requested,
     save_artist_scan_checkpoint,
@@ -150,6 +151,35 @@ def _run_artist_scan_pipeline_inner(
     if callable(progress_callback):
         _cb("metadata", 0, 1, artist_name)
 
+    # Progress-row ownership:
+    #
+    # Standalone artist scans (artist page) write their own progress rows
+    # ("navidrome_scan" for the import, "popularity_scan" for the combined
+    # pass) — the dashboard shows exactly one active scan for that artist.
+    #
+    # When an ORCHESTRATOR drives this pipeline (dashboard "All" full scan
+    # passes a ``progress_callback``), the orchestrator owns progress under
+    # the "full_scan" row.  Writing the sub-pipeline rows here too would
+    # leave the dashboard with TWO active progress markers — the reported
+    # "Active Scans showing two progress markers" (one stale from an older
+    # scan, plus the full-scan row) — and a stray "Popularity Scan 0/?"
+    # row that never completes because no dedicated popularity scan owns it.
+    # In orchestrator mode we therefore suppress the sub-pipeline progress
+    # rows: the import runs with progress_file=None (no "navidrome_scan"
+    # row) and the combined pass runs with progress_file=None (no
+    # "popularity_scan" row).  Stop requests are wired to the SAME row the
+    # orchestrator uses (full_scan), so dashboard Stop still halts the loop.
+    if callable(progress_callback):
+        import_progress_file: str | None = None
+        popularity_progress_file: str | None = None
+        # The orchestrator's row is the single source of truth for stop
+        # requests — the per-artist pipeline must honour dashboard stop too.
+        stop_progress_file = get_scan_progress_path("full_scan")
+    else:
+        import_progress_file = "navidrome_scan"
+        popularity_progress_file = "popularity_scan"
+        stop_progress_file = None
+
     log_unified(f"[SCAN_PIPELINE] Starting artist pipeline: {artist_name} (force={force})")
     record_scan("artist", "started", message=f"Artist scan: {artist_name}", artist=artist_name)
     try:
@@ -200,7 +230,16 @@ def _run_artist_scan_pipeline_inner(
                     error=str(_idx_exc),
                 )
         if artist_id:
-            scan_artist_to_db(artist_name, artist_id, verbose=True, force=force, progress_file="navidrome_scan")
+            scan_artist_to_db(
+                artist_name,
+                artist_id,
+                verbose=True,
+                force=force,
+                # In orchestrator mode this is the full_scan path — only used
+                # for stop-request reads (scan_artist_to_db never writes a
+                # progress row itself), so no duplicate navidrome_scan row.
+                progress_file=import_progress_file or stop_progress_file,
+            )
         else:
             log_unified(f"Navidrome import skipped for '{artist_name}' (no Navidrome artist ID found)")
 
@@ -252,7 +291,8 @@ def _run_artist_scan_pipeline_inner(
             verbose=True,
             force=force,
             artist_filter=artist_name,
-            progress_file="popularity_scan",
+            progress_file=popularity_progress_file,
+            stop_progress_file=stop_progress_file,
             progress_callback=_stage_band_cb,
         )
 

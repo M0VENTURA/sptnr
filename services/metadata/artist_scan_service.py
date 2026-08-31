@@ -203,7 +203,10 @@ def _cleanup_imported_releases() -> int:
 
     Matches on NORMALISED album title (punctuation/case-insensitive) so a
     missing "Queen Dies (Single)" row is removed once the "Queen Dies" album
-    exists — the reported singles staying "Missing" after being added.
+    exists — the reported singles staying "Missing" after being added.  Also
+    removes SINGLE rows whose track is now present in the library (on any
+    album), mirroring the builder rule: a single is only missing when its
+    track is not owned anywhere.
     """
     with db_session() as session:
         result = session.execute(text("""
@@ -212,6 +215,15 @@ def _cleanup_imported_releases() -> int:
                 SELECT 1 FROM tracks t
                 WHERE LOWER(COALESCE(NULLIF(t.album_artist, ''), t.artist)) = LOWER(mr.artist)
                   AND LOWER(REGEXP_REPLACE(TRIM(t.album), '[^a-z0-9]+', ' ', 'g')) = LOWER(REGEXP_REPLACE(TRIM(mr.title), '[^a-z0-9]+', ' ', 'g'))
+            )
+            OR (
+                LOWER(COALESCE(mr.category, '')) = 'single'
+                AND EXISTS (
+                    SELECT 1 FROM tracks t
+                    WHERE LOWER(COALESCE(NULLIF(t.album_artist, ''), t.artist)) = LOWER(mr.artist)
+                      AND t.title IS NOT NULL AND TRIM(t.title) <> ''
+                      AND LOWER(REGEXP_REPLACE(TRIM(t.title), '[^a-z0-9]+', ' ', 'g')) = LOWER(REGEXP_REPLACE(TRIM(mr.title), '[^a-z0-9]+', ' ', 'g'))
+                )
             )
         """))
         return result.rowcount or 0
@@ -445,8 +457,28 @@ def _run_missing_releases_scan() -> None:
                 if not artist_mbid:
                     continue
 
+                # Normalised titles of tracks the artist already owns — a
+                # SINGLE whose track is on a library album is not missing.
+                library_track_titles = set()
+                try:
+                    with db_session() as session:
+                        rows = session.execute(
+                            text("""
+                                SELECT DISTINCT title FROM tracks
+                                WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+                                  AND title IS NOT NULL AND TRIM(title) <> ''
+                            """),
+                            {"artist": artist},
+                        ).fetchall() or []
+                        library_track_titles = {_normalize_release_title(str(r[0])) for r in rows if r[0]}
+                except Exception as exc:
+                    logger.debug("Library track titles fetch failed", artist=artist, error=str(exc))
+
                 release_groups = _fetch_all_musicbrainz_releases(artist_mbid)
-                missing_items = _build_missing_release_items(release_groups, existing_norm)
+                missing_items = _build_missing_release_items(
+                    release_groups, existing_norm,
+                    library_track_titles=library_track_titles,
+                )
                 if missing_items:
                     _persist_missing_releases(artist, missing_items)
                     total_missing += len(missing_items)

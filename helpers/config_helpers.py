@@ -699,6 +699,87 @@ def get_tagging_config() -> dict[str, Any]:
 
 
 # -----------------------------------------------------------------------------
+# Metadata Update Configuration
+# -----------------------------------------------------------------------------
+
+_DEFAULT_METADATA_UPDATE_FIELDS = {
+    "album_name": False,
+    "year": False,
+    "album_artist": False,
+    "genres": False,
+    "cover_art": False,
+    "lyrics": False,
+}
+
+
+def get_metadata_update_config() -> dict[str, Any]:
+    """Get the "Updating Metadata" scan-behaviour config block.
+
+    Controls whether the popularity scan rewrites metadata and, when it
+    does, whether the write goes to the DATABASE only or also to the audio
+    FILES (``update_on_files`` per field).
+
+    ```yaml
+    metadata_update:
+      album_name_source: album        # album | release
+      album_name_update_target: db    # db | files
+      update_on_files:
+        album_name: false
+        year: false
+        album_artist: false
+        genres: false
+        cover_art: false
+        lyrics: false
+    ```
+
+    ``album_name_source`` decides what the album name is set to when the
+    scan cleans it:
+      - ``album`` (default): the current album name, cleaned up — trailing
+        edition markers are stripped idempotently ("Doomsday Machine
+        (reissue) (reissue) (reissue)" → "Doomsday Machine").
+      - ``release``: the MusicBrainz release title when a confident match
+        exists (falls back to the cleaned album name).
+
+    ``album_name_update_target`` decides where the cleaned/renamed album
+    name is written:
+      - ``db`` (default): update the tracks table only.
+      - ``files``: update the tracks table AND rewrite the ALBUM tag on the
+        audio files (Navidrome reads file tags, so it then re-serves the new
+        name too).
+    """
+    cfg = get_config() or {}
+    block = cfg.get("metadata_update") or {}
+    if not isinstance(block, dict):
+        block = {}
+
+    source = str(block.get("album_name_source") or "album").strip().lower()
+    if source not in ("album", "release"):
+        source = "album"
+
+    target = str(block.get("album_name_update_target") or "db").strip().lower()
+    if target not in ("db", "files"):
+        target = "db"
+
+    update_on_files = block.get("update_on_files") or {}
+    if not isinstance(update_on_files, dict):
+        update_on_files = {}
+
+    fields = dict(_DEFAULT_METADATA_UPDATE_FIELDS)
+    for key, default in fields.items():
+        if key in update_on_files:
+            try:
+                fields[key] = bool(update_on_files[key])
+            except Exception:
+                fields[key] = default
+
+    return {
+        "album_name_source": source,
+        "album_name_update_target": target,
+        "update_on_files": fields,
+    }
+
+
+# -----------------------------------------------------------------------------
 # Genre Aggregation Configuration
 # -----------------------------------------------------------------------------
 

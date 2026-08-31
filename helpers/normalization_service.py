@@ -193,8 +193,9 @@ def strip_remaster_suffix(value: str) -> str:
 
 _ALBUM_EDITION_STRIP_RE = re.compile(
     r"\s*[\(\[]\s*(?:clean|explicit|deluxe(?:\s+edition)?|special\s+edition|"
-    r"expanded\s+edition|extended\s+edition|anniversary\s+edition|"
-    r"limited\s+edition|collector(?:'s)?\s+edition|super\s+deluxe|"
+    r"expanded\s+edition|extended\s+edition|"
+    r"(?:\d+\s*(?:year\s*)?)?anniversary(?:\s+edition)?|"
+    r"reissue|limited\s+edition|collector(?:'s)?\s+edition|super\s+deluxe|"
     r"standard\s+edition|digital\s+edition|remaster(?:ed)?(?:\s+edition)?)"
     r"\s*[\)\]]\s*$",
     re.IGNORECASE,
@@ -202,8 +203,26 @@ _ALBUM_EDITION_STRIP_RE = re.compile(
 
 
 def strip_album_edition_marker(value: str) -> str:
-    """Return the album title with a trailing edition marker removed."""
-    return _ALBUM_EDITION_STRIP_RE.sub("", value or "").strip() or (value or "")
+    """Return the album title with trailing edition marker(s) removed.
+
+    Strips edition markers idempotently and REPEATEDLY so a mangled album
+    name like "The General Strike (10 Year Anniversary) (10 Year
+    Anniversary) (10 Year Anniversary) (10 Year Anniversary)" or "Doomsday
+    Machine (reissue) (reissue) (reissue)" collapses to the clean release
+    title — some tag sources duplicate the marker once per re-tag.  A bare
+    "(reissue)" / "(anniversary)" is an edition marker too, so it is
+    stripped (previously only "anniversary edition" matched and "reissue"
+    was not matched at all).
+    """
+    cleaned = value or ""
+    prev = None
+    for _ in range(8):  # bounded loop — never hang on pathological input
+        stripped = _ALBUM_EDITION_STRIP_RE.sub("", cleaned).strip()
+        if stripped == cleaned or stripped == prev:
+            break
+        prev = cleaned
+        cleaned = stripped
+    return cleaned or (value or "")
 
 
 def strip_search_keywords(value: str) -> str:

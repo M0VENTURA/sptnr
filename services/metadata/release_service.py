@@ -80,6 +80,24 @@ def get_cached_missing_releases(artist: str) -> tuple[dict[str, Any], int]:
                 if r[0]
             }
 
+            # Library TRACK titles — a SINGLE whose track is already on an
+            # owned album is not missing (e.g. "Queen Dies" when the album
+            # containing it is in the library).  This mirrors the insert-time
+            # rule in the missing-releases builders, and also cleans up stale
+            # rows persisted before that rule existed.
+            lib_track_titles = {
+                _norm(str(r[0] or ""))
+                for r in session.execute(
+                    text("""
+                        SELECT DISTINCT title FROM tracks
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+                          AND title IS NOT NULL AND TRIM(title) <> ''
+                    """),
+                    {"artist": artist},
+                ).fetchall() or []
+                if r[0]
+            }
+
             result = session.execute(
                 text("""
                     SELECT release_id, title, primary_type, first_release_date,
@@ -96,7 +114,13 @@ def get_cached_missing_releases(artist: str) -> tuple[dict[str, Any], int]:
             still_missing = []
             for r in rows:
                 title_norm = _norm(str(r.get("title") or ""))
-                if title_norm and title_norm in lib_albums:
+                category = str(r.get("category") or "")
+                covered_by_library_track = (
+                    category.lower() == "single"
+                    and title_norm
+                    and title_norm in lib_track_titles
+                )
+                if (title_norm and title_norm in lib_albums) or covered_by_library_track:
                     try:
                         session.execute(
                             text("DELETE FROM missing_releases WHERE release_id = :rid AND artist = :artist"),

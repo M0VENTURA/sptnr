@@ -413,3 +413,88 @@ def test_refresh_replaces_cache_owned_rows(release_cache_db):
         rows = _read_missing(session)
     by_title = {r["title"]: r["category"] for r in rows}
     assert by_title["Live After Death"] == "Live Album"
+
+
+def test_refresh_includes_prior_year_singles_but_not_library_covered(release_cache_db):
+    """The cache-driven path now persists singles from ANY year, but skips a
+    single whose track is already present in the library (on an album)."""
+    from services.popularity.release_cache_service import refresh_missing_releases_for_artist
+
+    _session, _open = release_cache_db
+    with _open() as session:
+        from sqlalchemy import text
+        # Cache rows: two 2018 singles + one album.
+        _seed_cache(session, [
+            {"artist": "Dyscordia", "title": "Queen Dies", "release_type": "single",
+             "category": "Single", "source": "musicbrainz", "release_id": "rg-qd", "year": 2018},
+            {"artist": "Dyscordia", "title": "Realms Of Fire", "release_type": "single",
+             "category": "Single", "source": "musicbrainz", "release_id": "rg-rof", "year": 2018},
+            {"artist": "Dyscordia", "title": "The Realms of Fire and Death", "release_type": "album",
+             "category": "Album", "source": "musicbrainz", "release_id": "rg-album", "year": 2018},
+        ])
+        # Library owns the album, which CONTAINS both singles' tracks.
+        session.execute(
+            text("""
+                INSERT INTO tracks (id, artist, album_artist, album, title, file_path)
+                VALUES (:id, :artist, :album_artist, :album, :title, :path)
+            """),
+            [
+                {"id": "t1", "artist": "Dyscordia", "album_artist": "Dyscordia",
+                 "album": "The Realms of Fire and Death", "title": "Queen Dies",
+                 "path": "/m/Dyscordia/The Realms of Fire and Death/01 - Queen Dies.mp3"},
+                {"id": "t2", "artist": "Dyscordia", "album_artist": "Dyscordia",
+                 "album": "The Realms of Fire and Death", "title": "Realms Of Fire",
+                 "path": "/m/Dyscordia/The Realms of Fire and Death/02 - Realms Of Fire.mp3"},
+                {"id": "t3", "artist": "Dyscordia", "album_artist": "Dyscordia",
+                 "album": "The Realms of Fire and Death", "title": "The Realms of Fire and Death",
+                 "path": "/m/Dyscordia/The Realms of Fire and Death/03 - Title Track.mp3"},
+            ],
+        )
+
+    refresh_missing_releases_for_artist("Dyscordia")
+
+    with _open() as session:
+        rows = _read_missing(session)
+    by_title = {r["title"]: r["category"] for r in rows}
+    # The album title is in the library → excluded entirely.
+    assert "The Realms of Fire and Death" not in by_title
+    # Both singles' tracks ARE in the library (on the album) → excluded.
+    assert "Queen Dies" not in by_title
+    assert "Realms Of Fire" not in by_title
+
+
+def test_refresh_includes_prior_year_single_not_in_library(release_cache_db):
+    """A prior-year single whose track is NOT anywhere in the library is
+    persisted as missing — this is the core of the user request."""
+    from services.popularity.release_cache_service import refresh_missing_releases_for_artist
+
+    _session, _open = release_cache_db
+    with _open() as session:
+        _seed_cache(session, [
+            {"artist": "Dyscordia", "title": "Queen Dies", "release_type": "single",
+             "category": "Single", "source": "musicbrainz", "release_id": "rg-qd", "year": 2018},
+            {"artist": "Dyscordia", "title": "The Realms of Fire and Death", "release_type": "album",
+             "category": "Album", "source": "musicbrainz", "release_id": "rg-album", "year": 2018},
+        ])
+        # Library contains the ALBUM but the single's track is NOT on it
+        # (only an unrelated track).
+        from sqlalchemy import text
+        session.execute(
+            text("""
+                INSERT INTO tracks (id, artist, album_artist, album, title, file_path)
+                VALUES (:id, :artist, :album_artist, :album, :title, :path)
+            """),
+            {"id": "t1", "artist": "Dyscordia", "album_artist": "Dyscordia",
+             "album": "The Realms of Fire and Death", "title": "Another Song",
+             "path": "/m/Dyscordia/The Realms of Fire and Death/01 - Another Song.mp3"},
+        )
+
+    refresh_missing_releases_for_artist("Dyscordia")
+
+    with _open() as session:
+        rows = _read_missing(session)
+    by_title = {r["title"]: r["category"] for r in rows}
+    # The album title is in the library → excluded.
+    assert "The Realms of Fire and Death" not in by_title
+    # The 2018 single is NOT covered by any library track → included.
+    assert by_title["Queen Dies"] == "Single"

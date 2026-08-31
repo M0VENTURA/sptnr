@@ -222,3 +222,41 @@ class TestHangulTitleMatching:
         """A genuinely different Hangul track must still be rejected."""
         candidate = _candidate("Stray Kids - 다른 노래.flac")
         assert _score_result(candidate, "Stray Kids", "일상") == 0.0
+
+
+class TestHangulArtistScriptMismatch:
+    """K-pop peers name the artist in Korean ("스트레이 키즈") while the queue
+    item carries the Latin name ("Stray Kids"), or vice versa.  The artist-
+    evidence gate used only Latin ``[a-z0-9]`` tokens, so the Korean-named
+    candidate produced an EMPTY token set and was rejected as "no artist
+    evidence" even though the TITLE matched perfectly — the reported
+    "Soulseek searches for Stray Kids fail on Korean tracks like
+    토끼와 거북이".  A strong Hangul/CJK title match must satisfy the gate,
+    and the artist contributes a modest credit so the total clears the
+    accept floor.  Wrong tracks must STILL be rejected."""
+
+    def test_korean_artist_latin_queue_matches(self):
+        candidate = _candidate("스트레이 키즈 - 토끼와 거북이.flac")
+        assert _score_result(candidate, "Stray Kids", "토끼와 거북이") >= 45.0
+
+    def test_latin_artist_korean_queue_matches(self):
+        candidate = _candidate("Stray Kids - 토끼와 거북이.flac")
+        assert _score_result(candidate, "스트레이 키즈", "토끼와 거북이") >= 45.0
+
+    def test_korean_artist_annotated_title_matches(self):
+        candidate = _candidate("스트레이 키즈 - 토끼와 거북이 (Korean Ver.).flac")
+        assert _score_result(candidate, "Stray Kids", "토끼와 거북이") >= 45.0
+
+    def test_both_korean_matches(self):
+        candidate = _candidate("스트레이 키즈 - 토끼와 거북이.flac")
+        assert _score_result(candidate, "스트레이 키즈", "토끼와 거북이") >= 45.0
+
+    def test_wrong_korean_track_rejected(self):
+        """A genuinely different Hangul track must still be rejected even
+        when the artist is Korean-named."""
+        candidate = _candidate("스트레이 키즈 - 미친 놈 (Ex).flac")
+        assert _score_result(candidate, "Stray Kids", "토끼와 거북이") == 0.0
+
+    def test_wrong_latin_track_rejected(self):
+        candidate = _candidate("Stray Kids - Another Song.flac")
+        assert _score_result(candidate, "Stray Kids", "토끼와 거북이") == 0.0

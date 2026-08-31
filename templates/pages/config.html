@@ -1549,6 +1549,82 @@
     </div>
   </div>
 
+  <!-- Updating Metadata Section -->
+  <div class="card shadow-sm mb-3" id="metadata-update">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-pencil-square"></i> Updating Metadata</h5>
+      <small class="text-muted">What the scan rewrites, and whether it touches the database only or also the audio files</small>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12 col-sm-6 col-lg-4">
+          <label class="form-label form-label-sm">Album Name Source</label>
+          <select class="form-select form-select-sm" id="metadata_update_album_name_source">
+            <option value="album" {% if (config.get('metadata_update', {}) or {}).get('album_name_source', 'album') == 'album' %}selected{% endif %}>Album name (cleaned)</option>
+            <option value="release" {% if (config.get('metadata_update', {}) or {}).get('album_name_source', 'album') == 'release' %}selected{% endif %}>Release Name (MusicBrainz)</option>
+          </select>
+          <small class="form-text text-muted">
+            The album name will be cleaned up with the <strong>Name</strong> during the <strong>Popularity Scan</strong>:
+            repeated edition markers are stripped ("Doomsday Machine (reissue) (reissue) (reissue)" → "Doomsday Machine").
+            Choose <strong>Album name</strong> to keep the current name (cleaned) or <strong>Release Name</strong> to
+            prefer the MusicBrainz release title when a confident match exists.
+          </small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-4">
+          <label class="form-label form-label-sm">Album Name Update Target</label>
+          <select class="form-select form-select-sm" id="metadata_update_album_name_target">
+            <option value="db" {% if (config.get('metadata_update', {}) or {}).get('album_name_update_target', 'db') == 'db' %}selected{% endif %}>Database only</option>
+            <option value="files" {% if (config.get('metadata_update', {}) or {}).get('album_name_update_target', 'db') == 'files' %}selected{% endif %}>Files (database + file tags)</option>
+          </select>
+          <small class="form-text text-muted">
+            <strong>Database only</strong> updates the tracks table. <strong>Files</strong> updates the tracks table
+            AND rewrites the ALBUM tag on the audio files — Navidrome reads file tags, so it then re-serves the new
+            name too.
+          </small>
+        </div>
+        <div class="col-12 col-sm-6 col-lg-4">
+          <label class="form-label form-label-sm">Update on Files during Scan</label>
+          <div class="border rounded p-2" style="background: rgba(0,0,0,.15);">
+            {% set mu_fields = (config.get('metadata_update', {}) or {}).get('update_on_files', {}) %}
+            <div class="form-check form-check-sm">
+              <input class="form-check-input" type="checkbox" id="metadata_update_field_album_name" {% if mu_fields.get('album_name', false) %}checked{% endif %}>
+              <label class="form-check-label small" for="metadata_update_field_album_name">Album Name</label>
+            </div>
+            <div class="form-check form-check-sm">
+              <input class="form-check-input" type="checkbox" id="metadata_update_field_year" {% if mu_fields.get('year', false) %}checked{% endif %}>
+              <label class="form-check-label small" for="metadata_update_field_year">Year</label>
+            </div>
+            <div class="form-check form-check-sm">
+              <input class="form-check-input" type="checkbox" id="metadata_update_field_album_artist" {% if mu_fields.get('album_artist', false) %}checked{% endif %}>
+              <label class="form-check-label small" for="metadata_update_field_album_artist">Album Artist</label>
+            </div>
+            <div class="form-check form-check-sm">
+              <input class="form-check-input" type="checkbox" id="metadata_update_field_genres" {% if mu_fields.get('genres', false) %}checked{% endif %}>
+              <label class="form-check-label small" for="metadata_update_field_genres">Genres</label>
+            </div>
+            <div class="form-check form-check-sm">
+              <input class="form-check-input" type="checkbox" id="metadata_update_field_cover_art" {% if mu_fields.get('cover_art', false) %}checked{% endif %}>
+              <label class="form-check-label small" for="metadata_update_field_cover_art">Cover Art</label>
+            </div>
+            <div class="form-check form-check-sm">
+              <input class="form-check-input" type="checkbox" id="metadata_update_field_lyrics" {% if mu_fields.get('lyrics', false) %}checked{% endif %}>
+              <label class="form-check-label small" for="metadata_update_field_lyrics">Lyrics</label>
+            </div>
+          </div>
+          <small class="form-text text-muted">Which fields the scan writes to the audio FILES (the database is always updated during the scan). When a field is off, file tags are left untouched for that field.</small>
+        </div>
+      </div>
+      <div class="alert alert-secondary mb-0 mt-3 py-2">
+        <small class="text-muted">
+          <strong>How it works:</strong> the popularity scan cleans the album name with the configured source and
+          updates the database every album. Whether the audio files are rewritten for each field is controlled by the
+          per-field checkboxes — <strong>Album Name Update Target</strong> is the master switch for the album name
+          specifically (Files = database + file tags).
+        </small>
+      </div>
+    </div>
+  </div>
+
   <!-- Single Detection & Star Ratings Section -->
   <div class="card shadow-sm mb-3" id="single-detection-zscore">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">

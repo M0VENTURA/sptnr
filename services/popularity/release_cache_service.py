@@ -528,8 +528,11 @@ def refresh_missing_releases_for_artist(artist: str) -> dict[str, Any]:
 
     Mirrors the legacy gap detection: a cached release (album/EP/single) whose
     normalized title is not in the library is stored in ``missing_releases``
-    with a category (Album / EP / Single — current-year singles only).  Pure
-    DB work — no API calls — so it is safe to run during every artist prefetch.
+    with a category (Album / EP / Single).  Singles from ANY year are included
+    (previous behaviour limited them to the current year) — but a single whose
+    track is already present in the library (on an album) is skipped, since it
+    is not actually missing.  Pure DB work — no API calls — so it is safe to
+    run during every artist prefetch.
 
     MUSICBRAINZ-ONLY: the cache holds BOTH MusicBrainz and Discogs rows (the
     Discogs rows feed singles detection), but only MusicBrainz rows may seed
@@ -686,8 +689,10 @@ def refresh_missing_releases_for_artist(artist: str) -> dict[str, Any]:
                 # re-inserted), and drop stale rows whose release is now in
                 # the library (mirrors the old DELETE-all's implicit cleanup
                 # — the artist page filters these out anyway, but they must
-                # not linger for the download queue).
-                if norm in seen or norm in library:
+                # not linger for the download queue).  Rows covered by a
+                # library TRACK (a single now on an owned album) are dropped
+                # too — the same rule that keeps them out of the insert.
+                if norm in seen or norm in library or norm in library_tracks:
                     replace_ids.append(rid)
             for rid in replace_ids:
                 session.execute(

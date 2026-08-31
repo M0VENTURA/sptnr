@@ -484,6 +484,42 @@ def _score_result(
     elif _normalise(expected_artist) in _normalise(filename):
         score += 20
 
+    # ── Hangul / CJK artist evidence fix ─────────────────────────────────
+    # K-pop peers routinely name the artist in Korean ("스트레이 키즈") while
+    # the queue item carries the Latin name ("Stray Kids"), or vice versa.
+    # The artist-evidence gate below used ONLY Latin ``[a-z0-9]`` tokens, so
+    # the Korean-named candidate produced an EMPTY token set and was rejected
+    # as "no artist evidence" — the reported "Soulseek searches for Stray
+    # Kids fail on Korean tracks like 토끼와 거북이" even though the title
+    # matched perfectly.  For Hangul/CJK artists the TITLE is the reliable
+    # discriminator (artist script/romanization varies wildly), so a strong
+    # title match must satisfy the gate.
+    parsed_artist = str(parts.get("artist") or "")
+    parsed_title = str(parts.get("title") or "")
+    _HANGUL_CJK_RE = re.compile(r"[\uAC00-\uD7AF\u1100-\u11FF\u3130-\u318F\u4E00-\u9FFF\u3040-\u30FF]")
+    _artist_script_ambiguous = bool(
+        _HANGUL_CJK_RE.search(expected_artist or "")
+        or _HANGUL_CJK_RE.search(parsed_artist or "")
+    )
+
+    # Pre-compute whether the TITLE matches strongly — reused by the artist
+    # gate (Hangul/CJK leniency) and by the hard title gate below.
+    _title_core_match = False
+    _title_core_score = 0.0
+    try:
+        from helpers.normalization_service import normalize_core_title as _nct_title
+        _cand_core = _nct_title(parsed_title or "")
+        _exp_core = _nct_title(expected_title or "")
+        if _cand_core and _exp_core:
+            _title_core_score = _similarity(_cand_core, _exp_core)
+            _title_core_match = (
+                _title_core_score >= 0.6
+                or _exp_core in _cand_core
+                or _cand_core in _exp_core
+            )
+    except Exception:
+        pass
+
     artist_evidenced = True
     if expected_artist and expected_artist.lower() not in {
         "unknown", "unidentified", "unidentified artist", "various", "various artists", "-",
@@ -492,8 +528,6 @@ def _score_result(
         gate_artist = _FEAT_SUFFIX_RE.sub("", expected_artist).strip()
         norm_gate = _normalise(gate_artist)
         
-        parsed_artist = str(parts.get("artist") or "")
-        parsed_title = str(parts.get("title") or "")
         norm_filename = _normalise(filename)
         path_scope = norm_filename
         if parsed_title:
@@ -505,16 +539,50 @@ def _score_result(
             w for w in re.findall(r"[a-z0-9]+", norm_gate)
             if len(w) >= 4
         ]
-        
-        artist_evidenced = (
-            art_score >= 0.6
-            or norm_gate in _normalise(artist_scope)
-            or (len(significant_words) >= 2 and all(w in artist_scope_tokens for w in significant_words))
-        )
+
+        # Hangul/CJK artist variant: the expected artist (or the file's
+        # artist) uses a non-Latin script, so Latin-token overlap cannot
+        # prove identity.  A strong title match, an exact artist string in
+        # the filename, or a Hangul-in-filename hit is sufficient evidence —
+        # the artist is only a weak disambiguator for these tracks.
+        if _artist_script_ambiguous:
+            artist_evidenced = (
+                art_score >= 0.4
+                or _title_core_match
+                or norm_gate in norm_filename
+                or _normalise(parsed_artist) in norm_filename
+                or (
+                    _HANGUL_CJK_RE.search(norm_gate or "")
+                    and _normalise(gate_artist) in norm_filename
+                )
+            )
+        else:
+            artist_evidenced = (
+                art_score >= 0.6
+                or norm_gate in _normalise(artist_scope)
+                or (len(significant_words) >= 2 and all(w in artist_scope_tokens for w in significant_words))
+            )
         
     if not artist_evidenced:
         logger.debug("Rejected candidate — no artist evidence", filename=filename[:180], expected_artist=expected_artist)
         return 0.0
+
+    # Hangul/CJK artist credit: the script-mismatched artist contributes
+    # ~0 to ``art_score``, so a perfect Hangul title match would otherwise
+    # score only ~25-30 (below the 45.0 accept floor).  The artist evidence
+    # was satisfied via the title (or a filename hit), so credit the artist
+    # with a modest bonus to keep these candidates competitive.
+    if _artist_script_ambiguous and art_score <= 0.4:
+        _artist_credit = 0.0
+        if _normalise(parsed_artist or "") == _normalise(expected_artist or ""):
+            _artist_credit = 20.0
+        elif (
+            _normalise(expected_artist or "") in _normalise(filename)
+            or _normalise(parsed_artist or "") in _normalise(filename)
+            or _title_core_match
+        ):
+            _artist_credit = 15.0
+        score += _artist_credit
 
     title_score = _similarity(str(parts.get("title") or ""), expected_title)
     exp_word_count = len(re.findall(r"[a-z0-9]+", _normalise(expected_title)))
@@ -542,19 +610,13 @@ def _score_result(
     # Hangul intact) so "(Korean Ver.)" / "(Ex)" annotations don't sink the
     # match.
     if not title_ok:
-        from helpers.normalization_service import normalize_core_title as _nct
-        _cand_core = _nct(str(parts.get("title") or ""))
-        _exp_core = _nct(expected_title)
-        if _cand_core and _exp_core:
-            core_score = _similarity(_cand_core, _exp_core)
-            if core_score >= 0.6:
-                title_score = max(title_score, core_score)
-                title_ok = True
-            elif _exp_core in _cand_core or _cand_core in _exp_core:
-                # Substring containment ("토끼와 거북이" in a longer
-                # annotated candidate) is strong evidence.
-                title_score = max(title_score, 0.7)
-                title_ok = True
+        # The core-title comparison was already computed for the artist gate;
+        # reuse it instead of recomputing (bracket-stripped titles keep
+        # Hangul intact so "(Korean Ver.)" / "(Ex)" annotations don't sink
+        # the match).
+        if _title_core_match:
+            title_score = max(title_score, _title_core_score if _title_core_score >= 0.6 else 0.7)
+            title_ok = True
         # Final fallback: Hangul/CJK expected title present in the raw
         # filename (the candidate may parse its title segment poorly).
         if not title_ok and re.search(r"[\uAC00-\uD7AF\u4E00-\u9FFF]", expected_title or ""):

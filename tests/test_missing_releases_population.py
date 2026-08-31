@@ -89,3 +89,34 @@ def test_missing_releases_singles_current_year_flag():
     titles = [item["title"] for item in missing]
     assert "This Year Single" in titles
     assert "Old Single" not in titles
+
+
+def test_missing_releases_prior_year_singles_not_covered_by_library_track():
+    """A prior-year single is included as missing — UNLESS its track is already
+    on a library album.  The user's request: singles that aren't matched to any
+    track on an album release from prior years should still show up."""
+    from services.metadata.artist_scan_service import _build_missing_release_items
+
+    release_groups = [
+        # 2018 single whose track is NOT in the library → still missing.
+        _make_rg("Queen Dies", "Single", release_date="2018-09-14"),
+        # 2018 single whose track IS on a library album → covered, not missing.
+        _make_rg("Realms Of Fire", "Single", release_date="2018-04-13"),
+        # A plain album for contrast.
+        _make_rg("The Realms of Fire and Death", "Album", release_date="2018-11-16"),
+    ]
+    library_tracks = {"queen dies", "the realms of fire and death", "other track"}
+
+    missing = _build_missing_release_items(
+        release_groups,
+        existing_norm=set(),
+        library_track_titles=library_tracks,
+    )
+
+    by_category = {item["title"]: item["category"] for item in missing}
+    # "Queen Dies" single is NOT on any library album → stays missing.
+    assert by_category["Queen Dies"] == "Single"
+    # "Realms Of Fire" single is covered by the album track → excluded.
+    assert "Realms Of Fire" not in by_category
+    # The album itself is not in the library → still missing.
+    assert by_category["The Realms of Fire and Death"] == "Album"
