@@ -500,6 +500,29 @@ def _library_albums(artist: str) -> set[str]:
         return set()
 
 
+def _library_track_titles(artist: str) -> set[str]:
+    """Normalised titles of every track by the artist already in the library.
+
+    Used to skip a SINGLE whose track is already covered by a library album
+    (e.g. the "Queen Dies" single when "The Realms of Fire and Death" —
+    which contains "Queen Dies" — is owned).  A single is only "missing"
+    when its track is NOT present anywhere in the library.
+    """
+    try:
+        with db_session() as session:
+            result = session.execute(
+                text("""
+                    SELECT DISTINCT title FROM tracks
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+                      AND title IS NOT NULL AND TRIM(title) <> ''
+                """),
+                {"artist": artist},
+            )
+            return {_norm_release_title(r[0]) for r in result.fetchall() or [] if r[0]}
+    except Exception:
+        return set()
+
+
 def refresh_missing_releases_for_artist(artist: str) -> dict[str, Any]:
     """Compare the cached artist releases against the library and persist gaps.
 
@@ -547,7 +570,6 @@ def refresh_missing_releases_for_artist(artist: str) -> dict[str, Any]:
         )
         return {"missing": 0}
 
-    current_year = datetime.now().year
     seen: set[str] = set()
 
     # Existing categories (title -> category) so a generic/stale cache value
@@ -584,6 +606,10 @@ def refresh_missing_releases_for_artist(artist: str) -> dict[str, Any]:
         )
 
     missing_rows: list[dict[str, Any]] = []
+    # Library track titles — a SINGLE whose track is already on a library
+    # album is NOT missing (e.g. "Queen Dies" single when the album that
+    # contains "Queen Dies" is owned).
+    library_tracks = _library_track_titles(artist)
     for row in cached:
         title = str(row.get("title") or "").strip()
         if not title:
@@ -595,8 +621,13 @@ def refresh_missing_releases_for_artist(artist: str) -> dict[str, Any]:
         rtype = str(row.get("release_type") or "album").lower()
         year = row.get("year")
         if rtype == "single":
-            if not (isinstance(year, int) and year == current_year):
-                continue  # legacy parity: singles only when current-year
+            # Singles from ANY year are included (previously only the
+            # current year's singles were persisted — the reported gap:
+            # prior-year singles never showed as missing).  BUT a single
+            # whose track is already present in the library (on an album)
+            # is skipped — it is not missing.
+            if norm in library_tracks:
+                continue
             category = "Single"
         elif rtype == "ep":
             category = "EP"

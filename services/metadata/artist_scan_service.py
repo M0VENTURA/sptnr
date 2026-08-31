@@ -110,9 +110,18 @@ def _build_missing_release_items(
     release_groups: list[dict[str, Any]],
     existing_norm: set[str],
     include_singles_current_year_only: bool = False,
+    library_track_titles: set[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Filter release-groups into missing-release items."""
+    """Filter release-groups into missing-release items.
+
+    ``library_track_titles`` (optional) holds normalised titles of tracks the
+    artist already has in the library.  A SINGLE whose track is present on a
+    library album is NOT missing — e.g. the "Queen Dies" single is already
+    covered by "The Realms of Fire and Death", so it must not appear as a
+    missing single.
+    """
     now_year = datetime.now().year
+    library_tracks = library_track_titles or set()
     missing: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
 
@@ -136,6 +145,10 @@ def _build_missing_release_items(
                 release_year = 0
             if release_year < now_year:
                 continue
+
+        # A single whose track is already on a library album is not missing.
+        if category == "Single" and norm_title in library_tracks:
+            continue
 
         dedupe_key = (norm_title, category)
         if dedupe_key in seen:
@@ -310,6 +323,23 @@ def get_missing_releases(artist: str, background: bool = False) -> tuple[dict[st
 
     existing_norm = {_normalize_release_title(a) for a in existing_albums if a}
 
+    # Normalised titles of tracks the artist already owns — a SINGLE whose
+    # track is on a library album is not missing.
+    library_track_titles = set()
+    try:
+        with db_session() as session:
+            rows = session.execute(
+                text("""
+                    SELECT DISTINCT title FROM tracks
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+                      AND title IS NOT NULL AND TRIM(title) <> ''
+                """),
+                {"artist": artist},
+            ).fetchall() or []
+            library_track_titles = {_normalize_release_title(str(r[0])) for r in rows if r[0]}
+    except Exception as exc:
+        logger.debug("Library track titles fetch failed", artist=artist, error=str(exc))
+
     if not artist_mbid:
         return {
             "artist": artist,
@@ -324,7 +354,10 @@ def get_missing_releases(artist: str, background: bool = False) -> tuple[dict[st
         logger.error("MusicBrainz fetch failed", artist=artist, error=str(exc))
         return {"artist": artist, "missing": [], "existing_albums": existing_albums, "info": str(exc)}, 500
 
-    missing_items = _build_missing_release_items(release_groups, existing_norm)
+    missing_items = _build_missing_release_items(
+        release_groups, existing_norm,
+        library_track_titles=library_track_titles,
+    )
 
     try:
         _persist_missing_releases(artist, missing_items)

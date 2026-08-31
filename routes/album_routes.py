@@ -276,26 +276,33 @@ async def api_album_set_art() -> Any:
 @album_bp.route("/upload-art", methods=["POST"])
 async def api_album_upload_art() -> Any:
     """Set custom album art from an uploaded file."""
-    form = await request.form
-    artist = form.get("artist", "").strip()
-    album = form.get("album", "").strip()
-    image_file = request.files.get("image")
+    try:
+        form = await request.form
+        artist = form.get("artist", "").strip()
+        album = form.get("album", "").strip()
+        image_file = request.files.get("image")
 
-    if not artist or not album:
-        return jsonify({"error": "Artist and album name required"}), 400
-    if not image_file or not image_file.filename:
-        return jsonify({"error": "No image file provided"}), 400
+        if not artist or not album:
+            return jsonify({"error": "Artist and album name required"}), 400
+        if not image_file or not image_file.filename:
+            return jsonify({"error": "No image file provided"}), 400
 
-    mime_type = image_file.mimetype or "image/jpeg"
-    if not mime_type.startswith("image/"):
-        return jsonify({"error": "Uploaded file must be an image"}), 400
+        mime_type = image_file.mimetype or "image/jpeg"
+        if not mime_type.startswith("image/"):
+            return jsonify({"error": "Uploaded file must be an image"}), 400
 
-    image_data = image_file.read()
-    if not image_data:
-        return jsonify({"error": "Uploaded image is empty"}), 400
+        image_data = image_file.read()
+        if not image_data:
+            return jsonify({"error": "Uploaded image is empty"}), 400
 
-    result, status_code = _pop_status(set_album_art_from_upload(artist, album, image_data, mime_type))
-    return jsonify(result), status_code
+        result, status_code = _pop_status(set_album_art_from_upload(artist, album, image_data, mime_type))
+        return jsonify(result), status_code
+    except Exception as exc:
+        # Quart's generic "An internal server error occurred" hid the real
+        # cause (multipart parse / FileStorage access).  Surface it so the
+        # upload failure is diagnosable.
+        logger.error("Album art upload failed", artist=artist, album=album, error=str(exc), exc_info=True)
+        return jsonify({"success": False, "error": f"Upload failed: {exc}"}), 500
 
 
 @album_bp.route("/submit-musicbrainz", methods=["POST"])

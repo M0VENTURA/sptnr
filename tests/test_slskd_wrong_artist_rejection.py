@@ -190,3 +190,35 @@ class TestWrongAlbumRejection:
         assert parts["artist"] is None
         assert parts["title"] == "Yesterday's Fire"
         assert parts["has_track_number"] is True
+
+
+class TestHangulTitleMatching:
+    """Pure-Hangul tracks (Stray Kids "일상", "타", "미친 놈 (Ex)") previously
+    ended ``no_qualifying_result`` despite 39-101 real Soulseek candidates:
+    the ASCII-only ``[a-z0-9]`` token fallback found nothing and Korean
+    candidates with annotations ("(Korean Ver.)", "(Ex)") dropped the raw
+    similarity below the hard title gate.  The bracket-stripped core title
+    comparison (which keeps Hangul intact) must let them match."""
+
+    def test_hangul_exact_title_matches(self):
+        candidate = _candidate("Stray Kids - 일상.flac")
+        assert _score_result(candidate, "Stray Kids", "일상") >= 30.0
+
+    def test_hangul_single_char_title_matches(self):
+        candidate = _candidate("Stray Kids - 타.flac")
+        assert _score_result(candidate, "Stray Kids", "타") >= 30.0
+
+    def test_hangul_annotated_candidate_matches(self):
+        """'일상 (Korean Ver.)' must still match '일상' (bracket-stripped
+        core comparison) instead of falling below the title gate."""
+        candidate = _candidate("Stray Kids - 일상 (Korean Ver.).flac")
+        assert _score_result(candidate, "Stray Kids", "일상") >= 30.0
+
+    def test_hangul_paren_ex_suffix_matches(self):
+        candidate = _candidate("Stray Kids - 미친 놈 (Ex).flac")
+        assert _score_result(candidate, "Stray Kids", "미친 놈 (Ex)") >= 30.0
+
+    def test_hangul_wrong_track_rejected(self):
+        """A genuinely different Hangul track must still be rejected."""
+        candidate = _candidate("Stray Kids - 다른 노래.flac")
+        assert _score_result(candidate, "Stray Kids", "일상") == 0.0
