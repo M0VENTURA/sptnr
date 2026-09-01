@@ -34,6 +34,13 @@ _POOL_MAX_CONNECTIONS = 200
 _POOL_MAX_KEEPALIVE = 50
 _POOL_TIMEOUT = 30.0
 
+# Short cap for the TCP/TLS CONNECT phase of the shared session.  A provider
+# that is unreachable/slow to handshake (observed: api.listenbrainz.org TLS
+# connect never completing, stalling an album's ListenBrainz tasks past their
+# 120s budgets) must raise after a few seconds instead of consuming the full
+# read timeout on EVERY retry attempt (3 × 20s+ = the whole per-task budget).
+_CONNECT_TIMEOUT_SECONDS = 10.0
+
 # Cap on a single Retry-After wait (seconds).  Matches the exponential-backoff
 # ceiling below so a provider sending a long header (e.g. "Retry-After: 300")
 # cannot stall a worker past the per-album track deadline — every per-track
@@ -362,7 +369,17 @@ def create_retry_client(
 
     client = httpx.Client(
         transport=transport,
-        timeout=httpx.Timeout(timeout),
+        # Component timeout: the TCP/TLS CONNECT phase gets a short cap so a
+        # hung provider (the observed api.listenbrainz.org TLS connect that
+        # never completed, stalling the album's LB tasks past their 120s
+        # budgets) raises after ~10s instead of consuming the full read
+        # timeout on every retry.  Read/write keep the caller's default.
+        timeout=httpx.Timeout(
+            connect=_CONNECT_TIMEOUT_SECONDS,
+            read=timeout,
+            write=timeout,
+            pool=_POOL_TIMEOUT,
+        ),
         headers=headers,
         verify=verify,
         limits=_build_pool_limits(),

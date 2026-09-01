@@ -111,7 +111,7 @@ class ListenBrainzClient:
             headers["Authorization"] = f"Token {self.user_token}"
         return headers
 
-    def _get(self, path: str, *, params: dict[str, Any] | None = None, authenticated: bool = False, timeout: float = 15.0) -> Any:
+    def _get(self, path: str, *, params: dict[str, Any] | None = None, authenticated: bool = False, timeout: Any = 15.0) -> Any:
         if not self.enabled:
             raise ListenBrainzError("ListenBrainz client is disabled")
         _strict_throttle()
@@ -200,7 +200,17 @@ class ListenBrainzClient:
         if not self.enabled or not mbids:
             return {}
         try:
-            data = self._get("/metadata/recording/", params={"recording_mbids": ",".join(mbids), "inc": inc}, timeout=20.0)
+            import httpx
+            # Component timeout: a hung TCP/TLS connect to api.listenbrainz.org
+            # (observed in the scan log — the TLS connect never completed,
+            # stalling the album's LB tasks past their 120s budgets) must raise
+            # after ~10s instead of consuming the full 20s read timeout on each
+            # of the 3 retries (which blew the per-task budget).
+            data = self._get(
+                "/metadata/recording/",
+                params={"recording_mbids": ",".join(mbids), "inc": inc},
+                timeout=httpx.Timeout(connect=10.0, read=20.0, write=20.0, pool=30.0),
+            )
             return data if isinstance(data, dict) else {}
         except Exception as exc:
             logger.debug("Failed to fetch recording metadata", error=str(exc))
@@ -211,7 +221,13 @@ class ListenBrainzClient:
         if not self.enabled or not mbids:
             return {}
         try:
-            data = self._get("/metadata/release/", params={"release_mbids": ",".join(mbids), "inc": inc}, timeout=20.0)
+            import httpx
+            # Component connect timeout (same rationale as recording batch).
+            data = self._get(
+                "/metadata/release/",
+                params={"release_mbids": ",".join(mbids), "inc": inc},
+                timeout=httpx.Timeout(connect=10.0, read=20.0, write=20.0, pool=30.0),
+            )
             return data if isinstance(data, dict) else {}
         except Exception as exc:
             logger.debug("Failed to fetch release metadata", error=str(exc))
