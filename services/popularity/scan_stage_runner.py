@@ -4,58 +4,99 @@ from __future__ import annotations
 
 import json
 import math
-import threading
 import time
+import concurrent.futures
+from collections import Counter
+from datetime import datetime
+from difflib import SequenceMatcher
 from typing import Any
 
 import structlog
+from sqlalchemy import text
 
-from helpers.config_helpers import get_config
+# Database
+from db.engine import db_session
+from db.repositories.popularity_cache import upsert_track_popularity_bulk
+from db.repositories.tracks import DeferredPersistSink, upsert_tracks_bulk
+
+# Config & Helpers
+from helpers.config_helpers import (
+    get_config, 
+    get_feature, 
+    get_prefetch_budget_seconds, 
+    get_track_timeout_seconds
+)
 from helpers.logging_config import log_unified
 from helpers.normalization_service import strip_featured_artist
-from services.popularity.progress_tracker import finish, start, update
-from services.popularity.popularity_cache_policy import should_freeze_track
-from services.popularity.scan_hooks import (
-    apply_context_fields_to_track,
-    get_stat_eligible_tracks,
-    prepare_tracks_for_album,
-)
-from services.popularity.popularity_matching import normalize_for_aggregation
-from services.popularity.popularity_math import (
-    ALBUM_RELATIVE_MIN_ALBUM_TRACKS,
-    apply_album_relative_popularity,
-    apply_track_artist_relative_popularity,
-)
-from services.popularity.popularity_sources import (
-    get_lastfm_artist_max_listeners,
-)
-from services.popularity.stages.album_stage import enrich_album
-from services.popularity.stages.finalise_stage import (
-    _create_essential_m3u,
-    _essential_playlists_enabled,
-    _essential_strip_guest_credit,
-    _fetch_essential_featured_rows,
-    finalise_scan,
-    post_album_star_ratings,
-)
-from services.popularity.stages.load_stage import load_candidates
-from services.popularity.stages.track_stage import process_track
-from db.repositories.tracks import DeferredPersistSink, upsert_tracks_bulk
-from services.scanning.scan_state import (
-    is_stop_requested,
-    save_artist_scan_checkpoint,
-    write_progress_with_current_artist,
-    get_scan_progress_path,
-)
-from services.scanning.scan_history_service import record_scan, was_album_scanned
+
+# API Clients
+from api_clients.discogs_http import get_artist_id as discogs_get_artist_id
+from api_clients.musicbrainz_http import lookup_album_metadata as mb_lookup_album_metadata
+from api_clients.listenbrainz import get_recording_tags_batch
+
+# Popularity & Scan Services
 from services.catalog.album_classification_service import (
     detect_live_album_type,
     is_bonus_track_title,
     is_instrumental_track_title,
     should_exclude_track_from_stats,
 )
+from services.metadata.album_name_update_service import apply_album_name_update, resolve_album_name
+from services.metadata.album_tag_sync_service import sync_album_file_tags
+from services.popularity.popularity_cache_policy import should_freeze_track
+from services.popularity.popularity_cache_service import prefetch_artist_popularity
+from services.popularity.popularity_matching import normalize_for_aggregation
+from services.popularity.popularity_math import (
+    ALBUM_RELATIVE_MIN_ALBUM_TRACKS,
+    apply_album_relative_popularity,
+    apply_track_artist_relative_popularity,
+    reanchor_scores_to_album_relative,
+)
+from services.popularity.popularity_sources import (
+    get_lastfm_artist_max_listeners,
+    get_listenbrainz_album_tracklist_with_release,
+)
+from services.popularity.progress_tracker import finish, start, update
+from services.popularity.release_cache_service import (
+    get_artist_promo_titles,
+    get_artist_single_titles,
+    populate_missing_release_tracklists,
+    prefetch_artist_releases,
+    refresh_missing_releases_for_artist,
+)
+from services.popularity.scan_hooks import (
+    apply_context_fields_to_track,
+    get_stat_eligible_tracks,
+    prepare_tracks_for_album,
+)
+from services.popularity.stages.album_stage import enrich_album, enrich_album_extras, ensure_album_type
+from services.popularity.stages.finalise_stage import (
+    _create_essential_m3u,
+    _create_genre_top_track_playlists,
+    _essential_playlists_enabled,
+    _essential_strip_guest_credit,
+    _fetch_essential_featured_rows,
+    finalise_scan,
+    post_album_star_ratings,
+    prune_genre_playlists_for_deletion,
+    refresh_genre_playlists_for_album,
+)
+from services.popularity.stages.load_stage import load_candidates
+from services.popularity.stages.track_stage import process_track
+from services.scanning.scan_history_service import record_scan, was_album_scanned
+from services.scanning.scan_state import (
+    get_scan_progress_path,
+    is_stop_requested,
+    save_artist_scan_checkpoint,
+    write_progress_with_current_artist,
+)
+from services.enrichment.single_detection_context_service import get_artist_lastfm_context
+from services.enrichment.cover_detection_service import detect_covers_for_album
 
 logger = structlog.get_logger(__name__)
+
+# Centrally managed thread pool for generic bounded calls to prevent thread exhaustion
+BOUNDED_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=16, thread_name_prefix="bounded")
 
 
 def _is_comp_artist(artist_name: str) -> bool:
@@ -70,122 +111,36 @@ def _is_comp_artist(artist_name: str) -> bool:
 
 def _bounded_call(fn, seconds: float, label: str) -> None:
     """Run ``fn()`` with a hard time budget so a hung call cannot freeze a scan."""
-    import threading
-
     if seconds is None or seconds <= 0:
         fn()
         return
 
-    _done = threading.Event()
-    _error: dict[str, BaseException] = {}
-
-    def _runner() -> None:
-        try:
-            fn()
-        except BaseException as exc:  # noqa: BLE001
-            _error["exc"] = exc
-        finally:
-            _done.set()
-
-    _thread = threading.Thread(target=_runner, name=f"bounded-{label[:40]}", daemon=True)
-    _thread.start()
-    if not _done.wait(seconds):
-        logger.warning(
-            "Budget exceeded — abandoned, scan continues",
-            task=label,
-            budget_seconds=seconds,
-        )
-        return
-    if _error.get("exc") is not None:
-        logger.warning("Bounded call failed", task=label, error=str(_error["exc"]))
+    future = BOUNDED_EXECUTOR.submit(fn)
+    try:
+        future.result(timeout=seconds)
+    except concurrent.futures.TimeoutError:
+        logger.warning("Budget exceeded — abandoned, scan continues", task=label, budget_seconds=seconds)
+    except Exception as exc:
+        logger.warning("Bounded call failed", task=label, error=str(exc))
 
 
 def _bounded_call_result(fn, seconds: float, label: str, default: Any = None) -> Any:
-    """Run ``fn()`` with a hard time budget, returning its result or ``default``.
-
-    Unlike ``_bounded_call`` (fire-and-forget), this captures the call's
-    return value so callers can fall back gracefully when a hung operation
-    (e.g. album enrichment making network calls) exceeds the budget — the
-    scan continues with ``default`` instead of freezing on that album.
-    """
-    import threading
-
+    """Run ``fn()`` with a hard time budget, returning its result or ``default``."""
     if seconds is None or seconds <= 0:
         try:
             return fn()
-        except BaseException:  # noqa: BLE001
+        except Exception:
             return default
 
-    _done = threading.Event()
-    _box: dict[str, Any] = {"result": default, "exc": None}
-
-    def _runner() -> None:
-        try:
-            _box["result"] = fn()
-        except BaseException as exc:  # noqa: BLE001
-            _box["exc"] = exc
-        finally:
-            _done.set()
-
-    _thread = threading.Thread(target=_runner, name=f"bounded-{label[:40]}", daemon=True)
-    _thread.start()
-    if not _done.wait(seconds):
-        logger.warning(
-            "Budget exceeded — abandoned, using default",
-            task=label,
-            budget_seconds=seconds,
-        )
+    future = BOUNDED_EXECUTOR.submit(fn)
+    try:
+        return future.result(timeout=seconds)
+    except concurrent.futures.TimeoutError:
+        logger.warning("Budget exceeded — abandoned, using default", task=label, budget_seconds=seconds)
         return default
-    if _box["exc"] is not None:
-        logger.warning("Bounded call failed", task=label, error=str(_box["exc"]))
-    return _box["result"]
-
-
-def _bounded_call_report(fn, seconds: float, label: str) -> dict[str, Any]:
-    """Run ``fn()`` under a hard budget, returning a status report.
-
-    Returns:
-        ``{"ok": True}`` on completion.
-        ``{"ok": False, "reason": "<exception>"}`` when the call raised.
-        ``{"ok": False, "abandoned": True, "reason": "budget exceeded ...",
-          "budget_seconds": <s>}`` when the call exceeded the time budget and
-        was abandoned (the daemon thread keeps running in the background).
-
-    Lets an orchestrator record WHY a bounded unit (e.g. one artist's scan
-    pipeline) failed or was abandoned, so the dashboard can show an
-    investigation banner instead of silently continuing.
-    """
-    import threading
-
-    if seconds is None or seconds <= 0:
-        try:
-            fn()
-            return {"ok": True}
-        except BaseException as exc:  # noqa: BLE001
-            return {"ok": False, "reason": str(exc)}
-
-    _done = threading.Event()
-    _box: dict[str, Any] = {"exc": None}
-
-    def _runner() -> None:
-        try:
-            fn()
-        except BaseException as exc:  # noqa: BLE001
-            _box["exc"] = exc
-        finally:
-            _done.set()
-
-    _thread = threading.Thread(target=_runner, name=f"bounded-{label[:40]}", daemon=True)
-    _thread.start()
-    if not _done.wait(seconds):
-        _reason = f"budget exceeded ({int(seconds)}s) — abandoned, scan continues"
-        logger.warning("Budget exceeded — abandoned, scan continues", task=label, budget_seconds=seconds)
-        return {"ok": False, "abandoned": True, "reason": _reason, "budget_seconds": int(seconds)}
-    if _box["exc"] is not None:
-        _reason = str(_box["exc"])
-        logger.warning("Bounded call failed", task=label, error=_reason)
-        return {"ok": False, "reason": _reason}
-    return {"ok": True}
+    except Exception as exc:
+        logger.warning("Bounded call failed", task=label, error=str(exc))
+        return default
 
 
 def _duration_seconds(value: Any) -> float | None:
@@ -216,11 +171,7 @@ def _refresh_album_live_context(album, album_context, track_contexts, album_type
         )
 
 
-def _collapse_album_mb_batch(
-    mb_batch: dict[str, dict[str, Any]],
-    track_contexts: list[dict[str, Any]],
-    current_album: str,
-) -> None:
+def _collapse_album_mb_batch(mb_batch: dict[str, dict[str, Any]], track_contexts: list[dict[str, Any]], current_album: str) -> None:
     folder_counts: dict[str, int] = {}
     for _tc in track_contexts or []:
         _fp = str((_tc.get("track") or {}).get("file_path") or "")
@@ -231,13 +182,8 @@ def _collapse_album_mb_batch(
             _folder = _parts[-2].strip()
             folder_counts[_folder] = folder_counts.get(_folder, 0) + 1
             
-    anchor = (
-        max(folder_counts.items(), key=lambda kv: (kv[1], len(kv[0])))[0]
-        if folder_counts
-        else str(current_album or "").strip()
-    )
+    anchor = (max(folder_counts.items(), key=lambda kv: (kv[1], len(kv[0])))[0] if folder_counts else str(current_album or "").strip())
 
-    from collections import Counter
     album_counts: Counter = Counter()
     distinct_albums: list[str] = []
     
@@ -251,8 +197,6 @@ def _collapse_album_mb_batch(
 
     canonical = None
     if anchor and distinct_albums:
-        from difflib import SequenceMatcher
-
         def _score(name: str) -> float:
             return SequenceMatcher(None, anchor.lower(), name.lower()).ratio()
 
@@ -260,10 +204,7 @@ def _collapse_album_mb_batch(
         for _name in distinct_albums:
             _sim = _score(_name)
             _tie = album_counts[_name]
-            if (
-                _sim > best_score
-                or (_sim == best_score and _tie > album_counts.get(canonical, 0))
-            ):
+            if _sim > best_score or (_sim == best_score and _tie > album_counts.get(canonical, 0)):
                 best_score = _sim
                 canonical = _name
                 
@@ -293,12 +234,13 @@ def _resolve_scan_type(options: dict[str, Any]) -> str:
 
 def _album_release_is_old(tracks: list[dict[str, Any]] | None, now=None) -> bool:
     try:
-        from helpers.config_helpers import get_feature
         age_months = int(get_feature("old_album_age_months", 48) or 48)
     except Exception:
         age_months = 48
+        
     if age_months <= 0:
         return False
+        
     try:
         years: list[int] = []
         for _t in tracks or []:
@@ -310,8 +252,8 @@ def _album_release_is_old(tracks: list[dict[str, Any]] | None, now=None) -> bool
                     continue
         if not years:
             return False
+            
         _min_year = min(years)
-        from datetime import datetime
         _now = now or datetime.now()
         _age_months = (_now.year - _min_year) * 12 + _now.month
         return _age_months >= age_months
@@ -323,12 +265,10 @@ def _load_mb_single_titles(artist: str) -> set[str]:
     if not artist:
         return set()
     try:
-        from sqlalchemy import text as _text
-        from db.engine import db_session as _db_session
         titles: set[str] = set()
-        with _db_session() as session:
+        with db_session() as session:
             result = session.execute(
-                _text(
+                text(
                     "SELECT title FROM missing_releases "
                     "WHERE LOWER(artist) = LOWER(:artist) AND LOWER(COALESCE(category, '')) = 'single'"
                 ),
@@ -337,7 +277,6 @@ def _load_mb_single_titles(artist: str) -> set[str]:
             titles.update(str(row[0]).strip().lower() for row in result.fetchall() or [] if row[0])
             
         try:
-            from services.popularity.release_cache_service import get_artist_single_titles
             titles |= get_artist_single_titles(artist, source="musicbrainz")
         except Exception:
             pass
@@ -351,7 +290,6 @@ def _load_discogs_single_titles(artist: str) -> set[str]:
     if not artist:
         return set()
     try:
-        from services.popularity.release_cache_service import get_artist_single_titles
         return get_artist_single_titles(artist, source="discogs") or set()
     except Exception as exc:
         logger.debug("Could not pre-load Discogs singles", artist=artist, error=str(exc))
@@ -362,28 +300,20 @@ def _load_discogs_promo_titles(artist: str) -> set[str]:
     if not artist:
         return set()
     try:
-        from services.popularity.release_cache_service import get_artist_promo_titles
         return get_artist_promo_titles(artist, source="discogs") or set()
     except Exception as exc:
         logger.debug("Could not pre-load Discogs promos", artist=artist, error=str(exc))
         return set()
 
 
-def _close_artist_essential_section(
-    artist_name: str | None,
-    options: dict[str, Any],
-    done: set[str],
-    featured_rows: list | None,
-) -> tuple[set[str], list | None]:
+def _close_artist_essential_section(artist_name: str | None, options: dict[str, Any], done: set[str], featured_rows: list | None) -> tuple[set[str], list | None]:
     if not artist_name or options.get("metadata_only"):
         return done, featured_rows
         
     artist_name = _essential_strip_guest_credit(artist_name) or artist_name
     key = str(artist_name).strip().casefold()
     
-    if not key or key in done:
-        return done, featured_rows
-    if not _essential_playlists_enabled(options):
+    if not key or key in done or not _essential_playlists_enabled(options):
         return done, featured_rows
         
     try:
@@ -397,24 +327,13 @@ def _close_artist_essential_section(
     return done, featured_rows
 
 
-def _run_album_cover_detection(
-    *,
-    artist: str,
-    album: str,
-    tracks: list[dict[str, Any]],
-    options: dict[str, Any],
-) -> None:
+def _run_album_cover_detection(artist: str, album: str, tracks: list[dict[str, Any]], options: dict[str, Any]) -> None:
     if not artist or not tracks:
         return
-    if (
-        options.get("singles_only")
-        or options.get("singles_with_missing_popularity")
-        or options.get("popularity_only")
-    ):
+    if options.get("singles_only") or options.get("singles_with_missing_popularity") or options.get("popularity_only"):
         return
         
     try:
-        from helpers.config_helpers import get_feature
         _covers_enabled = bool(get_feature("cover_detection_enabled", True))
     except Exception:
         _covers_enabled = True
@@ -423,7 +342,6 @@ def _run_album_cover_detection(
         return
 
     try:
-        from services.enrichment.cover_detection_service import detect_covers_for_album
         _cover_results = detect_covers_for_album(
             album=album,
             artist=artist,
@@ -437,14 +355,7 @@ def _run_album_cover_detection(
         logger.debug("Cover detection failed", artist=artist, album=album, error=str(exc))
 
 
-def _artist_top_marked_cutoffs(
-    scan_scores: list[float],
-    db_scores: list[float],
-    top_percentile: float = 0.10,
-    medium_percentile: float = 0.20,
-    large_catalog_percentile: float | None = None,
-    large_catalog_threshold: int = 30,
-) -> tuple[float | None, float | None, int, int]:
+def _artist_top_marked_cutoffs(scan_scores: list[float], db_scores: list[float], top_percentile: float = 0.10, medium_percentile: float = 0.20, large_catalog_percentile: float | None = None, large_catalog_threshold: int = 30) -> tuple[float | None, float | None, int, int]:
     all_scores = [float(s) for s in scan_scores if float(s or 0) > 0]
     all_scores.extend(float(s) for s in db_scores if float(s or 0) > 0)
     
@@ -490,11 +401,7 @@ def _apply_popularity_marking_bump(album_results: list[dict[str, Any]]) -> list[
     return album_results
 
 
-def _compute_global_5star_locked_titles(
-    artist: str,
-    all_results: list[dict[str, Any]],
-    options: dict[str, Any],
-) -> set[str]:
+def _compute_global_5star_locked_titles(artist: str, all_results: list[dict[str, Any]], options: dict[str, Any]) -> set[str]:
     try:
         _sd = get_config().get("single_detection") or {}
         _top_pct = float(_sd.get("global_5star_catalog_top_pct", 0.20) or 0.20)
@@ -530,11 +437,7 @@ def _compute_global_5star_locked_titles(
     eligible.sort(key=lambda pair: pair[0], reverse=True)
     n = max(1, math.ceil(len(all_results) * _top_pct))
     
-    return {
-        str(_tr.get("title") or "").strip().lower()
-        for _raw, _tr in eligible[:n]
-        if _raw >= _min_raw
-    }
+    return {str(_tr.get("title") or "").strip().lower() for _raw, _tr in eligible[:n] if _raw >= _min_raw}
 
 
 def _mark_track_artist_top_band(album_results: list[dict[str, Any]]) -> None:
@@ -585,12 +488,7 @@ def _mark_track_artist_top_band(album_results: list[dict[str, Any]]) -> None:
             continue
             
         _top_marked = _score > 0 and _score >= _top_cutoff
-        _medium_marked = (
-            _score > 0
-            and _score >= _medium_cutoff
-            and bool(_tr.get("is_single"))
-            and str(_tr.get("single_confidence") or "low") == "medium"
-        )
+        _medium_marked = (_score > 0 and _score >= _medium_cutoff and bool(_tr.get("is_single")) and str(_tr.get("single_confidence") or "low") == "medium")
         _tr["popularity_marked"] = bool(_top_marked or _medium_marked)
 
 
@@ -603,11 +501,9 @@ def _load_track_artist_scores(track_artist: str) -> list[float]:
         
     db_rows: list[tuple[str, str]] = []
     try:
-        from sqlalchemy import text as _text
-        from db.engine import db_session as _db_session
-        with _db_session() as session:
+        with db_session() as session:
             rows = session.execute(
-                _text(
+                text(
                     "SELECT title, album, final_score FROM tracks "
                     "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
                     "AND final_score > 0"
@@ -627,17 +523,13 @@ def _load_track_artist_scores(track_artist: str) -> list[float]:
         return []
         
     try:
-        from services.popularity.popularity_math import reanchor_scores_to_album_relative
         return list(reanchor_scores_to_album_relative(db_rows))
     except Exception as exc:
         logger.debug("Track artist score re-anchor failed", track_artist=track_artist, error=str(exc))
         return [float(s) for _alb, s in db_rows]
 
 
-def _album_reference_scores(
-    album_results: list[dict[str, Any]],
-    score_key: str = "popularity_score",
-) -> list[float]:
+def _album_reference_scores(album_results: list[dict[str, Any]], score_key: str = "popularity_score") -> list[float]:
     full = [float(r.get(score_key) or 0) for r in album_results if float(r.get(score_key) or 0) > 0]
     if len(full) < 3:
         return full
@@ -653,10 +545,7 @@ def _album_reference_scores(
     return full
 
 
-def _apply_album_relative_normalization(
-    album_results: list[dict[str, Any]],
-    is_compilation: bool = False,
-) -> int:
+def _apply_album_relative_normalization(album_results: list[dict[str, Any]], is_compilation: bool = False) -> int:
     if is_compilation:
         return _apply_track_artist_relative_normalization(album_results)
         
@@ -725,15 +614,13 @@ def _persist_album_relative_scores(rows: list[dict[str, Any]]) -> None:
     if not rows:
         return
     try:
-        from sqlalchemy import text as _text
-        from db.engine import db_session as _db_session
-        with _db_session() as session:
+        with db_session() as session:
             for tr in rows:
                 tid = str(tr.get("track_id") or "")
                 if not tid:
                     continue
                 session.execute(
-                    _text("UPDATE tracks SET final_score = :s, popularity = :s WHERE id = :id"),
+                    text("UPDATE tracks SET final_score = :s, popularity = :s WHERE id = :id"),
                     {"s": float(tr.get("final_score") or 0), "id": tid},
                 )
     except Exception as exc:
@@ -744,15 +631,13 @@ def _persist_popularity_marking(rows: list[dict[str, Any]]) -> None:
     if not rows:
         return
     try:
-        from sqlalchemy import text as _text
-        from db.engine import db_session as _db_session
-        with _db_session() as session:
+        with db_session() as session:
             for tr in rows:
                 tid = str(tr.get("track_id") or "")
                 if not tid:
                     continue
                 session.execute(
-                    _text(
+                    text(
                         "UPDATE tracks SET popularity_marked = :marked, "
                         "single_confidence = :conf, single_sources = :sources "
                         "WHERE id = :id"
@@ -766,6 +651,60 @@ def _persist_popularity_marking(rows: list[dict[str, Any]]) -> None:
                 )
     except Exception as exc:
         logger.debug("Popularity marking persist failed", error=str(exc))
+
+
+def _execute_track_jobs_safely(track_jobs, max_workers, timeout_sec, grace_sec, artist, album) -> list[dict[str, Any] | None]:
+    """Safely executes track processing using an isolated thread pool to prevent main-thread freezing."""
+    results = [None] * len(track_jobs)
+    if not track_jobs:
+        return results
+
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="track_worker")
+    
+    def _run_single(job_tuple):
+        _prepared, _tc, _opts, _frozen = job_tuple
+        return process_track(
+            track=_prepared,
+            track_context=_tc,
+            album_context=_opts.get("album_context", {}),
+            album_result=_opts.get("album_result", {}),
+            options=_opts,
+            album_lb_listens=_opts.get("album_lb_listens"),
+            artist_max_lf_listeners=_opts.get("artist_max_lf_listeners", 0),
+            artist_lf_context=_opts.get("artist_lf_context", {}),
+            album_tracks=_opts.get("album_tracks", []),
+            mb_cached_singles=_opts.get("mb_cached_singles", set()),
+            discogs_cached_singles=_opts.get("discogs_cached_singles", set()),
+            discogs_cached_promos=_opts.get("discogs_cached_promos", set()),
+            prefetched_popularity=_opts.get("prefetched_popularity", {}),
+        )
+
+    future_to_idx = {pool.submit(_run_single, job): i for i, job in enumerate(track_jobs)}
+    
+    try:
+        for future in concurrent.futures.as_completed(future_to_idx.keys(), timeout=timeout_sec):
+            idx = future_to_idx[future]
+            try:
+                results[idx] = future.result()
+            except Exception as exc:
+                logger.warning("Track worker crashed", artist=artist, album=album, track=track_jobs[idx][0].get('title'), error=str(exc))
+    except concurrent.futures.TimeoutError:
+        logger.warning(f"Track deadline ({timeout_sec}s) reached. Entering {grace_sec}s grace period.", artist=artist, album=album)
+        pending = [f for f in future_to_idx if not f.done()]
+        try:
+            for future in concurrent.futures.as_completed(pending, timeout=grace_sec):
+                idx = future_to_idx[future]
+                try:
+                    results[idx] = future.result()
+                except Exception as exc:
+                    logger.warning("Track worker crashed in grace", artist=artist, album=album, error=str(exc))
+        except concurrent.futures.TimeoutError:
+            dropped = [str(track_jobs[future_to_idx[f]][0].get("title", "?")) for f in pending if not f.done()]
+            logger.warning("Grace period exceeded. Abandoning stuck tracks.", artist=artist, album=album, dropped=dropped)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+        
+    return results
 
 
 def run_scan(
@@ -815,15 +754,9 @@ def run_scan(
 
     if not albums:
         if force:
-            log_unified(
-                "Popularity Scan - No tracks found. No candidate tracks/albums were "
-                "loaded from the library — check the library has been imported."
-            )
+            log_unified("Popularity Scan - No candidate tracks/albums were loaded from the library — check the library has been imported.")
         else:
-            log_unified(
-                "Popularity Scan - No tracks found. All tracks may already have "
-                "popularity data (run in Forced mode to rescan)."
-            )
+            log_unified("Popularity Scan - No tracks found. All tracks may already have popularity data (run in Forced mode to rescan).")
         update(stage="complete", progress=100, message="No albums to scan.", processed=0, total_items=0)
         finish(success=True)
         return {"success": True, "albums_processed": 0, "tracks_processed": 0}
@@ -836,14 +769,14 @@ def run_scan(
         _banner_title = f"ARTIST SCAN: {_banner_artist}"
     else:
         _banner_title = "LIBRARY SCAN"
+        
     log_unified("=" * 80)
     log_unified(f"🚀 {_banner_title} ({total_albums} Album(s) Queued)")
     log_unified("=" * 80)
 
     try:
-        from services.popularity.stages.finalise_stage import prune_genre_playlists_for_deletion
         prune_genre_playlists_for_deletion()
-    except BaseException as exc:
+    except Exception as exc:
         logger.debug("Genre playlist prune skipped", error=str(exc))
 
     albums_processed = 0
@@ -854,27 +787,23 @@ def run_scan(
 
     scan_type = _resolve_scan_type(options)
 
-    _singles_pass = bool(
-        options.get("singles_only") or options.get("singles_with_missing_popularity")
-    )
+    _singles_pass = bool(options.get("singles_only") or options.get("singles_with_missing_popularity"))
 
     _scan_threads = 4
     try:
-        from helpers.config_helpers import get_config as _get_cfg_threads
-        _scan_threads = int(((_get_cfg_threads().get("popularity") or {}).get("scan_threads") or 4))
+        _scan_threads = int(((get_config().get("popularity") or {}).get("scan_threads") or 4))
     except Exception:
         pass
     _scan_threads = max(1, min(_scan_threads, 8))
 
     try:
-        from helpers.config_helpers import get_track_timeout_seconds
         _track_timeout_seconds = get_track_timeout_seconds()
     except Exception:
         _track_timeout_seconds = 600
+        
     _track_grace_seconds = 60
 
     try:
-        from helpers.config_helpers import get_prefetch_budget_seconds
         _prefetch_budget_seconds = get_prefetch_budget_seconds()
     except Exception:
         _prefetch_budget_seconds = 360
@@ -919,22 +848,16 @@ def run_scan(
     _artist_5star_locked_titles: dict[str, set[str]] = {}
     _artist_pending_albums: dict[str, list[dict[str, Any]]] = {}
     _artist_db_rows_cache: dict[str, list[Any]] = {}
-
-    # Album-name renames collected during the album loop, applied AFTER the
-    # artist section's star-rating finalise (deferral is required — renaming
-    # tracks rows mid-loop would make the finalise's ``album = :album``
-    # queries find nothing).
+    _artist_db_listen_cache: dict[str, list[Any]] = {}
     _deferred_album_renames: dict[str, list[dict[str, Any]]] = {}
 
     def _load_artist_db_scores(artist: str, scanned_titles: set[str]) -> list[float]:
         db_rows: list[tuple[str, str]] = []
         try:
-            from sqlalchemy import text as _text
-            from db.engine import db_session as _db_session
             if artist not in _artist_db_rows_cache:
-                with _db_session() as session:
+                with db_session() as session:
                     rows = session.execute(
-                        _text(
+                        text(
                             "SELECT title, album, final_score FROM tracks "
                             "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
                             "AND final_score > 0"
@@ -942,36 +865,30 @@ def run_scan(
                         {"artist": artist},
                     ).fetchall()
                 _artist_db_rows_cache[artist] = rows or []
+                
             rows = _artist_db_rows_cache[artist]
             db_rows = [
                 (str(r[1] or ""), float(r[2] or 0))
                 for r in rows
-                if r[2]
-                and str(r[0] or "").strip().lower() not in scanned_titles
-                and not is_bonus_track_title(str(r[0] or ""))
+                if r[2] and str(r[0] or "").strip().lower() not in scanned_titles and not is_bonus_track_title(str(r[0] or ""))
             ]
         except Exception as exc:
             logger.debug("Artist DB score fetch failed", artist=artist, error=str(exc))
             
         try:
-            from services.popularity.popularity_math import reanchor_scores_to_album_relative
             db_scores = reanchor_scores_to_album_relative(db_rows)
         except Exception as exc:
             logger.debug("Artist DB score re-anchor failed", artist=artist, error=str(exc))
             db_scores = [float(s) for _alb, s in db_rows]
             
-        return db_scores
-
-    _artist_db_listen_cache: dict[str, list[Any]] = {}
+        return list(db_scores)
 
     def _load_artist_db_listeners(artist: str, scanned_titles: set[str]) -> list[float]:
         try:
-            from sqlalchemy import text as _text
-            from db.engine import db_session as _db_session
             if artist not in _artist_db_listen_cache:
-                with _db_session() as session:
+                with db_session() as session:
                     rows = session.execute(
-                        _text(
+                        text(
                             "SELECT title, lastfm_listeners FROM tracks "
                             "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
                             "AND COALESCE(lastfm_listeners, 0) > 0"
@@ -979,32 +896,23 @@ def run_scan(
                         {"artist": artist},
                     ).fetchall()
                 _artist_db_listen_cache[artist] = rows or []
+                
             rows = _artist_db_listen_cache[artist]
             return [
                 float(r[1] or 0)
                 for r in rows
-                if float(r[1] or 0) > 0
-                and str(r[0] or "").strip().lower() not in scanned_titles
-                and not is_bonus_track_title(str(r[0] or ""))
+                if float(r[1] or 0) > 0 and str(r[0] or "").strip().lower() not in scanned_titles and not is_bonus_track_title(str(r[0] or ""))
             ]
         except Exception as exc:
             logger.debug("Artist DB listen fetch failed", artist=artist, error=str(exc))
             return []
 
-    def _post_album_stars(
-        artist: str,
-        album_results: list[dict[str, Any]],
-        is_compilation: bool = False,
-        is_va_compilation: bool = False,
-    ) -> bool:
+    def _post_album_stars(artist: str, album_results: list[dict[str, Any]], is_compilation: bool = False, is_va_compilation: bool = False) -> bool:
         if not album_results or metadata_only:
             return False
 
         try:
-            _apply_album_relative_normalization(
-                album_results,
-                is_compilation=is_va_compilation,
-            )
+            _apply_album_relative_normalization(album_results, is_compilation=is_va_compilation)
         except Exception as exc:
             logger.debug("Album-relative normalization failed", error=str(exc))
 
@@ -1012,13 +920,10 @@ def run_scan(
         scan_scores = [
             float(r.get("popularity_score") or 0)
             for r in _artist_results
-            if float(r.get("popularity_score") or 0) > 0
-            and not bool(r.get("exclude_from_stats"))
+            if float(r.get("popularity_score") or 0) > 0 and not bool(r.get("exclude_from_stats"))
         ]
-        scanned_titles = {
-            str(r.get("title") or "").strip().lower()
-            for r in _artist_results
-        }
+        
+        scanned_titles = {str(r.get("title") or "").strip().lower() for r in _artist_results}
         _db_scores = _load_artist_db_scores(artist, scanned_titles)
         artist_scores = scan_scores + _db_scores
 
@@ -1028,16 +933,14 @@ def run_scan(
                 if str(_tr.get("title") or "").strip().lower() in _locked_set:
                     _tr["_global_5star_locked"] = True
                     if not bool(_tr.get("exclude_from_stats")) and not bool(_tr.get("is_live")):
-                        log_unified(
-                            f"[scan_runner] '{_tr.get('title')}' → GLOBAL 5★ LOCKED "
-                            f"(raw {float(_tr.get('_raw_combined') or 0):.1f}, catalog top)"
-                        )
+                        log_unified(f"[scan_runner] '{_tr.get('title')}' → GLOBAL 5★ LOCKED (raw {float(_tr.get('_raw_combined') or 0):.1f}, catalog top)")
 
         try:
-            _top_pct = float((get_config().get("single_detection") or {}).get("artist_top_percentile", 0.10) or 0.10)
-            _medium_pct = float((get_config().get("single_detection") or {}).get("artist_medium_bump_percentile", 0.20) or 0.20)
-            _large_pct = float((get_config().get("single_detection") or {}).get("artist_top_percentile_large", 0.25) or 0.25)
-            _large_threshold = int((get_config().get("single_detection") or {}).get("artist_catalog_large_threshold", 30) or 30)
+            _sd = get_config().get("single_detection") or {}
+            _top_pct = float(_sd.get("artist_top_percentile", 0.10) or 0.10)
+            _medium_pct = float(_sd.get("artist_medium_bump_percentile", 0.20) or 0.20)
+            _large_pct = float(_sd.get("artist_top_percentile_large", 0.25) or 0.25)
+            _large_threshold = int(_sd.get("artist_catalog_large_threshold", 30) or 30)
         except Exception:
             _top_pct, _medium_pct, _large_pct, _large_threshold = 0.10, 0.20, 0.25, 30
             
@@ -1060,14 +963,10 @@ def run_scan(
                     if bool(_tr.get("exclude_from_stats")) or is_instrumental_track_title(str(_tr.get("title") or "")):
                         _tr["popularity_marked"] = False
                         continue
+                        
                     _score = float(_tr.get("popularity_score") or 0)
                     _top_marked = _score >= _top_cutoff and _score > 0
-                    _medium_marked = (
-                        _score >= _medium_cutoff
-                        and _score > 0
-                        and bool(_tr.get("is_single"))
-                        and str(_tr.get("single_confidence") or "low") == "medium"
-                    )
+                    _medium_marked = (_score >= _medium_cutoff and _score > 0 and bool(_tr.get("is_single")) and str(_tr.get("single_confidence") or "low") == "medium")
                     _tr["popularity_marked"] = bool(_top_marked or _medium_marked)
                     
             _apply_popularity_marking_bump(album_results)
@@ -1077,17 +976,13 @@ def run_scan(
                 pass
 
         try:
-            _outcome = post_album_star_ratings(
-                album_results=album_results,
-                artist=artist,
-                artist_scores=artist_scores,
-                options=options,
-            )
+            _outcome = post_album_star_ratings(album_results=album_results, artist=artist, artist_scores=artist_scores, options=options)
             if int(_outcome.get("star_ratings") or 0) > 0:
                 _per_album_posted_keys.add((artist, str(album_results[0].get("album") or "")))
                 return True
         except Exception as exc:
             logger.debug("Per-album star posting failed", artist=artist, error=str(exc))
+            
         return False
 
     def _flush_artist_star_ratings(artist: str) -> None:
@@ -1098,17 +993,10 @@ def run_scan(
         try:
             _all_artist_results = _artist_scan_results.get(artist, [])
             if len(_all_artist_results) >= 5:
-                _locked_titles = _compute_global_5star_locked_titles(
-                    artist,
-                    _all_artist_results,
-                    options,
-                )
+                _locked_titles = _compute_global_5star_locked_titles(artist, _all_artist_results, options)
                 if _locked_titles:
                     _artist_5star_locked_titles[artist] = _locked_titles
-                    log_unified(
-                        f"[scan_runner] Global 5★ pre-pass: locked {len(_locked_titles)} "
-                        f"catalog top track(s) for '{artist}' (order-independent)"
-                    )
+                    log_unified(f"[scan_runner] Global 5★ pre-pass: locked {len(_locked_titles)} catalog top track(s) for '{artist}'")
         except Exception as exc:
             logger.debug("Global 5★ pre-pass failed", artist=artist, error=str(exc))
 
@@ -1124,7 +1012,6 @@ def run_scan(
             )
             if _posted and total_albums <= 1:
                 try:
-                    from services.popularity.stages.finalise_stage import refresh_genre_playlists_for_album
                     refresh_genre_playlists_for_album(artist, str(_pending.get("album") or ""))
                 except Exception as exc:
                     logger.debug("Genre playlist refresh failed", artist=artist, error=str(exc))
@@ -1132,8 +1019,6 @@ def run_scan(
     _essential_featured_rows: list | None = None
     _essential_playlists_done: set[str] = set()
     _section_artist: str | None = None
-    # Tracks which artist the Pass-1 pre-scan has already run for (so it
-    # runs ONCE per artist, not before every album of the same artist).
     _pre_scan_done_artist: str | None = None
 
     def _close_artist_section(artist_name: str | None) -> None:
@@ -1141,53 +1026,25 @@ def run_scan(
         if artist_name:
             try:
                 _flush_artist_star_ratings(artist_name)
-            except BaseException as exc:
+            except Exception as exc:
                 logger.debug("Deferred star-rating flush failed", artist=artist_name, error=str(exc))
 
-            # Apply the artist's deferred album-name renames NOW — the star
-            # ratings have been finalised against the ORIGINAL album names,
-            # so renaming the tracks rows afterwards is safe and the
-            # cleaned names persist for the next scan.
             try:
                 _renames = _deferred_album_renames.pop(artist_name, []) or []
-                from services.metadata.album_name_update_service import (
-                    apply_album_name_update,
-                )
                 for _name_update in _renames:
                     try:
                         _old = str(_name_update.get("album") or "")
                         _new = str(_name_update.get("new_name") or "")
-                        _res = apply_album_name_update(
-                            artist=artist_name,
-                            album=_old,
-                            new_name=_new,
-                        )
+                        _res = apply_album_name_update(artist=artist_name, album=_old, new_name=_new)
                         if _res.get("changed"):
-                            log_unified(
-                                f"[ALBUM_NAME] '{artist_name} - {_old}' → '{_new}' "
-                                f"(reason={_name_update.get('reason')}, "
-                                f"db={_res.get('db_updated')}, "
-                                f"files={_res.get('files_updated')})"
-                            )
+                            log_unified(f"[ALBUM_NAME] '{artist_name} - {_old}' → '{_new}' (reason={_name_update.get('reason')}, db={_res.get('db_updated')}, files={_res.get('files_updated')})")
                     except Exception as exc:
-                        logger.debug(
-                            "[ALBUM_NAME] Deferred rename failed",
-                            artist=artist_name,
-                            album=_name_update.get("album"),
-                            error=str(exc),
-                        )
+                        logger.debug("[ALBUM_NAME] Deferred rename failed", artist=artist_name, album=_name_update.get("album"), error=str(exc))
             except Exception as exc:
-                logger.debug(
-                    "[ALBUM_NAME] Deferred rename batch failed",
-                    artist=artist_name,
-                    error=str(exc),
-                )
+                logger.debug("[ALBUM_NAME] Deferred rename batch failed", artist=artist_name, error=str(exc))
                 
         _essential_playlists_done, _essential_featured_rows = _close_artist_essential_section(
-            artist_name,
-            options,
-            _essential_playlists_done,
-            _essential_featured_rows,
+            artist_name, options, _essential_playlists_done, _essential_featured_rows
         )
         
         if _essential_playlists_done:
@@ -1196,7 +1053,6 @@ def run_scan(
             options["_essential_featured_rows"] = _essential_featured_rows
 
     for album_index, album_row in enumerate(albums, start=1):
-
         if effective_stop_file and is_stop_requested(effective_stop_file):
             _close_artist_section(_section_artist)
             log_unified("Scan stopped by user request")
@@ -1206,25 +1062,12 @@ def run_scan(
         artist = album_row.get("artist") or ""
 
         if artist and artist != _section_artist:
-            # Normalize for the section comparison so cosmetic variants
-            # ("Atreyu" vs "Atreyu " / different casing) don't re-trigger the
-            # Pass-1 pre-scan + artist-section close for EVERY album of the
-            # same artist — the reported scan that logged the pre-scan before
-            # each of 7 albums (wasteful DB re-reads + per-album essentials
-            # close) instead of once.
             _artist_norm = str(artist).strip().lower()
             _section_norm = str(_section_artist or "").strip().lower()
             if _artist_norm != _section_norm:
                 _close_artist_section(_section_artist)
                 _section_artist = artist
 
-        # Pass-1 artist pre-scan — runs ONCE per artist (when the section
-        # artist changes), NOT before every album.  Previously it sat inside
-        # an unconditional ``if artist:`` so the same artist re-triggered it
-        # per album (the "Pass-1 artist pre-scan: Atreyu — 90 catalogue
-        # score(s)" line repeated before albums 1, 2, 3 ... of the same
-        # artist), and with cosmetic artist variants each repeat also closed
-        # the artist section (essentials + star flush) per album.
         if artist:
             _artist_key_norm = str(artist).strip().casefold()
             if _pre_scan_done_artist != _artist_key_norm:
@@ -1263,11 +1106,7 @@ def run_scan(
                     else:
                         options.pop("artist_listen_override", None)
                         
-                    log_unified(
-                        f"[scan_runner] Pass-1 artist pre-scan: {_pre_primary} — "
-                        f"{len(_pre_scores)} catalogue score(s), "
-                        f"{len(_pre_listens)} listen(s) pre-loaded for artist_z"
-                    )
+                    log_unified(f"[scan_runner] Pass-1 artist pre-scan: {_pre_primary} — {len(_pre_scores)} catalogue score(s), {len(_pre_listens)} listen(s) pre-loaded for artist_z")
                 except Exception as exc:
                     logger.debug("Pass-1 artist pre-scan failed", artist=artist, error=str(exc))
                     options.pop("artist_stats_override", None)
@@ -1307,7 +1146,6 @@ def run_scan(
         
         if not force and not album_filter:
             try:
-                from helpers.config_helpers import get_feature
                 if _mode_meta:
                     skip_days = int(get_feature("metadata_skip_days", 0) or 0)
                     if _album_is_old:
@@ -1337,153 +1175,13 @@ def run_scan(
                     elif _mode_pop:
                         all_done = all(float(t.get("final_score") or 0) > 0 for t in tracks)
                     else:
-                        all_scored = all(float(t.get("final_score") or 0) > 0 for t in tracks)
-                        all_assessed = all(t.get("single_detection_last_updated") for t in tracks)
-                        all_done = all_scored and all_assessed
+                        all_done = all(float(t.get("final_score") or 0) > 0 for t in tracks) and all(t.get("single_detection_last_updated") for t in tracks)
                     if all_done:
                         skip_album = True
                         log_unified(f"Popularity Scan - Skipping album \"{str(album or '').strip()}\" (no changes detected)")
                         
         if skip_album:
             skipped_albums += 1
-            try:
-                from services.popularity.stages.album_stage import ensure_album_type
-                _detected_type = ensure_album_type(album_row, options)
-            except Exception as exc:
-                logger.debug("Album type ensure failed", artist=artist, album=album, error=str(exc))
-                _detected_type = None
-                
-            try:
-                from helpers.config_helpers import get_feature as _gf
-                _run_singles_on_skip = _gf("run_singles_on_skipped_albums", False)
-            except Exception:
-                _run_singles_on_skip = False
-                
-            if _run_singles_on_skip and not metadata_only and not popularity_only:
-                try:
-                    _album_context, _track_contexts = prepare_tracks_for_album(
-                        artist=artist,
-                        album=album,
-                        tracks=tracks,
-                        album_artist=album_row.get("album_artist"),
-                        spotify_album_type=album_row.get("spotify_album_type"),
-                        musicbrainz_album_type=album_row.get("musicbrainz_album_type"),
-                    )
-                    _refresh_album_live_context(
-                        album,
-                        _album_context,
-                        _track_contexts,
-                        _detected_type or "",
-                    )
-                    _album_result = {
-                        "album_row": album_row,
-                        "album_context": _album_context,
-                        "detected_album_type": _detected_type or "",
-                        "is_heterogeneous": False,
-                    }
-                    _singles_options = dict(options)
-                    _singles_options["singles_detection_only"] = True
-                    import concurrent.futures as _futures2
-                    _skip_jobs = [(apply_context_fields_to_track(_tc), _tc) for _tc in _track_contexts]
-
-                    def _run_skip_job(job: tuple) -> dict[str, Any] | None:
-                        _prepared, _tc = job
-                        try:
-                            return process_track(
-                                track=_prepared,
-                                track_context=_tc,
-                                album_context=_album_context,
-                                album_result=_album_result,
-                                options=_singles_options,
-                                album_lb_listens=None,
-                                artist_max_lf_listeners=0,
-                                artist_lf_context={},
-                                album_tracks=tracks,
-                                mb_cached_singles=mb_cached_singles,
-                                discogs_cached_singles=discogs_cached_singles,
-                                discogs_cached_promos=discogs_cached_promos,
-                                prefetched_popularity={},
-                            )
-                        except BaseException as _skip_exc:
-                            logger.warning("Skip singles worker crashed", artist=artist, album=album, error=str(_skip_exc))
-                            return None
-
-                    def _run_skip_job_bounded(job: tuple) -> dict[str, Any] | None:
-                        import threading as _th2
-                        _skip_box: dict[str, Any] = {"result": None, "exc": None, "done": False}
-
-                        def _skip_work() -> None:
-                            try:
-                                _skip_box["result"] = _run_skip_job(job)
-                            except BaseException as _exc:  # noqa: BLE001
-                                _skip_box["exc"] = _exc
-                            finally:
-                                _skip_box["done"] = True
-
-                        _t2 = _th2.Thread(target=_skip_work, name="skip-worker", daemon=True)
-                        _t2.start()
-                        _t2.join(timeout=_track_worker_hard_timeout)
-                        if not _skip_box["done"]:
-                            logger.warning(
-                                "Skip singles worker exceeded timeout — abandoning",
-                                artist=artist,
-                                track=str((job[0] or {}).get("title") or "?"),
-                                timeout_seconds=_track_worker_hard_timeout,
-                            )
-                            return None
-                        return _skip_box["result"]
-
-                    def _collect_skip_results(_pool: Any, _skip_futures: list[Any]) -> list[dict[str, Any] | None]:
-                        collected: list[dict[str, Any] | None] = [None] * len(_skip_futures)
-                        _index_by_future = {_f: _i for _i, _f in enumerate(_skip_futures)}
-                        try:
-                            for _f in _futures2.as_completed(_skip_futures, timeout=_track_timeout_seconds):
-                                _i = _index_by_future[_f]
-                                try:
-                                    collected[_i] = _f.result()
-                                except BaseException as _exc:
-                                    logger.warning("Skip singles result failed", artist=artist, album=album, error=str(_exc))
-                                    collected[_i] = None
-                        except _futures2.TimeoutError:
-                            pass
-                        _still = [f for f in _skip_futures if not f.done()]
-                        if _still:
-                            try:
-                                for _f in _futures2.as_completed(_still, timeout=_track_grace_seconds):
-                                    _i = _index_by_future[_f]
-                                    try:
-                                        collected[_i] = _f.result()
-                                    except BaseException as _exc:
-                                        logger.warning("Skip singles result failed (grace)", artist=artist, album=album, error=str(_exc))
-                                        collected[_i] = None
-                            except _futures2.TimeoutError:
-                                pass
-                        for _f in _skip_futures:
-                            if not _f.done():
-                                _i = _index_by_future[_f]
-                                logger.warning(
-                                    "Skip singles result timed out",
-                                    artist=artist, album=album,
-                                    timeout_seconds=_track_timeout_seconds,
-                                    grace_seconds=_track_grace_seconds,
-                                )
-                                collected[_i] = None
-                        return collected
-
-                    if _scan_threads > 1 and len(_skip_jobs) > 1:
-                        _pool = _futures2.ThreadPoolExecutor(max_workers=_scan_threads)
-                        try:
-                            _skip_futures = [_pool.submit(_run_skip_job_bounded, job) for job in _skip_jobs]
-                            _skip_results = _collect_skip_results(_pool, _skip_futures)
-                        finally:
-                            try:
-                                _pool.shutdown(wait=False, cancel_futures=True)
-                            except Exception:
-                                pass
-                    else:
-                        _skip_results = [_run_skip_job_bounded(job) for job in _skip_jobs]
-                except Exception as exc:
-                    logger.debug("Singles-only pass failed", artist=artist, album=album, error=str(exc))
             continue
 
         progress = 5 + int((album_index / total_albums) * 90)
@@ -1498,22 +1196,9 @@ def run_scan(
 
         if effective_stop_file and artist and artist != last_checkpoint_artist:
             try:
-                # The row's scan-type label follows the file being written:
-                # a dedicated popularity scan writes "popularity_scan", but
-                # when an ORCHESTRATOR drives this runner (dashboard "All"
-                # full scan passes stop_progress_file=full_scan) the row is
-                # the full-scan row — labelling it "popularity_scan" created
-                # the phantom "Popularity Scan 0/?" active marker next to the
-                # real "Full Scan" row on the dashboard.
-                _row_scan_type = (
-                    "full_scan"
-                    if effective_stop_file == get_scan_progress_path("full_scan")
-                    else "popularity_scan"
-                )
+                _row_scan_type = "full_scan" if effective_stop_file == get_scan_progress_path("full_scan") else "popularity_scan"
                 write_progress_with_current_artist(
-                    effective_stop_file,
-                    _row_scan_type,
-                    True,
+                    effective_stop_file, _row_scan_type, True,
                     current_artist=artist,
                     extra={"status": "running", "percent_complete": progress, "current_item": current_item},
                 )
@@ -1525,21 +1210,14 @@ def run_scan(
 
         if artist and artist not in artist_lf_context_cache and not _is_comp_artist(artist):
             try:
-                from services.enrichment.single_detection_context_service import get_artist_lastfm_context
                 artist_lf_context_cache[artist] = get_artist_lastfm_context(artist, None, None)
             except Exception as exc:
                 logger.debug("Last.fm context fetch failed", artist=artist, error=str(exc))
                 artist_lf_context_cache[artist] = {"mean": 0, "stdev": 0, "total": 0, "values": []}
+                
         artist_lf_context = artist_lf_context_cache.get(artist) or {}
 
-        update(
-            stage="album",
-            progress=progress,
-            message=f"Preparing {current_item}",
-            current_item=current_item,
-            processed=album_index,
-            total_items=total_albums,
-        )
+        update(stage="album", progress=progress, message=f"Preparing {current_item}", current_item=current_item, processed=album_index, total_items=total_albums)
 
         try:
             album_context, track_contexts = prepare_tracks_for_album(
@@ -1553,27 +1231,15 @@ def run_scan(
             stat_eligible_tracks = get_stat_eligible_tracks(track_contexts)
         except Exception as exc:
             logger.warning("Album prep failed", artist=artist, album=album, error=str(exc))
-            try:
-                log_unified(f"[POPULARITY] Album '{str(artist or '').strip()} - {str(album or '').strip()}' skipped (prep error: {exc})")
-            except Exception:
-                pass
-            try:
-                record_scan(scan_type, "failed", message=f"Album prep failed: {exc}", artist=artist, album=album)
-            except Exception:
-                pass
+            log_unified(f"[POPULARITY] Album '{str(artist or '').strip()} - {str(album or '').strip()}' skipped (prep error: {exc})")
+            record_scan(scan_type, "failed", message=f"Album prep failed: {exc}", artist=artist, album=album)
             albums_processed += 1
             continue
 
         try:
             record_scan(scan_type, "started", message=f"{scan_type} scan: {artist} - {album}", artist=artist, album=album)
 
-            _full_pass = not (
-                options.get("metadata_only")
-                or options.get("popularity_only")
-                or options.get("singles_only")
-                or options.get("singles_with_missing_popularity")
-                or options.get("singles_detection_only")
-            )
+            _full_pass = not (_mode_meta or _mode_pop or _mode_singles or options.get("singles_detection_only"))
             if _full_pass:
                 options["defer_full_enrichment"] = True
 
@@ -1587,8 +1253,9 @@ def run_scan(
                 ),
                 seconds=_prefetch_budget_seconds,
                 label=f"album enrichment '{artist} - {album}'",
-                default=None,
+                default={},
             ) or {}
+            
             log_unified(f"[POPULARITY] Album enriched: {artist} - {album} (type={album_result.get('detected_album_type')})")
 
             _refresh_album_live_context(
@@ -1609,7 +1276,6 @@ def run_scan(
                 def _prefetch_artist_work() -> None:
                     if not _singles_pass:
                         try:
-                            from services.popularity.popularity_cache_service import prefetch_artist_popularity
                             _prefetch_state["prefetched_popularity"] = prefetch_artist_popularity(
                                 artist=artist,
                                 tracks=artist_all_tracks.get(artist) or track_dicts,
@@ -1617,13 +1283,9 @@ def run_scan(
                                 cache_full_catalogue=True,
                             )
                         except Exception as exc:
-                            logger.warning(
-                                "Popularity cache prefetch failed (falls back to per-track lookups)",
-                                artist=artist, error=str(exc),
-                            )
+                            logger.warning("Popularity cache prefetch failed", artist=artist, error=str(exc))
 
                     try:
-                        from services.popularity.release_cache_service import prefetch_artist_releases
                         _discogs_id = ""
                         for _t in artist_all_tracks.get(artist) or track_dicts:
                             _discogs_id = str(_t.get("discogs_artist_id") or "").strip()
@@ -1631,47 +1293,32 @@ def run_scan(
                                 break
                         if not _discogs_id:
                             try:
-                                from services.enrichment.discogs_service import DiscogsService
-                                from helpers.config_helpers import get_config
                                 _tok = ((get_config().get("api_integrations") or {}).get("discogs") or {}).get("token") or ""
                                 if _tok and _tok.lower() not in ("your_discogs_token", "your_token", "placeholder"):
-                                    _discogs_id = str(DiscogsService(token=_tok).get_artist_id(artist) or "").strip()
+                                    _discogs_id = str(discogs_get_artist_id(artist, token=_tok) or "").strip()
                             except Exception as exc:
                                 logger.debug("Discogs artist id resolution failed", artist=artist, error=str(exc))
+                                
                         prefetch_artist_releases(artist, _discogs_id)
                     except Exception as exc:
-                        logger.warning(
-                            "Release cache prefetch failed (single-title cache unavailable)",
-                            artist=artist, error=str(exc),
-                        )
+                        logger.warning("Release cache prefetch failed", artist=artist, error=str(exc))
 
                     if not _is_compilation_artist and not _singles_pass:
                         try:
-                            from services.popularity.release_cache_service import (
-                                populate_missing_release_tracklists,
-                                refresh_missing_releases_for_artist,
-                            )
                             refresh_missing_releases_for_artist(artist)
                             populate_missing_release_tracklists(artist, limit=3)
                         except Exception as exc:
                             logger.debug("Missing-releases refresh failed", artist=artist, error=str(exc))
 
-                log_unified(
-                    f"[POPULARITY] Prefetching popularity + release data for '{artist}' "
-                    f"(budget {int(_prefetch_budget_seconds or 0)}s)"
-                )
+                log_unified(f"[POPULARITY] Prefetching popularity + release data for '{artist}' (budget {int(_prefetch_budget_seconds or 0)}s)")
                 _prefetch_start = time.monotonic()
                 _bounded_call(_prefetch_artist_work, seconds=_prefetch_budget_seconds, label=f"per-artist prefetch for '{artist}'")
                 _prefetch_elapsed = time.monotonic() - _prefetch_start
                 prefetched_popularity = _prefetch_state["prefetched_popularity"]
-                log_unified(
-                    f"[POPULARITY] Prefetch complete for '{artist}' in {_prefetch_elapsed:.1f}s "
-                    f"({len(prefetched_popularity or {})} tracks pre-loaded)"
-                )
+                log_unified(f"[POPULARITY] Prefetch complete for '{artist}' in {_prefetch_elapsed:.1f}s ({len(prefetched_popularity or {})} tracks pre-loaded)")
 
             if not _singles_pass:
                 try:
-                    from services.popularity.popularity_sources import get_listenbrainz_album_tracklist_with_release
                     _needs_album_lb = bool(options.get("force"))
                     if not _needs_album_lb:
                         for _t in track_dicts:
@@ -1681,12 +1328,10 @@ def run_scan(
                             if _entry.get("source") != "album_tracklist":
                                 _needs_album_lb = True
                                 break
+                                
                     if _needs_album_lb:
                         _album_lb_by_title, _album_release_mbid = _bounded_call_result(
-                            lambda: (
-                                get_listenbrainz_album_tracklist_with_release(artist, album, track_dicts)
-                                or ({}, "")
-                            ),
+                            lambda: get_listenbrainz_album_tracklist_with_release(artist, album, track_dicts) or ({}, ""),
                             seconds=min(_track_timeout_seconds, 120),
                             label=f"album-tracklist LB for '{artist} - {album}'",
                             default=({}, ""),
@@ -1719,7 +1364,6 @@ def run_scan(
                                 })
                         if _cache_rows:
                             try:
-                                from db.repositories.popularity_cache import upsert_track_popularity_bulk
                                 upsert_track_popularity_bulk(_cache_rows)
                             except Exception as exc:
                                 logger.debug("Album-tracklist cache persist failed", error=str(exc))
@@ -1733,23 +1377,20 @@ def run_scan(
                 if _tc > 0:
                     album_lb_listens.append(_tc)
 
-            artist_max_lf = (
-                _bounded_call_result(
+            artist_max_lf = 0
+            if not _singles_pass:
+                artist_max_lf = _bounded_call_result(
                     lambda: get_lastfm_artist_max_listeners(artist),
                     seconds=min(_track_timeout_seconds, 90),
                     label=f"artist max LF listeners for '{artist}'",
                     default=0,
                 )
-                if not _singles_pass
-                else 0
-            )
 
             album_count = len(track_contexts)
             log_unified(f"[POPULARITY] Album {album_index}/{total_albums} ({scan_type}): {artist} - {album} ({album_count} tracks)")
 
             if not _singles_pass and not options.get("popularity_only"):
                 try:
-                    from services.enrichment.musicbrainz_service import MusicBrainzService, get_shared_mb_client
                     options["mb_batch_metadata"] = {}
                     _mb_entries: list[tuple[str, str]] = []
                     for _tc in track_contexts:
@@ -1759,15 +1400,15 @@ def run_scan(
                         _aa = _tc.get("artist")
                         if _tt and _aa:
                             _mb_entries.append((str(_tt), str(_aa)))
+                            
                     if _mb_entries:
                         _mb_batch = _bounded_call_result(
-                            lambda: MusicBrainzService(
-                                http_client=get_shared_mb_client()
-                            ).lookup_album_metadata(_mb_entries, album=str(album or "")),
+                            lambda: mb_lookup_album_metadata(_mb_entries, album=str(album or "")),
                             seconds=min(_track_timeout_seconds, 120),
                             label=f"MB album batch for '{artist} - {album}'",
                             default={},
                         ) or {}
+                        
                         if _mb_batch:
                             _collapse_album_mb_batch(_mb_batch, track_contexts, album)
                             options["mb_batch_metadata"] = _mb_batch
@@ -1785,12 +1426,13 @@ def run_scan(
                         _m = str(_t.get("recording_mbid") or _t.get("mbid") or _t.get("musicbrainz_trackid") or "").strip()
                         if _m and _m not in _lb_tag_mbids:
                             _lb_tag_mbids.append(_m)
+                            
                     for _mb_entry in (options.get("mb_batch_metadata") or {}).values():
                         _m = str((_mb_entry or {}).get("recording_mbid") or "").strip()
                         if _m and _m not in _lb_tag_mbids:
                             _lb_tag_mbids.append(_m)
+                            
                     if _lb_tag_mbids:
-                        from api_clients.listenbrainz import get_recording_tags_batch
                         options["lb_recording_tags_batch"] = _bounded_call_result(
                             lambda: get_recording_tags_batch(_lb_tag_mbids),
                             seconds=min(_track_timeout_seconds, 90),
@@ -1803,22 +1445,17 @@ def run_scan(
             _pop_due = False
             if _mode_singles:
                 try:
-                    from helpers.config_helpers import get_feature
                     _pop_window = int(get_feature("popularity_skip_days", 7) or 0)
                     if _album_is_old:
                         _pop_window = int(get_feature("popularity_old_album_skip_days", 30) or 0)
                 except Exception:
                     _pop_window = 7
+                    
                 if _pop_window <= 0:
                     _pop_due = True
                 else:
-                    _pop_scored_recently = (
-                        was_album_scanned(artist, album, "popularity", _pop_window)
-                        or was_album_scanned(artist, album, "combined", _pop_window)
-                    )
+                    _pop_scored_recently = (was_album_scanned(artist, album, "popularity", _pop_window) or was_album_scanned(artist, album, "combined", _pop_window))
                     _pop_due = not _pop_scored_recently
-
-            import concurrent.futures as _futures
 
             _track_jobs: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any], bool]] = []
             for track_context in track_contexts:
@@ -1827,20 +1464,13 @@ def run_scan(
                 
                 if not options.get("force") and should_freeze_track(prepared_track):
                     _frozen = True
-                    logger.debug(
-                        "Freezing mature track — running singles/cover/genre only",
-                        track=prepared_track.get("title", "?"),
-                        existing_score=prepared_track.get("final_score", 0),
-                    )
+                    logger.debug("Freezing mature track", track=prepared_track.get("title", "?"), existing_score=prepared_track.get("final_score", 0))
                     if not prepared_track.get("popularity_frozen"):
                         try:
-                            from sqlalchemy import text as _text
-                            from db.engine import db_session as _db_session
-                            with _db_session() as session:
+                            with db_session() as session:
                                 session.execute(
-                                    _text(
-                                        "UPDATE tracks SET popularity_frozen = TRUE, "
-                                        "popularity_frozen_at = CURRENT_TIMESTAMP "
+                                    text(
+                                        "UPDATE tracks SET popularity_frozen = TRUE, popularity_frozen_at = CURRENT_TIMESTAMP "
                                         "WHERE id = :id AND COALESCE(popularity_frozen, FALSE) = FALSE"
                                     ),
                                     {"id": prepared_track.get("id")},
@@ -1851,195 +1481,33 @@ def run_scan(
                 _track_options = dict(options)
                 _track_options["_deferred_persist"] = _deferred_persist
                 _track_options["refresh_popularity_if_due"] = _pop_due
+                _track_options["album_context"] = album_context
+                _track_options["album_result"] = album_result
+                _track_options["album_lb_listens"] = album_lb_listens if album_lb_listens else None
+                _track_options["artist_max_lf_listeners"] = artist_max_lf
+                _track_options["artist_lf_context"] = artist_lf_context
+                _track_options["album_tracks"] = track_dicts
+                _track_options["mb_cached_singles"] = mb_cached_singles
+                _track_options["discogs_cached_singles"] = discogs_cached_singles
+                _track_options["discogs_cached_promos"] = discogs_cached_promos
+                _track_options["prefetched_popularity"] = prefetched_popularity
+                
                 if _frozen:
                     _track_options["frozen_track"] = True
+                    
                 _track_jobs.append((prepared_track, track_context, _track_options, _frozen))
 
-            def _run_track_job(job: tuple) -> dict[str, Any] | None:
-                _prepared, _tc, _opts, _frozen = job
-                try:
-                    return process_track(
-                        track=_prepared,
-                        track_context=_tc,
-                        album_context=album_context,
-                        album_result=album_result,
-                        options=_opts,
-                        album_lb_listens=album_lb_listens if album_lb_listens else None,
-                        artist_max_lf_listeners=artist_max_lf,
-                        artist_lf_context=artist_lf_context,
-                        album_tracks=track_dicts,
-                        mb_cached_singles=mb_cached_singles,
-                        discogs_cached_singles=discogs_cached_singles,
-                        discogs_cached_promos=discogs_cached_promos,
-                        prefetched_popularity=prefetched_popularity,
-                    )
-                except BaseException as _track_exc:
-                    logger.warning(
-                        "Track worker crashed",
-                        artist=artist, album=album, track=_prepared.get("title", "?"), error=str(_track_exc)
-                    )
-                    try:
-                        log_unified(f"[TRACK_STAGE] Track worker crashed for '{_prepared.get('title', '?')}' — skipping ({_track_exc})")
-                    except Exception:
-                        pass
-                    return None
-
             _track_worker_hard_timeout = max(60, min(_track_timeout_seconds, 600))
-
-            def _run_track_job_bounded(job: tuple) -> dict[str, Any] | None:
-                import threading as _th
-                _box: dict[str, Any] = {"result": None, "exc": None, "done": False}
-
-                def _work() -> None:
-                    try:
-                        _box["result"] = _run_track_job(job)
-                    except BaseException as _exc:  # noqa: BLE001
-                        _box["exc"] = _exc
-                    finally:
-                        _box["done"] = True
-
-                _t = _th.Thread(target=_work, name="track-worker", daemon=True)
-                _t.start()
-                _t.join(timeout=_track_worker_hard_timeout)
-                if not _box["done"]:
-                    _title = str((job[0] or {}).get("title") or "?")
-                    logger.warning(
-                        "Track worker exceeded timeout — abandoning, scan continues",
-                        artist=artist, album=album, track=_title, timeout_seconds=_track_worker_hard_timeout
-                    )
-                    try:
-                        log_unified(f"[TRACK_STAGE] '{_title}' exceeded {_track_worker_hard_timeout}s — track skipped for this pass (scan continues)")
-                    except Exception:
-                        pass
-                    return None
-                if _box["exc"] is not None:
-                    return None
-                return _box["result"]
-
-            def _collect_track_results(_pool: Any, _track_futures: list[Any], _job_titles: list[str]) -> list[dict[str, Any] | None]:
-                collected: list[dict[str, Any] | None] = [None] * len(_track_futures)
-                _index_by_future = {_f: _i for _i, _f in enumerate(_track_futures)}
-                _deadline_seconds = _track_timeout_seconds
-
-                def _collect_finished(deadline: float) -> None:
-                    try:
-                        _remaining = max(0.0, deadline - time.monotonic())
-                    except Exception:
-                        _remaining = 0.0
-                    try:
-                        for _f in _futures.as_completed(_track_futures, timeout=_remaining):
-                            _i = _index_by_future[_f]
-                            try:
-                                collected[_i] = _f.result()
-                            except BaseException as _exc:
-                                logger.warning("Track result collection failed", artist=artist, album=album, error=str(_exc))
-                                try:
-                                    log_unified(f"[TRACK_STAGE] Track timed out or failed for '{artist} - {album}' — skipping ({_exc})")
-                                except Exception:
-                                    pass
-                                collected[_i] = None
-                    except _futures.TimeoutError:
-                        pass 
-
-                _phase1_started = time.monotonic()
-                _last_heartbeat = _phase1_started
-                _heartbeat_interval = 60.0
-                _deadline_at = time.monotonic() + _deadline_seconds
-
-                while True:
-                    _remaining_phase = max(0.0, _deadline_at - time.monotonic())
-                    if _remaining_phase <= 0:
-                        break
-                    _wait_chunk = min(_remaining_phase, _heartbeat_interval)
-                    _collect_finished(time.monotonic() + _wait_chunk)
-                    _now_hb = time.monotonic()
-                    # FAST PATH: once every future is done, collection is
-                    # complete — return immediately.  Previously this loop
-                    # kept iterating (and re-entering as_completed with a
-                    # fresh timeout) until the FULL album deadline elapsed,
-                    # which produced the observed multi-minute stall AFTER
-                    # all tracks had already finished (e.g. 8m19s gap between
-                    # the last [TRACK] log and the [TRACK_RESULT] logs).
-                    if all(_f.done() for _f in _track_futures):
-                        break
-                    if _now_hb - _last_heartbeat >= _heartbeat_interval:
-                        _last_heartbeat = _now_hb
-                        _in_flight = [
-                            _job_titles[_index_by_future[f]]
-                            for f in _track_futures
-                            if not f.done() and _index_by_future[f] < len(_job_titles)
-                        ]
-                        if _in_flight:
-                            logger.warning(
-                                "Album still waiting on tracks",
-                                artist=artist, album=album, 
-                                tracks_remaining=len(_in_flight),
-                                wait_seconds=int(_now_hb - _phase1_started),
-                                in_flight=_in_flight[:8]
-                            )
-                            try:
-                                log_unified(
-                                    f"[TRACK_STAGE] '{artist} - {album}' still waiting on "
-                                    f"{len(_in_flight)} track(s) after {int(_now_hb - _phase1_started)}s "
-                                    f"— in flight: {', '.join(_in_flight[:8])}"
-                                )
-                            except Exception:
-                                pass
-
-                _still_running = [f for f in _track_futures if not f.done()]
-                if _still_running:
-                    _collect_finished(time.monotonic() + _track_grace_seconds)
-                    _still_running = [f for f in _track_futures if not f.done()]
-
-                if _still_running:
-                    _dropped_titles = [_job_titles[_index_by_future[f]] for f in _still_running if _index_by_future[f] < len(_job_titles)]
-                    logger.warning(
-                        "Track result collection failed — dropped tracks",
-                        artist=artist, album=album,
-                        dropped_count=len(_still_running),
-                        total_futures=len(_track_futures),
-                        timeout_seconds=_deadline_seconds,
-                        grace_seconds=_track_grace_seconds,
-                        dropped=_dropped_titles,
-                    )
-                    try:
-                        log_unified(
-                            f"[TRACK_STAGE] Track(s) timed out for '{artist} - {album}' "
-                            f"after {_deadline_seconds}s (+{_track_grace_seconds}s grace) — "
-                            f"skipped: {', '.join(_dropped_titles) or '?'}"
-                        )
-                    except Exception:
-                        pass
-                    for _f in _still_running:
-                        collected[_index_by_future[_f]] = None
-                return collected
-
-            _track_results_ordered: list[dict[str, Any] | None] = []
-            _job_titles = [str((job[0] or {}).get("title") or "?") for job in _track_jobs]
             
-            if _scan_threads > 1 and len(_track_jobs) > 1:
-                _pool = _futures.ThreadPoolExecutor(max_workers=_scan_threads)
-                try:
-                    _track_futures = []
-                    _worker_slots = max(1, min(_scan_threads, 8))
-                    _slot_semaphore = threading.BoundedSemaphore(_worker_slots)
-
-                    def _submit_chunked(job):
-                        _slot_semaphore.acquire()
-                        try:
-                            return _run_track_job_bounded(job)
-                        finally:
-                            _slot_semaphore.release()
-
-                    _track_futures = [_pool.submit(_submit_chunked, job) for job in _track_jobs]
-                    _track_results_ordered = _collect_track_results(_pool, _track_futures, _job_titles)
-                finally:
-                    try:
-                        _pool.shutdown(wait=False, cancel_futures=True)
-                    except Exception:
-                        pass
-            else:
-                _track_results_ordered = [_run_track_job_bounded(job) for job in _track_jobs]
+            # Execute Track Jobs safely using mapped thread pool
+            _track_results_ordered = _execute_track_jobs_safely(
+                track_jobs=_track_jobs, 
+                max_workers=_scan_threads, 
+                timeout_sec=_track_worker_hard_timeout, 
+                grace_sec=_track_grace_seconds, 
+                artist=artist, 
+                album=album
+            )
 
             try:
                 _deferred_payloads = _deferred_persist.drain()
@@ -2049,34 +1517,20 @@ def run_scan(
             except Exception as exc:
                 logger.warning("Bulk track persist failed", artist=artist, album=album, error=str(exc))
                 
-            try:
-                _deferred_payloads = _deferred_persist.drain()
-                if _deferred_payloads:
-                    upsert_tracks_bulk(_deferred_payloads)
-                    logger.debug("Bulk-persisted late track(s)", count=len(_deferred_payloads), artist=artist, album=album)
-            except Exception as exc:
-                logger.warning("Late bulk track persist failed", artist=artist, album=album, error=str(exc))
-
             for _track_i, ((_prepared, _tc, _opts, _frozen), track_result) in enumerate(zip(_track_jobs, _track_results_ordered)):
                 if track_result is not None:
                     results.append(track_result)
                     if not options.get("metadata_only") and isinstance(track_result, dict):
                         _tt = _prepared.get("title", "Unknown Track")
                         _fs = track_result.get("popularity_score")
+                        _lf = float(track_result.get('lastfm_score') or 0.0)
+                        _lb = float(track_result.get('listenbrainz_score') or 0.0)
                         if _frozen:
-                            log_unified(f"[TRACK_RESULT] '{_tt}' -> Final: {float(_fs or 0.0):.1f} (frozen | LF: {float(track_result.get('lastfm_score') or 0.0):.1f} | LB: {float(track_result.get('listenbrainz_score') or 0.0):.1f})")
+                            log_unified(f"[TRACK_RESULT] '{_tt}' -> Final: {float(_fs or 0.0):.1f} (frozen | LF: {_lf:.1f} | LB: {_lb:.1f})")
                         else:
-                            log_unified(f"[TRACK_RESULT] '{_tt}' -> Final: {float(_fs or 0.0):.1f} (LF: {float(track_result.get('lastfm_score') or 0.0):.1f} | LB: {float(track_result.get('listenbrainz_score') or 0.0):.1f})")
+                            log_unified(f"[TRACK_RESULT] '{_tt}' -> Final: {float(_fs or 0.0):.1f} (LF: {_lf:.1f} | LB: {_lb:.1f})")
                 tracks_processed += 1
 
-                # ── Per-track progress heartbeat ───────────────────────────
-                # The album-level ``_progress_cb`` fires once per album (at
-                # album start), so a long rate-limited album leaves the footer
-                # frozen for minutes.  Fire it per track too — the full-scan
-                # orchestrator uses ``current_item`` to render a live
-                # "now scanning: <track>" line, and ``track_fraction`` lets it
-                # advance the percentage WITHIN the album band instead of
-                # waiting for the next album boundary.
                 try:
                     _track_denom = max(1, len(_track_jobs) - 1)
                     _track_frac = (_track_i / _track_denom) if len(_track_jobs) > 1 else 1.0
@@ -2099,15 +1553,13 @@ def run_scan(
                     pass
 
             _track_failure_ratio = (
-                (len(_track_jobs) - sum(1 for r in _track_results_ordered if r is not None))
-                / max(1, len(_track_jobs))
+                (len(_track_jobs) - sum(1 for r in _track_results_ordered if r is not None)) / max(1, len(_track_jobs))
                 if _track_jobs else 0.0
             )
 
             if _full_pass:
                 def _post_singles_enrichment_work() -> None:
                     try:
-                        from services.popularity.stages.album_stage import enrich_album_extras
                         _extra_ctx, _extra_similar, _extra_meta = enrich_album_extras(
                             artist=artist,
                             album=album,
@@ -2124,15 +1576,9 @@ def run_scan(
                         logger.debug("Post-singles enrichment failed", artist=artist, album=album, error=str(exc))
 
                 if _track_failure_ratio >= 0.5:
-                    logger.warning(
-                        "Skipping post-singles enrichment — track workers stalled (resource exhaustion guard)",
-                        artist=artist, album=album, failure_ratio_pct=_track_failure_ratio * 100
-                    )
+                    logger.warning("Skipping post-singles enrichment — track workers stalled", artist=artist, album=album, failure_ratio_pct=_track_failure_ratio * 100)
                 else:
-                    log_unified(
-                        f"[POPULARITY] Post-singles enrichment for '{artist} - {album}' "
-                        f"(covers, genres, artist metadata)"
-                    )
+                    log_unified(f"[POPULARITY] Post-singles enrichment for '{artist} - {album}' (covers, genres, artist metadata)")
                     _bounded_call(
                         _post_singles_enrichment_work,
                         seconds=_prefetch_budget_seconds,
@@ -2140,18 +1586,12 @@ def run_scan(
                     )
 
             if _track_failure_ratio < 0.5:
-                _run_album_cover_detection(
-                    artist=artist,
-                    album=album,
-                    tracks=tracks,
-                    options=options,
-                )
+                _run_album_cover_detection(artist=artist, album=album, tracks=tracks, options=options)
             else:
                 logger.debug("Skipping cover detection — track workers stalled (resource exhaustion guard)", artist=artist, album=album)
 
             if _mode_meta or _full_pass:
                 try:
-                    from services.metadata.album_tag_sync_service import sync_album_file_tags
                     _tag_sync = sync_album_file_tags(artist=artist, album=album)
                     if _tag_sync and (_tag_sync.get("files_updated") or _tag_sync.get("corrections_recorded")):
                         log_unified(
@@ -2163,31 +1603,9 @@ def run_scan(
                 except Exception as exc:
                     logger.debug("Album tag sync failed", artist=artist, album=album, error=str(exc))
 
-            # ── Album-name cleaning (metadata_update config) ──────────────
-            # The user's request: with "missing releases" and singles the
-            # album name should be cleaned up during the Popularity Scan —
-            # repeated edition markers ("(reissue) (reissue) (reissue)",
-            # "(10 Year Anniversary)" x4) are stripped, optionally using the
-            # MusicBrainz release title, and the result is written to the DB
-            # (always) and the audio file tags (when configured).
-            #
-            # IMPORTANT: only the RESOLUTION runs here — the DB + file write
-            # is deferred until the artist section closes.  Applying the
-            # rename immediately would rename the tracks rows BEFORE the
-            # artist-section star-rating finalise (``_flush_artist_star_
-            # ratings``) queries them by ``album = :album`` — the queries
-            # would find 0 rows and the album would never get its ★ ratings.
-            # Singles-only passes never finalise albums the same way and
-            # skip windows make repeated cleaning wasteful — skipped.
             if not _mode_singles:
                 try:
-                    from services.metadata.album_name_update_service import (
-                        resolve_album_name,
-                    )
-                    _new_name, _reason = resolve_album_name(
-                        artist=artist,
-                        album=album,
-                    )
+                    _new_name, _reason = resolve_album_name(artist=artist, album=album)
                     if _reason and _new_name and _new_name != album:
                         _deferred_album_renames.setdefault(artist, []).append({
                             "album": album,
@@ -2195,12 +1613,7 @@ def run_scan(
                             "reason": _reason,
                         })
                 except Exception as exc:
-                    logger.debug(
-                        "[ALBUM_NAME] Cleaning skipped",
-                        artist=artist,
-                        album=album,
-                        error=str(exc),
-                    )
+                    logger.debug("[ALBUM_NAME] Cleaning skipped", artist=artist, album=album, error=str(exc))
 
             try:
                 record_scan(scan_type, "completed", message=f"{scan_type} scan: {artist} - {album}", artist=artist, album=album)
@@ -2217,66 +1630,29 @@ def run_scan(
                     "album": album,
                 })
 
-        except BaseException as _album_exc:
+        except Exception as _album_exc:
             try:
                 _deferred_payloads = _deferred_persist.drain()
                 if _deferred_payloads:
                     upsert_tracks_bulk(_deferred_payloads)
-                    logger.debug("Safety-flushed deferred track(s)", count=len(_deferred_payloads), artist=artist, album=album)
             except Exception:
                 pass
                 
-            _album_error = _album_exc
+            logger.warning("Album failed completely", artist=artist, album=album, error=str(_album_exc))
             try:
-                _exc_type = type(_album_exc)
-                _is_future_like = (
-                    hasattr(_album_exc, "exception")
-                    and callable(getattr(_album_exc, "exception", None))
-                    and hasattr(_album_exc, "result")
-                    and callable(getattr(_album_exc, "result", None))
-                )
-                logger.warning(
-                    "Album failed",
-                    artist=artist, album=album,
-                    exception_type=f"{_exc_type.__module__}.{_exc_type.__name__}",
-                    future_like=_is_future_like,
-                )
-                if _is_future_like:
-                    _inner = _album_exc.exception()
-                    if _inner is not None:
-                        _album_error = _inner
-                    else:
-                        _result = _album_exc.result()
-                        _album_error = (
-                            RuntimeError(f"Album future completed with a value instead of raising — result type: {type(_result).__name__}")
-                            if _result is not None
-                            else RuntimeError("Album future completed with None instead of raising")
-                        )
-            except Exception:
-                pass
-                
-            logger.warning("Album failed completely", artist=artist, album=album, error=str(_album_error))
-            try:
-                log_unified(f"[POPULARITY] Album '{artist} - {album}' failed ({_album_error})")
-            except Exception:
-                pass
-            try:
-                record_scan(scan_type, "failed", message=f"Album failed: {_album_error}", artist=artist, album=album)
+                log_unified(f"[POPULARITY] Album '{artist} - {album}' failed ({_album_exc})")
+                record_scan(scan_type, "failed", message=f"Album failed: {_album_exc}", artist=artist, album=album)
             except Exception:
                 pass
                 
         albums_processed += 1
-
         _quarter = (albums_processed * 4) // total_albums
         if _quarter > _last_quarter:
             _last_quarter = _quarter
             log_unified(f"[POPULARITY] {_quarter * 25}% complete ({albums_processed}/{total_albums} albums processed)")
 
     if tracks_processed == 0:
-        log_unified(
-            "Popularity Scan - All albums were skipped (recently scanned or up to "
-            "date). Run in Forced mode to rescan."
-        )
+        log_unified("Popularity Scan - All albums were skipped (recently scanned or up to date). Run in Forced mode to rescan.")
 
     _close_artist_section(_section_artist)
 
@@ -2288,15 +1664,11 @@ def run_scan(
             options["_per_album_posted_keys"] = _per_album_posted_keys
         try:
             finalise_scan(results=results, options=options)
-        except BaseException as _finalise_exc:
+        except Exception as _finalise_exc:
             logger.warning("Finalise failed", error=str(_finalise_exc))
-            try:
-                log_unified(f"[POPULARITY] Finalise step failed ({_finalise_exc})")
-            except Exception:
-                pass
+            log_unified(f"[POPULARITY] Finalise step failed ({_finalise_exc})")
     else:
         try:
-            from services.popularity.stages.finalise_stage import _create_genre_top_track_playlists
             _genre_playlists_written = _create_genre_top_track_playlists()
             if _genre_playlists_written:
                 log_unified(f"[FINALISE_STAGE] Genre playlists: {_genre_playlists_written} file(s) written")
