@@ -94,19 +94,12 @@ def fetch_album_tracks(album_id: str, client: NavidromeClient | None = None) -> 
 
 
 def save_to_db(track_payload: dict[str, Any]) -> None:
-    """Persist a track payload through the PostgreSQL-safe tracks repository.
-
-    This replaces the previous fallback to ``popularity_helpers.save_to_db`` so
-    the import path stays PostgreSQL-only.
-    """
+    """Persist a track payload through the PostgreSQL-safe tracks repository."""
     upsert_track_payload(track_payload)
 
 
 def detect_live_album(album_name: str) -> dict[str, bool]:
-    """Return lightweight live/unplugged album context flags.
-    
-    Delegates to the canonical implementation in services.catalog.album_classification_service.
-    """
+    """Return lightweight live/unplugged album context flags."""
     from services.catalog.album_classification_service import (
         is_live_or_alternate_album,
         detect_live_album_type,
@@ -116,37 +109,17 @@ def detect_live_album(album_name: str) -> dict[str, bool]:
     return {"is_live": is_live, "is_unplugged": album_type == "acoustic"}
 
 
-def artist_album_name_diff(
+def compute_artist_album_diff(
     artist_name: str,
-    artist_id: str,
-    client: NavidromeClient | None = None,
+    nav_albums: list[dict[str, Any]],
 ) -> tuple[bool, set[str], set[str]]:
-    """Compare Navidrome album names/counts to current DB album names/counts.
+    """Compare pre-fetched Navidrome albums against current DB album names/counts.
 
-    Returns ``(skip_artist, changed_albums, removed_albums)``:
-    - ``changed_albums`` — albums whose track set changed (name added/removed
-      or Navidrome ``songCount`` differs from the DB count).
-    - ``removed_albums`` — albums present in the DB but gone from Navidrome.
-      They are a subset of ``changed_albums`` but never enter the album loop
-      (Navidrome no longer reports them), so callers must delete their cached
-      tracks explicitly.
+    Returns ``(skip_artist, changed_albums, removed_albums)``.
     """
-    try:
-        nav_albums = fetch_artist_albums(artist_id, client=client)
-    except Exception as exc:
-        logger.debug(
-            "[NAVIDROME_SCAN] Could not fetch albums",
-            artist=artist_name,
-            error=str(exc),
-        )
-        return False, set(), set()
-
     nav_names: set[str] = set()
     nav_counts: dict[str, int] = {}
     for album in nav_albums:
-        # Same edition-marker stripping as scan_artist_to_db — the DB stores
-        # release titles ("Slipknot"), so a Navidrome folder named
-        # "Slipknot (Clean)" must compare equal, not look changed/removed.
         name = strip_album_edition_marker(album.get("name") or "")
         if name:
             nav_names.add(name)
@@ -173,9 +146,6 @@ def artist_album_name_diff(
                 count = int(row[1] or 0)
                 if album_name:
                     db_raw_names.add(album_name)
-                    # Compare against the release-title form (same stripping as
-                    # the Navidrome side) so legacy edition-suffixed rows don't
-                    # show up as removed once the DB starts storing clean names.
                     stripped_db = strip_album_edition_marker(album_name)
                     db_names.add(stripped_db)
                     db_counts[stripped_db] = db_counts.get(stripped_db, 0) + count
@@ -192,17 +162,10 @@ def artist_album_name_diff(
         if nav_counts.get(album, 0) != db_counts.get(album, 0):
             changed.add(album)
 
-    # Legacy edition-suffixed DB rows: the DB still stores "Slipknot (Clean)"
-    # while Navidrome (stripped) says "Slipknot".  Stripped names match, but
-    # the stored name is stale — flag the album as CHANGED once so the import
-    # loop re-runs and the upsert rewrites ``album`` to the release title.
-    # Only genuinely-gone albums (no stripped-name match) are removed.
     for raw_name in db_raw_names - nav_names:
         if strip_album_edition_marker(raw_name) in nav_names:
             changed.add(strip_album_edition_marker(raw_name))
 
-    # All returned names are in the stripped (release-title) form, matching
-    # ``existing_album_tracks`` in ``prefetch_artist_state``.
     removed = {db_name for db_name in db_names if db_name not in nav_names}
     return (not changed), changed, removed
 
@@ -255,10 +218,7 @@ def extract_and_backfill_track_metadata(
     navi_client: Any,
     track: dict[str, Any],
 ) -> tuple[dict[str, Any], str]:
-    """Extract Navidrome metadata and writer JSON.
-
-    Kept as a compatibility wrapper, but implemented via metadata_extractor.
-    """
+    """Extract Navidrome metadata and writer JSON."""
     get_song = getattr(navi_client, "get_song", None)
     extracted = extract_track_metadata(track, get_song=get_song)
     writer_json = extracted.get("writer", "[]") or "[]"
@@ -289,11 +249,6 @@ def prefetch_artist_state(*, canonical_artist_name: str) -> dict[str, Any]:
             if track_id:
                 existing_track_ids.add(str(track_id))
             if album and track_id:
-                # Key by the RELEASE-TITLE album name (same stripping as the
-                # import loop) so a legacy "Slipknot (Clean)" row is found
-                # under "Slipknot" on the first post-migration scan — the
-                # cached-id set then survives the rename and tracks are NOT
-                # re-defaulted as brand-new.
                 existing_album_tracks.setdefault(strip_album_edition_marker(str(album)), set()).add(str(track_id))
             if album and album_artist:
                 existing_album_artists[strip_album_edition_marker(str(album))] = str(album_artist)
@@ -321,7 +276,7 @@ def scan_artist_to_db(
     diff_mode: bool = False,
     client: NavidromeClient | None = None,
 ):
-    """Scan one Navidrome artist and upsert local PostgreSQL track rows."""
+    """Scan one Navidrome artist and upsert local PostgreSQL track rows efficiently."""
     log_unified(f"[NAVIDROME_IMPORT] Importing artist: {artist_name} (artist_id={artist_id or 'none'}, force={force}, processed={processed_artists})")
 
     if not artist_id:
@@ -346,43 +301,9 @@ def scan_artist_to_db(
         )
         sanitize_artist_rows_safe(canonical_artist_name=canonical_artist_name)
 
-        changed_album_names: set[str] | None = None
-        removed_album_names: set[str] = set()
-
-        if diff_mode and not force and not album_filter and not filter_missing:
-            skip_artist, changed_album_names, removed_album_names = artist_album_name_diff(
-                canonical_artist_name,
-                artist_id,
-                client=active_client,
-            )
-            if skip_artist:
-                return {"changed": False, "changed_albums": 0}
-
+        # Single fetch for artist albums from Navidrome
         albums = fetch_artist_albums(artist_id, client=active_client) or []
 
-        # Same album NAME listed more than once (e.g. duplicate Navidrome
-        # entries with different MusicBrainz album MBIDs) — the DB caches
-        # tracks by album NAME only, so the per-album stale cleanup cannot
-        # attribute rows to one entry and would delete the sibling
-        # duplicate's tracks.  Collect duplicated names so the cleanup below
-        # can skip them (the rows are still upserted from every entry).
-        _album_name_counts: dict[str, int] = {}
-        for _album in albums:
-            _name = strip_album_edition_marker(str(_album.get("name") or "").strip())
-            if _name:
-                _album_name_counts[_name] = _album_name_counts.get(_name, 0) + 1
-        duplicate_album_names = {
-            _name for _name, _count in _album_name_counts.items() if _count > 1
-        }
-
-        # ── Data-loss guard ──────────────────────────────────────────────
-        # ``fetch_artist_albums`` returns [] BOTH when the artist has no
-        # albums AND when the Navidrome call failed (network/timeout).  If we
-        # proceed with an empty album list, ``navidrome_track_ids`` stays
-        # empty and the stale-track cleanup below would DELETE every existing
-        # local track for this artist — emptying the library during a forced
-        # scan and leaving every later popularity scan with "No tracks found".
-        # Treat an empty response as "cannot verify" and preserve local data.
         if not albums:
             log_unified(
                 f"Navidrome Import - {artist_name}: Navidrome returned no albums — "
@@ -395,22 +316,31 @@ def scan_artist_to_db(
             )
             return None
 
-        # Only create fallback client for getSong metadata extraction if a real
-        # client was not passed and the legacy start.py helpers were used for
-        # album/track fetching.
+        changed_album_names: set[str] | None = None
+        removed_album_names: set[str] = set()
+
+        if diff_mode and not force and not album_filter and not filter_missing:
+            skip_artist, changed_album_names, removed_album_names = compute_artist_album_diff(
+                canonical_artist_name,
+                albums,
+            )
+            if skip_artist:
+                return {"changed": False, "changed_albums": 0}
+
+        _album_name_counts: dict[str, int] = {}
+        for _album in albums:
+            _name = strip_album_edition_marker(str(_album.get("name") or "").strip())
+            if _name:
+                _album_name_counts[_name] = _album_name_counts.get(_name, 0) + 1
+        duplicate_album_names = {
+            _name for _name, _count in _album_name_counts.items() if _count > 1
+        }
+
         navi_client = active_client or _get_fallback_client()
 
         for album_index, album in enumerate(albums, 1):
-            # Album naming is based on the RELEASE TITLE, not the edition
-            # folder Navidrome happens to use.  "Slipknot (Clean)" stores as
-            # "Slipknot" — the parenthetical is an edition marker (Clean /
-            # Deluxe Edition / Remaster ...), not part of the release's
-            # canonical title.  Live/Remix markers are preserved: they change
-            # what the album IS, so they stay in the name.
             album_name = strip_album_edition_marker(album.get("name") or "")
 
-            # Honour dashboard stop requests (stop-all / stop-navidrome) so
-            # the artist import halts cleanly instead of draining every album.
             if progress_file and is_stop_requested(progress_file):
                 log_unified(f"Navidrome Import - Stop requested — import halted for '{artist_name}'")
                 break
@@ -471,10 +401,6 @@ def scan_artist_to_db(
             )
 
             album_mbids_seen: set[str] = set()
-            # Payloads are accumulated per album and persisted in ONE
-            # session + commit — the per-track ``save_to_db`` used to open a
-            # fresh transaction for every track (tens of thousands across a
-            # full library import).
             _album_payloads: list[dict[str, Any]] = []
 
             for track in tracks:
@@ -531,10 +457,6 @@ def scan_artist_to_db(
                 )
 
         if not filter_missing and not album_filter and not diff_mode:
-            # Only prune stale tracks when we actually confirmed the artist's
-            # current track set from Navidrome.  If every album's track fetch
-            # failed/returned nothing, `navidrome_track_ids` stays empty and a
-            # cleanup would delete the whole artist's local library.
             if navidrome_track_ids:
                 cleanup_stale_artist_tracks_if_needed(
                     artist_name=artist_name,
@@ -553,10 +475,6 @@ def scan_artist_to_db(
             )
 
         if diff_mode:
-            # Albums present in the DB but gone from Navidrome never enter the
-            # album loop above (they are not in ``albums``), and diff mode
-            # deliberately skips the artist-level stale cleanup — delete their
-            # cached tracks explicitly so full-album removals propagate.
             for removed_album in removed_album_names:
                 removed_cached_ids = existing_album_tracks.get(removed_album, set())
                 if removed_cached_ids:
@@ -578,11 +496,7 @@ def scan_artist_to_db(
 
 
 def pre_import_sync_album_artists(artist_id: str | None = None) -> dict[str, Any]:
-    """Compatibility placeholder for album-artist pre-sync.
-
-    Keep your richer implementation if you have one elsewhere. This placeholder
-    remains so callers do not fail while the pre-sync behaviour is migrated.
-    """
+    """Compatibility placeholder for album-artist pre-sync."""
     return {
         "success": True,
         "unique_album_artists": 0,
