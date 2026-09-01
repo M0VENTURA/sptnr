@@ -840,26 +840,26 @@ def _run_full_enrichment(
     _enrich_start = time.monotonic()
 
     _step_start = time.monotonic()
-    logger.debug(
+    logger.info(
         "[ENRICH] ▶ album art lookup (Navidrome → MB/CAA → AudioDB → Discogs)",
         artist=artist, album=album,
     )
     art_source = _fetch_album_art_with_fallback(artist, album, discogs_token)
     if art_source:
         logger.info("Album art cached", artist=artist, album=album, source=art_source)
-    logger.debug(
+    logger.info(
         "[ENRICH] ✓ album art lookup done",
         artist=artist, album=album, source=art_source,
         elapsed_s=round(time.monotonic() - _step_start, 1),
     )
 
     _step_start = time.monotonic()
-    logger.debug(
+    logger.info(
         "[ENRICH] ▶ artist metadata (bio / country / image)",
         artist=artist,
     )
     meta = _fetch_artist_metadata(artist, None)
-    logger.debug(
+    logger.info(
         "[ENRICH] ✓ artist metadata done",
         artist=artist,
         country=meta.get("country"), has_bio=bool(meta.get("bio")), has_image=bool(meta.get("image_url")),
@@ -867,12 +867,12 @@ def _run_full_enrichment(
     )
 
     _step_start = time.monotonic()
-    logger.debug(
+    logger.info(
         "[ENRICH] ▶ artist lastfm tags",
         artist=artist,
     )
     _fetch_artist_lastfm_tags(artist, None)
-    logger.debug(
+    logger.info(
         "[ENRICH] ✓ artist lastfm tags done",
         artist=artist,
         elapsed_s=round(time.monotonic() - _step_start, 1),
@@ -891,24 +891,24 @@ def _run_full_enrichment(
             logger.debug("releasecountry backfill failed", error=str(exc))
 
     _step_start = time.monotonic()
-    logger.debug(
+    logger.info(
         "[ENRICH] ▶ artist musicbrainz id",
         artist=artist,
     )
     _fetch_musicbrainz_artist_id(artist, None, options)
-    logger.debug(
+    logger.info(
         "[ENRICH] ✓ artist musicbrainz id done",
         artist=artist,
         elapsed_s=round(time.monotonic() - _step_start, 1),
     )
 
     _step_start = time.monotonic()
-    logger.debug(
+    logger.info(
         "[ENRICH] ▶ similar artists (Last.fm + ListenBrainz)",
         artist=artist,
     )
     similar = _fetch_similar_artists(artist, None, options)
-    logger.debug(
+    logger.info(
         "[ENRICH] ✓ similar artists done",
         artist=artist,
         lastfm_count=len(similar.get("lastfm") or []),
@@ -917,12 +917,12 @@ def _run_full_enrichment(
     )
 
     _step_start = time.monotonic()
-    logger.debug(
+    logger.info(
         "[ENRICH] ▶ artist discogs id",
         artist=artist,
     )
     _fetch_discogs_artist_id(artist, None, options)
-    logger.debug(
+    logger.info(
         "[ENRICH] ✓ artist discogs id done",
         artist=artist,
         elapsed_s=round(time.monotonic() - _step_start, 1),
@@ -931,7 +931,7 @@ def _run_full_enrichment(
     _apply_live_remix_album_tagging(artist, album, detected_type, album_tracks)
     _persist_alternate_takes(album_context)
 
-    logger.debug(
+    logger.info(
         "[ENRICH] ✓ album enrichment complete",
         artist=artist, album=album,
         total_s=round(time.monotonic() - _enrich_start, 1),
