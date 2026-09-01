@@ -6,27 +6,23 @@ This file is intentionally minimal and orchestration-focused.
 
 Responsibilities:
 - Configure logging
-- Create Flask app instance
+- Create Quart app instance
 - Register extensions (flash helpers, filters, blueprints, hooks)
 - Ensure required files and config exist
 - Initialize database schema
-- Start background services
+- Start background services (via Leader Election)
 - Launch the web server
-
-Important:
-This file should NOT contain business logic or database logic.
-All heavy logic lives in:
-- db/
-- helpers/
-- services/
 """
 
 import os
+import threading
+import time
+import logging
 
 from quart import Quart
+from sqlalchemy import text
 
 from helpers.secret_key import resolve_secret_key
-
 from helpers.logging_config import setup_logging
 from db.bootstrap import init_database_and_schema
 from helpers.flash_manager import register_flash_helpers
@@ -51,13 +47,9 @@ except Exception:
     def run_migrations_on_startup():
         return False
 
-
 setup_logging("WebUI")
 
-# Log the effective logging configuration so operators can confirm where logs
-# land and whether debug is enabled.
 try:
-    import logging
     from helpers.logging_config import resolve_log_dir, _resolve_log_level
     logging.getLogger(__name__).info(
         "Logging ready: dir=%s level=%s",
@@ -67,23 +59,13 @@ try:
 except Exception:
     pass
 
-# Initialise the SQLAlchemy engine early so the pool is ready before any
-# request or background worker needs it.
 if _sqlalchemy_available:
     try:
         get_engine()
     except Exception as exc:
-        import logging
         logging.getLogger(__name__).warning("SQLAlchemy engine init failed: %s", exc)
 
-
-
-
 app = Quart(__name__)
-# Secret key must be IDENTICAL across all hypercorn workers.  Quart signs the
-# session cookie with this key; if every worker rolls its own random value,
-# a request served by worker A carries a cookie worker B cannot validate and
-# the user is bounced back to login on every page navigation.
 app.secret_key = resolve_secret_key()
 app.config["PERMANENT_SESSION_LIFETIME"] = 86400
 
@@ -98,15 +80,66 @@ register_all_blueprints(app)
 register_app_hooks(app)
 register_asset_helpers(app)
 
-# NOTE: Database schema initialisation and Alembic migrations are handled
-# by entrypoint.sh BEFORE Hypercorn workers are spawned.  This avoids
-# race conditions when multiple workers import this module simultaneously.
-# Do NOT add init_database_and_schema() or run_migrations_on_startup() here.
+# -------------------------------------------------------------------------
+# LEADER ELECTION & BACKGROUND SERVICES
+# -------------------------------------------------------------------------
 
-# Pass the Flask app into background service bootstrap so workers that need
-# an application context can create one safely without importing app.py.
-initialize_app_services(app)
+def _keep_lock_alive(conn) -> None:
+    """Hold the dedicated connection open forever to maintain the advisory lock."""
+    while True:
+        time.sleep(60)
+        try:
+            # Ping the database to prevent TCP/idle timeouts from dropping the connection
+            conn.execute(text("SELECT 1"))
+        except Exception:
+            pass
 
+def _elect_leader_and_start_services(app_instance: Quart) -> None:
+    """Ensure background tasks are only started on a single Hypercorn worker."""
+    if not _sqlalchemy_available:
+        return
+        
+    engine = get_engine()
+    if not engine:
+        return
+        
+    try:
+        # Check out a dedicated connection and set AUTOCOMMIT so we don't
+        # trigger "idle-in-transaction" timeouts on Postgres.
+        conn = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+        
+        # Use a unique 64-bit integer for the Scheduler/Background worker lock
+        _SCHEDULER_LOCK_KEY = 0x504F50534348  # "POPSCH"
+        
+        # pg_try_advisory_lock is non-blocking
+        result = conn.execute(
+            text("SELECT pg_try_advisory_lock(:k)"), 
+            {"k": _SCHEDULER_LOCK_KEY}
+        ).scalar()
+        
+        if result:
+            logging.getLogger(__name__).info("Acquired leader lock. Starting background services.")
+            
+            # Start the background tasks only on this specific worker
+            initialize_app_services(app_instance)
+            
+            # Keep the connection alive in a daemon thread so the lock never drops
+            threading.Thread(
+                target=_keep_lock_alive, 
+                args=(conn,), 
+                daemon=True, 
+                name="leader-keepalive"
+            ).start()
+        else:
+            logging.getLogger(__name__).info("Another worker is the leader. Running in web-only mode.")
+            # We didn't get the lock, so we don't need this dedicated connection
+            conn.close()
+            
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Leader election failed: %s", exc)
+
+# Execute the leader election synchronously during app boot
+_elect_leader_and_start_services(app)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
