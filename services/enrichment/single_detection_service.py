@@ -528,6 +528,12 @@ def _detect_discogs(title: str, artist: str, album: str | None,
                     "metadata": {"is_promo": is_promo, "similarity_ratio": 1.0},
                     "cached": True}
     try:
+        # NOTE: the Discogs arm is a single blocking get_single_status call
+        # (3-6+ rate-limited requests inside).  Each Discogs HTTP request is
+        # itself bounded by _DISCOGS_REQUEST_BUDGET_SECONDS in
+        # api_clients/discogs_http.py (30s hard cap incl. 429 cooldowns), so a
+        # shared rate-limit cooldown can no longer stall the album's track
+        # workers for minutes (the reported 240s+ singles-detection hang).
         from services.enrichment.discogs_service import (
             _get_service as _get_discogs_service,
             calculate_discogs_confidence,

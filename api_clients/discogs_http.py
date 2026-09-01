@@ -33,6 +33,10 @@ _DISCOGS_CONSECUTIVE_ERRORS = 0
 
 _DISCOGS_THROTTLE_LOCK = threading.Lock()
 _DISCOGS_MAX_COOLDOWN = 60.0
+# Hard wall-clock budget per Discogs request (429 cooldowns + 5xx backoff).
+# Keeps a shared rate-limit cooldown from stalling an album's track workers
+# for minutes (the reported 240s+ singles-detection hang).
+_DISCOGS_REQUEST_BUDGET_SECONDS = 30.0
 
 
 def build_discogs_session() -> Any:
@@ -151,8 +155,22 @@ class DiscogsHttpClient:
 
         url = path_or_url if path_or_url.startswith("http") else f"{self.base_url}{path_or_url}"
         retry_delay = 1.0
+        # Hard wall-clock budget for the whole request (429 cooldowns + 5xx
+        # backoff).  A shared cooldown window keeps getting pushed forward by
+        # repeated 429s, and with 4-8 concurrent track workers ALL of them
+        # sleep on that window — the reported album-level hang where 8 tracks
+        # sat "in flight" for 240s+ in singles detection.  Give up after the
+        # budget instead of spinning on an ever-extending cooldown.
+        _deadline = time.monotonic() + _DISCOGS_REQUEST_BUDGET_SECONDS
 
         for attempt in range(max_retries + 1):
+            if time.monotonic() > _deadline:
+                logger.warning(
+                    "Discogs request budget exceeded — giving up",
+                    url=url,
+                    budget_seconds=_DISCOGS_REQUEST_BUDGET_SECONDS,
+                )
+                return {}
             throttle_discogs()
             try:
                 response = self.session.request(method, url, headers=self.headers, params=params, timeout=timeout)
@@ -161,12 +179,29 @@ class DiscogsHttpClient:
                     wait_seconds = min(get_retry_after_seconds(response), _DISCOGS_MAX_COOLDOWN)
                     _set_rate_limit_window(wait_seconds)
                     logger.warning("Discogs rate limited", wait_seconds=int(wait_seconds))
+                    # Budget-check BEFORE the cooldown sleep — a long 429
+                    # cooldown must not push the total past the request budget
+                    # (the loop-top check only fires AFTER this sleep).
+                    if time.monotonic() + min(wait_seconds, 1.0) > _deadline:
+                        logger.warning(
+                            "Discogs request budget exceeded during 429 cooldown",
+                            url=url,
+                            budget_seconds=_DISCOGS_REQUEST_BUDGET_SECONDS,
+                        )
+                        return {}
                     time.sleep(wait_seconds)
                     continue
 
                 if response.status_code in {502, 503}:
                     record_discogs_error(str(response.status_code))
                     if attempt < max_retries:
+                        if time.monotonic() + retry_delay > _deadline:
+                            logger.warning(
+                                "Discogs request budget exceeded during backoff",
+                                url=url,
+                                budget_seconds=_DISCOGS_REQUEST_BUDGET_SECONDS,
+                            )
+                            return {}
                         time.sleep(retry_delay)
                         retry_delay *= 2
                         continue
@@ -184,6 +219,16 @@ class DiscogsHttpClient:
                 
             except Exception as exc:
                 if attempt < max_retries:
+                    # Budget-check before the backoff sleep (same reasoning as
+                    # the 429/5xx branches — the loop-top check only fires
+                    # after this sleep).
+                    if time.monotonic() + retry_delay > _deadline:
+                        logger.warning(
+                            "Discogs request budget exceeded during exception backoff",
+                            url=url,
+                            budget_seconds=_DISCOGS_REQUEST_BUDGET_SECONDS,
+                        )
+                        return {}
                     time.sleep(retry_delay)
                     retry_delay *= 2
                     continue

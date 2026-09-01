@@ -104,3 +104,53 @@ class TestRetryTransportCapsRetryAfter:
         assert resp.status_code == 200
         # Bounded well under the 300s header (and under the 300s album deadline).
         assert elapsed < 5.0
+
+
+class TestDiscogsRequestBudget:
+    """The Discogs ``_request`` loop must give up after a hard wall-clock
+    budget instead of spinning on an ever-extending shared 429 cooldown —
+    the reported 240s+ singles-detection hang where 8 tracks sat in flight."""
+
+    def test_request_budget_constant_is_set(self):
+        import api_clients.discogs_http as dh
+
+        assert dh._DISCOGS_REQUEST_BUDGET_SECONDS > 0
+        assert dh._DISCOGS_REQUEST_BUDGET_SECONDS < dh._DISCOGS_MAX_COOLDOWN * 4
+
+    def test_budget_exceeded_returns_empty(self):
+        """When the shared cooldown keeps extending past the request budget,
+        ``_request`` returns {} instead of blocking indefinitely."""
+        import api_clients.discogs_http as dh
+
+        class _FakeSession:
+            def request(self, method, url, headers=None, params=None, timeout=None):
+                # Simulate a permanent 429 with a fresh cooldown every call.
+                dh._set_rate_limit_window(30.0)
+                raise _Fake429()
+
+        class _Fake429(Exception):
+            pass
+
+        client = dh.DiscogsHttpClient(token="tok")
+        client.session = _FakeSession()
+
+        # Shrink the budget so the test is fast; the point is bounded exit.
+        # Shrink the budget so the test is fast; the point is bounded exit.
+        # NOTE: throttle_discogs() enforces a 1s pacing floor per iteration,
+        # so a budget below ~1s is dominated by that floor — 1.5s lets the
+        # loop run ~2 iterations before the budget fires (without the budget
+        # it would run all max_retries+1 iterations and take 9s+).
+        original = dh._DISCOGS_REQUEST_BUDGET_SECONDS
+        dh._DISCOGS_REQUEST_BUDGET_SECONDS = 1.5
+        try:
+            start = time.time()
+            payload = client._request("GET", "/database/search", params={"q": "x"})
+            elapsed = time.time() - start
+        finally:
+            dh._DISCOGS_REQUEST_BUDGET_SECONDS = original
+            # The fake armed a real shared cooldown — clear it so other tests
+            # in the same process don't sleep on throttle_discogs().
+            dh._DISCOGS_RATE_LIMIT_UNTIL = 0.0
+
+        assert payload == {}
+        assert elapsed < 5.0
