@@ -7,19 +7,31 @@ To add background services, import and start them here so ``app.py`` stays
 clean of business logic.
 """
 
+import os
 import logging
 
 logger = logging.getLogger(__name__)
 
 
-def initialize_app_services(app=None):
+def initialize_app_services(app=None, is_leader=None):
     """Start background services after the Flask app is created.
 
     Called once during app factory setup (``app.py``). Starts APScheduler
     for periodic tasks (library sync, popularity scan, queue processor) and
     mirrors the Download Retry Scheduler's ``auto_start`` config into its
     runtime state so the config page shows Running after boot.
+
+    Guarded by leader status to prevent duplicate scheduling across multi-worker deployments.
     """
+    # If leader status isn't explicitly passed, check environment variable guard 
+    # to prevent secondary worker processes from spawning overlapping background loops.
+    if is_leader is None:
+        is_leader = os.environ.get("ENABLE_BACKGROUND_WORKERS", "true").lower() == "true"
+
+    if not is_leader:
+        logger.debug("[TASK_MANAGER] Skipping background services initialization on non-leader worker.")
+        return
+
     # Boot hygiene: a scan killed by a crash/reboot leaves its DB
     # ``scan_states`` row flagged running (the completion path never ran).
     # The schema bootstrap already resets these before workers spawn, but
