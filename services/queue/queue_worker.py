@@ -7,6 +7,7 @@ Features:
     - Signal-based graceful shutdown (SIGTERM/SIGINT).
     - Periodic processing cycles via ``queue_orchestrator.process_cycle``.
     - Error recovery and automatic restart logic.
+    - Distributed leader election (Advisory Lock).
 """
 
 from __future__ import annotations
@@ -18,14 +19,28 @@ import time
 from typing import Any
 
 import structlog
+from sqlalchemy import text
 
 from helpers.config_helpers import get_queue_worker_config
 from services.queue.queue_orchestrator import process_cycle
+
+# Graceful degradation for sqlalchemy imports
+try:
+    from db.engine import get_engine
+    _sqlalchemy_available = True
+except Exception:
+    _sqlalchemy_available = False
+
+    def get_engine():
+        return None
 
 logger = structlog.get_logger(__name__)
 
 _SHOULD_STOP = False
 _worker_cfg = get_queue_worker_config()
+
+# Unique 64-bit integer for the Queue Worker lock
+_QUEUE_WORKER_LOCK_KEY = 0x5155455545  # "QUEUE"
 
 
 # =============================================================================
@@ -59,6 +74,36 @@ def _configure_logging() -> None:
 # =============================================================================
 
 def run(interval: int | None = None, batch_size: int | None = None) -> None:
+    if not _sqlalchemy_available:
+        logger.error("SQLAlchemy not available. Cannot run queue worker.")
+        return
+
+    engine = get_engine()
+    if not engine:
+        logger.error("Database engine not available. Cannot run queue worker.")
+        return
+
+    try:
+        # Check out a dedicated connection and set AUTOCOMMIT 
+        conn = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+        
+        # pg_try_advisory_lock is non-blocking
+        result = conn.execute(
+            text("SELECT pg_try_advisory_lock(:k)"), 
+            {"k": _QUEUE_WORKER_LOCK_KEY}
+        ).scalar()
+
+        if not result:
+            logger.info("Another queue worker process is already running. Exiting.")
+            conn.close()
+            return
+            
+    except Exception as exc:
+        logger.warning("Queue worker leader election failed. Exiting to prevent duplicates.", error=str(exc))
+        return
+
+    logger.info("Acquired queue worker leader lock.")
+    
     effective_interval: int = _worker_cfg.get("interval_seconds", 30) if interval is None else interval
     effective_batch: int = _worker_cfg.get("batch_size", 50) if batch_size is None else batch_size
     
@@ -76,51 +121,62 @@ def run(interval: int | None = None, batch_size: int | None = None) -> None:
 
     loop_count = 0
 
-    while not _SHOULD_STOP:
-        loop_count += 1
+    try:
+        while not _SHOULD_STOP:
+            loop_count += 1
 
-        try:
-            start_time = time.monotonic()
+            # Keep the DB connection alive so the lock doesn't drop
+            try:
+                conn.execute(text("SELECT 1"))
+            except Exception:
+                pass
 
-            payload, status = process_cycle(
-                batch_size=effective_batch,
-                run_maintenance_hooks=True,
-            )
+            try:
+                start_time = time.monotonic()
 
-            duration = round(time.monotonic() - start_time, 3)
-
-            if status >= 500:
-                logger.error(
-                    "Queue cycle failed",
-                    loop=loop_count,
-                    duration_seconds=duration,
-                    response=payload,
-                )
-            elif status >= 400:
-                logger.warning(
-                    "Queue cycle warning",
-                    loop=loop_count,
-                    duration_seconds=duration,
-                    response=payload,
-                )
-            else:
-                logger.debug(
-                    "Queue cycle success",
-                    loop=loop_count,
-                    duration_seconds=duration,
-                    processed=payload.get("processed"),
-                    succeeded=payload.get("succeeded"),
-                    failed=payload.get("failed"),
-                    skipped=payload.get("skipped"),
+                payload, status = process_cycle(
+                    batch_size=effective_batch,
+                    run_maintenance_hooks=True,
                 )
 
-        except Exception:
-            logger.exception("Queue worker cycle crashed")
+                duration = round(time.monotonic() - start_time, 3)
 
-        from services.queue.queue_signal import wait_for_item
-        woke = wait_for_item(timeout=float(effective_interval))
-        if woke:
-            logger.debug("Queue worker woke up early — new item signalled")
+                if status >= 500:
+                    logger.error(
+                        "Queue cycle failed",
+                        loop=loop_count,
+                        duration_seconds=duration,
+                        response=payload,
+                    )
+                elif status >= 400:
+                    logger.warning(
+                        "Queue cycle warning",
+                        loop=loop_count,
+                        duration_seconds=duration,
+                        response=payload,
+                    )
+                else:
+                    logger.debug(
+                        "Queue cycle success",
+                        loop=loop_count,
+                        duration_seconds=duration,
+                        processed=payload.get("processed"),
+                        succeeded=payload.get("succeeded"),
+                        failed=payload.get("failed"),
+                        skipped=payload.get("skipped"),
+                    )
+
+            except Exception:
+                logger.exception("Queue worker cycle crashed")
+
+            from services.queue.queue_signal import wait_for_item
+            woke = wait_for_item(timeout=float(effective_interval))
+            if woke:
+                logger.debug("Queue worker woke up early — new item signalled")
+
+    finally:
+        # Ensure the connection (and the lock) is released when the loop exits
+        conn.close()
 
     logger.info("Queue worker stopped cleanly", total_cycles=loop_count)
 
