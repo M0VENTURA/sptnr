@@ -95,10 +95,6 @@ MAINTENANCE_CANDIDATES: tuple[MaintenanceCandidate, ...] = (
         "cleanup_stale_downloads",
     ),
     MaintenanceCandidate(
-        "services.downloads.download_scheduler_service",
-        "run_due_tasks",
-    ),
-    MaintenanceCandidate(
         "services.queue.queue_cleanup_service",
         "cleanup_stuck_items",
     ),
