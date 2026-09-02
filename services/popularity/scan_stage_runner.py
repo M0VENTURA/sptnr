@@ -911,6 +911,115 @@ def run_scan(
             logger.debug("Artist DB listen fetch failed", artist=artist, error=str(exc))
             return []
 
+    def _post_album_stars(artist: str, album_results: list[dict[str, Any]], is_compilation: bool = False, is_va_compilation: bool = False) -> bool:
+        if not album_results or metadata_only:
+            return False
+
+        try:
+            _apply_album_relative_normalization(album_results, is_compilation=is_va_compilation)
+        except Exception as exc:
+            logger.debug("Album-relative normalization failed", error=str(exc))
+
+        _artist_results = _artist_scan_results.get(artist, [])
+        scan_scores = [
+            float(r.get("popularity_score") or 0)
+            for r in _artist_results
+            if float(r.get("popularity_score") or 0) > 0 and not bool(r.get("exclude_from_stats"))
+        ]
+        
+        scanned_titles = {str(r.get("title") or "").strip().lower() for r in _artist_results}
+        _db_scores = _load_artist_db_scores(artist, scanned_titles)
+        artist_scores = scan_scores + _db_scores
+
+        _locked_set = _artist_5star_locked_titles.get(artist) or set()
+        if _locked_set:
+            for _tr in album_results:
+                if str(_tr.get("title") or "").strip().lower() in _locked_set:
+                    _tr["_global_5star_locked"] = True
+                    if not bool(_tr.get("exclude_from_stats")) and not bool(_tr.get("is_live")):
+                        log_unified(f"[scan_runner] '{_tr.get('title')}' → GLOBAL 5★ LOCKED (raw {float(_tr.get('_raw_combined') or 0):.1f}, catalog top)")
+
+        try:
+            _sd = get_config().get("single_detection") or {}
+            _top_pct = float(_sd.get("artist_top_percentile", 0.10) or 0.10)
+            _medium_pct = float(_sd.get("artist_medium_bump_percentile", 0.20) or 0.20)
+            _large_pct = float(_sd.get("artist_top_percentile_large", 0.25) or 0.25)
+            _large_threshold = int(_sd.get("artist_catalog_large_threshold", 30) or 30)
+        except Exception:
+            _top_pct, _medium_pct, _large_pct, _large_threshold = 0.10, 0.20, 0.25, 30
+            
+        if is_va_compilation:
+            _top_cutoff = _medium_cutoff = None
+        else:
+            _top_cutoff, _medium_cutoff, _top_n, _medium_n = _artist_top_marked_cutoffs(
+                scan_scores, _db_scores,
+                top_percentile=_top_pct,
+                medium_percentile=_medium_pct,
+                large_catalog_percentile=_large_pct,
+                large_catalog_threshold=_large_threshold,
+            )
+            
+        if not options.get("popularity_only") and (is_va_compilation or _top_cutoff is not None):
+            if is_va_compilation:
+                _mark_track_artist_top_band(album_results)
+            elif _top_cutoff is not None:
+                for _tr in album_results:
+                    if bool(_tr.get("exclude_from_stats")) or is_instrumental_track_title(str(_tr.get("title") or "")):
+                        _tr["popularity_marked"] = False
+                        continue
+                        
+                    _score = float(_tr.get("popularity_score") or 0)
+                    _top_marked = _score >= _top_cutoff and _score > 0
+                    _medium_marked = (_score >= _medium_cutoff and _score > 0 and bool(_tr.get("is_single")) and str(_tr.get("single_confidence") or "low") == "medium")
+                    _tr["popularity_marked"] = bool(_top_marked or _medium_marked)
+                    
+            _apply_popularity_marking_bump(album_results)
+            try:
+                _persist_popularity_marking(album_results)
+            except Exception:
+                pass
+
+        try:
+            _outcome = post_album_star_ratings(album_results=album_results, artist=artist, artist_scores=artist_scores, options=options)
+            if int(_outcome.get("star_ratings") or 0) > 0:
+                _per_album_posted_keys.add((artist, str(album_results[0].get("album") or "")))
+                return True
+        except Exception as exc:
+            logger.debug("Per-album star posting failed", artist=artist, error=str(exc))
+            
+        return False
+
+    def _flush_artist_star_ratings(artist: str) -> None:
+        pending = _artist_pending_albums.pop(artist, [])
+        if not pending or metadata_only:
+            return
+
+        try:
+            _all_artist_results = _artist_scan_results.get(artist, [])
+            if len(_all_artist_results) >= 5:
+                _locked_titles = _compute_global_5star_locked_titles(artist, _all_artist_results, options)
+                if _locked_titles:
+                    _artist_5star_locked_titles[artist] = _locked_titles
+                    log_unified(f"[scan_runner] Global 5★ pre-pass: locked {len(_locked_titles)} catalog top track(s) for '{artist}'")
+        except Exception as exc:
+            logger.debug("Global 5★ pre-pass failed", artist=artist, error=str(exc))
+
+        for _pending in pending:
+            _album_results_this = _pending.get("album_results") or []
+            if not _album_results_this:
+                continue
+            _posted = _post_album_stars(
+                artist,
+                _album_results_this,
+                is_compilation=bool(_pending.get("is_compilation")),
+                is_va_compilation=bool(_pending.get("is_va_compilation")),
+            )
+            if _posted and total_albums <= 1:
+                try:
+                    refresh_genre_playlists_for_album(artist, str(_pending.get("album") or ""))
+                except Exception as exc:
+                    logger.debug("Genre playlist refresh failed", artist=artist, error=str(exc))
+
     def _close_artist_section(artist_name: str | None) -> None:
         nonlocal _essential_featured_rows, _essential_playlists_done
         if artist_name:
