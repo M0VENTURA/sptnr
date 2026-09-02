@@ -652,8 +652,8 @@ def _persist_popularity_marking(rows: list[dict[str, Any]]) -> None:
         logger.debug("Popularity marking persist failed", error=str(exc))
 
 
-def _execute_track_jobs_safely(track_jobs, max_workers, timeout_sec, grace_sec, artist, album) -> list[dict[str, Any] | None]:
-    """Safely executes track processing using an isolated thread pool to prevent main-thread freezing."""
+def _execute_track_jobs_safely(track_jobs, max_workers, timeout_sec, artist, album) -> list[dict[str, Any] | None]:
+    """Safely executes track processing using an isolated thread pool with strict failure shedding."""
     results = [None] * len(track_jobs)
     if not track_jobs:
         return results
@@ -688,18 +688,10 @@ def _execute_track_jobs_safely(track_jobs, max_workers, timeout_sec, grace_sec, 
             except Exception as exc:
                 logger.warning("Track worker crashed", artist=artist, album=album, track=track_jobs[idx][0].get('title'), error=str(exc))
     except concurrent.futures.TimeoutError:
-        logger.warning(f"Track deadline ({timeout_sec}s) reached. Entering {grace_sec}s grace period.", artist=artist, album=album)
+        logger.warning(f"Track deadline ({timeout_sec}s) reached. Aborting hung tracks for circuit breaker protection.", artist=artist, album=album)
         pending = [f for f in future_to_idx if not f.done()]
-        try:
-            for future in concurrent.futures.as_completed(pending, timeout=grace_sec):
-                idx = future_to_idx[future]
-                try:
-                    results[idx] = future.result()
-                except Exception as exc:
-                    logger.warning("Track worker crashed in grace", artist=artist, album=album, error=str(exc))
-        except concurrent.futures.TimeoutError:
-            dropped = [str(track_jobs[future_to_idx[f]][0].get("title", "?")) for f in pending if not f.done()]
-            logger.warning("Grace period exceeded. Abandoning stuck tracks.", artist=artist, album=album, dropped=dropped)
+        for f in pending:
+            f.cancel()
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
         
@@ -781,6 +773,9 @@ def run_scan(
     albums_processed = 0
     tracks_processed = 0
     skipped_albums = 0
+    consecutive_failures = 0
+    MAX_CONSECUTIVE_FAILURES = 3
+
     results: list[dict[str, Any]] = []
     last_checkpoint_artist: str | None = None
 
@@ -799,8 +794,6 @@ def run_scan(
         _track_timeout_seconds = get_track_timeout_seconds()
     except Exception:
         _track_timeout_seconds = 600
-        
-    _track_grace_seconds = 60
 
     try:
         _prefetch_budget_seconds = get_prefetch_budget_seconds()
@@ -1052,6 +1045,11 @@ def run_scan(
             options["_essential_featured_rows"] = _essential_featured_rows
 
     for album_index, album_row in enumerate(albums, start=1):
+        if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+            log_unified(f"[CIRCUIT BREAKER] Aborting scan due to {consecutive_failures} consecutive unrecoverable album failures. Try restarting the worker.")
+            record_scan(scan_type, "failed", message="Circuit breaker triggered.")
+            break
+
         if effective_stop_file and is_stop_requested(effective_stop_file):
             _close_artist_section(_section_artist)
             log_unified("Scan stopped by user request")
@@ -1501,7 +1499,6 @@ def run_scan(
                 track_jobs=_track_jobs, 
                 max_workers=_scan_threads, 
                 timeout_sec=_track_worker_hard_timeout, 
-                grace_sec=_track_grace_seconds, 
                 artist=artist, 
                 album=album
             )
@@ -1554,6 +1551,17 @@ def run_scan(
                 if _track_jobs else 0.0
             )
 
+            # Circuit breaker logic
+            if _track_failure_ratio >= 0.5:
+                consecutive_failures += 1
+                logger.warning(f"Skipping post-singles enrichment — track workers stalled", artist=artist, album=album, failure_ratio_pct=_track_failure_ratio * 100)
+                record_scan(scan_type, "failed", message=f"Skipped album completion due to {_track_failure_ratio*100:.0f}% track failure rate.", artist=artist, album=album)
+                albums_processed += 1
+                continue
+            else:
+                # Reset consecutive breaker on successful execution
+                consecutive_failures = 0
+
             if _full_pass:
                 def _post_singles_enrichment_work() -> None:
                     try:
@@ -1572,20 +1580,14 @@ def run_scan(
                     except Exception as exc:
                         logger.debug("Post-singles enrichment failed", artist=artist, album=album, error=str(exc))
 
-                if _track_failure_ratio >= 0.5:
-                    logger.warning("Skipping post-singles enrichment — track workers stalled", artist=artist, album=album, failure_ratio_pct=_track_failure_ratio * 100)
-                else:
-                    log_unified(f"[POPULARITY] Post-singles enrichment for '{artist} - {album}' (covers, genres, artist metadata)")
-                    _bounded_call(
-                        _post_singles_enrichment_work,
-                        seconds=_prefetch_budget_seconds,
-                        label=f"post-singles enrichment for '{artist} - {album}'",
-                    )
+                log_unified(f"[POPULARITY] Post-singles enrichment for '{artist} - {album}' (covers, genres, artist metadata)")
+                _bounded_call(
+                    _post_singles_enrichment_work,
+                    seconds=_prefetch_budget_seconds,
+                    label=f"post-singles enrichment for '{artist} - {album}'",
+                )
 
-            if _track_failure_ratio < 0.5:
-                _run_album_cover_detection(artist=artist, album=album, tracks=tracks, options=options)
-            else:
-                logger.debug("Skipping cover detection — track workers stalled (resource exhaustion guard)", artist=artist, album=album)
+            _run_album_cover_detection(artist=artist, album=album, tracks=tracks, options=options)
 
             if _mode_meta or _full_pass:
                 try:
