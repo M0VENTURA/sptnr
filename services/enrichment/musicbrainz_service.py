@@ -85,15 +85,6 @@ _INIT_LOCK = threading.Lock()
 _MB_BATCH_CHUNK = 20
 _MB_BATCH_SIMILARITY_FLOOR = 0.6
 
-# Single-track suggested-MBID cache bounds (items 4 & 5 of the review):
-# - _MBID_CACHE_SIMILARITY_FLOOR: same floor as the batch path — a weak
-#   early match must not be cached permanently (a bad match poisoned the
-#   track's identity forever before).
-# - _MBID_CACHE_TTL_SECONDS: cached entries are re-validated after this long
-#   (MusicBrainz merges/edits recordings, so a forever-cached MBID can go
-#   stale).
-# - _MBID_CACHE_MAX_SIZE: FIFO size cap so /tmp/mbid_cache.json cannot grow
-#   without bound across long scans.
 _MBID_CACHE_SIMILARITY_FLOOR = 0.6
 _MBID_CACHE_TTL_SECONDS = 30 * 24 * 3600  # 30 days
 _MBID_CACHE_MAX_SIZE = 5000
@@ -151,14 +142,6 @@ def _parse_secondary_types(raw: Any) -> list[str]:
 
 
 def _compose_album_type(primary_type: str, secondary_types: list[str]) -> str:
-    """Compose the app's ``album_type`` string from MB primary+secondary types.
-
-    Matches the frontend's ``_buildAlbumType`` convention: primary stays the
-    base, and a meaningful secondary (compilation / live / remix / soundtrack /
-    spoken word / demo / dj-mix / mixtape) is appended as ``primary+secondary``
-    so the album page's type selector can apply it ("album+compilation",
-    "album+live", …).
-    """
     primary = str(primary_type or "Album").strip().lower() or "album"
     if primary == "album":
         primary = "album"
@@ -193,7 +176,6 @@ def _artist_lookup_candidates(artist: str) -> list[str]:
 _SHARED_MB_CLIENT: MusicBrainzHttpClient | None = None
 
 def get_shared_mb_client() -> MusicBrainzHttpClient:
-    """Return the process-wide shared ``MusicBrainzHttpClient`` singleton."""
     global _SHARED_MB_CLIENT
     if _SHARED_MB_CLIENT is None:
         with _INIT_LOCK:
@@ -266,15 +248,11 @@ class MusicBrainzService:
             return {}
 
     def _save_cache(self) -> None:
-        # Safely clone the cache so we don't hold the memory lock during slow disk I/O
         with self._mem_lock:
             data_to_save = dict(self._mbid_cache)
 
         with _CACHE_IO_LOCK:
             try:
-                # Atomic write via temp-then-rename: a second process writing
-                # concurrently sees either the old or the new file, never a
-                # truncated/corrupted half-written JSON.
                 tmp_path = f"{CACHE_FILE}.tmp"
                 with open(tmp_path, "w", encoding="utf-8") as f:
                     json.dump(data_to_save, f)
@@ -299,8 +277,6 @@ class MusicBrainzService:
         with self._mem_lock:
             cached = self._mbid_cache.get(cache_key)
             if isinstance(cached, (list, tuple)) and len(cached) >= 2:
-                # Entry shape: (mbid, score, cached_at).  Legacy entries may
-                # lack the timestamp — treat them as valid (no expiry info).
                 mbid, score = str(cached[0] or ""), float(cached[1] or 0)
                 cached_at = float(cached[2]) if len(cached) >= 3 else None
                 if mbid and (
@@ -312,7 +288,7 @@ class MusicBrainzService:
         query = f'recording:"{escape_lucene_special_chars(query_title)}" AND artist:"{escape_lucene_special_chars(artist)}"'
 
         try:
-            recordings = self.http.search_recordings(query, limit=limit)
+            recordings = self.http.search_recordings(query, limit=limit, timeout=15.0)
 
             best_mbid = ""
             best_score = 0.0
@@ -332,13 +308,9 @@ class MusicBrainzService:
 
             result = (best_mbid, round(best_score, 3))
 
-            # Only cache a match that clears the similarity floor — a weak
-            # early match (e.g. 0.1) must not be cached permanently and
-            # poison the track's identity.  Same floor as the batch path.
             if best_mbid and best_score >= _MBID_CACHE_SIMILARITY_FLOOR:
                 with self._mem_lock:
                     self._mbid_cache[cache_key] = (best_mbid, round(best_score, 3), now)
-                    # FIFO size cap — drop oldest entries past the bound.
                     while len(self._mbid_cache) > _MBID_CACHE_MAX_SIZE:
                         try:
                             self._mbid_cache.pop(next(iter(self._mbid_cache)))
@@ -365,7 +337,7 @@ class MusicBrainzService:
             if not mbid:
                 return {}
 
-            recording = self.http.get_recording(mbid, inc="artist-credits+releases")
+            recording = self.http.get_recording(mbid, inc="artist-credits+releases", timeout=15.0)
 
             if not recording:
                 return {}
@@ -377,7 +349,6 @@ class MusicBrainzService:
             return {}
 
     def lookup_recordings_by_mbid_bulk(self, mbids: list[str]) -> dict[str, dict[str, Any]]:
-        """Fetch full recording metadata for a batch of MBIDs."""
         if not self.enabled or not mbids:
             return {}
             
@@ -385,7 +356,8 @@ class MusicBrainzService:
         try:
             payload = self.http.get_recordings_bulk(
                 mbids, 
-                inc="artist-credits+releases+work-rels+genres"
+                inc="artist-credits+releases+work-rels+genres",
+                timeout=30.0
             )
             
             recordings = payload.get("recordings", [])
@@ -417,11 +389,6 @@ class MusicBrainzService:
 
         release = (recording.get("releases") or [None])[0]
 
-        # ── Writer(s) from the recording's work-rels ──────────────────────
-        # The recording's "performance"/"recording of" relation points to its
-        # WORK; the work's own composer/writer/lyricist relations name the
-        # writers.  Extracting them here means the album batch supplies the
-        # writer WITHOUT a second per-track get_composers_for_recording call.
         writers: list[str] = []
         work_mbid: str | None = None
         try:
@@ -461,12 +428,6 @@ class MusicBrainzService:
             "confidence": confidence,
             "writer": ", ".join(dict.fromkeys(writers)) if writers else "",
             "work_mbid": work_mbid or "",
-            # MusicBrainz genres from the recording (batch now requests
-            # ``genres``) — lets track_stage fill musicbrainz_genres from the
-            # album batch WITHOUT a per-track get_recording(genres+tags) call
-            # (a 1 req/s MB call that timed out under contention and left the
-            # genre columns empty → album/artist pages showed only Essentia +
-            # Navidrome).
             "genres": [
                 str(g.get("name") or "").strip()
                 for g in (recording.get("genres") or [])
@@ -508,17 +469,8 @@ class MusicBrainzService:
                     recordings = self.http.search_recordings(
                         " OR ".join(groups),
                         limit=min(100, len(chunk) * candidates_per_entry),
-                        # Request release/release-group data so
-                        # ``_recording_matches_album`` can actually read
-                        # ``recording["releases"]`` for album-anchor matching.
-                        # Without this include, the field is absent from the
-                        # search response and album anchoring silently never
-                        # fires — matches fall back to pure title similarity.
-                        # ``work-rels`` lets the batch carry per-recording
-                        # WRITERS, avoiding a second per-track composer call.
-                        # ``genres`` lets the batch carry per-recording MB
-                        # genres, avoiding a per-track genre lookup.
                         inc="releases+work-rels+genres",
+                        timeout=30.0,
                     )
                 except Exception as exc:
                     logger.debug("Album batch search failed", chunk_start=chunk_start, error=str(exc))
@@ -601,11 +553,12 @@ class MusicBrainzService:
             f'releasegroup:"{escape_lucene_special_chars(query_title)}" '
             f'AND artist:"{escape_lucene_special_chars(artist)}"'
         )
-        groups = self.http.search_release_groups(rg_query, limit=10)
+        groups = self.http.search_release_groups(rg_query, limit=10, timeout=15.0)
         if not groups:
             groups = self.http.search_release_groups(
                 f'artist:"{escape_lucene_special_chars(artist)}"',
                 limit=50,
+                timeout=15.0,
             )
         norm_title = normalize_title_for_lookup(title)
         for group in groups:
@@ -633,7 +586,7 @@ class MusicBrainzService:
             f'recording:"{escape_lucene_special_chars(query_title)}" '
             f'AND artist:"{escape_lucene_special_chars(artist)}"'
         )
-        for rec in self.http.search_recordings(query, limit=10):
+        for rec in self.http.search_recordings(query, limit=10, timeout=15.0):
             for release in rec.get("releases") or []:
                 rg = release.get("release-group") or {}
                 pt = (
@@ -663,7 +616,7 @@ class MusicBrainzService:
         recording = self.http.get_recording(
             mbid,
             inc="releases+release-groups",
-            timeout=10.0,
+            timeout=15.0,
         )
         if not recording:
             return False
@@ -690,6 +643,7 @@ class MusicBrainzService:
                 f'artist:"{escape_lucene_special_chars(artist)}"',
                 limit=1,
                 inc="area",
+                timeout=15.0,
             )
 
             if not result:
@@ -712,7 +666,7 @@ class MusicBrainzService:
         query = f'recording:"{escape_lucene_special_chars(strip_search_keywords(title))}" AND artist:"{escape_lucene_special_chars(artist)}"'
 
         try:
-            recordings = self.http.search_recordings(query, limit=1, inc="tags+releases")
+            recordings = self.http.search_recordings(query, limit=1, inc="tags+releases", timeout=15.0)
 
             if not recordings:
                 return []
@@ -736,7 +690,7 @@ class MusicBrainzService:
         query = f'artist:"{escape_lucene_special_chars(artist_name)}" AND releasegroup:"{escape_lucene_special_chars(clean_album)}"'
 
         try:
-            groups = self.http.search_release_groups(query, limit=limit)
+            groups = self.http.search_release_groups(query, limit=limit, timeout=15.0)
         except Exception as exc:
             logger.debug("Release-group search failed", artist=artist_name, album=album_name, error=str(exc))
             groups = []
@@ -748,6 +702,7 @@ class MusicBrainzService:
                     groups = self.http.search_release_groups(
                         f'artist:"{escape_lucene_special_chars(artist_name)}" AND releasegroup:{terms}',
                         limit=limit,
+                        timeout=15.0,
                     )
                 except Exception as exc:
                     logger.debug("Release-group fallback search failed", artist=artist_name, album=album_name, error=str(exc))
@@ -815,7 +770,7 @@ class MusicBrainzService:
         inc = inc_map.get(relation_type, "artist-rels")
 
         try:
-            data = self.http.get_artist(artist_mbid, inc=inc)
+            data = self.http.get_artist(artist_mbid, inc=inc, timeout=15.0)
             return data.get("relations", []) or []
         except Exception as exc:
             logger.debug("Failed to fetch relationships for artist", artist_mbid=artist_mbid, error=str(exc))
@@ -829,6 +784,7 @@ class MusicBrainzService:
             data = self.http.get_recording(
                 recording_mbid,
                 inc="artist-rels+work-rels+work-level-rels+recording-level-rels",
+                timeout=15.0,
             )
             return data.get("relations", []) or []
         except Exception as exc:
@@ -867,7 +823,7 @@ class MusicBrainzService:
         query = f'recording:"{escape_lucene_special_chars(title)}" AND artist:"{escape_lucene_special_chars(artist)}"'
 
         try:
-            recordings = self.http.search_recordings_with_genres(query, limit=3)
+            recordings = self.http.search_recordings_with_genres(query, limit=3, timeout=15.0)
             if not recordings:
                 return []
             genres = []
@@ -915,6 +871,7 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> dict[str, Any] | None
         data = get_shared_mb_client().get_release(
             release_id,
             inc="recordings+artist-credits+release-groups+work-rels+genres",
+            timeout=15.0,
         )
 
         if not data:
@@ -928,11 +885,6 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> dict[str, Any] | None
             or (data.get("date") or "")[:4]
         )
 
-        # ── Release-level metadata (the user's master checklist) ─────────
-        # secondary-types drives the ``compilation`` flag ("Various Artists"
-        # soundtracks / compilations stay in one entry); the ORIGINAL release
-        # date comes from the release-group's first-release-date so remasters
-        # sort by when the album FIRST debuted, not the reissue date.
         _secondary_types = _parse_secondary_types(rg.get("secondary-types"))
         release_info: dict[str, Any] = {
             "release_title": data.get("title"),
@@ -947,9 +899,6 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> dict[str, Any] | None
             "original_year": (
                 (rg.get("first-release-date") or data.get("date") or "")[:4]
             ),
-            # Album type from the release-group primary/secondary types so
-            # "Update All Tracks" can apply the MB "Album Type" (album / EP /
-            # single / live / compilation …) to the local tracks + files.
             "album_type": _compose_album_type(
                 str(rg.get("primary-type") or "Album"),
                 _secondary_types,
@@ -959,15 +908,11 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> dict[str, Any] | None
         if data.get("artist-credit"):
             release_info["artist"] = primary_album_artist(data["artist-credit"])
             release_info["artist_credit"] = build_artist_credit_string(data["artist-credit"])
-            # Album-artist MBID from the PRIMARY credit — links aliases and
-            # featured collaborations back to the primary band's page.
             _first_credit = (data.get("artist-credit") or [{}])[0] or {}
             _first_artist = _first_credit.get("artist") or {}
             if isinstance(_first_artist, dict):
                 release_info["album_artist_mbid"] = str(_first_artist.get("id") or "")
 
-        # Absolute sequential track number across all discs (handles local
-        # libraries numbered 1..22 across two discs, or tagged per-disc).
         _absolute_track_number = 1
 
         for disc_index, media in enumerate(data.get("media", []), start=1):
@@ -977,9 +922,6 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> dict[str, Any] | None
                 track_info: dict[str, Any] = {
                     "disc_number": disc_index,
                     "track_number": track.get("position"),
-                    # The absolute sequential number (medium position offset
-                    # by all previous discs) — lets locally-numbered 1..22
-                    # libraries match multi-disc releases without disc tags.
                     "absolute_track_number": _absolute_track_number,
                     "title": track.get("title") or recording.get("title"),
                     "recording_mbid": recording.get("id"),
@@ -992,12 +934,6 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> dict[str, Any] | None
                 }
                 _absolute_track_number += 1
 
-                # ── Recording work relationships (writers + covers) ──────
-                # The release lookup now requests ``work-rels``, so each
-                # recording carries its work relations.  A "recording of"
-                # work relation means the recording IS a performance of that
-                # work; the work's own relations name the WRITERS.  A track
-                # whose work is by a different artist is a COVER.
                 writers: list[str] = []
                 composers: list[str] = []
                 lyricists: list[str] = []
@@ -1014,7 +950,6 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> dict[str, Any] | None
                             work_mbid = work.get("id")
                             work_title = work.get("title")
                             work_iswc = str(work.get("iswc") or "").strip() or None
-                            # The work's composer/writer relations.
                             for work_rel in work.get("relations") or []:
                                 wrt = str(work_rel.get("type") or "").lower()
                                 wtarget = work_rel.get("artist") or {}
@@ -1024,8 +959,6 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> dict[str, Any] | None
                                     lyricists.append(str(wtarget["name"]))
                                 if wrt in ("composer", "writer", "lyricist") and wtarget.get("name"):
                                     writers.append(str(wtarget["name"]))
-                            # The work's artist credit — a cover when it
-                            # differs from the recording/release artist.
                             work_credit = work.get("artist-credit") or []
                             if work_credit:
                                 work_artist = primary_album_artist(work_credit)
@@ -1056,14 +989,11 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> dict[str, Any] | None
                     if is_cover:
                         track_info["is_cover"] = True
                         track_info["original_cover_artist"] = work_artist
-                        # originaltitle = the WORK title (the song being
-                        # covered), not the local cover's title.
                         if work_title:
                             track_info["original_title"] = work_title
                 except Exception as _rel_exc:
                     logger.debug("Work-relation parse failed", recording=recording.get("id"), error=str(_rel_exc))
 
-                # ── Recording genres from MusicBrainz ────────────────────
                 try:
                     mb_genres = [
                         str(g.get("name") or "").strip()
@@ -1104,14 +1034,14 @@ def resolve_release_id(release_id: str) -> str:
 
     try:
         http = _get_service().http
-        data = http.get_release(release_id, inc="")
+        data = http.get_release(release_id, inc="", timeout=15.0)
         if data and data.get("id"):
             return release_id
     except Exception:
         pass
 
     try:
-        releases = http.browse_releases_for_group(release_id, inc="media", limit=50)
+        releases = http.browse_releases_for_group(release_id, inc="media", limit=50, timeout=15.0)
         if releases:
             def _total_tracks(rel: dict[str, Any]) -> int:
                 return sum(
@@ -1145,7 +1075,8 @@ def fetch_release_metadata(release_id: str) -> dict[str, Any] | None:
 
         data = http.get_release(
             release_id,
-            inc="recordings+artist-credits+release-groups"
+            inc="recordings+artist-credits+release-groups",
+            timeout=15.0,
         )
 
         if not data:
@@ -1219,7 +1150,7 @@ def _lookup_existing_mbid(existing_mbid: str, artist: str, album: str) -> dict[s
     client = get_shared_mb_client()
 
     try:
-        rel_data = client.get_release(existing_mbid, inc="artist-credits+release-groups")
+        rel_data = client.get_release(existing_mbid, inc="artist-credits+release-groups", timeout=15.0)
         if rel_data:
             rel_artist = primary_album_artist(rel_data.get("artist-credit") or []) or artist
             rg = rel_data.get("release-group") or {}
@@ -1244,7 +1175,7 @@ def _lookup_existing_mbid(existing_mbid: str, artist: str, album: str) -> dict[s
         logger.debug("Stored release lookup failed", existing_mbid=existing_mbid, error=str(exc))
 
     try:
-        rg_data = client.get_release_group(existing_mbid, inc="artist-credits")
+        rg_data = client.get_release_group(existing_mbid, inc="artist-credits", timeout=15.0)
         if rg_data:
             rg_artist = _mb_artist_credit_name(rg_data.get("artist-credit") or []) or artist
             return {
@@ -1277,7 +1208,7 @@ def lookup_musicbrainz_album(artist: str, album: str, existing_mbid: str = "") -
 
     query = f'release:"{escape_lucene_special_chars(album)}" AND artist:"{escape_lucene_special_chars(artist)}"'
     try:
-        groups = get_shared_mb_client().search_release_groups(query, limit=10)
+        groups = get_shared_mb_client().search_release_groups(query, limit=10, timeout=15.0)
     except Exception as exc:
         logger.warning("MusicBrainz album search unavailable", error=str(exc))
         groups = []
@@ -1319,7 +1250,7 @@ def lookup_musicbrainz_album(artist: str, album: str, existing_mbid: str = "") -
 
 def get_release_group_releases(rg_mbid: str, include_track_counts: bool = False) -> dict[str, Any]:
     try:
-        data = get_shared_mb_client().get_release_group(rg_mbid, inc="releases")
+        data = get_shared_mb_client().get_release_group(rg_mbid, inc="releases", timeout=15.0)
         if not data:
             return {"success": False, "error": "No release-group data returned"}
         raw_releases = data.get("releases", []) or []
@@ -1368,7 +1299,7 @@ def _enrich_releases_with_track_counts(releases: list[dict[str, Any]], rg_mbid: 
 
     try:
         browse_releases = get_shared_mb_client().browse_releases_for_group(
-            rg_mbid, inc="media", limit=100,
+            rg_mbid, inc="media", limit=100, timeout=15.0,
         )
         tc_lookup: dict[str, int] = {}
         for rel in browse_releases:
@@ -1397,7 +1328,7 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict[s
 
         _direct = None
         try:
-            _direct = get_shared_mb_client().get_release(rg_mbid, inc="")
+            _direct = get_shared_mb_client().get_release(rg_mbid, inc="", timeout=15.0)
         except Exception:
             _direct = None
 
@@ -1541,10 +1472,6 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict[s
                 "mb_year": mb_year,
                 "mb_duration": None,
                 "mb_duration_sec": int(mb_duration_sec) if mb_duration_sec else None,
-                # Full MusicBrainz enrichment for this recording — carried so
-                # "Update All Tracks" can apply composer / writer / genres /
-                # cover / work MBID to the local track + file tags (the
-                # reported gap: only title/track/year/mbid were applied).
                 "mb_writer": mb_track.get("writer") or "",
                 "mb_work_mbid": mb_track.get("work_mbid") or "",
                 "mb_work_title": mb_track.get("work_title") or "",
@@ -1695,8 +1622,6 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict[s
                 "mb_year": mb_year,
                 "mb_duration": None,
                 "mb_duration_sec": int(mb_duration_sec) if mb_duration_sec else None,
-                # Full MusicBrainz enrichment for this recording (see the
-                # matched entry above).
                 "mb_writer": mb_track.get("writer") or "",
                 "mb_work_mbid": mb_track.get("work_mbid") or "",
                 "mb_work_title": mb_track.get("work_title") or "",
@@ -1809,7 +1734,7 @@ def get_musicbrainz_best_release(artist: str, album: str, rg_mbid: str) -> dict[
         client = get_shared_mb_client()
 
         releases_raw = client.browse_releases_for_group(
-            rg_mbid, inc="media+labels", limit=50,
+            rg_mbid, inc="media+labels", limit=50, timeout=15.0,
         )
         releases: list[dict[str, Any]] = []
         
