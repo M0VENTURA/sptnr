@@ -204,24 +204,34 @@ class _RetryTransport(httpx.BaseTransport):
         def _attempt() -> httpx.Response:
             nonlocal last_status_response
             
-            # Bypass the global lock for local/internal IPs to prevent local bottlenecks
             host = request.url.host
             is_internal = host in ("127.0.0.1", "localhost") or host.startswith("192.168.") or host.startswith("10.") or host.startswith("172.")
+            thread_name = threading.current_thread().name
             
+            logger.debug(f"[HTTP-TRACE] [{thread_name}] Preparing request to {request.url}")
+
             if not is_internal:
                 global _LAST_API_CALL_TIME
-                # 1. ACQUIRE LOCK JUST TO PACE THE START TIME
+                logger.debug(f"[HTTP-TRACE] [{thread_name}] Waiting for rate-limit lock for {request.url}")
                 with _GLOBAL_API_LOCK:
                     elapsed = time.monotonic() - _LAST_API_CALL_TIME
                     if elapsed < _MIN_DELAY_SECONDS:
                         time.sleep(_MIN_DELAY_SECONDS - elapsed)
-                    # Mark the ticket as taken
                     _LAST_API_CALL_TIME = time.monotonic()
                 
-                # 2. RELEASE LOCK IMMEDIATELY. DO NETWORK I/O CONCURRENTLY.
-                response = self._transport.handle_request(request)
+                logger.debug(f"[HTTP-TRACE] [{thread_name}] Lock released, starting network I/O to {request.url}")
+                try:
+                    response = self._transport.handle_request(request)
+                    logger.debug(f"[HTTP-TRACE] [{thread_name}] Network I/O complete for {request.url} ({response.status_code})")
+                except Exception as e:
+                    logger.error(f"[HTTP-TRACE] [{thread_name}] Network I/O FAILED for {request.url} - {repr(e)}")
+                    raise
             else:
-                response = self._transport.handle_request(request)
+                try:
+                    response = self._transport.handle_request(request)
+                except Exception as e:
+                    logger.error(f"[HTTP-TRACE] [{thread_name}] Internal Network I/O FAILED for {request.url} - {repr(e)}")
+                    raise
 
             if response.status_code in self._status_forcelist:
                 last_status_response = response
