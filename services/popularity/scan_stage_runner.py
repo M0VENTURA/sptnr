@@ -855,6 +855,62 @@ def run_scan(
     _section_artist: str | None = None
     _pre_scan_done_artist: str | None = None
 
+    def _load_artist_db_scores(artist: str, scanned_titles: set[str]) -> list[float]:
+        db_rows: list[tuple[str, str]] = []
+        try:
+            if artist not in _artist_db_rows_cache:
+                with db_session() as session:
+                    rows = session.execute(
+                        text(
+                            "SELECT title, album, final_score FROM tracks "
+                            "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
+                            "AND final_score > 0"
+                        ),
+                        {"artist": artist},
+                    ).fetchall()
+                _artist_db_rows_cache[artist] = rows or []
+                
+            rows = _artist_db_rows_cache[artist]
+            db_rows = [
+                (str(r[1] or ""), float(r[2] or 0))
+                for r in rows
+                if r[2] and str(r[0] or "").strip().lower() not in scanned_titles and not is_bonus_track_title(str(r[0] or ""))
+            ]
+        except Exception as exc:
+            logger.debug("Artist DB score fetch failed", artist=artist, error=str(exc))
+            
+        try:
+            db_scores = reanchor_scores_to_album_relative(db_rows)
+        except Exception as exc:
+            logger.debug("Artist DB score re-anchor failed", artist=artist, error=str(exc))
+            db_scores = [float(s) for _alb, s in db_rows]
+            
+        return list(db_scores)
+
+    def _load_artist_db_listeners(artist: str, scanned_titles: set[str]) -> list[float]:
+        try:
+            if artist not in _artist_db_listen_cache:
+                with db_session() as session:
+                    rows = session.execute(
+                        text(
+                            "SELECT title, lastfm_listeners FROM tracks "
+                            "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
+                            "AND COALESCE(lastfm_listeners, 0) > 0"
+                        ),
+                        {"artist": artist},
+                    ).fetchall()
+                _artist_db_listen_cache[artist] = rows or []
+                
+            rows = _artist_db_listen_cache[artist]
+            return [
+                float(r[1] or 0)
+                for r in rows
+                if float(r[1] or 0) > 0 and str(r[0] or "").strip().lower() not in scanned_titles and not is_bonus_track_title(str(r[0] or ""))
+            ]
+        except Exception as exc:
+            logger.debug("Artist DB listen fetch failed", artist=artist, error=str(exc))
+            return []
+
     def _close_artist_section(artist_name: str | None) -> None:
         nonlocal _essential_featured_rows, _essential_playlists_done
         if artist_name:
