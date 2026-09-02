@@ -210,14 +210,16 @@ class _RetryTransport(httpx.BaseTransport):
             
             if not is_internal:
                 global _LAST_API_CALL_TIME
+                # 1. ACQUIRE LOCK JUST TO PACE THE START TIME
                 with _GLOBAL_API_LOCK:
                     elapsed = time.monotonic() - _LAST_API_CALL_TIME
                     if elapsed < _MIN_DELAY_SECONDS:
                         time.sleep(_MIN_DELAY_SECONDS - elapsed)
-                    try:
-                        response = self._transport.handle_request(request)
-                    finally:
-                        _LAST_API_CALL_TIME = time.monotonic()
+                    # Mark the ticket as taken
+                    _LAST_API_CALL_TIME = time.monotonic()
+                
+                # 2. RELEASE LOCK IMMEDIATELY. DO NETWORK I/O CONCURRENTLY.
+                response = self._transport.handle_request(request)
             else:
                 response = self._transport.handle_request(request)
 
