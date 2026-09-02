@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import time
+import re
 import concurrent.futures
 from collections import Counter
 from datetime import datetime
@@ -96,6 +97,19 @@ from services.enrichment.cover_detection_service import detect_covers_for_album
 logger = structlog.get_logger(__name__)
 
 BOUNDED_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=16, thread_name_prefix="bounded")
+
+
+def _sanitize_release_name(album_name: str) -> str:
+    """Strips '(Topshelf Edition)', '[Deluxe Version]', etc. for exact API matches."""
+    if not album_name:
+        return ""
+    cleaned = re.sub(
+        r'\s*[\(\[].*?(edition|deluxe|remaster|version|bonus|expanded|explicit|clean).*?[\)\]]', 
+        '', 
+        album_name, 
+        flags=re.IGNORECASE
+    ).strip()
+    return cleaned if cleaned else album_name
 
 
 def _is_comp_artist(artist_name: str) -> bool:
@@ -681,7 +695,6 @@ def _execute_track_jobs_safely(
             prefetched_popularity=_opts.get("prefetched_popularity", {}),
         )
 
-    # Track indices of jobs that still need to complete
     pending_indices = set(range(len(track_jobs)))
     attempt = 0
 
@@ -694,7 +707,6 @@ def _execute_track_jobs_safely(
             )
             time.sleep(pause_sec)
 
-        # Create a fresh thread pool for this attempt
         pool = concurrent.futures.ThreadPoolExecutor(
             max_workers=max_workers, 
             thread_name_prefix=f"track_worker_retry_{attempt}"
@@ -710,7 +722,7 @@ def _execute_track_jobs_safely(
                 idx = future_to_idx[future]
                 try:
                     results[idx] = future.result()
-                    pending_indices.remove(idx) # Mark as successfully finished
+                    pending_indices.remove(idx)
                 except Exception as exc:
                     logger.warning(
                         "Track worker crashed", 
@@ -719,7 +731,7 @@ def _execute_track_jobs_safely(
                         track=track_jobs[idx][0].get('title'), 
                         error=str(exc)
                     )
-                    pending_indices.remove(idx) # Failed explicitly (e.g. 500 error), do not retry
+                    pending_indices.remove(idx)
                     
         except concurrent.futures.TimeoutError:
             logger.warning(
@@ -728,7 +740,6 @@ def _execute_track_jobs_safely(
                 album=album
             )
         finally:
-            # Cancel unstarted futures and shut down the pool immediately
             for f in future_to_idx:
                 f.cancel()
             pool.shutdown(wait=False, cancel_futures=True)
@@ -1374,10 +1385,11 @@ def run_scan(
                                 break
                                 
                     if _needs_album_lb:
+                        _clean_album = _sanitize_release_name(album)
                         _album_lb_by_title, _album_release_mbid = _bounded_call_result(
-                            lambda: get_listenbrainz_album_tracklist_with_release(artist, album, track_dicts) or ({}, ""),
+                            lambda: get_listenbrainz_album_tracklist_with_release(artist, _clean_album, track_dicts) or ({}, ""),
                             seconds=min(_track_timeout_seconds, 120),
-                            label=f"album-tracklist LB for '{artist} - {album}'",
+                            label=f"album-tracklist LB for '{artist} - {_clean_album}'",
                             default=({}, ""),
                         )
                         _cache_rows: list[dict[str, Any]] = []
@@ -1446,10 +1458,11 @@ def run_scan(
                             _mb_entries.append((str(_tt), str(_aa)))
                             
                     if _mb_entries:
+                        _clean_album = _sanitize_release_name(album)
                         _raw_mb_batch = _bounded_call_result(
-                            lambda: MusicBrainzHttpClient().search_releases(str(album or ""), limit=10),
+                            lambda: MusicBrainzHttpClient().search_releases(str(_clean_album or ""), limit=10),
                             seconds=min(_track_timeout_seconds, 120),
-                            label=f"MB album batch for '{artist} - {album}'",
+                            label=f"MB album batch for '{artist} - {_clean_album}'",
                             default={},
                         ) or {}
                         
