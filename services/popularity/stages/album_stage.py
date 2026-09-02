@@ -46,6 +46,22 @@ from services.catalog.album_classification_service import (
 logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _sanitize_release_name(album_name: str) -> str:
+    """Strips '(Topshelf Edition)', '[Deluxe Version]', etc. for exact API matches."""
+    if not album_name:
+        return ""
+    cleaned = re.sub(
+        r'\s*[\(\[].*?(edition|deluxe|remaster|version|bonus|expanded|explicit|clean).*?[\)\]]', 
+        '', 
+        album_name, 
+        flags=re.IGNORECASE
+    ).strip()
+    return cleaned if cleaned else album_name
+
+# ---------------------------------------------------------------------------
 # Album type detection
 # ---------------------------------------------------------------------------
 
@@ -96,6 +112,7 @@ def _detect_album_type(artist: str, album: str, album_artist: str | None, spotif
 
 def _fetch_album_art_with_fallback(artist: str, album: str, discogs_token: str | None = None) -> str | None:
     """Fetch album art: Navidrome first (default), then MusicBrainz/CAA, then AudioDB, then Discogs."""
+    clean_album = _sanitize_release_name(album)
 
     # 0) Skip the whole provider chain when art is already in the DB — a
     # repeat/forced scan must not re-hit 4 external services per album
@@ -122,7 +139,7 @@ def _fetch_album_art_with_fallback(artist: str, album: str, discogs_token: str |
 
     # 1) Try MusicBrainz / Cover Art Archive
     try:
-        data = fetch_album_art_from_musicbrainz(artist, album)
+        data = fetch_album_art_from_musicbrainz(artist, clean_album)
         if data:
             save_album_art_to_db(artist, album, data, source="musicbrainz")
             return "musicbrainz"
@@ -132,7 +149,7 @@ def _fetch_album_art_with_fallback(artist: str, album: str, discogs_token: str |
     # 2) Try AudioDB
     try:
         from api_clients.audiodb import get_album_artwork
-        art_url = get_album_artwork(artist, album, enabled=True)
+        art_url = get_album_artwork(artist, clean_album, enabled=True)
         if art_url:
             resp = httpx.get(art_url, timeout=10)
             if resp.status_code == 200 and resp.content:
@@ -146,7 +163,7 @@ def _fetch_album_art_with_fallback(artist: str, album: str, discogs_token: str |
         from api_clients.discogs_http import DiscogsHttpClient
         if discogs_token and len(discogs_token) >= 10 and discogs_token.lower() not in ("your_discogs_token", "your_token", "placeholder"):
             client = DiscogsHttpClient(discogs_token)
-            results = client.search_album_release(artist, album)
+            results = client.search_album_release(artist, clean_album)
             if results and results[0].get("cover_image"):
                 resp = httpx.get(results[0]["cover_image"], timeout=10)
                 if resp.status_code == 200 and resp.content:
@@ -356,12 +373,6 @@ def _fetch_discogs_artist_id(artist: str, conn: Any, options: dict[str, Any]) ->
             
         _cache_key = artist.casefold().strip()
 
-        # Cache check under the lock only — the network call MUST happen
-        # outside it.  Holding the module-global lock across a Discogs
-        # request (which can sleep up to 60s per 429 cooldown, plus retries)
-        # lets an abandoned bounded thread (album enrichment exceeding its
-        # budget) deadlock every later caller on ``with _discogs_artist_id_lock``
-        # for the rest of the scan — the scan appears frozen with zero logs.
         with _discogs_artist_id_lock:
             discogs_artist_id = _discogs_artist_id_cache.get(_cache_key, "")
         if not discogs_artist_id:
@@ -415,9 +426,10 @@ def _fetch_musicbrainz_artist_id(artist: str, conn: Any, options: dict[str, Any]
 
 def _lookup_musicbrainz_album_type(artist: str, album: str) -> tuple[str | None, str | None]:
     """Query MusicBrainz release-group for a confident album-type match."""
+    clean_album = _sanitize_release_name(album)
     try:
         svc = get_shared_mb_service()
-        matches = svc.search_releasegroup_matches(artist, album, limit=3)
+        matches = svc.search_releasegroup_matches(artist, clean_album, limit=3)
         if not matches:
             return None, None
         best = matches[0]
