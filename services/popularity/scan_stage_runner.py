@@ -652,14 +652,17 @@ def _persist_popularity_marking(rows: list[dict[str, Any]]) -> None:
         logger.debug("Popularity marking persist failed", error=str(exc))
 
 
-def _execute_track_jobs_safely(track_jobs, max_workers, timeout_sec, artist, album) -> list[dict[str, Any] | None]:
-    """Safely executes track processing using an isolated thread pool with strict failure shedding."""
+def _execute_track_jobs_safely(
+    track_jobs, max_workers, timeout_sec, artist, album, max_retries=2, pause_sec=60
+) -> list[dict[str, Any] | None]:
+    """
+    Executes track processing in an isolated thread pool. 
+    If threads hang, pauses the scan and restarts execution for pending tracks in a new pool.
+    """
     results = [None] * len(track_jobs)
     if not track_jobs:
         return results
 
-    pool = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="track_worker")
-    
     def _run_single(job_tuple):
         _prepared, _tc, _opts, _frozen = job_tuple
         return process_track(
@@ -678,22 +681,66 @@ def _execute_track_jobs_safely(track_jobs, max_workers, timeout_sec, artist, alb
             prefetched_popularity=_opts.get("prefetched_popularity", {}),
         )
 
-    future_to_idx = {pool.submit(_run_single, job): i for i, job in enumerate(track_jobs)}
-    
-    try:
-        for future in concurrent.futures.as_completed(future_to_idx.keys(), timeout=timeout_sec):
-            idx = future_to_idx[future]
-            try:
-                results[idx] = future.result()
-            except Exception as exc:
-                logger.warning("Track worker crashed", artist=artist, album=album, track=track_jobs[idx][0].get('title'), error=str(exc))
-    except concurrent.futures.TimeoutError:
-        logger.warning(f"Track deadline ({timeout_sec}s) reached. Aborting hung tracks for circuit breaker protection.", artist=artist, album=album)
-        pending = [f for f in future_to_idx if not f.done()]
-        for f in pending:
-            f.cancel()
-    finally:
-        pool.shutdown(wait=False, cancel_futures=True)
+    # Track indices of jobs that still need to complete
+    pending_indices = set(range(len(track_jobs)))
+    attempt = 0
+
+    while pending_indices and attempt <= max_retries:
+        if attempt > 0:
+            logger.warning(
+                f"Pausing scan for {pause_sec}s before restarting thread pool for {len(pending_indices)} stuck tracks...", 
+                artist=artist, 
+                album=album
+            )
+            time.sleep(pause_sec)
+
+        # Create a fresh thread pool for this attempt
+        pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max_workers, 
+            thread_name_prefix=f"track_worker_retry_{attempt}"
+        )
+        
+        future_to_idx = {}
+        for idx in pending_indices:
+            future = pool.submit(_run_single, track_jobs[idx])
+            future_to_idx[future] = idx
+            
+        try:
+            for future in concurrent.futures.as_completed(future_to_idx.keys(), timeout=timeout_sec):
+                idx = future_to_idx[future]
+                try:
+                    results[idx] = future.result()
+                    pending_indices.remove(idx) # Mark as successfully finished
+                except Exception as exc:
+                    logger.warning(
+                        "Track worker crashed", 
+                        artist=artist, 
+                        album=album, 
+                        track=track_jobs[idx][0].get('title'), 
+                        error=str(exc)
+                    )
+                    pending_indices.remove(idx) # Failed explicitly (e.g. 500 error), do not retry
+                    
+        except concurrent.futures.TimeoutError:
+            logger.warning(
+                f"Track deadline ({timeout_sec}s) reached on attempt {attempt + 1}. Threads stalled.", 
+                artist=artist, 
+                album=album
+            )
+        finally:
+            # Cancel unstarted futures and shut down the pool immediately
+            for f in future_to_idx:
+                f.cancel()
+            pool.shutdown(wait=False, cancel_futures=True)
+
+        attempt += 1
+
+    if pending_indices:
+        logger.warning(
+            f"Abandoning {len(pending_indices)} tracks after {max_retries} failed thread restarts.", 
+            artist=artist, 
+            album=album
+        )
         
     return results
 
@@ -1399,12 +1446,22 @@ def run_scan(
                             _mb_entries.append((str(_tt), str(_aa)))
                             
                     if _mb_entries:
-                        _mb_batch = _bounded_call_result(
+                        _raw_mb_batch = _bounded_call_result(
                             lambda: MusicBrainzHttpClient().search_releases(str(album or ""), limit=10),
                             seconds=min(_track_timeout_seconds, 120),
                             label=f"MB album batch for '{artist} - {album}'",
                             default={},
                         ) or {}
+                        
+                        # Coerce list responses into a dictionary to prevent AttributeErrors
+                        _mb_batch = {}
+                        if isinstance(_raw_mb_batch, list):
+                            for idx, item in enumerate(_raw_mb_batch):
+                                if isinstance(item, dict):
+                                    key = item.get("title") or item.get("recording_mbid") or str(idx)
+                                    _mb_batch[key] = item
+                        elif isinstance(_raw_mb_batch, dict):
+                            _mb_batch = _raw_mb_batch
                         
                         if _mb_batch:
                             options["mb_batch_metadata"] = _mb_batch
