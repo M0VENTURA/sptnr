@@ -14,10 +14,18 @@ import datetime
 import logging
 import ssl
 import time
+import threading
 from typing import Any
 
 import httpx
 
+# ---------------------------------------------------------------------------
+# Global Rate Limiting (Cross-Thread)
+# ---------------------------------------------------------------------------
+# Shared lock to force all external API calls into a strict single-file queue.
+_GLOBAL_API_LOCK = threading.Lock()
+_LAST_API_CALL_TIME = 0.0
+_MIN_DELAY_SECONDS = 1.05  # Ensures strictly < 1 req/sec for external APIs
 
 # ---------------------------------------------------------------------------
 # Connection-pool limits (shared session)
@@ -195,7 +203,24 @@ class _RetryTransport(httpx.BaseTransport):
 
         def _attempt() -> httpx.Response:
             nonlocal last_status_response
-            response = self._transport.handle_request(request)
+            
+            # Bypass the global lock for local/internal IPs to prevent local bottlenecks
+            host = request.url.host
+            is_internal = host in ("127.0.0.1", "localhost") or host.startswith("192.168.") or host.startswith("10.") or host.startswith("172.")
+            
+            if not is_internal:
+                global _LAST_API_CALL_TIME
+                with _GLOBAL_API_LOCK:
+                    elapsed = time.monotonic() - _LAST_API_CALL_TIME
+                    if elapsed < _MIN_DELAY_SECONDS:
+                        time.sleep(_MIN_DELAY_SECONDS - elapsed)
+                    try:
+                        response = self._transport.handle_request(request)
+                    finally:
+                        _LAST_API_CALL_TIME = time.monotonic()
+            else:
+                response = self._transport.handle_request(request)
+
             if response.status_code in self._status_forcelist:
                 last_status_response = response
                 raise _RetryableStatus(response)
