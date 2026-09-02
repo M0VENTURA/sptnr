@@ -11,6 +11,7 @@ Album metadata service (clean version)
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 import structlog
@@ -41,6 +42,22 @@ from services.enrichment.album_art_service import (
 from services.enrichment.musicbrainz_service import get_shared_mb_client
 
 logger = structlog.get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _sanitize_release_name(album_name: str) -> str:
+    """Strips '(Topshelf Edition)', '[Deluxe Version]', etc. for exact API matches."""
+    if not album_name:
+        return ""
+    cleaned = re.sub(
+        r'\s*[\(\[].*?(edition|deluxe|remaster|version|bonus|expanded|explicit|clean).*?[\)\]]', 
+        '', 
+        album_name, 
+        flags=re.IGNORECASE
+    ).strip()
+    return cleaned if cleaned else album_name
 
 
 # =============================================================================
@@ -391,19 +408,20 @@ def match_album_tracklist(artist: str, album: str) -> dict[str, Any]:
             if (r.get("title") if hasattr(r, "get") else r[1])
         }
 
-    # ✅ Fallback to MusicBrainz API via shared client singleton
+    # ✅ Fallback to MusicBrainz API via shared client singleton (Sanitized)
+    clean_album = _sanitize_release_name(album)
     try:
         from api_clients.musicbrainz_http import escape_lucene_special_chars
         mb = get_shared_mb_client()
 
         releases = mb.search_releases(
-            f'release:"{escape_lucene_special_chars(album)}" AND artist:"{escape_lucene_special_chars(artist)}"',
+            f'release:"{escape_lucene_special_chars(clean_album)}" AND artist:"{escape_lucene_special_chars(artist)}"',
             limit=5,
         ) or []
 
         if not releases:
             release_groups = mb.search_release_groups(
-                f'"{escape_lucene_special_chars(album)}" AND artist:"{escape_lucene_special_chars(artist)}"',
+                f'"{escape_lucene_special_chars(clean_album)}" AND artist:"{escape_lucene_special_chars(artist)}"',
                 limit=1,
             )
 
