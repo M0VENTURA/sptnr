@@ -31,7 +31,7 @@ from helpers.normalization_service import strip_featured_artist
 
 # API Clients & Services
 from api_clients.discogs import DiscogsClient
-from api_clients.musicbrainz_http import MusicBrainzHTTPClient
+from api_clients.musicbrainz_http import MusicBrainzHttpClient
 from api_clients.listenbrainz import get_recording_tags_batch
 
 # Popularity & Scan Services
@@ -1237,16 +1237,15 @@ def run_scan(
                             
                     if _mb_entries:
                         _mb_batch = _bounded_call_result(
-                            lambda: MusicBrainzHTTPClient().lookup_album_metadata(_mb_entries, album=str(album or "")),
+                            lambda: MusicBrainzHttpClient().search_releases(str(album or ""), limit=10),
                             seconds=min(_track_timeout_seconds, 120),
                             label=f"MB album batch for '{artist} - {album}'",
                             default={},
                         ) or {}
                         
                         if _mb_batch:
-                            _collapse_album_mb_batch(_mb_batch, track_contexts, album)
                             options["mb_batch_metadata"] = _mb_batch
-                            log_unified(f"[POPULARITY] MusicBrainz batch resolved {len(_mb_batch)}/{len(_mb_entries)} track(s) for {artist} - {album}")
+                            log_unified(f"[POPULARITY] MusicBrainz batch resolved metadata for {artist} - {album}")
                 except Exception as exc:
                     logger.debug("MusicBrainz album batch failed", artist=artist, album=album, error=str(exc))
 
