@@ -6,6 +6,7 @@ import json
 import math
 import time
 import re
+import socket
 import concurrent.futures
 from collections import Counter
 from datetime import datetime
@@ -14,6 +15,11 @@ from typing import Any
 
 import structlog
 from sqlalchemy import text
+
+# Enforce a global OS-level socket timeout for the entire worker process.
+# This acts as an absolute kill-switch for poorly coded third-party API clients 
+# (like musicbrainzngs or pylast) that forget to set timeouts and hang indefinitely.
+socket.setdefaulttimeout(30.0)
 
 # Database
 from db.engine import db_session
@@ -96,8 +102,6 @@ from services.enrichment.cover_detection_service import detect_covers_for_album
 
 logger = structlog.get_logger(__name__)
 
-BOUNDED_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=16, thread_name_prefix="bounded")
-
 
 def _sanitize_release_name(album_name: str) -> str:
     """Strips '(Topshelf Edition)', '[Deluxe Version]', etc. for exact API matches."""
@@ -123,39 +127,48 @@ def _is_comp_artist(artist_name: str) -> bool:
 
 
 def _bounded_call(fn, seconds: float, label: str) -> None:
-    """Run ``fn()`` with a hard time budget so a hung call cannot freeze a scan."""
+    """Run ``fn()`` with a hard time budget. Spawns an isolated pool to avoid deadlocks."""
     if seconds is None or seconds <= 0:
         fn()
         return
 
-    future = BOUNDED_EXECUTOR.submit(fn)
+    logger.debug(f"[BOUNDED-TRACE] Starting bounded task: {label} (budget {seconds}s)")
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(fn)
     try:
         future.result(timeout=seconds)
+        logger.debug(f"[BOUNDED-TRACE] Finished bounded task: {label}")
     except concurrent.futures.TimeoutError:
-        logger.warning("Budget exceeded — abandoned, scan continues", task=label, budget_seconds=seconds)
+        logger.warning(f"[BOUNDED-TRACE] Budget exceeded — abandoned, scan continues: {label}", budget_seconds=seconds)
     except Exception as exc:
-        logger.warning("Bounded call failed", task=label, error=str(exc))
+        logger.warning(f"[BOUNDED-TRACE] Bounded call failed: {label}", error=str(exc))
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _bounded_call_result(fn, seconds: float, label: str, default: Any = None) -> Any:
-    """Run ``fn()`` with a hard time budget, returning its result or ``default``."""
+    """Run ``fn()`` with a hard time budget. Spawns an isolated pool to avoid deadlocks."""
     if seconds is None or seconds <= 0:
         try:
             return fn()
         except Exception:
             return default
 
-    future = BOUNDED_EXECUTOR.submit(fn)
+    logger.debug(f"[BOUNDED-TRACE] Starting bounded task: {label} (budget {seconds}s)")
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(fn)
     try:
-        return future.result(timeout=seconds)
+        res = future.result(timeout=seconds)
+        logger.debug(f"[BOUNDED-TRACE] Finished bounded task: {label}")
+        return res
     except concurrent.futures.TimeoutError:
-        logger.warning("Budget exceeded — abandoned, using default", task=label, budget_seconds=seconds)
+        logger.warning(f"[BOUNDED-TRACE] Budget exceeded — abandoned, using default: {label}", budget_seconds=seconds)
         return default
     except Exception as exc:
-        logger.warning("Bounded call failed", task=label, error=str(exc))
+        logger.warning(f"[BOUNDED-TRACE] Bounded call failed: {label}", error=str(exc))
         return default
-
-
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 def _duration_seconds(value: Any) -> float | None:
     """Best-effort track duration in seconds (None when unknown/zero)."""
     try:
@@ -665,46 +678,47 @@ def _persist_popularity_marking(rows: list[dict[str, Any]]) -> None:
     except Exception as exc:
         logger.debug("Popularity marking persist failed", error=str(exc))
 
-
 def _execute_track_jobs_safely(
     track_jobs, max_workers, timeout_sec, artist, album, max_retries=2, pause_sec=60
 ) -> list[dict[str, Any] | None]:
-    """
-    Executes track processing in an isolated thread pool. 
-    If threads hang, pauses the scan and restarts execution for pending tracks in a new pool.
-    """
+    """Executes track processing in an isolated thread pool with tracing."""
     results = [None] * len(track_jobs)
     if not track_jobs:
         return results
 
     def _run_single(job_tuple):
         _prepared, _tc, _opts, _frozen = job_tuple
-        return process_track(
-            track=_prepared,
-            track_context=_tc,
-            album_context=_opts.get("album_context", {}),
-            album_result=_opts.get("album_result", {}),
-            options=_opts,
-            album_lb_listens=_opts.get("album_lb_listens"),
-            artist_max_lf_listeners=_opts.get("artist_max_lf_listeners", 0),
-            artist_lf_context=_opts.get("artist_lf_context", {}),
-            album_tracks=_opts.get("album_tracks", []),
-            mb_cached_singles=_opts.get("mb_cached_singles", set()),
-            discogs_cached_singles=_opts.get("discogs_cached_singles", set()),
-            discogs_cached_promos=_opts.get("discogs_cached_promos", set()),
-            prefetched_popularity=_opts.get("prefetched_popularity", {}),
-        )
+        title = _prepared.get("title", "Unknown")
+        thread_name = threading.current_thread().name
+        logger.debug(f"[TRACK-TRACE] [{thread_name}] Starting processing for track: '{title}'")
+        try:
+            res = process_track(
+                track=_prepared,
+                track_context=_tc,
+                album_context=_opts.get("album_context", {}),
+                album_result=_opts.get("album_result", {}),
+                options=_opts,
+                album_lb_listens=_opts.get("album_lb_listens"),
+                artist_max_lf_listeners=_opts.get("artist_max_lf_listeners", 0),
+                artist_lf_context=_opts.get("artist_lf_context", {}),
+                album_tracks=_opts.get("album_tracks", []),
+                mb_cached_singles=_opts.get("mb_cached_singles", set()),
+                discogs_cached_singles=_opts.get("discogs_cached_singles", set()),
+                discogs_cached_promos=_opts.get("discogs_cached_promos", set()),
+                prefetched_popularity=_opts.get("prefetched_popularity", {}),
+            )
+            logger.debug(f"[TRACK-TRACE] [{thread_name}] Finished processing for track: '{title}'")
+            return res
+        except Exception as exc:
+            logger.error(f"[TRACK-TRACE] [{thread_name}] ERROR processing track: '{title}' - {repr(exc)}")
+            raise
 
     pending_indices = set(range(len(track_jobs)))
     attempt = 0
 
     while pending_indices and attempt <= max_retries:
         if attempt > 0:
-            logger.warning(
-                f"Pausing scan for {pause_sec}s before restarting thread pool for {len(pending_indices)} stuck tracks...", 
-                artist=artist, 
-                album=album
-            )
+            logger.warning(f"[TRACK-TRACE] Pausing scan for {pause_sec}s before restarting thread pool...", artist=artist, album=album)
             time.sleep(pause_sec)
 
         pool = concurrent.futures.ThreadPoolExecutor(
@@ -724,18 +738,14 @@ def _execute_track_jobs_safely(
                     results[idx] = future.result()
                     pending_indices.remove(idx)
                 except Exception as exc:
-                    logger.warning(
-                        "Track worker crashed", 
-                        artist=artist, 
-                        album=album, 
-                        track=track_jobs[idx][0].get('title'), 
-                        error=str(exc)
-                    )
+                    logger.warning("Track worker crashed", artist=artist, album=album, track=track_jobs[idx][0].get('title'), error=str(exc))
                     pending_indices.remove(idx)
                     
         except concurrent.futures.TimeoutError:
+            stuck_tracks = [track_jobs[future_to_idx[f]][0].get("title", "?") for f in future_to_idx if not f.done()]
             logger.warning(
-                f"Track deadline ({timeout_sec}s) reached on attempt {attempt + 1}. Threads stalled.", 
+                f"[TRACK-TRACE] Track deadline ({timeout_sec}s) reached on attempt {attempt + 1}. "
+                f"Threads stalled on tracks: {stuck_tracks}", 
                 artist=artist, 
                 album=album
             )
@@ -747,14 +757,9 @@ def _execute_track_jobs_safely(
         attempt += 1
 
     if pending_indices:
-        logger.warning(
-            f"Abandoning {len(pending_indices)} tracks after {max_retries} failed thread restarts.", 
-            artist=artist, 
-            album=album
-        )
+        logger.warning(f"[TRACK-TRACE] Abandoning {len(pending_indices)} tracks after {max_retries} failed restarts.", artist=artist, album=album)
         
     return results
-
 
 def run_scan(
     *,
