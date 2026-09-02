@@ -33,9 +33,26 @@ _PROGRESS_PATH = "missing_releases_scan_progress.json"
 _scan_thread: threading.Thread | None = None
 _scan_lock = threading.Lock()
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _sanitize_release_name(album_name: str) -> str:
+    """Strips '(Topshelf Edition)', '[Deluxe Version]', etc. for exact API matches."""
+    if not album_name:
+        return ""
+    cleaned = re.sub(
+        r'\s*[\(\[].*?(edition|deluxe|remaster|version|bonus|expanded|explicit|clean).*?[\)\]]', 
+        '', 
+        album_name, 
+        flags=re.IGNORECASE
+    ).strip()
+    return cleaned if cleaned else album_name
 
 def _normalize_release_title(title: str) -> str:
-    return normalize_title_for_lookup(title or "")
+    # First sanitize retail editions out, then let standard normalizer run
+    clean_title = _sanitize_release_name(title)
+    return normalize_title_for_lookup(clean_title or "")
 
 
 def _fetch_musicbrainz_release_groups(artist_mbid: str, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
