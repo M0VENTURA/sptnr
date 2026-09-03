@@ -37,6 +37,13 @@ logger = structlog.get_logger(__name__)
 _navidrome_art_miss_cache: dict[tuple[str, str], float] = {}
 _NAVIDROME_MISS_TTL_SECONDS = 6 * 3600
 
+# Dedicated isolated HTTP client for non-blocking art downloads to prevent pool starvation
+_art_client = httpx.Client(
+    timeout=httpx.Timeout(10.0, connect=5.0),
+    limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
+    follow_redirects=True,
+)
+
 
 def _sanitize_release_name(album_name: str) -> str:
     """Strips '(Topshelf Edition)', '[Deluxe Version]', etc. for exact API matches."""
@@ -104,7 +111,7 @@ def fetch_album_art_from_musicbrainz(artist_name: str, album_name: str) -> bytes
         # front art is populated more often than the release-group's).  Browse
         # the group's releases and try each; fall back to the group front.
         try:
-            releases = musicbrainz.browse_releases_for_group(release_group_mbid, inc="", limit=10)
+            releases = musicbrainz.browse_releases_for_group(release_group_mbid, inc="", limit=5)
             for rel in releases or []:
                 rel_id = rel.get("id")
                 if not rel_id:
@@ -140,11 +147,10 @@ def fetch_album_art_from_itunes(
             "limit": 5,
         }
 
-        response = httpx.get(
+        response = _art_client.get(
             search_url,
             params=params,
             headers=headers,
-            timeout=5,
         )
         response.raise_for_status()
 
@@ -170,7 +176,7 @@ def fetch_album_art_from_itunes(
                 artwork_url = artwork_url.replace("100x100", "1000x1000")
                 logger.info("iTunes: Found exact match", artist=artist_name, album=album_name)
 
-                art_response = httpx.get(artwork_url, headers=headers, timeout=5)
+                art_response = _art_client.get(artwork_url, headers=headers)
                 if art_response.status_code == 200:
                     return art_response.content
 
@@ -179,7 +185,7 @@ def fetch_album_art_from_itunes(
             artwork_url = artwork_url.replace("100x100", "1000x1000")
             logger.debug("iTunes: Using fallback result", artist=artist_name, album=album_name)
 
-            art_response = httpx.get(artwork_url, headers=headers, timeout=5)
+            art_response = _art_client.get(artwork_url, headers=headers)
             if art_response.status_code == 200:
                 return art_response.content
 
@@ -203,7 +209,7 @@ def fetch_album_art_from_discogs(artist_name: str, album_name: str, token: str) 
             return None
 
         img_url = results[0]["cover_url"]
-        resp = discogs.session.get(img_url, timeout=5)
+        resp = _art_client.get(img_url)
 
         if resp.status_code == 200:
             return resp.content
@@ -299,7 +305,7 @@ def fetch_album_art_from_audiodb(artist_name: str, album_name: str) -> bytes | N
     clean_album = _sanitize_release_name(album_name)
     try:
         url = "https://theaudiodb.com/api/v1/json/2/searchalbum.php"
-        resp = httpx.get(url, params={"s": artist_name, "a": clean_album}, timeout=10)
+        resp = _art_client.get(url, params={"s": artist_name, "a": clean_album})
         if resp.status_code != 200:
             return None
             
@@ -312,7 +318,7 @@ def fetch_album_art_from_audiodb(artist_name: str, album_name: str) -> bytes | N
         if not art_url:
             return None
             
-        img_resp = httpx.get(art_url, timeout=10)
+        img_resp = _art_client.get(art_url)
         if img_resp.status_code == 200:
             logger.debug("Fetched album art from AudioDB", artist=artist_name, album=album_name)
             return img_resp.content
@@ -390,7 +396,7 @@ def get_or_fetch_album_art(artist: str, album: str, discogs_token: str = "") -> 
             ).fetchone()
             if row and row[0] and str(row[0]).strip():
                 url = str(row[0]).strip()
-                resp = httpx.get(url, timeout=5)
+                resp = _art_client.get(url)
                 if resp.status_code == 200:
                     save_album_art_to_db(artist, album, resp.content, source="missing_releases")
                     return resp.content, "image/jpeg"
@@ -430,9 +436,6 @@ def download_and_save_album_art(artist: str, album: str, image_data: bytes, sour
 
 def search_album_art_external(artist: str, album: str, source: str = "musicbrainz") -> tuple[dict, int]:
     """Search for album art from the specified external source."""
-    # Discogs art search requires the configured token — the previous code
-    # hardcoded ``token=""`` so the Discogs source always returned
-    # "No album art found" (the reported bug).
     try:
         from helpers.config_helpers import get_config
         _cfg = get_config() or {}
@@ -445,8 +448,6 @@ def search_album_art_external(artist: str, album: str, source: str = "musicbrain
         data = fetch_album_art_from_musicbrainz(artist, album)
         if data:
             return data
-        # CAA fallback via the release-GROUP front image is covered inside
-        # fetch_album_art_from_musicbrainz; nothing extra here.
         return None
 
     sources = {
@@ -500,7 +501,7 @@ def set_album_art_from_url(artist: str, album: str, image_url: str) -> dict[str,
             except Exception:
                 return {"success": False, "error": "Invalid data URL payload"}
         else:
-            resp = httpx.get(image_url, timeout=10)
+            resp = _art_client.get(image_url)
             if resp.status_code != 200:
                 return {"success": False, "error": "Failed to download image"}
             image_data = resp.content
@@ -508,8 +509,6 @@ def set_album_art_from_url(artist: str, album: str, image_url: str) -> dict[str,
 
         saved = save_album_art_to_db(artist, album, image_data, source="url", mime_type=mime_type)
         if saved:
-            # Embed into the album's audio files (the JS expects
-            # ``files_updated`` so it can report how many files got art).
             files_updated = 0
             try:
                 files_updated = apply_album_art_to_tracks(artist, album, image_data, mime_type)
@@ -535,7 +534,6 @@ def set_album_art_from_upload(artist: str, album: str, image_data: bytes, mime_t
         try:
             files_updated = apply_album_art_to_tracks(artist, album, image_data, mime_type)
         except Exception as exc:
-            # Embedding failure is non-fatal — the art is saved in the DB.
             logger.debug("Upload art embed failed", artist=artist, album=album, error=str(exc))
         return {
             "success": True,
