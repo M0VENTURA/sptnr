@@ -887,6 +887,7 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> dict[str, Any] | None
 
         _secondary_types = _parse_secondary_types(rg.get("secondary-types"))
         release_info: dict[str, Any] = {
+            # FIX: Prioritize release-group title here to strip Topshelf Edition fluffy suffixes
             "release_title": rg.get("title") or data.get("title"),
             "release_year": release_year,
             "artist": "",
@@ -1160,6 +1161,7 @@ def _lookup_existing_mbid(existing_mbid: str, artist: str, album: str) -> dict[s
             display_date = rg.get("first-release-date", "") or rel_data.get("date", "")
             return {
                 "mbid": existing_mbid,
+                # FIX: Prioritize release-group title here to strip Topshelf Edition fluffy suffixes
                 "title": rg.get("title") or rel_data.get("title", album),
                 "artist": rel_artist,
                 "primary_type": primary_type,
