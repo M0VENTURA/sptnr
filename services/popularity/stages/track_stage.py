@@ -518,9 +518,6 @@ def _score_track_popularity(
     return score_data, lb_percentile
 
 
-_ALBUM_MB_REWRITE_MIN_SIMILARITY = 0.85
-
-
 def _same_album_release(a: str, b: str) -> bool:
     if not a or not b:
         return False
@@ -528,7 +525,7 @@ def _same_album_release(a: str, b: str) -> bool:
         return False
     return (
         SequenceMatcher(None, a.lower(), b.lower()).ratio()
-        >= _ALBUM_MB_REWRITE_MIN_SIMILARITY
+        >= 0.85
     )
 
 
@@ -611,34 +608,24 @@ def _resolve_track_mb_metadata(
             _mb_isrc = _as_str(mb_data.get("isrc") or "").strip()
             if _mb_isrc and not _as_str(track.get("isrc") or "").strip():
                 payload["isrc"] = _mb_isrc
+
+            # ---------------------------------------------------------
+            # NON-DESTRUCTIVE ASSIGNMENT FOR ALBUM, ARTIST, AND YEAR
+            # ---------------------------------------------------------
+            # We ONLY write these metadata fields if they are missing
+            # completely from the local track tags. MusicBrainz shouldn't
+            # overwrite intended local edition names or original release years.
             
-            if mb_data.get("album"):
-                existing_album = _as_str(track.get("album") or "")
-                fp = _as_str(track.get("file_path") or "")
-                folder_name = ""
-                if fp:
-                    import os as _os
-                    parts = _os.path.normpath(fp).split(_os.sep)
-                    if len(parts) >= 2:
-                        folder_name = parts[-2]
-                mb_album = _as_str(mb_data["album"])
+            _existing_album = _as_str(track.get("album") or "").strip()
+            if mb_data.get("album") and not _existing_album:
+                payload["album"] = mb_data["album"]
                 
-                folder_consistent = bool(
-                    folder_name
-                    and existing_album
-                    and SequenceMatcher(None, existing_album.lower(), folder_name.lower()).ratio() >= 0.9
-                )
-                if mb_album and not folder_consistent:
-                    if folder_name:
-                        if _same_album_release(folder_name, mb_album):
-                            payload["album"] = mb_album
-                        elif not existing_album:
-                            payload["album"] = folder_name
-                    else:
-                        payload["album"] = mb_album
-            if mb_data.get("artist"):
+            _existing_artist = _as_str(track.get("artist") or "").strip()
+            if mb_data.get("artist") and not _existing_artist:
                 payload["artist"] = mb_data["artist"]
-            if mb_data.get("year"):
+                
+            _existing_year = _as_str(track.get("year") or "").strip()
+            if mb_data.get("year") and not _existing_year:
                 payload["year"] = mb_data["year"]
 
     return {
