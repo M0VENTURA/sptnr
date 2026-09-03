@@ -1,39 +1,99 @@
-"""MusicBrainz upcoming-releases fetcher.
+"""MusicBrainz upcoming and recently released album discovery.
 
-Mirrors the legacy daily MusicBrainz collection refresh: pulls release-groups
-for artists in the collection within a configurable date window and upserts
-them into ``upcoming_releases`` (source = "MusicBrainz Daily Collection"),
-augmenting the Wikipedia scrape with direct MusicBrainz data.
+Discovers MusicBrainz release groups from:
 
-A global discovery pass (no artist constraint) also runs first so brand-new
-MusicBrainz releases from artists NOT in the collection surface too.
+1. Artists already present in the local music collection.
+2. A configurable global discovery pass for artists outside the collection.
+
+All MusicBrainz API requests are routed through
+``api_clients.musicbrainz_http.MusicBrainzHttpClient``.
+
+This module does not perform direct HTTP requests, rate limiting, retries,
+TLS handling, or HTTP response caching. Those responsibilities belong to the
+shared MusicBrainz HTTP client.
+
+Release groups are filtered, normalised, deduplicated by release-group MBID,
+and persisted into the ``upcoming_releases`` table.
 """
 
 from __future__ import annotations
 
+import re
 import threading
 import unicodedata
-from datetime import datetime, timedelta
-from typing import Any
+from datetime import date, datetime, timedelta
+from typing import Any, Iterable, Iterator
 
 import structlog
 from sqlalchemy import text
 
-from api_clients.musicbrainz_http import MusicBrainzHttpClient, escape_lucene_special_chars
+from api_clients.musicbrainz_http import (
+    MusicBrainzHttpClient,
+    escape_lucene_special_chars,
+)
 from db.engine import db_session
 
 logger = structlog.get_logger(__name__)
 
-SOURCE_NAME = "MusicBrainz Daily Collection"
 
-_DISQUALIFYING_SECONDARY_TYPES = ("live", "remix", "compilation")
+# =============================================================================
+# Constants
+# =============================================================================
+
+SOURCE_NAME = "MusicBrainz Daily Collection"
+MBID_SOURCE_NAME = "musicbrainz_daily_scan"
+
+_ALLOWED_PRIMARY_TYPES = frozenset(
+    {
+        "album",
+        "ep",
+        "single",
+    }
+)
+
+_DISQUALIFYING_SECONDARY_TYPES = frozenset(
+    {
+        "live",
+        "remix",
+        "compilation",
+    }
+)
+
+_MAX_MUSICBRAINZ_QUERY_RESULTS = 100
+_MAX_COLLECTION_ARTISTS = 50_000
+_MAX_DATE_WINDOW_DAYS = 365
+_QUERY_DATE_MARGIN_DAYS = 90
+_MAX_CONSECUTIVE_FAILURES = 20
+
+
+# =============================================================================
+# Shared MusicBrainz client
+# =============================================================================
 
 _mb_client: MusicBrainzHttpClient | None = None
 _client_lock = threading.Lock()
+
+
+def _get_mb_client() -> MusicBrainzHttpClient:
+    """Return the shared MusicBrainz HTTP client instance."""
+    global _mb_client
+
+    if _mb_client is not None:
+        return _mb_client
+
+    with _client_lock:
+        if _mb_client is None:
+            _mb_client = MusicBrainzHttpClient(enabled=True)
+
+    return _mb_client
+
+
+# =============================================================================
+# Background refresh state
+# =============================================================================
+
 _refresh_lock = threading.Lock()
 _refresh_running = False
-
-_MAX_CONSECUTIVE_FAILURES = 20
 
 _status_lock = threading.Lock()
 _status: dict[str, Any] = {
@@ -43,549 +103,1171 @@ _status: dict[str, Any] = {
     "current_artist": None,
     "updated_at": None,
     "last_stats": None,
+    "last_error": None,
 }
 
 
 def _set_status(**changes: Any) -> None:
+    """Apply changes to the thread-safe refresh status."""
     with _status_lock:
         _status.update(changes)
-        _status["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        _status["updated_at"] = datetime.now().isoformat(
+            timespec="seconds"
+        )
 
 
 def get_refresh_status() -> dict[str, Any]:
-    """Snapshot of the background MusicBrainz refresh (for the status endpoint)."""
+    """Return a snapshot of the current MusicBrainz refresh status."""
     with _status_lock:
         return dict(_status)
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+def is_refresh_running() -> bool:
+    """Return whether the background MusicBrainz refresh is active."""
+    with _refresh_lock:
+        return _refresh_running
 
-def _get_mb_client() -> MusicBrainzHttpClient:
-    global _mb_client
-    if _mb_client is None:
-        with _client_lock:
-            if _mb_client is None:
-                _mb_client = MusicBrainzHttpClient(enabled=True)
-    return _mb_client
+
+# =============================================================================
+# General helpers
+# =============================================================================
+
+_NON_ALPHANUMERIC_RE = re.compile(r"[^a-z0-9\s]+")
+_MULTIPLE_WHITESPACE_RE = re.compile(r"\s+")
 
 
 def _normalize_artist(name: str) -> str:
-    return unicodedata.normalize("NFKD", str(name or "")).encode("ascii", "ignore").decode().strip().lower()
+    """Normalise an artist name for MusicBrainz credit comparison.
+
+    This normalisation is used only for comparing MusicBrainz artist-credit
+    names. It is not written back to the database.
+    """
+    if not name:
+        return ""
+
+    value = unicodedata.normalize("NFKD", str(name))
+
+    value = "".join(
+        character
+        for character in value
+        if not unicodedata.combining(character)
+    )
+
+    value = value.lower()
+    value = _NON_ALPHANUMERIC_RE.sub(" ", value)
+    value = _MULTIPLE_WHITESPACE_RE.sub(" ", value)
+
+    return value.strip()
+
+
+def _database_comparison_key(value: str) -> str:
+    """Build the equivalent of the database REGEXP_REPLACE comparison key."""
+    return re.sub(
+        r"[^a-zA-Z0-9]",
+        "",
+        str(value or ""),
+    ).lower()
 
 
 def _parse_release_date(raw: Any) -> str | None:
-    """Accept YYYY-MM-DD / YYYY-MM / YYYY; return the raw string or None."""
+    """Validate a MusicBrainz release date.
+
+    MusicBrainz may return:
+
+    * YYYY-MM-DD
+    * YYYY-MM
+    * YYYY
+    """
     if not raw:
         return None
-    raw = str(raw).strip()
-    for fmt in ("%Y-%m-%d", "%Y-%m", "%Y"):
+
+    raw_value = str(raw).strip()
+
+    for date_format in ("%Y-%m-%d", "%Y-%m", "%Y"):
         try:
-            datetime.strptime(raw, fmt)
-            return raw
+            datetime.strptime(raw_value, date_format)
+            return raw_value
         except ValueError:
             continue
+
     return None
 
 
-def _normalize_release_date(raw: Any) -> str:
-    """Expand a partial MB release date to a comparable ISO date string."""
-    raw = str(raw or "").strip()
-    if len(raw) == 4 and raw[:4].isdigit():
-        return f"{raw}-01-01"
-    if len(raw) == 7 and raw[4] == "-" and raw[:4].isdigit() and raw[5:7].isdigit():
-        return f"{raw}-01"
-    return raw
+def _normalize_release_date(raw: Any) -> str | None:
+    """Expand a partial MusicBrainz date to a database-compatible ISO date."""
+    parsed = _parse_release_date(raw)
 
+    if not parsed:
+        return None
+
+    if len(parsed) == 4:
+        return f"{parsed}-01-01"
+
+    if len(parsed) == 7:
+        return f"{parsed}-01"
+
+    return parsed
+
+
+def _release_year(raw: str | None) -> int | None:
+    """Extract the release year from a normalised date."""
+    if not raw:
+        return None
+
+    if len(raw) < 4 or not raw[:4].isdigit():
+        return None
+
+    return int(raw[:4])
+
+
+def _month_end(value: date) -> date:
+    """Return the final day of the month containing the supplied date."""
+    if value.month == 12:
+        next_month = value.replace(
+            year=value.year + 1,
+            month=1,
+            day=1,
+        )
+    else:
+        next_month = value.replace(
+            month=value.month + 1,
+            day=1,
+        )
+
+    return next_month - timedelta(days=1)
+
+
+def _within_window(
+    raw_date: str,
+    minimum_date: date,
+    maximum_date: date,
+) -> bool:
+    """Return whether a complete or partial MusicBrainz date overlaps a window."""
+    try:
+        if len(raw_date) >= 10:
+            parsed_date = datetime.strptime(
+                raw_date[:10],
+                "%Y-%m-%d",
+            ).date()
+
+            return minimum_date <= parsed_date <= maximum_date
+
+        if len(raw_date) == 7:
+            parsed_month = datetime.strptime(
+                raw_date,
+                "%Y-%m",
+            ).date()
+
+            month_start = parsed_month.replace(day=1)
+            month_finish = _month_end(parsed_month)
+
+            return (
+                month_start <= maximum_date
+                and month_finish >= minimum_date
+            )
+
+        if len(raw_date) == 4:
+            parsed_year = int(raw_date)
+
+            return (
+                minimum_date.year
+                <= parsed_year
+                <= maximum_date.year
+            )
+
+    except (TypeError, ValueError):
+        return False
+
+    return False
+
+
+# =============================================================================
+# Feature configuration
+# =============================================================================
 
 def _feature_int(key: str, default: int) -> int:
+    """Read an integer feature setting with a safe fallback."""
     try:
         from helpers.config_helpers import get_feature
-        return int(get_feature(key, default) or default)
-    except Exception:
+
+        value = get_feature(key, default)
+
+        if value is None:
+            return default
+
+        return int(value)
+
+    except Exception as exc:
+        logger.debug(
+            "Could not read integer feature setting",
+            key=key,
+            default=default,
+            error=str(exc),
+        )
         return default
 
 
-def _collection_artists(limit: int) -> list[str]:
-    """Distinct album artists from the library (sorted, capped)."""
+def _feature_bool(key: str, default: bool) -> bool:
+    """Read a Boolean feature setting with explicit string handling."""
+    try:
+        from helpers.config_helpers import get_feature
+
+        value = get_feature(key, default)
+
+    except Exception as exc:
+        logger.debug(
+            "Could not read Boolean feature setting",
+            key=key,
+            default=default,
+            error=str(exc),
+        )
+        return default
+
+    if value is None:
+        return default
+
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, str):
+        normalised = value.strip().lower()
+
+        if normalised in {
+            "true",
+            "1",
+            "yes",
+            "on",
+            "enabled",
+        }:
+            return True
+
+        if normalised in {
+            "false",
+            "0",
+            "no",
+            "off",
+            "disabled",
+        }:
+            return False
+
+    return bool(value)
+
+
+def _scan_enabled() -> bool:
+    """Read the preferred scan setting with support for the legacy key."""
+    try:
+        from helpers.config_helpers import get_feature
+
+        current_value = get_feature(
+            "upcoming_releases_scan_enabled",
+            None,
+        )
+
+        if current_value is not None:
+            if isinstance(current_value, str):
+                return current_value.strip().lower() in {
+                    "true",
+                    "1",
+                    "yes",
+                    "on",
+                    "enabled",
+                }
+
+            return bool(current_value)
+
+    except Exception as exc:
+        logger.debug(
+            "Could not read primary upcoming releases setting",
+            error=str(exc),
+        )
+
+    return _feature_bool(
+        "daily_musicbrainz_release_scan_enabled",
+        True,
+    )
+
+
+# =============================================================================
+# Artist helpers
+# =============================================================================
+
+def _release_group_artist(
+    release_group: dict[str, Any],
+) -> str:
+    """Build a display artist from a MusicBrainz artist-credit array."""
+    credits = release_group.get("artist-credit") or []
+    parts: list[str] = []
+
+    for credit in credits:
+        if isinstance(credit, str):
+            parts.append(credit)
+            continue
+
+        if not isinstance(credit, dict):
+            continue
+
+        artist_data = credit.get("artist") or {}
+
+        name = (
+            credit.get("name")
+            or artist_data.get("name")
+            or ""
+        )
+
+        join_phrase = credit.get("joinphrase") or ""
+
+        if name:
+            parts.append(str(name))
+
+        if join_phrase:
+            parts.append(str(join_phrase))
+
+    return "".join(parts).strip()
+
+
+def _release_group_credit_names(
+    release_group: dict[str, Any],
+) -> list"""Return individual artist names from MusicBrainz artist credits."""
+    names: list[str] = []
+
+    for credit in release_group.get("artist-credit") or []:
+        if isinstance(credit, str):
+            credit_name = credit.strip()
+
+            if credit_name:
+                names.append(credit_name)
+
+            continue
+
+        if not isinstance(credit, dict):
+            continue
+
+        artist_data = credit.get("artist") or {}
+
+        name = (
+            artist_data.get("name")
+            or credit.get("name")
+            or ""
+        )
+
+        name = str(name).strip()
+
+        if name:
+            names.append(name)
+
+    return names
+
+
+def _collection_artists(limit: int) -> list"""Return distinct album artists from the local tracks table."""
+    safe_limit = max(
+        1,
+        min(int(limit), _MAX_COLLECTION_ARTISTS),
+    )
+
     try:
         with db_session() as session:
             result = session.execute(
-                text("""
+                text(
+                    """
                     SELECT artist_name
                     FROM (
-                        SELECT DISTINCT COALESCE(NULLIF(album_artist, ''), artist) AS artist_name,
-                               LOWER(COALESCE(NULLIF(album_artist, ''), artist)) AS artist_sort
+                        SELECT DISTINCT
+                            COALESCE(
+                                NULLIF(TRIM(album_artist), ''),
+                                NULLIF(TRIM(artist), '')
+                            ) AS artist_name,
+                            LOWER(
+                                COALESCE(
+                                    NULLIF(TRIM(album_artist), ''),
+                                    NULLIF(TRIM(artist), '')
+                                )
+                            ) AS artist_sort
                         FROM tracks
-                        WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL
-                          AND TRIM(COALESCE(NULLIF(album_artist, ''), artist)) <> ''
+                        WHERE COALESCE(
+                            NULLIF(TRIM(album_artist), ''),
+                            NULLIF(TRIM(artist), '')
+                        ) IS NOT NULL
                     ) AS artist_rows
+                    WHERE artist_name IS NOT NULL
+                      AND artist_name <> ''
                     ORDER BY artist_sort
                     LIMIT :limit
-                """),
-                {"limit": max(1, min(limit, 50000))},
+                    """
+                ),
+                {
+                    "limit": safe_limit,
+                },
             )
-            return [str(r[0]).strip() for r in result.fetchall() or [] if r[0]]
+
+            return [
+                str(row[0]).strip()
+                for row in result.fetchall() or []
+                if row[0] and str(row[0]).strip()
+            ]
+
     except Exception as exc:
-        logger.error("Collection artist query failed", error=str(exc))
+        logger.error(
+            "Collection artist query failed",
+            limit=safe_limit,
+            error=str(exc),
+        )
         return []
+
+
+def _collection_artist_keys() -> set"""Return punctuation-insensitive keys for all collection artists.
+
+    The full set is loaded once for the global discovery pass rather than
+    opening a database session for every globally discovered release.
+    """
+    try:
+        with db_session() as session:
+            result = session.execute(
+                text(
+                    """
+                    SELECT DISTINCT
+                        LOWER(
+                            REGEXP_REPLACE(
+                                COALESCE(
+                                    NULLIF(TRIM(album_artist), ''),
+                                    NULLIF(TRIM(artist), '')
+                                ),
+                                '[^a-zA-Z0-9]',
+                                '',
+                                'g'
+                            )
+                        ) AS artist_key
+                    FROM tracks
+                    WHERE COALESCE(
+                        NULLIF(TRIM(album_artist), ''),
+                        NULLIF(TRIM(artist), '')
+                    ) IS NOT NULL
+                    """
+                )
+            )
+
+            return {
+                str(row[0]).strip()
+                for row in result.fetchall() or []
+                if row[0] and str(row[0]).strip()
+            }
+
+    except Exception as exc:
+        logger.warning(
+            "Collection artist key query failed",
+            error=str(exc),
+        )
+        return set()
+
+
+# =============================================================================
+# MusicBrainz retrieval helpers
+# =============================================================================
+
+def _build_date_query_range(
+    minimum_date: date,
+    maximum_date: date,
+) -> str:
+    """Build an expanded MusicBrainz first-release-date query range."""
+    margin = timedelta(days=_QUERY_DATE_MARGIN_DAYS)
+
+    query_start = minimum_date - margin
+    query_end = maximum_date + margin
+
+    return (
+        f"[{query_start.isoformat()} "
+        f"TO {query_end.isoformat()}]"
+    )
+
+
+def _is_allowed_release_group(
+    release_group: dict[str, Any],
+) -> bool:
+    """Return whether a release group has an allowed primary/secondary type."""
+    primary_type = str(
+        release_group.get("primary-type") or ""
+    ).strip().lower()
+
+    if primary_type not in _ALLOWED_PRIMARY_TYPES:
+        return False
+
+    secondary_types = {
+        str(value).strip().lower()
+        for value in release_group.get("secondary-types") or []
+        if value
+    }
+
+    return not bool(
+        secondary_types.intersection(
+            _DISQUALIFYING_SECONDARY_TYPES
+        )
+    )
+
+
+def _serialise_release_group(
+    release_group: dict[str, Any],
+    minimum_date: date,
+    maximum_date: date,
+    *,
+    include_artist: bool,
+) -> dict[str, Any] | None:
+    """Validate and convert a MusicBrainz release group."""
+    if not isinstance(release_group, dict):
+        return None
+
+    if not _is_allowed_release_group(release_group):
+        return None
+
+    release_group_mbid = str(
+        release_group.get("id") or ""
+    ).strip()
+
+    title = str(
+        release_group.get("title") or ""
+    ).strip()
+
+    release_date = _parse_release_date(
+        release_group.get("first-release-date")
+    )
+
+    if not release_group_mbid:
+        return None
+
+    if not title:
+        return None
+
+    if not release_date:
+        return None
+
+    if not _within_window(
+        release_date,
+        minimum_date,
+        maximum_date,
+    ):
+        return None
+
+    item: dict[str, Any] = {
+        "id": release_group_mbid,
+        "title": title,
+        "first_release_date": release_date,
+        "primary_type": str(
+            release_group.get("primary-type") or ""
+        ).strip().lower(),
+    }
+
+    if include_artist:
+        item["artist"] = _release_group_artist(
+            release_group
+        )
+
+    return item
 
 
 def _fetch_artist_release_groups(
     client: MusicBrainzHttpClient,
     artist: str,
     limit: int,
-    min_date: Any,
-    max_date: Any,
+    minimum_date: date,
+    maximum_date: date,
 ) -> list[dict[str, Any]]:
-    """Fetch one artist's release-groups inside the date window."""
-    escaped = escape_lucene_special_chars(artist)
-    query_margin = timedelta(days=90)
-    query_range = (
-        f"[{(min_date - query_margin).isoformat()} TO {(max_date + query_margin).isoformat()}]"
+    """Fetch release groups belonging to a collection artist.
+
+    The MusicBrainz API call passes exclusively through
+    ``MusicBrainzHttpClient.search_release_groups``.
+    """
+    escaped_artist = escape_lucene_special_chars(artist)
+
+    query_range = _build_date_query_range(
+        minimum_date,
+        maximum_date,
     )
+
     query = (
-        f'artist:"{escaped}" AND (primarytype:album OR primarytype:ep OR primarytype:single) '
+        f'artist:"{escaped_artist}" '
+        "AND (primarytype:album "
+        "OR primarytype:ep "
+        "OR primarytype:single) "
         f"AND firstreleasedate:{query_range}"
     )
-    raw = client.search_release_groups(query, limit=max(1, min(limit, 100)))
-    requested_norm = _normalize_artist(artist)
-    out: list[dict[str, Any]] = []
-    for rg in raw or []:
-        if not isinstance(rg, dict):
+
+    search_limit = max(
+        1,
+        min(
+            int(limit),
+            _MAX_MUSICBRAINZ_QUERY_RESULTS,
+        ),
+    )
+
+    raw_release_groups = client.search_release_groups(
+        query,
+        limit=search_limit,
+    )
+
+    requested_artist = _normalize_artist(artist)
+
+    results: list[dict[str, Any]] = []
+    seen_mbids: set[str] = set()
+
+    for release_group in raw_release_groups or []:
+        if not isinstance(release_group, dict):
             continue
-        primary = str(rg.get("primary-type") or "").lower()
-        if primary not in ("album", "ep", "single"):
-            continue
-        secondary = [str(s).lower() for s in (rg.get("secondary-types") or []) if s]
-        if any(t in secondary for t in _DISQUALIFYING_SECONDARY_TYPES):
-            continue
-        credits = rg.get("artist-credit") or []
-        if credits:
-            names = []
-            for credit in credits:
-                if isinstance(credit, dict):
-                    art = credit.get("artist") or {}
-                    names.append(art.get("name") or credit.get("name") or "")
-            if names and not any(_normalize_artist(n) == requested_norm for n in names):
+
+        credit_names = _release_group_credit_names(
+            release_group
+        )
+
+        if credit_names:
+            normalised_credits = {
+                _normalize_artist(name)
+                for name in credit_names
+                if name
+            }
+
+            if requested_artist not in normalised_credits:
                 continue
-        parsed_date = _parse_release_date(rg.get("first-release-date"))
-        if not parsed_date:
+
+        item = _serialise_release_group(
+            release_group,
+            minimum_date,
+            maximum_date,
+            include_artist=False,
+        )
+
+        if not item:
             continue
-        if not _within_window(parsed_date, min_date, max_date):
+
+        release_group_mbid = item["id"]
+
+        if release_group_mbid in seen_mbids:
             continue
-        out.append({
-            "id": str(rg.get("id") or "").strip(),
-            "title": str(rg.get("title") or "").strip(),
-            "first_release_date": parsed_date,
-            "primary_type": primary,
-        })
-    return out
+
+        seen_mbids.add(release_group_mbid)
+        results.append(item)
+
+    return results
 
 
 def _fetch_global_upcoming_release_groups(
     client: MusicBrainzHttpClient,
     limit: int,
-    min_date: Any,
-    max_date: Any,
+    minimum_date: date,
+    maximum_date: date,
 ) -> list[dict[str, Any]]:
-    """Fetch upcoming/recent release-groups from ANY artist (discovery)."""
-    query_margin = timedelta(days=90)
-    query_range = (
-        f"[{(min_date - query_margin).isoformat()} TO {(max_date + query_margin).isoformat()}]"
+    """Fetch globally discovered albums, EPs, and singles.
+
+    Albums are requested first. EPs and singles use any remaining configured
+    capacity. All calls pass through the shared MusicBrainz client.
+    """
+    safe_limit = max(
+        1,
+        min(
+            int(limit),
+            _MAX_MUSICBRAINZ_QUERY_RESULTS,
+        ),
     )
 
-    def _fetch_type(primary_type: str, fetch_limit: int) -> list[dict[str, Any]]:
-        query = f"primarytype:{primary_type} AND firstreleasedate:{query_range}"
-        return client.search_release_groups(query, limit=max(1, min(fetch_limit, 100)))
+    query_range = _build_date_query_range(
+        minimum_date,
+        maximum_date,
+    )
 
-    out: list[dict[str, Any]] = []
-    for rg in _fetch_type("album", limit) or []:
-        if not isinstance(rg, dict):
-            continue
-        secondary = [str(s).lower() for s in (rg.get("secondary-types") or []) if s]
-        if any(t in secondary for t in _DISQUALIFYING_SECONDARY_TYPES):
-            continue
-        parsed_date = _parse_release_date(rg.get("first-release-date"))
-        if not parsed_date or not _within_window(parsed_date, min_date, max_date):
-            continue
-        out.append({
-            "id": str(rg.get("id") or "").strip(),
-            "title": str(rg.get("title") or "").strip(),
-            "first_release_date": parsed_date,
-            "primary_type": "album",
-            "artist": _release_group_artist(rg),
-        })
+    results: list[dict[str, Any]] = []
+    seen_mbids: set[str] = set()
 
-    remaining = max(1, min(limit, 100)) - len(out)
-    if remaining > 0:
-        for primary_type in ("ep", "single"):
-            if remaining <= 0:
-                break
-            for rg in _fetch_type(primary_type, remaining) or []:
-                if not isinstance(rg, dict):
-                    continue
-                secondary = [str(s).lower() for s in (rg.get("secondary-types") or []) if s]
-                if any(t in secondary for t in _DISQUALIFYING_SECONDARY_TYPES):
-                    continue
-                parsed_date = _parse_release_date(rg.get("first-release-date"))
-                if not parsed_date or not _within_window(parsed_date, min_date, max_date):
-                    continue
-                out.append({
-                    "id": str(rg.get("id") or "").strip(),
-                    "title": str(rg.get("title") or "").strip(),
-                    "first_release_date": parsed_date,
-                    "primary_type": str(rg.get("primary-type") or primary_type).lower(),
-                    "artist": _release_group_artist(rg),
-                })
-                remaining -= 1
+    for primary_type in ("album", "ep", "single"):
+        remaining = safe_limit - len(results)
 
-    out.sort(key=lambda r: r.get("first_release_date") or "", reverse=True)
-    return out[: max(1, min(limit, 100))]
+        if remaining <= 0:
+            break
 
+        query = (
+            f"primarytype:{primary_type} "
+            f"AND firstreleasedate:{query_range}"
+        )
 
-def _release_group_artist(rg: dict[str, Any]) -> str:
-    credits = rg.get("artist-credit") or []
-    parts = []
-    for credit in credits:
-        if isinstance(credit, dict):
-            name = credit.get("name") or (credit.get("artist") or {}).get("name") or ""
-            join = credit.get("joinphrase", "")
-            if name:
-                parts.append(name)
-            if join:
-                parts.append(join)
-        elif isinstance(credit, str):
-            parts.append(credit)
-    return "".join(parts).strip()
+        raw_release_groups = client.search_release_groups(
+            query,
+            limit=remaining,
+        )
 
-
-def _within_window(raw_date: str, min_date: Any, max_date: Any) -> bool:
-    try:
-        if len(raw_date) >= 10:
-            return min_date <= datetime.strptime(raw_date[:10], "%Y-%m-%d").date() <= max_date
-        if len(raw_date) == 7:
-            ym = datetime.strptime(raw_date, "%Y-%m").date()
-            return ym.replace(day=1) <= max_date.replace(day=1) and ym.replace(day=28) >= min_date.replace(day=1)
-        if len(raw_date) == 4:
-            year = int(raw_date)
-            return min_date.year <= year <= max_date.year
-    except ValueError:
-        pass
-    return False
-
-
-def _persist_artist_releases(artist: str, releases: list[dict[str, Any]]) -> tuple[int, int]:
-    inserted = 0
-    updated = 0
-    if not releases:
-        return 0, 0
-    try:
-        from services.upcoming_releases.matching_service import sanitize_wiki_entry
-        with db_session() as session:
-            for rel in releases:
-                _artist, album = sanitize_wiki_entry(artist, rel.get("title") or "")
-                if not album:
-                    continue
-                rel_date = _normalize_release_date(rel.get("first_release_date") or "")
-                release_year = int(rel_date[:4]) if len(rel_date) >= 4 and rel_date[:4].isdigit() else None
-                
-                dup = session.execute(
-                    text("""
-                        SELECT id FROM upcoming_releases
-                        WHERE LOWER(artist_name) = LOWER(:artist)
-                          AND LOWER(album_name) = LOWER(:album)
-                        LIMIT 1
-                    """),
-                    {"artist": _artist, "album": album},
-                ).fetchone()
-
-                _mbid = rel.get("id") or None
-                _ptype = str(rel.get("primary_type") or "").strip()
-                if dup:
-                    session.execute(
-                        text("""
-                            UPDATE upcoming_releases SET
-                                last_seen_at = CURRENT_TIMESTAMP,
-                                source = :source,
-                                primary_type = COALESCE(:ptype, upcoming_releases.primary_type),
-                                release_date = CASE
-                                    WHEN upcoming_releases.release_date IS NULL
-                                         OR :date IS NULL
-                                        THEN COALESCE(:date, upcoming_releases.release_date)
-                                    WHEN :date < upcoming_releases.release_date
-                                        THEN :date
-                                    ELSE upcoming_releases.release_date
-                                END,
-                                release_year = COALESCE(:year, upcoming_releases.release_year),
-                                artist_in_collection = TRUE,
-                                release_group_mbid = COALESCE(:mbid, upcoming_releases.release_group_mbid),
-                                mbid_match_status = CASE
-                                    WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_match_status
-                                    ELSE 'matched'
-                                END,
-                                mbid_confidence = CASE
-                                    WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_confidence
-                                    ELSE 'high'
-                                END,
-                                mbid_source = CASE
-                                    WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_source
-                                    ELSE :source
-                                END,
-                                mbid_match_score = CASE
-                                    WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_match_score
-                                    ELSE 1.0
-                                END,
-                                mbid_last_checked_at = :checked,
-                                updated_at = CURRENT_TIMESTAMP
-                            WHERE id = :id
-                        """),
-                        {"id": dup[0], "source": SOURCE_NAME, "date": rel_date,
-                         "year": release_year, "mbid": _mbid, "ptype": _ptype,
-                         "checked": datetime.now().isoformat()},
-                    )
-                    updated += 1
-                    continue
-
-                result = session.execute(
-                    text("""
-                        INSERT INTO upcoming_releases (
-                            artist_name, album_name, release_date, release_year, source,
-                            primary_type, artist_in_collection, release_group_mbid,
-                            mbid_match_status, mbid_source, mbid_confidence,
-                            mbid_match_score, mbid_last_checked_at, status,
-                            last_seen_at, updated_at
-                        ) VALUES (
-                            :artist, :album, :date, :year, :source,
-                            :ptype, TRUE, :mbid,
-                            'matched', 'musicbrainz_daily_scan', 'high',
-                            1.0, :checked, 'discovered',
-                            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-                        )
-                        ON CONFLICT (artist_name, album_name) DO UPDATE SET
-                            last_seen_at = CURRENT_TIMESTAMP,
-                            source = EXCLUDED.source,
-                            primary_type = COALESCE(EXCLUDED.primary_type, upcoming_releases.primary_type),
-                            release_date = CASE
-                                WHEN upcoming_releases.release_date IS NULL
-                                     OR EXCLUDED.release_date IS NULL
-                                    THEN COALESCE(EXCLUDED.release_date, upcoming_releases.release_date)
-                                WHEN EXCLUDED.release_date < upcoming_releases.release_date
-                                    THEN EXCLUDED.release_date
-                                ELSE upcoming_releases.release_date
-                            END,
-                            release_year = COALESCE(EXCLUDED.release_year, upcoming_releases.release_year),
-                            artist_in_collection = TRUE,
-                            release_group_mbid = COALESCE(EXCLUDED.release_group_mbid, upcoming_releases.release_group_mbid),
-                            mbid_match_status = CASE
-                                WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_match_status
-                                ELSE EXCLUDED.mbid_match_status
-                            END,
-                            mbid_confidence = CASE
-                                WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_confidence
-                                ELSE EXCLUDED.mbid_confidence
-                            END,
-                            mbid_source = CASE
-                                WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_source
-                                ELSE EXCLUDED.mbid_source
-                            END,
-                            mbid_match_score = CASE
-                                WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_match_score
-                                ELSE EXCLUDED.mbid_match_score
-                            END,
-                            mbid_last_checked_at = EXCLUDED.mbid_last_checked_at,
-                            updated_at = CURRENT_TIMESTAMP
-                    """),
-                    {
-                        "artist": _artist,
-                        "album": album,
-                        "date": rel_date,
-                        "year": release_year,
-                        "source": SOURCE_NAME,
-                        "mbid": _mbid,
-                        "ptype": _ptype,
-                        "checked": datetime.now().isoformat(),
-                    },
-                )
-                if result.rowcount == 1:
-                    inserted += 1
-                else:
-                    updated += 1
-        return inserted, updated
-    except Exception as exc:
-        logger.debug("Persist failed for artist", artist=artist, error=str(exc))
-        return 0, 0
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-def _artist_in_collection(artist: str) -> bool:
-    if not artist:
-        return False
-    try:
-        with db_session() as session:
-            result = session.execute(
-                text("""
-                    SELECT 1 FROM tracks
-                    WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)
-                    LIMIT 1
-                """),
-                {"artist": artist},
+        for release_group in raw_release_groups or []:
+            item = _serialise_release_group(
+                release_group,
+                minimum_date,
+                maximum_date,
+                include_artist=True,
             )
-            return result.fetchone() is not None
-    except Exception as exc:
-        logger.debug("Collection check failed", artist=artist, error=str(exc))
-        return False
+
+            if not item:
+                continue
+
+            if not item.get("artist"):
+                continue
+
+            release_group_mbid = item["id"]
+
+            if release_group_mbid in seen_mbids:
+                continue
+
+            seen_mbids.add(release_group_mbid)
+            results.append(item)
+
+            if len(results) >= safe_limit:
+                break
+
+    results.sort(
+        key=lambda item: (
+            item.get("first_release_date") or ""
+        ),
+        reverse=True,
+    )
+
+    return results[:safe_limit]
 
 
-def _persist_global_releases(releases: list[dict[str, Any]]) -> tuple[int, int]:
+# =============================================================================
+# Database SQL
+# =============================================================================
+
+_FIND_EXISTING_RELEASE_SQL = text(
+    """
+    SELECT id
+    FROM upcoming_releases
+    WHERE LOWER(
+              REGEXP_REPLACE(
+                  artist_name,
+                  '[^a-zA-Z0-9]',
+                  '',
+                  'g'
+              )
+          ) = LOWER(
+              REGEXP_REPLACE(
+                  :artist,
+                  '[^a-zA-Z0-9]',
+                  '',
+                  'g'
+              )
+          )
+      AND LOWER(
+              REGEXP_REPLACE(
+                  album_name,
+                  '[^a-zA-Z0-9]',
+                  '',
+                  'g'
+              )
+          ) = LOWER(
+              REGEXP_REPLACE(
+                  :album,
+                  '[^a-zA-Z0-9]',
+                  '',
+                  'g'
+              )
+          )
+    LIMIT 1
+    """
+)
+
+
+_UPDATE_RELEASE_SQL = text(
+    """
+    UPDATE upcoming_releases
+    SET
+        last_seen_at = CURRENT_TIMESTAMP,
+        source = :source,
+
+        primary_type = COALESCE(
+            NULLIF(:primary_type, ''),
+            upcoming_releases.primary_type
+        ),
+
+        release_date = CASE
+            WHEN upcoming_releases.release_date IS NULL
+                THEN :release_date
+            WHEN :release_date IS NULL
+                THEN upcoming_releases.release_date
+            WHEN :release_date < upcoming_releases.release_date
+                THEN :release_date
+            ELSE upcoming_releases.release_date
+        END,
+
+        release_year = COALESCE(
+            :release_year,
+            upcoming_releases.release_year
+        ),
+
+        artist_in_collection = (
+            COALESCE(
+                upcoming_releases.artist_in_collection,
+                FALSE
+            )
+            OR :artist_in_collection
+        ),
+
+        release_group_mbid = COALESCE(
+            :release_group_mbid,
+            upcoming_releases.release_group_mbid
+        ),
+
+        mbid_match_status = CASE
+            WHEN COALESCE(
+                upcoming_releases.mbid_manual_override,
+                FALSE
+            )
+                THEN upcoming_releases.mbid_match_status
+            ELSE 'matched'
+        END,
+
+        mbid_confidence = CASE
+            WHEN COALESCE(
+                upcoming_releases.mbid_manual_override,
+                FALSE
+            )
+                THEN upcoming_releases.mbid_confidence
+            ELSE 'high'
+        END,
+
+        mbid_source = CASE
+            WHEN COALESCE(
+                upcoming_releases.mbid_manual_override,
+                FALSE
+            )
+                THEN upcoming_releases.mbid_source
+            ELSE :mbid_source
+        END,
+
+        mbid_match_score = CASE
+            WHEN COALESCE(
+                upcoming_releases.mbid_manual_override,
+                FALSE
+            )
+                THEN upcoming_releases.mbid_match_score
+            ELSE 1.0
+        END,
+
+        mbid_last_checked_at = :checked_at,
+        updated_at = CURRENT_TIMESTAMP
+
+    WHERE id = :id
+    """
+)
+
+
+_INSERT_RELEASE_SQL = text(
+    """
+    INSERT INTO upcoming_releases (
+        artist_name,
+        album_name,
+        release_date,
+        release_year,
+        source,
+        primary_type,
+        artist_in_collection,
+        release_group_mbid,
+        mbid_match_status,
+        mbid_source,
+        mbid_confidence,
+        mbid_match_score,
+        mbid_last_checked_at,
+        status,
+        last_seen_at,
+        updated_at
+    )
+    VALUES (
+        :artist,
+        :album,
+        :release_date,
+        :release_year,
+        :source,
+        NULLIF(:primary_type, ''),
+        :artist_in_collection,
+        :release_group_mbid,
+        'matched',
+        :mbid_source,
+        'high',
+        1.0,
+        :checked_at,
+        'discovered',
+        CURRENT_TIMESTAMP,
+        CURRENT_TIMESTAMP
+    )
+
+    ON CONFLICT (artist_name, album_name)
+    DO UPDATE SET
+        last_seen_at = CURRENT_TIMESTAMP,
+        source = EXCLUDED.source,
+
+        primary_type = COALESCE(
+            EXCLUDED.primary_type,
+            upcoming_releases.primary_type
+        ),
+
+        release_date = CASE
+            WHEN upcoming_releases.release_date IS NULL
+                THEN EXCLUDED.release_date
+            WHEN EXCLUDED.release_date IS NULL
+                THEN upcoming_releases.release_date
+            WHEN EXCLUDED.release_date
+                 < upcoming_releases.release_date
+                THEN EXCLUDED.release_date
+            ELSE upcoming_releases.release_date
+        END,
+
+        release_year = COALESCE(
+            EXCLUDED.release_year,
+            upcoming_releases.release_year
+        ),
+
+        artist_in_collection = (
+            COALESCE(
+                upcoming_releases.artist_in_collection,
+                FALSE
+            )
+            OR EXCLUDED.artist_in_collection
+        ),
+
+        release_group_mbid = COALESCE(
+            EXCLUDED.release_group_mbid,
+            upcoming_releases.release_group_mbid
+        ),
+
+        mbid_match_status = CASE
+            WHEN COALESCE(
+                upcoming_releases.mbid_manual_override,
+                FALSE
+            )
+                THEN upcoming_releases.mbid_match_status
+            ELSE EXCLUDED.mbid_match_status
+        END,
+
+        mbid_confidence = CASE
+            WHEN COALESCE(
+                upcoming_releases.mbid_manual_override,
+                FALSE
+            )
+                THEN upcoming_releases.mbid_confidence
+            ELSE EXCLUDED.mbid_confidence
+        END,
+
+        mbid_source = CASE
+            WHEN COALESCE(
+                upcoming_releases.mbid_manual_override,
+                FALSE
+            )
+                THEN upcoming_releases.mbid_source
+            ELSE EXCLUDED.mbid_source
+        END,
+
+        mbid_match_score = CASE
+            WHEN COALESCE(
+                upcoming_releases.mbid_manual_override,
+                FALSE
+            )
+                THEN upcoming_releases.mbid_match_score
+            ELSE EXCLUDED.mbid_match_score
+        END,
+
+        mbid_last_checked_at = EXCLUDED.mbid_last_checked_at,
+        updated_at = CURRENT_TIMESTAMP
+    """
+)
+
+
+# =============================================================================
+# Persistence helpers
+# =============================================================================
+
+def _prepare_release_for_persistence(
+    artist: str,
+    release: dict[str, Any],
+    *,
+    artist_in_collection: bool,
+) -> dict[str, Any] | None:
+    """Sanitise one MusicBrainz release for database persistence."""
+    from services.upcoming_releases.matching_service import (
+        sanitize_wiki_entry,
+    )
+
+    cleaned_artist, cleaned_album = sanitize_wiki_entry(
+        artist,
+        release.get("title") or "",
+    )
+
+    cleaned_artist = str(cleaned_artist or "").strip()
+    cleaned_album = str(cleaned_album or "").strip()
+
+    if not cleaned_artist or not cleaned_album:
+        return None
+
+    normalised_release_date = _normalize_release_date(
+        release.get("first_release_date")
+    )
+
+    if not normalised_release_date:
+        return None
+
+    release_group_mbid = str(
+        release.get("id") or ""
+    ).strip() or None
+
+    primary_type = str(
+        release.get("primary_type") or ""
+    ).strip().lower()
+
+    checked_at = datetime.now().isoformat(
+        timespec="seconds"
+    )
+
+    return {
+        "artist": cleaned_artist,
+        "album": cleaned_album,
+        "release_date": normalised_release_date,
+        "release_year": _release_year(
+            normalised_release_date
+        ),
+        "source": SOURCE_NAME,
+        "primary_type": primary_type,
+        "artist_in_collection": bool(
+            artist_in_collection
+        ),
+        "release_group_mbid": release_group_mbid,
+        "mbid_source": MBID_SOURCE_NAME,
+        "checked_at": checked_at,
+    }
+
+
+def _persist_releases(
+    release_entries: Iterable[
+        tuple[str, dict[str, Any], bool]
+    ],
+) -> tuple[int, int]:
+    """Persist collection and global releases through one shared path.
+
+    Each iterable item contains:
+
+        artist name,
+        release dictionary,
+        artist-in-collection flag
+    """
     inserted = 0
     updated = 0
-    if not releases:
-        return 0, 0
-    try:
-        from services.upcoming_releases.matching_service import sanitize_wiki_entry
-        with db_session() as session:
-            for rel in releases:
-                artist_name = str(rel.get("artist") or "").strip()
-                _artist, album = sanitize_wiki_entry(artist_name, rel.get("title") or "")
-                if not album:
-                    continue
-                rel_date = _normalize_release_date(rel.get("first_release_date") or "")
-                release_year = int(rel_date[:4]) if len(rel_date) >= 4 and rel_date[:4].isdigit() else None
-                _mbid = rel.get("id") or None
-                _ptype = str(rel.get("primary_type") or "").strip()
-                in_collection = _artist_in_collection(_artist)
 
-                dup = session.execute(
-                    text("""
-                        SELECT id FROM upcoming_releases
-                        WHERE LOWER(artist_name) = LOWER(:artist)
-                          AND LOWER(album_name) = LOWER(:album)
-                        LIMIT 1
-                    """),
-                    {"artist": _artist, "album": album},
+    try:
+        with db_session() as session:
+            for (
+                artist,
+                release,
+                artist_in_collection,
+            ) in release_entries:
+                values = _prepare_release_for_persistence(
+                    artist,
+                    release,
+                    artist_in_collection=artist_in_collection,
+                )
+
+                if not values:
+                    continue
+
+                existing = session.execute(
+                    _FIND_EXISTING_RELEASE_SQL,
+                    {
+                        "artist": values["artist"],
+                        "album": values["album"],
+                    },
                 ).fetchone()
 
-                if dup:
+                if existing:
                     session.execute(
-                        text("""
-                            UPDATE upcoming_releases SET
-                                last_seen_at = CURRENT_TIMESTAMP,
-                                source = :source,
-                                primary_type = COALESCE(:ptype, upcoming_releases.primary_type),
-                                release_date = CASE
-                                    WHEN upcoming_releases.release_date IS NULL
-                                         OR :date IS NULL
-                                        THEN COALESCE(:date, upcoming_releases.release_date)
-                                    WHEN :date < upcoming_releases.release_date
-                                        THEN :date
-                                    ELSE upcoming_releases.release_date
-                                END,
-                                release_year = COALESCE(:year, upcoming_releases.release_year),
-                                artist_in_collection = :in_collection,
-                                release_group_mbid = COALESCE(:mbid, upcoming_releases.release_group_mbid),
-                                mbid_match_status = CASE
-                                    WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_match_status
-                                    ELSE 'matched'
-                                END,
-                                mbid_confidence = CASE
-                                    WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_confidence
-                                    ELSE 'high'
-                                END,
-                                mbid_source = CASE
-                                    WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_source
-                                    ELSE :source
-                                END,
-                                mbid_match_score = CASE
-                                    WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_match_score
-                                    ELSE 1.0
-                                END,
-                                mbid_last_checked_at = :checked,
-                                updated_at = CURRENT_TIMESTAMP
-                            WHERE id = :id
-                        """),
-                        {"id": dup[0], "source": SOURCE_NAME, "date": rel_date,
-                         "year": release_year, "mbid": _mbid, "ptype": _ptype,
-                         "in_collection": in_collection,
-                         "checked": datetime.now().isoformat()},
+                        _UPDATE_RELEASE_SQL,
+                        {
+                            **values,
+                            "id": existing[0],
+                        },
                     )
+
                     updated += 1
                     continue
 
-                result = session.execute(
-                    text("""
-                        INSERT INTO upcoming_releases (
-                            artist_name, album_name, release_date, release_year, source,
-                            primary_type, artist_in_collection, release_group_mbid,
-                            mbid_match_status, mbid_source, mbid_confidence,
-                            mbid_match_score, mbid_last_checked_at, status,
-                            last_seen_at, updated_at
-                        ) VALUES (
-                            :artist, :album, :date, :year, :source,
-                            :ptype, :in_collection, :mbid,
-                            'matched', 'musicbrainz_daily_scan', 'high',
-                            1.0, :checked, 'discovered',
-                            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-                        )
-                        ON CONFLICT (artist_name, album_name) DO UPDATE SET
-                            last_seen_at = CURRENT_TIMESTAMP,
-                            source = EXCLUDED.source,
-                            primary_type = COALESCE(EXCLUDED.primary_type, upcoming_releases.primary_type),
-                            release_date = CASE
-                                WHEN upcoming_releases.release_date IS NULL
-                                     OR EXCLUDED.release_date IS NULL
-                                    THEN COALESCE(EXCLUDED.release_date, upcoming_releases.release_date)
-                                WHEN EXCLUDED.release_date < upcoming_releases.release_date
-                                    THEN EXCLUDED.release_date
-                                ELSE upcoming_releases.release_date
-                            END,
-                            release_year = COALESCE(EXCLUDED.release_year, upcoming_releases.release_year),
-                            artist_in_collection = EXCLUDED.artist_in_collection,
-                            release_group_mbid = COALESCE(EXCLUDED.release_group_mbid, upcoming_releases.release_group_mbid),
-                            mbid_match_status = CASE
-                                WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_match_status
-                                ELSE EXCLUDED.mbid_match_status
-                            END,
-                            mbid_confidence = CASE
-                                WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_confidence
-                                ELSE EXCLUDED.mbid_confidence
-                            END,
-                            mbid_source = CASE
-                                WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_source
-                                ELSE EXCLUDED.mbid_source
-                            END,
-                            mbid_match_score = CASE
-                                WHEN COALESCE(upcoming_releases.mbid_manual_override, FALSE) THEN upcoming_releases.mbid_match_score
-                                ELSE EXCLUDED.mbid_match_score
-                            END,
-                            mbid_last_checked_at = EXCLUDED.mbid_last_checked_at,
-                            updated_at = CURRENT_TIMESTAMP
-                    """),
-                    {
-                        "artist": _artist,
-                        "album": album,
-                        "date": rel_date,
-                        "year": release_year,
-                        "source": SOURCE_NAME,
-                        "mbid": _mbid,
-                        "ptype": _ptype,
-                        "in_collection": in_collection,
-                        "checked": datetime.now().isoformat(),
-                    },
+                session.execute(
+                    _INSERT_RELEASE_SQL,
+                    values,
                 )
-                if result.rowcount == 1:
-                    inserted += 1
-                else:
-                    updated += 1
+
+                inserted += 1
+
         return inserted, updated
+
     except Exception as exc:
-        logger.debug("Global persist failed", error=str(exc))
+        logger.error(
+            "MusicBrainz release persistence failed",
+            inserted_before_failure=inserted,
+            updated_before_failure=updated,
+            error=str(exc),
+        )
+
         return 0, 0
 
+
+def _persist_artist_releases(
+    artist: str,
+    releases: list[dict[str, Any]],
+) -> tuple[int, int]:
+    """Persist releases found for an artist already in the collection."""
+    if not releases:
+        return 0, 0
+
+    entries = (
+        (
+            artist,
+            release,
+            True,
+        )
+        for release in releases
+    )
+
+    return _persist_releases(entries)
+
+
+def _global_persistence_entries(
+    releases: list[dict[str, Any]],
+    collection_keys: set[str],
+) -> Iterator[tuple[str, dict[str, Any], bool]]:
+    """Generate persistence entries for globally discovered releases."""
+    for release in releases:
+        artist = str(
+            release.get("artist") or ""
+        ).strip()
+
+        if not artist:
+            continue
+
+        artist_key = _database_comparison_key(artist)
+
+        yield (
+            artist,
+            release,
+            artist_key in collection_keys,
+        )
+
+
+def _persist_global_releases(
+    releases: list[dict[str, Any]],
+) -> tuple[int, int]:
+    """Persist globally discovered MusicBrainz releases."""
+    if not releases:
+        return 0, 0
+
+    collection_keys = _collection_artist_keys()
+
+    entries = _global_persistence_entries(
+        releases,
+        collection_keys,
+    )
+
+    return _persist_releases(entries)
+
+
+# =============================================================================
+# Main refresh
+# =============================================================================
 
 def fetch_musicbrainz_upcoming_releases(
     artists_limit: int | None = None,
@@ -593,125 +1275,389 @@ def fetch_musicbrainz_upcoming_releases(
     lookback_days: int | None = None,
     lookahead_days: int | None = None,
 ) -> dict[str, Any]:
-    """Fetch upcoming/recent release-groups from MusicBrainz for the collection."""
-    try:
-        from helpers.config_helpers import get_feature
-        enabled = get_feature("upcoming_releases_scan_enabled", None)
-        if enabled is None:
-            enabled = get_feature("daily_musicbrainz_release_scan_enabled", True)
-        enabled = bool(enabled)
-    except Exception:
-        enabled = True
-    if not enabled:
-        return {"skipped": True, "reason": "upcoming_releases_scan_enabled is false"}
+    """Run global and collection-specific MusicBrainz discovery."""
+    if not _scan_enabled():
+        skipped_result = {
+            "skipped": True,
+            "reason": "upcoming_releases_scan_enabled is false",
+        }
 
-    # Fix: Expand limit to encompass entire libraries
-    artists_limit = artists_limit or _feature_int("daily_musicbrainz_release_max_artists", 50000)
-    per_artist_limit = per_artist_limit or _feature_int("daily_musicbrainz_release_per_artist_limit", 100)
-    
-    if lookback_days is None:
-        lookback_days = _feature_int("daily_musicbrainz_release_lookback_days", 42)
-    if lookahead_days is None:
-        lookahead_days = _feature_int("daily_musicbrainz_release_lookahead_days", 120)
+        _set_status(
+            status="idle",
+            current_artist=None,
+            last_stats=skipped_result,
+            last_error=None,
+        )
+
+        return skipped_result
+
+    configured_artist_limit = (
+        artists_limit
+        if artists_limit is not None
+        else _feature_int(
+            "daily_musicbrainz_release_max_artists",
+            _MAX_COLLECTION_ARTISTS,
+        )
+    )
+
+    configured_per_artist_limit = (
+        per_artist_limit
+        if per_artist_limit is not None
+        else _feature_int(
+            "daily_musicbrainz_release_per_artist_limit",
+            _MAX_MUSICBRAINZ_QUERY_RESULTS,
+        )
+    )
+
+    configured_lookback = (
+        lookback_days
+        if lookback_days is not None
+        else _feature_int(
+            "daily_musicbrainz_release_lookback_days",
+            42,
+        )
+    )
+
+    configured_lookahead = (
+        lookahead_days
+        if lookahead_days is not None
+        else _feature_int(
+            "daily_musicbrainz_release_lookahead_days",
+            120,
+        )
+    )
+
+    safe_artist_limit = max(
+        1,
+        min(
+            int(configured_artist_limit),
+            _MAX_COLLECTION_ARTISTS,
+        ),
+    )
+
+    safe_per_artist_limit = max(
+        1,
+        min(
+            int(configured_per_artist_limit),
+            _MAX_MUSICBRAINZ_QUERY_RESULTS,
+        ),
+    )
+
+    safe_lookback = max(
+        1,
+        min(
+            int(configured_lookback),
+            _MAX_DATE_WINDOW_DAYS,
+        ),
+    )
+
+    safe_lookahead = max(
+        1,
+        min(
+            int(configured_lookahead),
+            _MAX_DATE_WINDOW_DAYS,
+        ),
+    )
 
     today = datetime.now().date()
-    min_date = today - timedelta(days=max(1, min(lookback_days, 365)))
-    max_date = today + timedelta(days=max(1, min(lookahead_days, 365)))
+
+    minimum_date = today - timedelta(
+        days=safe_lookback
+    )
+
+    maximum_date = today + timedelta(
+        days=safe_lookahead
+    )
+
+    stats: dict[str, Any] = {
+        "artists_scanned": 0,
+        "artists_failed": 0,
+        "inserted": 0,
+        "updated": 0,
+        "global_candidates": 0,
+        "global_inserted": 0,
+        "global_updated": 0,
+        "aborted": False,
+    }
 
     client = _get_mb_client()
-    stats: dict[str, Any] = {"artists_scanned": 0, "inserted": 0, "updated": 0, "global_inserted": 0, "global_updated": 0}
+
+    _set_status(
+        status="starting",
+        progress=0,
+        total=0,
+        current_artist=None,
+        last_stats=None,
+        last_error=None,
+    )
+
+    # =========================================================================
+    # Global discovery pass
+    # =========================================================================
 
     try:
-        global_limit = _feature_int("daily_musicbrainz_release_global_limit", 50)
+        global_limit = _feature_int(
+            "daily_musicbrainz_release_global_limit",
+            50,
+        )
+
         if global_limit > 0:
-            global_groups = _fetch_global_upcoming_release_groups(client, global_limit, min_date, max_date)
-            if global_groups:
-                for rg in global_groups:
-                    rg["artist"] = _release_group_artist(rg)
-                g_ins, g_upd = _persist_global_releases(global_groups)
-                stats["global_inserted"] = g_ins
-                stats["global_updated"] = g_upd
-                stats["inserted"] += g_ins
-                stats["updated"] += g_upd
-                logger.info(
-                    "Global discovery complete",
-                    inserted=g_ins, updated=g_upd, candidates=len(global_groups),
+            global_releases = (
+                _fetch_global_upcoming_release_groups(
+                    client,
+                    global_limit,
+                    minimum_date,
+                    maximum_date,
                 )
+            )
+
+            stats["global_candidates"] = len(
+                global_releases
+            )
+
+            (
+                global_inserted,
+                global_updated,
+            ) = _persist_global_releases(
+                global_releases
+            )
+
+            stats["global_inserted"] = global_inserted
+            stats["global_updated"] = global_updated
+            stats["inserted"] += global_inserted
+            stats["updated"] += global_updated
+
+            logger.info(
+                "Global MusicBrainz discovery complete",
+                candidates=len(global_releases),
+                inserted=global_inserted,
+                updated=global_updated,
+            )
+
     except Exception as exc:
-        logger.warning("Global discovery failed", error=str(exc))
+        logger.warning(
+            "Global MusicBrainz discovery failed",
+            error=str(exc),
+        )
 
-    artists = _collection_artists(artists_limit)
+    # =========================================================================
+    # Collection artist pass
+    # =========================================================================
+
+    artists = _collection_artists(
+        safe_artist_limit
+    )
+
     if not artists:
-        _set_status(status="idle", current_artist=None, last_stats=stats)
-        return {**stats, "skipped": True, "reason": "no collection artists"}
+        stats["skipped"] = True
+        stats["reason"] = "no collection artists"
 
-    failed_artists: list[str] = []
+        _set_status(
+            status="idle",
+            progress=0,
+            total=0,
+            current_artist=None,
+            last_stats=dict(stats),
+            last_error=None,
+        )
+
+        return stats
+
     total_artists = len(artists)
-    _set_status(status="running", progress=0, total=total_artists, current_artist=None)
+    failed_artists: list[str] = []
     consecutive_failures = 0
+
+    _set_status(
+        status="running",
+        progress=0,
+        total=total_artists,
+        current_artist=None,
+        last_error=None,
+    )
+
     try:
         for artist in artists:
             stats["artists_scanned"] += 1
+
             try:
-                rgs = _fetch_artist_release_groups(client, artist, per_artist_limit, min_date, max_date)
-                new_count, upd_count = _persist_artist_releases(artist, rgs)
-                stats["inserted"] += new_count
-                stats["updated"] += upd_count
+                release_groups = (
+                    _fetch_artist_release_groups(
+                        client,
+                        artist,
+                        safe_per_artist_limit,
+                        minimum_date,
+                        maximum_date,
+                    )
+                )
+
+                inserted, updated = (
+                    _persist_artist_releases(
+                        artist,
+                        release_groups,
+                    )
+                )
+
+                stats["inserted"] += inserted
+                stats["updated"] += updated
+
                 consecutive_failures = 0
+
             except Exception as exc:
                 consecutive_failures += 1
                 failed_artists.append(artist)
+
+                stats["artists_failed"] = len(
+                    failed_artists
+                )
+
                 if len(failed_artists) == 1:
-                    logger.warning("Artist fetch failed", artist=artist, error=str(exc))
-                else:
-                    logger.debug("Artist fetch failed", artist=artist, error=str(exc))
-                if consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
                     logger.warning(
-                        "Aborting refresh due to consecutive failures",
-                        consecutive_failures=consecutive_failures, last_artist=artist,
+                        "MusicBrainz artist refresh failed",
+                        artist=artist,
+                        consecutive_failures=consecutive_failures,
+                        error=str(exc),
                     )
+                else:
+                    logger.debug(
+                        "MusicBrainz artist refresh failed",
+                        artist=artist,
+                        consecutive_failures=consecutive_failures,
+                        error=str(exc),
+                    )
+
+                if (
+                    consecutive_failures
+                    >= _MAX_CONSECUTIVE_FAILURES
+                ):
                     stats["aborted"] = True
-                    stats["abort_reason"] = f"{consecutive_failures} consecutive failures"
+                    stats["abort_reason"] = (
+                        f"{consecutive_failures} "
+                        "consecutive failures"
+                    )
+
+                    logger.warning(
+                        "Aborting MusicBrainz refresh",
+                        consecutive_failures=(
+                            consecutive_failures
+                        ),
+                        last_artist=artist,
+                    )
+
                     break
+
             finally:
                 _set_status(
+                    status="running",
                     progress=stats["artists_scanned"],
+                    total=total_artists,
                     current_artist=artist,
-                    stats=stats,
+                    stats=dict(stats),
                 )
+
     finally:
-        _set_status(status="idle", current_artist=None, last_stats=stats)
+        stats["artists_failed"] = len(
+            failed_artists
+        )
+
+        _set_status(
+            status="idle",
+            progress=stats["artists_scanned"],
+            total=total_artists,
+            current_artist=None,
+            last_stats=dict(stats),
+        )
+
+        try:
+            client.clear_caches()
+
+        except Exception as exc:
+            logger.debug(
+                "Could not clear MusicBrainz HTTP caches",
+                error=str(exc),
+            )
 
     if failed_artists:
-        stats["artists_failed"] = len(failed_artists)
         logger.warning(
-            "Refresh completed with failures",
-            failed_count=len(failed_artists), total_artists=total_artists, inserted=stats["inserted"], updated=stats["updated"],
+            "MusicBrainz refresh completed with artist failures",
+            failed_count=len(failed_artists),
+            total_artists=total_artists,
+            inserted=stats["inserted"],
+            updated=stats["updated"],
+            aborted=stats["aborted"],
         )
     else:
-        logger.info("Refresh complete", stats=stats)
+        logger.info(
+            "MusicBrainz refresh complete",
+            stats=stats,
+        )
+
     return stats
 
 
+# =============================================================================
+# Background execution
+# =============================================================================
+
 def start_musicbrainz_refresh() -> bool:
-    """Kick off the MusicBrainz collection refresh in a background thread."""
+    """Start the MusicBrainz refresh in a daemon thread.
+
+    Returns False if another refresh is already running.
+    """
     global _refresh_running
+
     with _refresh_lock:
         if _refresh_running:
             return False
+
         _refresh_running = True
 
     def _run() -> None:
         global _refresh_running
+
         try:
             stats = fetch_musicbrainz_upcoming_releases()
-            _set_status(status="idle", current_artist=None, last_stats=stats if isinstance(stats, dict) else None)
+
+            _set_status(
+                status="idle",
+                current_artist=None,
+                last_stats=(
+                    stats
+                    if isinstance(stats, dict)
+                    else None
+                ),
+                last_error=None,
+            )
+
         except Exception as exc:
-            logger.error("Background refresh failed", error=str(exc))
-            _set_status(status="error", current_artist=None, last_error=str(exc))
+            logger.exception(
+                "Background MusicBrainz refresh failed",
+                error=str(exc),
+            )
+
+            _set_status(
+                status="error",
+                current_artist=None,
+                last_error=str(exc),
+            )
+
         finally:
             with _refresh_lock:
                 _refresh_running = False
 
-    threading.Thread(target=_run, daemon=True, name="upcoming-mb-refresh").start()
+    refresh_thread = threading.Thread(
+        target=_run,
+        daemon=True,
+        name="upcoming-musicbrainz-refresh",
+    )
+
+    refresh_thread.start()
+
     return True
+
+
+__all__ = [
+    "fetch_musicbrainz_upcoming_releases",
+    "get_refresh_status",
+    "is_refresh_running",
+    "start_musicbrainz_refresh",
+]
