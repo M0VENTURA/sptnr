@@ -130,10 +130,150 @@ def _read_file_values(file_path: str) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Genre Consolidation 
+# ---------------------------------------------------------------------------
+
+def _fetch_artist_genres(artist: str) -> dict[str, int]:
+    """Fetch artist-level tags to enrich track genres."""
+    scores: dict[str, int] = {}
+    if not artist:
+        return scores
+        
+    try:
+        from sqlalchemy import text
+        from db.engine import db_session
+        with db_session() as session:
+            rows = []
+            try:
+                rows = session.execute(
+                    text("SELECT tag, weight FROM artist_tags WHERE LOWER(artist_name) = LOWER(:a) ORDER BY weight DESC LIMIT 15"),
+                    {"a": artist}
+                ).fetchall()
+            except Exception:
+                try:
+                    rows = session.execute(
+                        text("SELECT tag, weight FROM artist_tags WHERE LOWER(artist) = LOWER(:a) ORDER BY weight DESC LIMIT 15"),
+                        {"a": artist}
+                    ).fetchall()
+                except Exception:
+                    pass
+            
+            for row in rows:
+                t = str(row[0]).strip().title()
+                if t and t.lower() not in {"cover", "live"}:
+                    weight_val = 1
+                    try:
+                        weight_val = int(row[1] or 1)
+                    except Exception:
+                        pass
+                    scores[t] = scores.get(t, 0) + weight_val
+    except Exception as exc:
+        logger.debug("Failed to fetch artist tags", artist=artist, error=str(exc))
+
+    try:
+        from sqlalchemy import text
+        from db.engine import db_session
+        with db_session() as session:
+            row = None
+            try:
+                row = session.execute(
+                    text("SELECT genres, lastfm_tags, musicbrainz_genres FROM artist_metadata WHERE LOWER(artist_name) = LOWER(:a) LIMIT 1"),
+                    {"a": artist}
+                ).mappings().first()
+            except Exception:
+                try:
+                    row = session.execute(
+                        text("SELECT genres, lastfm_tags, musicbrainz_genres FROM artist_metadata WHERE LOWER(artist) = LOWER(:a) LIMIT 1"),
+                        {"a": artist}
+                    ).mappings().first()
+                except Exception:
+                    pass
+                    
+            if row:
+                for k in ("genres", "musicbrainz_genres", "lastfm_tags"):
+                    val = row.get(k)
+                    if not val: continue
+                    val_str = str(val).strip()
+                    if val_str.startswith("["):
+                        try:
+                            parsed = json.loads(val_str)
+                            for item in parsed:
+                                if isinstance(item, dict) and "name" in item:
+                                    t = str(item["name"]).strip().title()
+                                    if t and t.lower() not in {"cover", "live"}:
+                                        scores[t] = scores.get(t, 0) + int(item.get("count", 1))
+                        except Exception:
+                            pass
+                    else:
+                        for p in re.split(r"[,;\\]+", val_str):
+                            t = p.strip().title()
+                            if t and t.lower() not in {"cover", "live"}:
+                                scores[t] = scores.get(t, 0) + 2
+    except Exception as exc:
+        logger.debug("Failed to fetch artist metadata tags", artist=artist, error=str(exc))
+        
+    return scores
+
+
+def _consolidate_top_3_genres(track: dict[str, Any], artist_genres: dict[str, int]) -> str:
+    """Consolidate genres from all track/artist sources and return the top 3."""
+    genre_scores: dict[str, int] = dict(artist_genres)
+    
+    def _add_single(g: str, score: int) -> None:
+        g = g.strip()
+        if not g or len(g) < 2: return
+        
+        g_lower = g.lower()
+        junk = {
+            "cover", "live", "seen live", "favorite", "favourites", 
+            "good music", "awesome", "loved", "favorite tracks", "tracks"
+        }
+        if g_lower in junk: 
+            return
+            
+        g_title = g.title()
+        genre_scores[g_title] = genre_scores.get(g_title, 0) + score
+        
+    def _parse_and_add(raw: Any, base_score: int) -> None:
+        if not raw: return
+        raw_str = str(raw).strip()
+        if raw_str.startswith("["):
+            try:
+                parsed = json.loads(raw_str)
+                for item in parsed:
+                    if isinstance(item, dict) and "name" in item:
+                        _add_single(item["name"], base_score + int(item.get("count", 1)))
+                    elif isinstance(item, str):
+                        _add_single(item, base_score)
+                return
+            except Exception:
+                pass
+        
+        parts = re.split(r"[,;\\]+", raw_str)
+        for i, p in enumerate(parts):
+            _add_single(p, base_score + max(0, 3 - i))
+            
+    _parse_and_add(track.get("genres"), 5)
+    _parse_and_add(track.get("musicbrainz_genres"), 4)
+    _parse_and_add(track.get("discogs_genres"), 4)
+    _parse_and_add(track.get("discogs_styles"), 3)
+    _parse_and_add(track.get("lastfm_tags"), 3)
+    _parse_and_add(track.get("listenbrainz_tags"), 2)
+    _parse_and_add(track.get("musicbrainz_tags"), 2)
+    
+    if not genre_scores:
+        return ""
+        
+    sorted_genres = sorted(genre_scores.items(), key=lambda x: x[1], reverse=True)
+    top_3 = [g[0] for g in sorted_genres[:3]]
+    return ", ".join(top_3)
+
+
+# ---------------------------------------------------------------------------
 # DB → file-tag mapping
 # ---------------------------------------------------------------------------
 
-def _db_tag_candidates(track: dict[str, Any], perfect: bool, include_lyrics: bool) -> dict[str, str]:
+def _db_tag_candidates(track: dict[str, Any], perfect: bool, include_lyrics: bool, artist_genres: dict[str, int]) -> dict[str, str]:
     """Map a track's fresh DB values to file-tag keys (empty values omitted)."""
     out: dict[str, str] = {}
 
@@ -165,12 +305,7 @@ def _db_tag_candidates(track: dict[str, Any], perfect: bool, include_lyrics: boo
         except Exception:
             _put("composer", writer)
 
-    genres = track.get("genres")
-    if genres:
-        raw = str(genres)
-        parts = [g.strip() for g in re.split(r"[,;\\]+", raw) if g.strip()]
-        if parts:
-            out["genres"] = ", ".join(parts)
+    _put("genres", _consolidate_top_3_genres(track, artist_genres))
 
     if include_lyrics:
         _put("lyrics", track.get("lyrics"))
@@ -305,6 +440,7 @@ def sync_album_file_tags(artist: str, album: str) -> dict[str, Any]:
     if not tracks:
         return {"skipped": "no_tracks", "files_updated": 0, "corrections_recorded": 0}
 
+    artist_genres = _fetch_artist_genres(artist)
     release_mbid, mb_index, mb_count = _resolve_mb_release(tracks)
     perfect = bool(release_mbid) and _is_perfect_match(tracks, mb_index, mb_count)
 
@@ -315,7 +451,7 @@ def sync_album_file_tags(artist: str, album: str) -> dict[str, Any]:
         if not file_path or not os.path.exists(file_path):
             continue
         file_values = _read_file_values(file_path)
-        db_candidates = _db_tag_candidates(track, perfect, include_lyrics)
+        db_candidates = _db_tag_candidates(track, perfect, include_lyrics, artist_genres)
 
         fill = {
             k: v for k, v in db_candidates.items()
