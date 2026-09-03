@@ -29,25 +29,23 @@ logger = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 def parse_json_tags(json_str: str | list | dict | None) -> list[dict[str, Any]]:
-    """Parse a JSON tag array or pre-parsed structure from a database column.
-
-    Handles columns like ``lastfm_tags``, ``discogs_genres``,
-    ``musicbrainz_genres``, ``listenbrainz_genres``
-    which store JSON arrays of ``{"name": …, "count": …}`` dicts.
-
-    Also tolerates pre-parsed lists/dicts, and plain-string arrays (``["rock", "metal"]``).
-    """
+    """Parse a JSON tag array or fallback safely to delimited tags without log spam."""
     if not json_str:
         return []
         
     if isinstance(json_str, (list, dict)):
         data = json_str
     else:
-        try:
-            data = json.loads(json_str)
-        except (json.JSONDecodeError, TypeError) as exc:
-            logger.debug("Failed to parse JSON tags", error=str(exc))
+        if not isinstance(json_str, str):
             return []
+        cleaned = json_str.strip()
+        if not cleaned:
+            return []
+        try:
+            data = json.loads(cleaned)
+        except (json.JSONDecodeError, TypeError):
+            # Fallback for plain text or non-JSON columns without filling logs with debug errors
+            return parse_delimited_tags(cleaned)
             
     if isinstance(data, dict):
         data = [data]
