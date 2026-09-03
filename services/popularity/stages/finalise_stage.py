@@ -484,6 +484,7 @@ def _assign_stars(
         or is_standout
     ):
         if is_standout:
+            track["_era_5star"] = True
             return 5
 
         if album_model and album_model.get("has_benchmark") and score > 0:
