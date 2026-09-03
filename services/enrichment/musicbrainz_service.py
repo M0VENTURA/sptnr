@@ -337,7 +337,6 @@ class MusicBrainzService:
             if not mbid:
                 return {}
 
-            # FIXED: Added work-rels and genres to ensure complete metadata mapping
             recording = self.http.get_recording(
                 mbid, 
                 inc="artist-credits+releases+work-rels+genres"
@@ -477,8 +476,7 @@ class MusicBrainzService:
                 except Exception as exc:
                     logger.debug("Album batch search failed", chunk_start=chunk_start, error=str(exc))
                     continue
-                    
-                # FIXED: Defer to bulk lookup to fetch correct metadata including genres 
+
                 batch_mbids: list[tuple[str, str, float]] = []
 
                 for title, artist in chunk:
@@ -675,7 +673,6 @@ class MusicBrainzService:
             return []
 
         try:
-            # FIXED: Search API ignores 'inc', must resolve MBID and do direct lookup
             mbid, _ = self.get_suggested_mbid(title, artist)
             if not mbid:
                 return []
@@ -897,7 +894,6 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> dict[str, Any] | None
 
         _secondary_types = _parse_secondary_types(rg.get("secondary-types"))
         release_info: dict[str, Any] = {
-            # FIX: Prioritize release-group title here to strip Topshelf Edition fluffy suffixes
             "release_title": rg.get("title") or data.get("title"),
             "release_year": release_year,
             "artist": "",
@@ -1079,6 +1075,81 @@ def resolve_release_id(release_id: str) -> str:
     return release_id
 
 
+def fetch_release_metadata(release_id: str) -> dict[str, Any] | None:
+    try:
+        service = _get_service()
+        http = service.http
+
+        data = http.get_release(
+            release_id,
+            inc="recordings+artist-credits+release-groups",
+        )
+
+        if not data:
+            return None
+
+        rg = data.get("release-group", {})
+
+        release_year = (
+            (rg.get("first-release-date") or "")[:4]
+            or (data.get("date") or "")[:4]
+        )
+
+        release_info: dict[str, Any] = {
+            "release_title": rg.get("title") or data.get("title"),
+            "release_year": release_year,
+            "artist": "",
+            "disc_count": len(data.get("media", [])),
+            "tracks": [],
+            "release_mbid": data.get("id"),
+        }
+
+        if data.get("artist-credit"):
+            release_info["artist"] = primary_album_artist(data["artist-credit"])
+            release_info["artist_credit"] = build_artist_credit_string(data["artist-credit"])
+
+        for disc_index, media in enumerate(data.get("media", []), start=1):
+            for track in media.get("tracks", []):
+                recording = track.get("recording", {})
+
+                release_info["tracks"].append({
+                    "disc_number": disc_index,
+                    "track_number": track.get("position"),
+                    "title": track.get("title") or recording.get("title"),
+                    "recording_mbid": recording.get("id"),
+                    "duration": track.get("length"),
+                    "artist": (
+                        build_artist_credit_string(recording.get("artist-credit"))
+                        if recording.get("artist-credit")
+                        else release_info.get("artist_credit") or release_info.get("artist")
+                    ),
+                })
+
+        return release_info
+
+    except Exception as e:
+        logger.error("MB RELEASE track fetch error", error=str(e), exc_info=True)
+        return None
+
+
+def _mb_artist_credit_name(artist_credit: list[Any] | str) -> str:
+    if isinstance(artist_credit, list) and artist_credit:
+        first = artist_credit[0]
+        if isinstance(first, dict):
+            return str(first.get("name") or "")
+    elif isinstance(artist_credit, str):
+        return artist_credit
+    return ""
+
+
+def _cover_art_url(rg_id: str, release_id: str = "") -> str:
+    if rg_id:
+        return f"https://coverartarchive.org/release-group/{rg_id}/front-250"
+    if release_id:
+        return f"https://coverartarchive.org/release/{release_id}/front-250"
+    return ""
+
+
 def _lookup_existing_mbid(existing_mbid: str, artist: str, album: str) -> dict[str, Any] | None:
     if not existing_mbid:
         return None
@@ -1095,7 +1166,6 @@ def _lookup_existing_mbid(existing_mbid: str, artist: str, album: str) -> dict[s
             display_date = rg.get("first-release-date", "") or rel_data.get("date", "")
             return {
                 "mbid": existing_mbid,
-                # FIX: Prioritize release-group title here to strip Topshelf Edition fluffy suffixes
                 "title": rg.get("title") or rel_data.get("title", album),
                 "artist": rel_artist,
                 "primary_type": primary_type,
