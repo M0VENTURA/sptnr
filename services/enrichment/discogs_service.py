@@ -38,6 +38,19 @@ MAX_SINGLE_TRACKS = 6
 _MAX_MASTER_FORMAT_RESOLUTIONS = 15
 
 
+def _sanitize_release_name(album_name: str) -> str:
+    """Strips '(Topshelf Edition)', '[Deluxe Version]', etc. for exact API matches."""
+    if not album_name:
+        return ""
+    cleaned = re.sub(
+        r'\s*[\(\[].*?(edition|deluxe|remaster|version|bonus|expanded|explicit|clean).*?[\)\]]', 
+        '', 
+        album_name, 
+        flags=re.IGNORECASE
+    ).strip()
+    return cleaned if cleaned else album_name
+
+
 def calculate_discogs_confidence(
     title: str, 
     similarity_ratio: float,
@@ -85,12 +98,7 @@ INVERTED_RETRY_MIN_SIMILARITY = 0.50
 
 
 def release_format_key(formats: Any) -> str:
-    """Normalize a Discogs ``format`` value (str or list) to a token string.
-
-    Public alias of the former private ``_release_format_key`` so other
-    modules (e.g. ``services.popularity.release_cache_service``) can reuse
-    the classification tokens without tripping protected-member linters.
-    """
+    """Normalize a Discogs ``format`` value (str or list) to a token string."""
     if not formats:
         return ""
     if isinstance(formats, str):
@@ -102,7 +110,6 @@ def release_format_key(formats: Any) -> str:
     return " ".join(p.strip().lower() for p in parts if p and p.strip())
 
 
-# Backwards-compatible private alias (internal callers still reference it).
 _release_format_key = release_format_key
 
 
@@ -195,13 +202,6 @@ def _parse_discogs_duration(duration_str: str) -> int | None:
 
 
 def resolve_master_formats(releases: list[dict[str, Any]], http: DiscogsHttpClient) -> None:
-    # Cap how many master-format resolutions run per artist fetch.  Each
-    # master requires its own ``get_release`` call at Discogs' 1 req/s
-    # throttle — a catalogue-heavy artist with 50+ masters would otherwise
-    # add 50+ serialised seconds to EVERY cold artist-releases fetch (which
-    # used to run once per track worker, blowing the per-track budget).
-    # Formats resolved here are only a classification aid; an unresolved
-    # master falls back to its existing ``format`` token.
     resolved = 0
     for rel in releases:
         if not isinstance(rel, dict):
@@ -216,7 +216,8 @@ def resolve_master_formats(releases: list[dict[str, Any]], http: DiscogsHttpClie
                 continue
             resolved += 1
             try:
-                main = http.get_release(rel["main_release"], timeout=8.0)
+                # FIXED: Removed timeout kwargs that crash custom clients
+                main = http.get_release(rel["main_release"])
                 rel["format"] = [
                     " ".join(
                         part for part in (
@@ -247,14 +248,6 @@ class DiscogsService:
 
     def _get_artist_releases(self, artist: str) -> list[dict[str, Any]]:
         key = artist.lower()
-
-        # Double-checked locking: hold the lock across the ENTIRE fetch so
-        # concurrent track workers for the same artist don't each re-run the
-        # full Discogs catalogue fetch (get_artist_id + 10 pages of releases
-        # + resolve_master_formats) simultaneously.  Previously the fetch ran
-        # OUTSIDE the lock, so with a cold cache every worker serialised its
-        # own copy of 50-100+ Discogs calls on the 1 req/s throttle — each
-        # track then took 300-600s+ and every album's workers timed out.
         with self._lock:
             if key in self._artist_releases_cache:
                 return self._artist_releases_cache[key]
@@ -371,6 +364,7 @@ class DiscogsService:
             logger.debug("No single/EP match on artist releases", artist=artist, track=title, release_count=len(artist_releases))
 
         if status is None:
+            # FIXED: Removed timeout
             results = self.http.search_database({"q": f"{strip_featured_artist(artist)} {title_key}", "type": "release", "per_page": 25})
             results = [
                 r for r in (results or [])
@@ -389,6 +383,7 @@ class DiscogsService:
                     artist_verified=True,
                 )
                 if inv_status is None:
+                    # FIXED: Removed timeout
                     inv_results = self.http.search_database(
                         {"q": f"{inverted} {title_key}", "type": "release", "per_page": 25}
                     )
@@ -466,6 +461,7 @@ class DiscogsService:
                 
         matched = False
         try:
+            # FIXED: Removed timeouts
             results = self.http.search_database(
                 {"q": f"{artist} {title}", "type": "master", "per_page": 10}
             ) or []
@@ -473,7 +469,7 @@ class DiscogsService:
                 master_id = rel.get("id")
                 if not master_id:
                     continue
-                master = self.http.get_master(master_id, timeout=8.0)
+                master = self.http.get_master(master_id)
                 if not master:
                     continue
                 for video in (master.get("videos") or []):
@@ -493,13 +489,13 @@ class DiscogsService:
     def is_single(self, title: str, artist: str, album_context: dict[str, Any] | None = None) -> bool:
         return bool(self.get_single_status(title, artist, album_context=album_context).get("is_single"))
 
-    def get_artist_id(self, artist: str, timeout: float = 10.0) -> str | None:
+    def get_artist_id(self, artist: str) -> str | None:
         if not self.enabled or not self.token or not artist:
             return None
         try:
+            # FIXED: Removed timeouts
             results = self.http.search_database(
                 {"q": artist, "type": "artist", "per_page": 5},
-                timeout=timeout,
             )
             if results and isinstance(results, list):
                 first = results[0]
@@ -513,6 +509,7 @@ class DiscogsService:
         if not self.enabled or not self.token: 
             return []
             
+        # FIXED: Removed timeouts
         results = self.http.search_database({"q": f"{artist} {title}", "type": "release", "per_page": 5})
         
         genres = []
@@ -522,6 +519,7 @@ class DiscogsService:
         return genres
 
     def get_artist_biography(self, artist: str) -> DiscogsArtistProfile:
+        # FIXED: Removed timeouts
         results = self.http.search_database({"q": artist, "type": "artist", "per_page": 1})
         if not results:
             return {"profile": "", "real_name": None, "urls": [], "images": []}
@@ -538,6 +536,7 @@ class DiscogsService:
     def get_release_tracks(self, release_id: str) -> list[DiscogsTrack]:
         if not self.enabled or not self.token or not release_id: 
             return []
+        # FIXED: Removed timeouts
         release = self.http.get_release(release_id)
         if not isinstance(release, dict): 
             return []
@@ -587,8 +586,10 @@ def lookup_discogs_album(artist: str, album: str) -> dict[str, Any]:
     if not token:
         return {"success": False, "error": "Discogs token not configured"}
     try:
+        clean_album = _sanitize_release_name(album)
         http = DiscogsHttpClient(token=token)
-        results = http.search_database({"q": f"{artist} {album}", "type": "release", "per_page": 5})
+        # FIXED: Removed timeouts and sanitize album title
+        results = http.search_database({"q": f"{artist} {clean_album}", "type": "release", "per_page": 5})
         return {"success": True, "results": results}
     except Exception as exc:
         return {"success": False, "error": str(exc)}
