@@ -6,6 +6,7 @@ Config-driven, thread-safe logging configuration.
 from __future__ import annotations
 
 import os
+import time
 import logging
 import logging.config
 from typing import Any
@@ -13,6 +14,9 @@ from typing import Any
 import structlog
 
 from helpers.config_helpers import get_config
+
+# Force all standard library logging formatters to use local time instead of UTC
+logging.Formatter.converter = time.localtime
 
 _VALID_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 
@@ -242,7 +246,8 @@ def _configure_structlog_bridge() -> None:
         structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,
         structlog.stdlib.PositionalArgumentsFormatter(),
-        structlog.processors.TimeStamper(fmt="iso"),
+        # Force utc=False here to respect local system time
+        structlog.processors.TimeStamper(fmt="iso", utc=False),
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
         structlog.processors.UnicodeDecoder(),
@@ -277,7 +282,7 @@ def _setup_standard_logging(service_name: str, log_dir: str, use_structlog: bool
             "foreign_pre_chain": [
                 structlog.stdlib.add_log_level,
                 structlog.stdlib.add_logger_name,
-                structlog.processors.TimeStamper(fmt="iso"),
+                structlog.processors.TimeStamper(fmt="iso", utc=False),
             ],
         }
         verbose_formatter = unified_formatter
