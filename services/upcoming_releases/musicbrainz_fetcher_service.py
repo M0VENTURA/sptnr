@@ -422,6 +422,9 @@ def _release_group_artist(
         if join_phrase:
             parts.append(str(join_phrase))
 
+    return "".join(parts).strip()
+
+
 def _release_group_credit_names(
     release_group: dict[str, Any],
 ) -> list[str]:
@@ -456,8 +459,8 @@ def _release_group_credit_names(
     return names
 
 
-
-def _collection_artists(limit: int) -> list"""Return distinct album artists from the local tracks table."""
+def _collection_artists(limit: int) -> list[str]:
+    """Return distinct album artists from the local tracks table."""
     safe_limit = max(
         1,
         min(int(limit), _MAX_COLLECTION_ARTISTS),
@@ -513,7 +516,8 @@ def _collection_artists(limit: int) -> list"""Return distinct album artists from
         return []
 
 
-def _collection_artist_keys() -> set"""Return punctuation-insensitive keys for all collection artists.
+def _collection_artist_keys() -> set[str]:
+    """Return punctuation-insensitive keys for all collection artists.
 
     The full set is loaded once for the global discovery pass rather than
     opening a database session for every globally discovered release.
