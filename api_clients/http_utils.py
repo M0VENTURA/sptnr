@@ -234,8 +234,24 @@ class _RetryTransport(httpx.BaseTransport):
                     raise
 
             if response.status_code in self._status_forcelist:
+                # CONNECTION LEAK FIX: Explicitly close the un-read raw stream of 
+                # the previous failed retry before overwriting the reference.
+                if last_status_response is not None and last_status_response is not response:
+                    try:
+                        last_status_response.close()
+                    except Exception:
+                        pass
                 last_status_response = response
                 raise _RetryableStatus(response)
+                
+            # If the response is successful, we no longer need the stored status response
+            if last_status_response is not None and last_status_response is not response:
+                try:
+                    last_status_response.close()
+                except Exception:
+                    pass
+                last_status_response = None
+
             return response
 
         # Cumulative retry-wait budget: once the sum of all waits exceeds
@@ -326,11 +342,12 @@ class _RetryTransport(httpx.BaseTransport):
             if last_status_response is not None:
                 return last_status_response
             raise
-        except _RetryableStatus:
+        except Exception:
+            # This catches RetryError from tenacity when attempts are exhausted, 
+            # allowing us to gracefully surface the final 429/503 response.
             if last_status_response is not None:
                 return last_status_response
             raise
-        raise httpx.TransportError("Maximum retries exceeded")
 
     def close(self) -> None:
         self._transport.close()
