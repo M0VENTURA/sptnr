@@ -1,14 +1,13 @@
 """MusicBrainz WS/2 search client for upcoming, new, and recently-added releases.
 
-Implements the three-scan strategy required by the upcoming-releases feature:
+Implements batched artist queries to retrieve:
 1. Newly released albums  – date range in the past
 2. Upcoming releases      – date range in the future
-3. Recently added entries – added range in the MusicBrainz database
 
-Results are filtered to artists that exist in the local collection or in the
-recommended-artist cache, deduplicated by release-group MBID, and normalised
-to match the ``upcoming_releases`` table field layout so they can be merged
-transparently with existing DB-sourced releases.
+Results are strictly filtered by requesting the specific artists from the local
+collection or recommended-artist cache via the MusicBrainz Lucene index,
+deduplicated by release-group MBID, and normalised to match the
+``upcoming_releases`` table.
 """
 
 from __future__ import annotations
@@ -59,7 +58,7 @@ def _read_cache(query: str, offset: int) -> Optional[Dict[str, Any]]:
         if time.time() - os.path.getmtime(path) > _CACHE_TTL_SECONDS:
             return None
         with open(path, "r", encoding="utf-8") as fh:
-            return json.load(fh)  # type: ignore[return-value]
+            return json.load(fh)
     except Exception as exc:
         logger.debug("Could not read MB upcoming cache: %s", exc)
         return None
@@ -82,19 +81,13 @@ def _normalise_artist(name: str) -> str:
     text = unicodedata.normalize("NFKD", name)
     text = "".join(c for c in text if not unicodedata.combining(c))
     text = text.lower()
-    # collapse non-alphanumerics to spaces
     import re
-
     text = re.sub(r"[^a-z0-9\s]", " ", text)
     return " ".join(text.split())
 
 
 def _fetch_page(query: str, offset: int = 0, limit: int = 100) -> Optional[Dict[str, Any]]:
-    """Fetch a single page of MusicBrainz release search results.
-
-    Implements 24-hour caching, 1-second rate limiting between requests, and
-    exponential-backoff retry on 5xx / 429.
-    """
+    """Fetch a single page of MusicBrainz release search results."""
     cached = _read_cache(query, offset)
     if cached is not None:
         return cached
@@ -137,7 +130,7 @@ def _fetch_page(query: str, offset: int = 0, limit: int = 100) -> Optional[Dict[
             data = resp.json()
             _write_cache(query, offset, data)
             time.sleep(_RATE_LIMIT_SECONDS)
-            return data  # type: ignore[return-value]
+            return data
         except requests.exceptions.RequestException as exc:
             if attempt < _MAX_RETRIES - 1:
                 wait = _BASE_BACKOFF_SECONDS * (2 ** attempt)
@@ -216,46 +209,32 @@ def _extract_label(release: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _build_queries(
+def _build_queries_for_chunk(
+    artist_chunk: List[str],
     lookback_days: int = 7,
     lookahead_days: int = 180,
-    added_lookback_days: int = 7,
 ) -> List[Tuple[str, str]]:
-    """Build the three required WS/2 search queries.
-
-    Returns a list of (query_string, source_label) tuples.
-    """
+    """Build targeted Lucene queries for a specific chunk of artists."""
     today = datetime.now().date().isoformat()
-
-    queries: List[Tuple[str, str]] = []
-
-    # 1. Newly released albums (past)
     start_new = (datetime.now().date() - timedelta(days=lookback_days)).isoformat()
-    queries.append(
-        (
-            f"date:[{start_new} TO {today}] AND status:official AND type:album",
-            "MusicBrainz New Release",
-        )
-    )
-
-    # 2. Upcoming releases (future)
     end_upcoming = (datetime.now().date() + timedelta(days=lookahead_days)).isoformat()
-    queries.append(
-        (
-            f"date:[{today} TO {end_upcoming}] AND status:official AND type:album",
-            "MusicBrainz Upcoming",
-        )
-    )
 
-    # 3. Recently added to the MusicBrainz database
-    start_added = (datetime.now().date() - timedelta(days=added_lookback_days)).isoformat()
-    queries.append(
-        (
-            f"added:[{start_added} TO {today}] AND status:official AND type:album",
-            "MusicBrainz Recently Added",
-        )
-    )
+    # Safely escape quotes inside artist names for the Lucene query
+    artist_clauses = []
+    for a in artist_chunk:
+        safe_a = a.replace('"', '\\"')
+        artist_clauses.append(f'artist:"{safe_a}"')
 
+    artist_query = " OR ".join(artist_clauses)
+    base_query = f"({artist_query}) AND status:official AND (type:album OR type:ep)"
+
+    queries = [
+        (f"{base_query} AND date:[{start_new} TO {today}]", "MusicBrainz New Release"),
+        (f"{base_query} AND date:[{today} TO {end_upcoming}]", "MusicBrainz Upcoming"),
+    ]
+    
+    # Note: MusicBrainz does NOT index the "added" date in the Search API. 
+    # We omit the recently added query as it returns junk/ignored data.
     return queries
 
 
@@ -264,35 +243,32 @@ def fetch_musicbrainz_upcoming_releases(
     recommended_artists: Set[str],
     lookback_days: int = 7,
     lookahead_days: int = 180,
-    added_lookback_days: int = 7,
+    added_lookback_days: int = 7,  # Kept for signature compatibility
     max_results_per_query: int = 200,
 ) -> List[Dict[str, Any]]:
-    """Run the three MusicBrainz scans and filter to catalogue / recommended artists.
+    
+    # Exclude compilation artists to prevent massive query bloat
+    ignore_artists = {"various artists", "various", "compilation", "soundtrack"}
+    
+    all_artists = sorted({
+        a.strip() for a in (collection_artists | recommended_artists)
+        if a and a.strip().lower() not in ignore_artists
+    })
 
-    Args:
-        collection_artists:  Set of artist names present in the local library.
-        recommended_artists: Set of artist names from similar-artist caches.
-        lookback_days:       Days in the past for newly-released detection.
-        lookahead_days:      Days in the future for upcoming detection.
-        added_lookback_days: Days in the past for recently-added detection.
-        max_results_per_query: Maximum raw releases to fetch per query.
-
-    Returns:
-        A list of release dicts that match the ``upcoming_releases`` field layout.
-    """
-    if not collection_artists and not recommended_artists:
+    if not all_artists:
         return []
 
-    queries = _build_queries(lookback_days, lookahead_days, added_lookback_days)
     raw_results: List[Tuple[Dict[str, Any], str]] = []
+    chunk_size = 30  # Batch 30 artists per request to respect URL length limits
 
-    for query, source_label in queries:
-        logger.debug("MusicBrainz upcoming query: %s", query)
-        releases = _search_releases(query, max_results=max_results_per_query)
-        logger.debug(
-            "MusicBrainz upcoming query returned %d raw releases", len(releases)
-        )
-        raw_results.extend((r, source_label) for r in releases)
+    for i in range(0, len(all_artists), chunk_size):
+        chunk = all_artists[i:i + chunk_size]
+        queries = _build_queries_for_chunk(chunk, lookback_days, lookahead_days)
+
+        for query, source_label in queries:
+            logger.debug("MusicBrainz upcoming query: %s", query)
+            releases = _search_releases(query, max_results=max_results_per_query)
+            raw_results.extend((r, source_label) for r in releases)
 
     # Deduplicate by release-group MBID, keeping the earliest release date.
     by_rg: Dict[str, Dict[str, Any]] = {}
@@ -337,7 +313,7 @@ def fetch_musicbrainz_upcoming_releases(
     if not by_rg:
         return []
 
-    # Build normalised filter sets
+    # Build normalised filter sets for final safety check
     norm_collection = {_normalise_artist(a) for a in collection_artists if a}
     norm_recommended = {_normalise_artist(a) for a in recommended_artists if a}
 
