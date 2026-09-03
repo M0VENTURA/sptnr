@@ -887,7 +887,7 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> dict[str, Any] | None
 
         _secondary_types = _parse_secondary_types(rg.get("secondary-types"))
         release_info: dict[str, Any] = {
-            "release_title": data.get("title"),
+            "release_title": rg.get("title") or data.get("title"),
             "release_year": release_year,
             "artist": "",
             "disc_count": len(data.get("media", [])),
@@ -1041,7 +1041,7 @@ def resolve_release_id(release_id: str) -> str:
         pass
 
     try:
-        releases = http.browse_releases_for_group(release_id, inc="media", limit=50, timeout=15.0)
+        releases = http.browse_releases_for_group(release_id, inc="media", limit=50)
         if releases:
             def _total_tracks(rel: dict[str, Any]) -> int:
                 return sum(
@@ -1090,7 +1090,7 @@ def fetch_release_metadata(release_id: str) -> dict[str, Any] | None:
         )
 
         release_info: dict[str, Any] = {
-            "release_title": data.get("title"),
+            "release_title": rg.get("title") or data.get("title"),
             "release_year": release_year,
             "artist": "",
             "disc_count": len(data.get("media", [])),
@@ -1160,7 +1160,7 @@ def _lookup_existing_mbid(existing_mbid: str, artist: str, album: str) -> dict[s
             display_date = rg.get("first-release-date", "") or rel_data.get("date", "")
             return {
                 "mbid": existing_mbid,
-                "title": rel_data.get("title", album),
+                "title": rg.get("title") or rel_data.get("title", album),
                 "artist": rel_artist,
                 "primary_type": primary_type,
                 "secondary_types": secondary_types,
@@ -1299,7 +1299,7 @@ def _enrich_releases_with_track_counts(releases: list[dict[str, Any]], rg_mbid: 
 
     try:
         browse_releases = get_shared_mb_client().browse_releases_for_group(
-            rg_mbid, inc="media", limit=100, timeout=15.0,
+            rg_mbid, inc="media", limit=100
         )
         tc_lookup: dict[str, int] = {}
         for rel in browse_releases:
@@ -1651,9 +1651,9 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict[s
                     stripped = re.sub(r'\s*\([^)]*\bcover\b[^)]*\)', '', lib_title, flags=re.IGNORECASE).strip()
                     if stripped.lower() != mb_title.lower():
                         diff_fields.append("title")
-                else:
-                    diff_fields.append("title")
-                    
+            else:
+                diff_fields.append("title")
+                
             if mb_num is not None and str(mb_num) != str(best_lib.get("track_number") or ""):
                 diff_fields.append("track_number")
                 
@@ -1734,7 +1734,7 @@ def get_musicbrainz_best_release(artist: str, album: str, rg_mbid: str) -> dict[
         client = get_shared_mb_client()
 
         releases_raw = client.browse_releases_for_group(
-            rg_mbid, inc="media+labels", limit=50, timeout=15.0,
+            rg_mbid, inc="media+labels", limit=50,
         )
         releases: list[dict[str, Any]] = []
         
