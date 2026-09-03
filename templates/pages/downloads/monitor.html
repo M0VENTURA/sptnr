@@ -4,31 +4,18 @@
 
 {% block content %}
 <div class="container-fluid mt-4">
-  <!-- Header: title + compact stat pills + overflow menu.  The Refresh
-       Queue and Auto-Discover buttons were removed — the queue list and
-       stat pills auto-refresh every 10s (downloads.js poll) and discovery
-       runs automatically every 5 minutes via the queue worker's cleanup
-       hook, so the manual actions were redundant. -->
-  <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
-    <h4 class="mb-0 me-auto">
-      <i class="bi bi-download"></i> Music Downloads
+  <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+    <h4 class="mb-0">
+      <i class="bi bi-download text-primary me-2"></i> Music Downloads
       <a href="/help/FEATURES_DOWNLOADS" class="btn btn-sm btn-outline-success ms-2 py-0" title="Help for Downloads">
         <i class="bi bi-question-circle"></i>
       </a>
     </h4>
-    <div class="stat-pills-row d-flex align-items-center gap-1">
-      <span class="stat-pill" data-pill-for="queueTotalCount"><i class="bi bi-activity me-1"></i>Active <strong id="queueTotalCount">0</strong></span>
-      <span class="stat-pill" data-pill-for="queueActiveCount"><i class="bi bi-cloud-arrow-down text-info me-1"></i>Downloading <strong id="queueActiveCount">0</strong></span>
-      <span class="stat-pill" data-pill-for="queueQueuedCount"><i class="bi bi-hourglass-split text-warning me-1"></i>Queued <strong id="queueQueuedCount">0</strong></span>
-      <span class="stat-pill" data-pill-for="queueFailedCount"><i class="bi bi-x-circle text-danger me-1"></i>Failed <strong id="queueFailedCount">0</strong></span>
-      <span class="stat-pill" data-pill-for="queueCompletedCount"><i class="bi bi-check-circle text-success me-1"></i>Complete <strong id="queueCompletedCount">0</strong></span>
-      <span class="stat-pill" data-pill-for="queueMovingCount"><i class="bi bi-arrow-left-right me-1"></i>Moving <strong id="queueMovingCount">0</strong></span>
-    </div>
     <div class="dropdown">
       <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="dropdown" aria-expanded="false" title="More actions">
-        <i class="bi bi-three-dots-vertical"></i>
+        <i class="bi bi-three-dots-vertical"></i> Actions
       </button>
-      <ul class="dropdown-menu dropdown-menu-end dropdown-menu-dark">
+      <ul class="dropdown-menu dropdown-menu-end dropdown-menu-dark shadow">
         <li><a class="dropdown-item" href="/downloads/banned-words"><i class="bi bi-slash-circle me-2"></i>Banned Words</a></li>
         <li><hr class="dropdown-divider"></li>
         <li><button class="dropdown-item" type="button" onclick="clearQueue()"><i class="bi bi-eraser me-2"></i>Clear Queue</button></li>
@@ -37,40 +24,78 @@
     </div>
   </div>
 
+  <!-- Upgraded Metrics Grid -->
+  <div class="row g-2 text-center mb-4">
+    <div class="col-4 col-md-2">
+      <div class="card p-2 shadow-sm h-100" style="background: var(--tertiary-bg);">
+        <div class="extra-small text-muted text-uppercase fw-semibold mb-1"><i class="bi bi-activity"></i> Active</div>
+        <div class="h5 fw-bold mb-0 text-white" id="queueTotalCount">0</div>
+      </div>
+    </div>
+    <div class="col-4 col-md-2">
+      <div class="card p-2 shadow-sm h-100" style="background: var(--tertiary-bg);">
+        <div class="extra-small text-muted text-uppercase fw-semibold mb-1"><i class="bi bi-cloud-arrow-down text-info"></i> Down</div>
+        <div class="h5 fw-bold mb-0 text-info" id="queueActiveCount">0</div>
+      </div>
+    </div>
+    <div class="col-4 col-md-2">
+      <div class="card p-2 shadow-sm h-100" style="background: var(--tertiary-bg);">
+        <div class="extra-small text-muted text-uppercase fw-semibold mb-1"><i class="bi bi-hourglass-split text-warning"></i> Queued</div>
+        <div class="h5 fw-bold mb-0 text-warning" id="queueQueuedCount">0</div>
+      </div>
+    </div>
+    <div class="col-4 col-md-2">
+      <div class="card p-2 shadow-sm h-100" style="background: var(--tertiary-bg);">
+        <div class="extra-small text-muted text-uppercase fw-semibold mb-1"><i class="bi bi-x-circle text-danger"></i> Failed</div>
+        <div class="h5 fw-bold mb-0 text-danger" id="queueFailedCount">0</div>
+      </div>
+    </div>
+    <div class="col-4 col-md-2">
+      <div class="card p-2 shadow-sm h-100" style="background: var(--tertiary-bg);">
+        <div class="extra-small text-muted text-uppercase fw-semibold mb-1"><i class="bi bi-check-circle text-success"></i> Done</div>
+        <div class="h5 fw-bold mb-0 text-success" id="queueCompletedCount">0</div>
+      </div>
+    </div>
+    <div class="col-4 col-md-2">
+      <div class="card p-2 shadow-sm h-100" style="background: var(--tertiary-bg);">
+        <div class="extra-small text-muted text-uppercase fw-semibold mb-1"><i class="bi bi-arrow-left-right text-secondary"></i> Moving</div>
+        <div class="h5 fw-bold mb-0 text-white" id="queueMovingCount">0</div>
+      </div>
+    </div>
+  </div>
+
   {% include 'components/search/_monitor_queue_section.html' ignore missing %}
 
   <!-- Downloads File Manager: Matched Folders + Upcoming Releases tabs -->
-  <div class="card mb-4">
-    <div class="card-header p-0">
-      <ul class="nav nav-tabs card-header-tabs px-2 pt-2" id="downloadManagerTabs" role="tablist">
+  <div class="card mb-4 shadow-sm">
+    <div class="card-header p-2 border-bottom-0 bg-transparent">
+      <ul class="nav nav-pills nav-fill bg-secondary p-1 rounded" id="downloadManagerTabs" role="tablist">
         <li class="nav-item" role="presentation">
-          <button class="nav-link active" id="matched-tab" data-bs-toggle="tab" data-bs-target="#matched-pane" type="button" role="tab" aria-controls="matched-pane" aria-selected="true">
-            <i class="bi bi-folder"></i> Matched Folders <span class="badge bg-info ms-1" id="unmatchedFoldersBadge">0</span>
+          <button class="nav-link active py-2" id="matched-tab" data-bs-toggle="tab" data-bs-target="#matched-pane" type="button" role="tab">
+            <i class="bi bi-folder me-1"></i> Matched Folders <span class="badge bg-dark border border-secondary ms-1" id="unmatchedFoldersBadge">0</span>
           </button>
         </li>
         <li class="nav-item" role="presentation">
-          <button class="nav-link" id="upcoming-tab" data-bs-toggle="tab" data-bs-target="#upcoming-pane" type="button" role="tab" aria-controls="upcoming-pane" aria-selected="false">
-            <i class="bi bi-calendar-event"></i> Upcoming Releases
+          <button class="nav-link py-2" id="upcoming-tab" data-bs-toggle="tab" data-bs-target="#upcoming-pane" type="button" role="tab">
+            <i class="bi bi-calendar-event me-1"></i> Upcoming Releases
           </button>
         </li>
       </ul>
     </div>
-    <div class="card-body p-0">
+    <div class="card-body p-0 border-top border-secondary">
       <div class="tab-content">
-        <div class="tab-pane fade show active p-2" id="matched-pane" role="tabpanel" aria-labelledby="matched-tab">
-          <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
-            <!-- Scan Downloads was removed: automatic discovery (worker
-                 cleanup hook, every 5 min) covers it. -->
+        <div class="tab-pane fade show active p-3" id="matched-pane" role="tabpanel">
+          <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
             <button class="btn btn-sm btn-primary" onclick="processAlbums(event)"><i class="bi bi-collection"></i> Process Albums</button>
-            <button class="btn btn-sm btn-outline-secondary" onclick="refreshFolderMatches(this)" title="Re-sync folder matches so torrent albums matched before the torrents-root flattening are re-associated to the correct album subfolder"><i class="bi bi-arrow-repeat"></i> Refresh Matches</button>
-            <span id="discoveryMessage" class="text-muted small"></span>
+            <button class="btn btn-sm btn-outline-secondary" onclick="refreshFolderMatches(this)" title="Re-sync folder matches"><i class="bi bi-arrow-repeat"></i> Refresh Matches</button>
+            <span id="discoveryMessage" class="text-muted small ms-auto"></span>
           </div>
           <div id="discoveryResults" class="alert alert-info py-2 small" style="display:none;"></div>
           <div id="unmatchedFoldersSection" style="display:none;">
             <div id="unmatchedFoldersList"></div>
           </div>
         </div>
-        <div class="tab-pane fade p-2" id="upcoming-pane" role="tabpanel" aria-labelledby="upcoming-tab">
+        <div class="tab-pane fade p-3" id="upcoming-pane" role="tabpanel">
           {% include 'components/search/_monitor_upcoming.html' ignore missing %}
         </div>
       </div>
@@ -78,22 +103,17 @@
   </div>
 </div>
 
-<!-- Manual Soulseek Search modal — opened by the search button on queue items -->
 {% include 'components/modals/_soulseek_manual_search.html' ignore missing %}
 {% endblock %}
 
 {% block scripts %}
-<!-- 1. Inject backend configurations for the external JS to use -->
 <script id="page-data" type="application/json">
   {{ {"queueStatusConfig": queue_status_config | default({})} | tojson | safe }}
 </script>
 <script>
-  // Parse the injected backend data and attach it to the window globally
   const _pd = JSON.parse(document.getElementById('page-data').textContent);
   window.queueStatusConfig = _pd.queueStatusConfig;
 </script>
-
-<!-- 2. Load the external logic -->
 <link rel="stylesheet" href="{{ versioned_static('css/downloads.css') }}">
 <script src="{{ versioned_static('js/upcoming_releases.js') }}"></script>
 <script src="{{ versioned_static('js/monitor.js') }}"></script>

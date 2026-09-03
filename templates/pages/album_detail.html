@@ -59,6 +59,7 @@
     .album-form-toggle[aria-expanded="true"] .bi-chevron-down { transform: rotate(180deg); }
     .album-form-toggle .bi-chevron-down { transition: transform 0.2s ease; }
 </style>
+
 <div class="container-fluid mt-4">
     <nav aria-label="breadcrumb">
         <ol class="breadcrumb">
@@ -227,7 +228,6 @@
             </button>
         </div>
     </div>
-
 
     <!-- Navigation Tabs -->
     <div class="card mb-4 sticky-top" style="top: 0; z-index: 1000;">
@@ -544,7 +544,7 @@
                                       {% endfor %}
                                     </div>
                                     <button class="btn btn-sm btn-outline-success album-apply-source-tags-btn" style="display:none" onclick="applySelectedAlbumSourceTags()">
-                                                                            <i class="bi bi-check-circle"></i> Add Selected to Save List
+                                                                                        <i class="bi bi-check-circle"></i> Add Selected to Save List
                                     </button>
                                   </div>
                                   {% set ns3.first = False %}
@@ -770,9 +770,10 @@
             {% endfor %}
             {% endif %}
             {% endmacro %}
+            
             <table class="table table-hover mb-0">
-                <thead class="d-none d-md-table-header-group">
-                    <tr class="text-muted small fw-normal">
+                <thead>
+                    <tr class="d-none d-md-table-row text-muted small fw-normal">
                         <th style="width: 2rem;">
                             <input type="checkbox" class="form-check-input" id="selectAllCheckbox" onchange="toggleSelectAll(this)">
                         </th>
@@ -815,6 +816,91 @@
                 </tbody>
             </table>
         </div>
+    </div>
+
+    <div class="card mb-4 mobile-tab-group mobile-tab-active" data-mobile-group="disco" id="artist-appears-on-section">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="card-title mb-0">
+          <i class="bi bi-people"></i> Appears On
+        </h5>
+        <small class="text-muted">Featured on other artists' releases</small>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-hover mb-0" data-mobile-cards>
+          <thead>
+            <tr class="d-none d-md-table-row">
+              <th style="width: 100px;">Art</th>
+              <th>Release</th>
+              <th class="text-center" style="width: 80px;">Year</th>
+              <th class="text-center" style="width: 80px;">Tracks</th>
+              <th class="text-center" style="width: 100px;">Avg ★</th>
+              <th class="text-center" style="width: 70px;">Open</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% if appears_on_albums and appears_on_albums|length > 0 %}
+              {% for entry in appears_on_albums %}
+                <tr>
+                  <td class="text-center" style="width: 100px; padding: 0.5rem;" data-label="Art">
+                    {% if entry.album and entry.album_artist %}
+                    <a href="/album/{{ entry.album_artist|path_segment }}/{{ entry.album|path_segment }}{% if entry.album_year %}/{{ entry.album_year }}{% endif %}">
+                      <img src="/api/album/{{ entry.album_artist|path_segment }}/{{ entry.album|path_segment }}/art"
+                           alt="{{ entry.album }}"
+                           class="img-thumbnail"
+                           style="width: 80px; height: 80px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;"
+                           onerror="this.src='/api/album-art-placeholder'">
+                    </a>
+                    {% else %}
+                    <img src="/api/album-art-placeholder"
+                         alt="{{ entry.album }}"
+                         class="img-thumbnail"
+                         style="width: 80px; height: 80px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;">
+                    {% endif %}
+                  </td>
+                  <td data-label="Release">
+                    <div class="d-flex flex-column justify-content-center" style="min-height: 80px;">
+                      {% if entry.album and entry.album_artist %}
+                      <a href="/album/{{ entry.album_artist|path_segment }}/{{ entry.album|path_segment }}{% if entry.album_year %}/{{ entry.album_year }}{% endif %}" class="text-decoration-none fw-semibold">
+                        {{ entry.album }}
+                      </a>
+                      {% else %}
+                      <span class="fw-semibold">{{ entry.album or '—' }}</span>
+                      {% endif %}
+                      {% if entry.album_artist %}
+                      <a href="{{ url_for('ui.artist_detail', name=entry.album_artist) }}" class="text-decoration-none small text-muted mt-1">
+                        {{ entry.album_artist }}
+                      </a>
+                      {% else %}
+                      <span class="small text-muted mt-1">—</span>
+                      {% endif %}
+                    </div>
+                  </td>
+                  <td class="text-center" data-label="Year">{{ entry.album_year or '—' }}</td>
+                  <td class="text-center" data-label="Tracks">{{ entry.track_count or 0 }}</td>
+                  <td class="text-center" data-label="Avg ★">
+                    {% if entry.avg_stars %}
+                      <span class="badge bg-info">{{ entry.avg_stars|round(2) }}★</span>
+                    {% else %}
+                      <span class="text-muted">—</span>
+                    {% endif %}
+                  </td>
+                  <td class="text-center" data-label="Open">
+                    <a class="btn btn-sm btn-outline-secondary" href="/album/{{ entry.album_artist|path_segment }}/{{ entry.album|path_segment }}{% if entry.album_year %}/{{ entry.album_year }}{% endif %}" title="View album">
+                      <i class="bi bi-arrow-right"></i>
+                    </a>
+                  </td>
+                </tr>
+              {% endfor %}
+            {% else %}
+              <tr>
+                <td colspan="6" class="text-center text-muted py-4">
+                  <i class="bi bi-info-circle"></i> No featured-release appearances found
+                </td>
+              </tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
     </div>
 </div>
 
