@@ -242,6 +242,17 @@ class DiscogsHttpClient:
         results = payload.get("results", [])
         return results if isinstance(results, list) else []
 
+    def get_artist_id(self, artist_name: str, timeout: float = 10.0) -> int | str | None:
+        """Search Discogs database for an artist name and return their primary ID."""
+        if not artist_name:
+            return None
+        results = self.search_database({"q": artist_name, "type": "artist"}, timeout=timeout)
+        if results and isinstance(results, list):
+            first = results[0]
+            if isinstance(first, dict):
+                return first.get("id")
+        return None
+
     def get_release(self, release_id: str | int, timeout: float = 10.0) -> dict[str, Any]:
         if not release_id:
             return {}
