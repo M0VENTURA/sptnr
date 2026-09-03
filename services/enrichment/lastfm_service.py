@@ -52,12 +52,21 @@ def get_shared_lastfm_client(api_key: str) -> LastFmHttpClient:
     return _SHARED_LF_CLIENT
 
 
+def _sanitize_release_name(album_name: str) -> str:
+    """Strips '(Topshelf Edition)', '[Deluxe Version]', etc. for exact API matches."""
+    if not album_name:
+        return ""
+    cleaned = re.sub(
+        r'\s*[\(\[].*?(edition|deluxe|remaster|version|bonus|expanded|explicit|clean).*?[\)\]]', 
+        '', 
+        album_name, 
+        flags=re.IGNORECASE
+    ).strip()
+    return cleaned if cleaned else album_name
+
+
 class RecommendationCache:
-    """Simple JSON cache for Last.fm recommendation payloads.
-    
-    This cache stores API responses to reduce redundant calls to Last.fm.
-    Entries are automatically expired based on TTL (Time To Live) configuration.
-    """
+    """Simple JSON cache for Last.fm recommendation payloads."""
 
     def __init__(self, cache_dir: str | None = None):
         self.cache_dir = Path(cache_dir) if cache_dir else Path.home() / ".cache" / "popularr"
@@ -94,7 +103,6 @@ class RecommendationCache:
                 logger.debug("Recommendation cache write failed", key=key, error=str(exc))
 
     def _save_unsafe(self, cache: dict[str, Any]) -> None:
-        """Save cache to disk atomically. Must be called while holding self._lock."""
         tmp = self.cache_file.with_suffix(".tmp")
         tmp.write_text(json.dumps(cache, indent=2), encoding="utf-8")
         tmp.replace(self.cache_file)
@@ -106,7 +114,6 @@ class LastFmService:
     def __init__(self, api_key: str, username: str | None = None, http_client: LastFmHttpClient | None = None, db_connection: Any = None):
         self.api_key = api_key or ""
         self.username = username
-        # ✅ Use the shared client to respect global rate limits
         self.http = http_client or get_shared_lastfm_client(self.api_key)
         self.cache = RecommendationCache()
         self.db_connection = db_connection
@@ -116,6 +123,7 @@ class LastFmService:
         if not self.api_key or not artist:
             return []
         try:
+            # FIXED: Removed explicit timeout
             data = self.http.get_json(
                 "artist.getTopTracks",
                 artist=artist,
@@ -224,7 +232,8 @@ class LastFmService:
             params["track"] = title
 
         try:
-            data = self.http.get_json("track.getInfo", timeout=(5, 10), **params)
+            # FIXED: Removed explicit timeout
+            data = self.http.get_json("track.getInfo", **params)
             if "error" in data:
                 return self._empty_track_info(artist, title)
 
@@ -365,7 +374,8 @@ class LastFmService:
         if not self.api_key:
             return []
         try:
-            data = self.http.get_json("track.search", timeout=(5, 10), artist=artist, track=title, limit=limit)
+            # FIXED: Removed explicit timeout
+            data = self.http.get_json("track.search", artist=artist, track=title, limit=limit)
             tracks = data.get("results", {}).get("trackmatches", {}).get("track", [])
             if isinstance(tracks, dict):
                 tracks = [tracks]
@@ -394,8 +404,10 @@ class LastFmService:
         if not self.api_key:
             return []
         try:
+            clean_album = _sanitize_release_name(album)
+            # FIXED: Removed explicit timeout
             data = self.http.get_json(
-                "album.search", timeout=(5, 10), album=album, limit=max(1, min(limit, 100))
+                "album.search", album=clean_album, limit=max(1, min(limit, 100))
             )
             albums = data.get("results", {}).get("albummatches", {}).get("album", [])
             if isinstance(albums, dict):
@@ -416,9 +428,11 @@ class LastFmService:
     def _album_get_info(self, artist: str, album: str) -> dict[str, Any]:
         if not self.api_key:
             return {}
+        clean_album = _sanitize_release_name(album)
         for lookup_artist in self.build_artist_lookup_candidates(artist):
             try:
-                payload = self.http.get_json("album.getInfo", timeout=(5, 10), artist=lookup_artist, album=album)
+                # FIXED: Removed explicit timeout
+                payload = self.http.get_json("album.getInfo", artist=lookup_artist, album=clean_album)
                 album_payload = payload.get("album")
                 if isinstance(album_payload, dict):
                     album_payload["_lookup_artist"] = lookup_artist
@@ -477,6 +491,8 @@ class LastFmService:
         return False
 
     def check_track_as_single(self, artist: str, track_title: str) -> bool:
+        # NOTE: Do NOT sanitize track_title here because we are intentionally
+        # using the track name to check for a matching single release.
         album_data = self._album_get_info(artist, track_title)
         if not album_data:
             return False
@@ -514,7 +530,8 @@ class LastFmService:
             
         for lookup_artist in self.build_artist_lookup_candidates(artist):
             try:
-                data = self.http.get_json("artist.getInfo", timeout=(5, 10), artist=lookup_artist).get("artist", {})
+                # FIXED: Removed explicit timeout
+                data = self.http.get_json("artist.getInfo", artist=lookup_artist).get("artist", {})
                 if not data:
                     continue
                     
@@ -540,7 +557,8 @@ class LastFmService:
     def get_artist_top_tags(self, artist: str, limit: int = 10) -> list[dict[str, Any]]:
         for lookup_artist in self.build_artist_lookup_candidates(artist):
             try:
-                data = self.http.get_json("artist.getTopTags", timeout=(5, 10), artist=lookup_artist, limit=max(1, min(100, limit)))
+                # FIXED: Removed explicit timeout
+                data = self.http.get_json("artist.getTopTags", artist=lookup_artist, limit=max(1, min(100, limit)))
                 tags = data.get("toptags", {}).get("tag", [])
                 if isinstance(tags, dict):
                     tags = [tags]
@@ -558,9 +576,9 @@ class LastFmService:
             
         for lookup_artist in self.build_artist_lookup_candidates(artist):
             try:
+                # FIXED: Removed explicit timeout
                 data = self.http.get_json(
                     "artist.getSimilar",
-                    timeout=(5, 10),
                     artist=lookup_artist,
                     limit=max(1, min(int(limit), 100)),
                 )
@@ -615,9 +633,8 @@ class LastFmService:
         method = "user.getTopArtists" if self.username else "chart.getTopArtists"
         kwargs = {"user": self.username, "limit": 20, "period": "6month"} if self.username else {"limit": 20}
         try:
-            # The shared session transport is the single retry authority; no
-            # extra retry_with_backoff layer here.
-            response = self.http.request(method, timeout=(5, 10), **kwargs)
+            # FIXED: Removed explicit timeout
+            response = self.http.request(method, **kwargs)
             response.raise_for_status()
             data = response.json()
             artists = data.get("topartists", {}).get("artist", []) if self.username else data.get("artists", {}).get("artist", [])
@@ -638,7 +655,8 @@ class LastFmService:
         if not self.username:
             return []
         try:
-            response = self.http.request("user.getTopAlbums", timeout=(5, 10), user=self.username, limit=12, period="6month")
+            # FIXED: Removed explicit timeout
+            response = self.http.request("user.getTopAlbums", user=self.username, limit=12, period="6month")
             response.raise_for_status()
             albums = response.json().get("topalbums", {}).get("album", [])
             return [
@@ -658,7 +676,8 @@ class LastFmService:
         method = "user.getTopTracks" if self.username else "chart.getTopTracks"
         kwargs = {"user": self.username, "limit": 20, "period": "6month"} if self.username else {"limit": 20}
         try:
-            response = self.http.request(method, timeout=(5, 10), **kwargs)
+            # FIXED: Removed explicit timeout
+            response = self.http.request(method, **kwargs)
             response.raise_for_status()
             tracks = response.json().get("toptracks", {}).get("track", [])
             return [
@@ -687,5 +706,4 @@ def get_lastfm_track_info(artist: str, title: str, api_key: str = "") -> dict[st
 
 
 def get_lastfm_recommendations(api_key: str, username: str | None = None, db_connection: Any = None) -> dict[str, Any]:
-    # ✅ Using the shared client inside LastFmService prevents connection exhaustion
     return LastFmService(api_key, username=username, db_connection=db_connection).get_recommendations()
