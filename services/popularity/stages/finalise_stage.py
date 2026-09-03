@@ -3,7 +3,7 @@
 Handles:
 - Star rating assignment (1–5★) using album/artist z-scores + z-score bands
 - Navidrome rating sync via Subsonic API
-- Essential Collection .m3u creation (deduplicated 4★/5★ artist best-of)
+- Essential Collection API sync (deduplicated 4★/5★ artist best-of)
 - Summary logging
 """
 
@@ -648,13 +648,14 @@ def _refresh_all_essential_collections() -> int:
 
 def _cleanup_stale_essential_files(playlists_dir: str, artist: str, playlist_name: str) -> None:
     for name in (f"{artist} (Essential Playlist)", playlist_name):
-        stale = os.path.join(playlists_dir, f"{_sanitize_name(name)}.nsp")
-        try:
-            if os.path.exists(stale):
-                os.remove(stale)
-                logger.info("Removed stale NSP essential file", path=stale)
-        except Exception:
-            pass
+        for ext in (".nsp", ".m3u"):
+            stale = os.path.join(playlists_dir, f"{_sanitize_name(name)}{ext}")
+            try:
+                if os.path.exists(stale):
+                    os.remove(stale)
+                    logger.info(f"Removed stale {ext} essential file", path=stale)
+            except Exception:
+                pass
 
 
 def _essential_playlists_enabled(options: dict[str, Any]) -> bool:
@@ -723,37 +724,30 @@ def _create_new_music_playlist() -> int:
         try:
             if os.path.exists(file_path):
                 os.remove(file_path)
-                logger.info("Removed New Music playlist (insufficient tracks)", count=len(winners))
+                logger.info("Removed legacy M3U file for New Music", path=file_path)
         except Exception as exc:
             logger.debug("New Music removal failed", error=str(exc))
         return 0
 
     winners = winners[:_NEW_MUSIC_MAX_TRACKS]
     os.makedirs(playlists_dir, exist_ok=True)
-    lines = ["#EXTM3U"]
-    for row in winners:
-        try:
-            duration = int(float(row.get("duration") or 0) or 0)
-        except (TypeError, ValueError):
-            duration = 0
-        lines.append(f"#EXTINF:{duration},{row.get('artist')} - {row.get('title')}")
-        lines.append(str(row.get("file_path") or row.get("title") or ""))
         
     try:
-        with open(file_path, "w", encoding="utf-8") as handle:
-            handle.write("\n".join(lines) + "\n")
-        logger.info("New Music playlist written", tracks=len(winners))
-        log_unified(f"📄 Playlist: Generated 'New Music.m3u' ({len(winners)} tracks)")
-        
-        try:
-            _song_ids = [str(r.get("id") or "") for r in winners if str(r.get("id") or "").strip()]
-            if _song_ids:
-                _sync_playlist_to_navidrome("New Music", _song_ids)
-        except Exception:
-            pass
+        # Actively delete the legacy .m3u file to prevent ghost duplicates
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception:
+                pass
+
+        _song_ids = [str(r.get("id") or "") for r in winners if str(r.get("id") or "").strip()]
+        if _song_ids:
+            _sync_playlist_to_navidrome("New Music", _song_ids)
+            log_unified(f"📄 Playlist: Synced 'New Music' to Navidrome ({len(winners)} tracks)")
+
         return len(winners)
     except Exception as exc:
-        logger.warning("New Music playlist write failed", error=str(exc))
+        logger.warning("New Music playlist sync failed", error=str(exc))
         return 0
 
 
@@ -908,28 +902,18 @@ def _create_essential_m3u(artist: str, featured_rows: list[dict[str, Any]] | Non
         os.makedirs(playlists_dir, exist_ok=True)
         _cleanup_stale_essential_files(playlists_dir, artist, playlist_name)
         
-        lines = ["#EXTM3U"]
-        for row in winners:
-            title = str(row.get("title") or "Unknown")
-            try:
-                duration = int(float(row.get("duration") or 0) or 0)
-            except (TypeError, ValueError):
-                duration = 0
-            lines.append(f"#EXTINF:{duration},{artist} - {title}")
-            lines.append(str(row.get("file_path") or title))
-            
         try:
-            with open(file_path, "w", encoding="utf-8") as handle:
-                handle.write("\n".join(lines) + "\n")
-            logger.info("Essential collection created", path=file_path, count=len(winners))
-            log_unified(f"📄 Playlist: Generated '{playlist_name}.m3u' ({len(winners)} tracks)")
-            
-            try:
-                _song_ids = [str(r.get("id") or "") for r in winners if str(r.get("id") or "").strip()]
-                if _song_ids:
-                    _sync_playlist_to_navidrome(playlist_name, _song_ids)
-            except Exception:
-                pass
+            # Actively delete the legacy .m3u file to prevent ghost duplicates
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except Exception:
+                    pass
+
+            _song_ids = [str(r.get("id") or "") for r in winners if str(r.get("id") or "").strip()]
+            if _song_ids:
+                _sync_playlist_to_navidrome(playlist_name, _song_ids)
+                log_unified(f"📄 Playlist: Synced '{playlist_name}' to Navidrome ({len(winners)} tracks)")
             
             try:
                 from services.playlists.playlist_service import attach_playlist_cover
@@ -937,14 +921,14 @@ def _create_essential_m3u(artist: str, featured_rows: list[dict[str, Any]] | Non
             except Exception:
                 pass
         except Exception as exc:
-            logger.warning("Essential collection write failed", artist=artist, error=str(exc))
+            logger.warning("Essential collection API sync failed", artist=artist, error=str(exc))
         return
 
     _cleanup_stale_essential_files(playlists_dir, artist, playlist_name)
     if os.path.exists(file_path):
         try:
             os.remove(file_path)
-            logger.info("Removed essential collection (insufficient tracks)", artist=artist, count=len(winners))
+            logger.info("Removed legacy M3U file (insufficient tracks)", artist=artist, count=len(winners))
         except Exception:
             pass
     else:
@@ -1248,10 +1232,19 @@ def _create_genre_top_track_playlists(
             delimited_sources=_delimited_sources,
         )
 
+    # Dictionary to hold the merged tracks, using a normalized punctuation-free string as the key
     pools: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    genre_freq: dict[str, int] = defaultdict(int)
+    genre_display: dict[str, str] = {}
+
     for row in rows:
         for genre in _track_genres(row):
-            pools[genre].append({
+            # Normalize to merge "Children's Music" and "Childrens Music" into the same playlist sync
+            norm_key = re.sub(r"[^\w\s-]", "", genre.lower()).strip()
+            if not norm_key:
+                continue
+                
+            pools[norm_key].append({
                 "id": str(row.get("id") or ""),
                 "title": str(row.get("title") or "Unknown"),
                 "file_path": str(row.get("file_path") or ""),
@@ -1262,6 +1255,12 @@ def _create_genre_top_track_playlists(
                 "is_live": int(row.get("is_live") or 0),
                 "is_compilation": int(row.get("is_compilation") or 0),
             })
+            
+            # Keep track of the most frequent raw string for the final display name
+            genre_freq[genre] += 1
+            current_top = genre_display.get(norm_key)
+            if not current_top or genre_freq[genre] > genre_freq[current_top]:
+                genre_display[norm_key] = genre
 
     def _tiebreak(item: dict[str, Any]) -> tuple:
         return (
@@ -1284,10 +1283,16 @@ def _create_genre_top_track_playlists(
     written = 0
     keep_names: set[str] = set()
     
-    for genre, tracks in pools.items():
-        if only_genres is not None and genre not in only_genres:
+    norm_only_genres = None
+    if only_genres is not None:
+        norm_only_genres = {re.sub(r"[^\w\s-]", "", g.lower()).strip() for g in only_genres}
+    
+    for norm_key, tracks in pools.items():
+        if norm_only_genres is not None and norm_key not in norm_only_genres:
             continue
 
+        genre = genre_display[norm_key]
+        
         grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
         for t in tracks:
             key = (
@@ -1314,30 +1319,25 @@ def _create_genre_top_track_playlists(
             continue
 
         winners.sort(key=_popularity_order)
-        lines = ["#EXTM3U"]
-        for t in winners:
-            try:
-                duration = int(float(t.get("duration") or 0) or 0)
-            except (TypeError, ValueError):
-                duration = 0
-            lines.append(f"#EXTINF:{duration},{display_genre} - {t['title']}")
-            lines.append(t["file_path"] or t["title"])
-            
+        
         try:
-            with open(file_path, "w", encoding="utf-8") as handle:
-                handle.write("\n".join(lines) + "\n")
+            # Actively delete legacy .m3u files
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except Exception:
+                    pass
+
+            _song_ids = [str(t.get("id") or "") for t in winners if str(t.get("id") or "").strip()]
+            if _song_ids:
+                _sync_playlist_to_navidrome(playlist_name, _song_ids)
+                log_unified(f"📄 Playlist: Synced '{playlist_name}' to Navidrome ({len(winners)} tracks)")
+
             keep_names.add(file_name)
             written += 1
-            log_unified(f"📄 Playlist: Generated '{playlist_name}.m3u' ({len(winners)} tracks)")
             
-            try:
-                _song_ids = [str(t.get("id") or "") for t in winners if str(t.get("id") or "").strip()]
-                if _song_ids:
-                    _sync_playlist_to_navidrome(playlist_name, _song_ids)
-            except Exception:
-                pass
         except Exception as exc:
-            logger.warning("Genre playlist write failed", genre=genre, error=str(exc))
+            logger.warning("Genre playlist API sync failed", genre=genre, error=str(exc))
 
     previous_names = _load_genre_playlist_state()
     suffix = _sanitize_name(_genre_playlist_name("GENRE")).replace("GENRE", "", 1).strip() or ""
@@ -1358,7 +1358,7 @@ def _create_genre_top_track_playlists(
             try:
                 os.remove(os.path.join(playlists_dir, name))
                 removed.add(name)
-                logger.info("Removed stale genre playlist", name=name)
+                logger.info("Removed stale legacy M3U file", name=name)
             except FileNotFoundError:
                 removed.add(name)
             except Exception:
