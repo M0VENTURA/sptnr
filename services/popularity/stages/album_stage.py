@@ -1,24 +1,27 @@
 """Album enrichment/statistics stage.
 
-Orchestrates album-level enrichment during a popularity scan, delegating to
-existing ``services.enrichment.*`` and ``services.metadata.*`` modules instead
-of duplicating their logic.
+Orchestrates album-level enrichment during a popularity scan while delegating
+to existing services.enrichment.* and services.metadata.* modules.
 
-Handles:
-- Album type detection (compilation, live, remix overrides)
-- Album art lookup with fallback → delegates to ``album_art_service``
-- Artist metadata (country, bio, image) → delegates to ``artist_metadata_service``
-- Similar artists fetching and caching
+This rebuild adds:
+- start, completion, failure, skip and heartbeat logs for every scan section
+- provider-level album-art logging
+- slow-call heartbeat logging around external services
+- defensive result parsing
+- UTC-aware cache timestamps
+- same-session genre updates to avoid nested write transactions/SQLite locks
+- consistent exception logging with elapsed time
 """
-
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable, Iterator, TypeVar
 
 import httpx
 import structlog
@@ -26,581 +29,992 @@ from sqlalchemy import text
 
 from db.engine import db_session
 from db.utils import row_get
-
-# Enrichment/metadata services
+from services.catalog.album_classification_service import (
+    detect_live_album_type,
+    is_live_or_unplugged_track_title,
+    normalize_primary_release_type,
+)
 from services.enrichment.album_art_service import (
-    save_album_art_to_db,
     fetch_album_art_from_musicbrainz,
+    save_album_art_to_db,
 )
 from services.enrichment.artist_bio_service import get_artist_biography
 from services.enrichment.musicbrainz_service import (
     get_shared_mb_client,
     get_shared_mb_service,
 )
-from services.catalog.album_classification_service import (
-    detect_live_album_type,
-    is_live_or_unplugged_track_title,
-    normalize_primary_release_type,
-)
 
 logger = structlog.get_logger(__name__)
+T = TypeVar("T")
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+# A heartbeat does not cancel a blocked third-party function. It makes the
+# blocked section visible in logs until the underlying client returns.
+_SLOW_CALL_HEARTBEAT_SECONDS = max(
+    5.0,
+    float(os.getenv("ENRICHMENT_HEARTBEAT_SECONDS", "30")),
+)
+_HTTP_TIMEOUT = httpx.Timeout(
+    connect=float(os.getenv("ENRICHMENT_HTTP_CONNECT_TIMEOUT", "5")),
+    read=float(os.getenv("ENRICHMENT_HTTP_READ_TIMEOUT", "15")),
+    write=float(os.getenv("ENRICHMENT_HTTP_WRITE_TIMEOUT", "15")),
+    pool=float(os.getenv("ENRICHMENT_HTTP_POOL_TIMEOUT", "5")),
+)
+
+
+def _safe_error(exc: BaseException) -> str:
+    return f"{type(exc).__name__}: {exc}"
+
+
+@contextmanager
+def _log_section(section: str, **context: Any) -> Iterator[None]:
+    start = time.monotonic()
+    logger.info("[ENRICH] section started", section=section, **context)
+    try:
+        yield
+    except Exception as exc:
+        logger.exception(
+            "[ENRICH] section failed",
+            section=section,
+            elapsed_s=round(time.monotonic() - start, 3),
+            error=_safe_error(exc),
+            **context,
+        )
+        raise
+    else:
+        logger.info(
+            "[ENRICH] section completed",
+            section=section,
+            elapsed_s=round(time.monotonic() - start, 3),
+            **context,
+        )
+
+
+def _call_with_heartbeat(
+    section: str,
+    func: Callable[..., T],
+    *args: Any,
+    log_context: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> T:
+    """Run a call synchronously while emitting periodic slow-call logs."""
+    context = dict(log_context or {})
+    start = time.monotonic()
+    stop_event = threading.Event()
+
+    def heartbeat() -> None:
+        while not stop_event.wait(_SLOW_CALL_HEARTBEAT_SECONDS):
+            logger.warning(
+                "[ENRICH] section still running",
+                section=section,
+                elapsed_s=round(time.monotonic() - start, 1),
+                **context,
+            )
+
+    logger.info("[ENRICH] call started", section=section, **context)
+    monitor = threading.Thread(
+        target=heartbeat,
+        name=f"enrichment-heartbeat-{section}",
+        daemon=True,
+    )
+    monitor.start()
+    try:
+        result = func(*args, **kwargs)
+    except Exception as exc:
+        logger.exception(
+            "[ENRICH] call failed",
+            section=section,
+            elapsed_s=round(time.monotonic() - start, 3),
+            error=_safe_error(exc),
+            **context,
+        )
+        raise
+    else:
+        logger.info(
+            "[ENRICH] call completed",
+            section=section,
+            elapsed_s=round(time.monotonic() - start, 3),
+            **context,
+        )
+        return result
+    finally:
+        stop_event.set()
+        monitor.join(timeout=0.2)
+
 
 def _sanitize_release_name(album_name: str) -> str:
-    """Strips '(Topshelf Edition)', '[Deluxe Version]', etc. for exact API matches."""
+    """Strip common edition suffixes to improve exact API matches."""
     if not album_name:
         return ""
     cleaned = re.sub(
-        r'\s*[\(\[].*?(edition|deluxe|remaster|version|bonus|expanded|explicit|clean).*?[\)\]]', 
-        '', 
-        album_name, 
-        flags=re.IGNORECASE
+        r"\s*[\(\[].*?(edition|deluxe|remaster|version|bonus|expanded|explicit|clean).*?[\)\]]",
+        "",
+        album_name,
+        flags=re.IGNORECASE,
     ).strip()
-    return cleaned if cleaned else album_name
+    return cleaned or album_name
 
-# ---------------------------------------------------------------------------
-# Album type detection
-# ---------------------------------------------------------------------------
 
-_COMPILATION_ARTISTS = frozenset(["various artists", "various artists -", "various", "compilation", "soundtrack"])
-_HETEROGENEOUS_MARKERS = [
+_COMPILATION_ARTISTS = frozenset(
+    {"various artists", "various artists -", "various", "compilation", "soundtrack"}
+)
+_HETEROGENEOUS_MARKERS = (
     "+compilation", "(compilation)", "+soundtrack", "(soundtrack)",
     "+live", "(live)", "+remix", "(remix)", "+spokenword", "(spokenword)",
-]
-_LIVE_ALBUM_PATTERNS = [
+)
+_LIVE_ALBUM_PATTERNS = (
     r"\blive\s+at\b", r"\blive\s+in\b", r"\blive\s+from\b",
     r"\blive\s+session\b", r"\(live\)\s*$", r"\[live\]\s*$",
     r"-\s*live\s*$", r",\s*live\s*$", r"\+\s*live\s*$",
     r"live\s+recording\b", r"live\s+tour\b", r"\bin\s+concert\b",
     r"\bunplugged\b", r"\bacoustic\b",
-]
+)
 
 
-def _detect_album_type(artist: str, album: str, album_artist: str | None, spotify_type: str | None) -> str:
-    """Detect album type (album, compilation, live, remix, etc.)."""
-    artist_lower = artist.lower()
-    album_lower = album.lower()
+def _detect_album_type(
+    artist: str,
+    album: str,
+    album_artist: str | None,
+    spotify_type: str | None,
+) -> str:
+    artist_lower = (artist or "").casefold().strip()
+    album_lower = (album or "").casefold().strip()
+    album_artist_lower = (album_artist or "").casefold().strip()
 
-    if artist_lower in _COMPILATION_ARTISTS:
+    if artist_lower in _COMPILATION_ARTISTS or album_artist_lower in _COMPILATION_ARTISTS:
         return "album+compilation"
-    if album_artist and album_artist.lower() in _COMPILATION_ARTISTS:
-        return "album+compilation"
-
     if spotify_type:
-        st = spotify_type.lower()
-        if st == "compilation" or "+compilation" in st or "(compilation)" in st:
+        spotify_lower = spotify_type.casefold()
+        if spotify_lower == "compilation" or "+compilation" in spotify_lower or "(compilation)" in spotify_lower:
             return "album+compilation"
-
     if "soundtrack" in album_lower:
         return "album+soundtrack"
-
-    if any(re.search(p, album_lower) for p in _LIVE_ALBUM_PATTERNS):
+    if any(re.search(pattern, album_lower) for pattern in _LIVE_ALBUM_PATTERNS):
         return "album+live"
-
     if "+remix" in album_lower or "(remix)" in album_lower:
         return "album+remix"
-
     return "album"
 
 
-# ---------------------------------------------------------------------------
-# Album art helper
-# ---------------------------------------------------------------------------
+def _http_get_bytes(url: str, *, section: str, context: dict[str, Any]) -> bytes | None:
+    response = _call_with_heartbeat(
+        section,
+        httpx.get,
+        url,
+        timeout=_HTTP_TIMEOUT,
+        follow_redirects=True,
+        log_context=context,
+    )
+    if response.status_code != 200:
+        logger.info(
+            "[ENRICH] artwork HTTP response had no usable image",
+            section=section,
+            status_code=response.status_code,
+            **context,
+        )
+        return None
+    return response.content or None
 
-def _fetch_album_art_with_fallback(artist: str, album: str, discogs_token: str | None = None) -> str | None:
-    """Fetch album art: Navidrome first (default), then MusicBrainz/CAA, then AudioDB, then Discogs."""
+
+def _fetch_album_art_with_fallback(
+    artist: str,
+    album: str,
+    discogs_token: str | None = None,
+) -> str | None:
     clean_album = _sanitize_release_name(album)
+    context = {"artist": artist, "album": album}
+
+    logger.info("[ENRICH] album-art pipeline started", **context)
 
     try:
         from db.repositories.metadata import fetch_album_art_blob
-        blob, _ = fetch_album_art_blob(artist=artist, album=album)
+        blob, _ = _call_with_heartbeat(
+            "album_art.cache",
+            fetch_album_art_blob,
+            artist=artist,
+            album=album,
+            log_context=context,
+        )
         if blob:
+            logger.info("[ENRICH] album art cache hit", source="cached", **context)
             return "cached"
+        logger.info("[ENRICH] album art cache miss", **context)
     except Exception as exc:
-        logger.debug("Album-art cache check failed", artist=artist, album=album, error=str(exc))
-    
-    try:
-        from services.enrichment.album_art_service import fetch_album_art_from_navidrome
-        data = fetch_album_art_from_navidrome(artist, album)
-        if data:
-            save_album_art_to_db(artist, album, data, source="navidrome")
-            return "navidrome"
-    except Exception as exc:
-        logger.debug("Navidrome art fetch failed", artist=artist, album=album, error=str(exc))
+        logger.warning("[ENRICH] album-art cache check failed", error=_safe_error(exc), **context)
 
     try:
-        data = fetch_album_art_from_musicbrainz(artist, clean_album)
+        from services.enrichment.album_art_service import fetch_album_art_from_navidrome
+        data = _call_with_heartbeat(
+            "album_art.navidrome",
+            fetch_album_art_from_navidrome,
+            artist,
+            album,
+            log_context=context,
+        )
         if data:
-            save_album_art_to_db(artist, album, data, source="musicbrainz")
-            return "musicbrainz"
+            _call_with_heartbeat(
+                "album_art.navidrome.persist",
+                save_album_art_to_db,
+                artist,
+                album,
+                data,
+                source="navidrome",
+                log_context=context,
+            )
+            return "navidrome"
+        logger.info("[ENRICH] Navidrome returned no album art", **context)
     except Exception as exc:
-        logger.debug("CAA fetch failed", artist=artist, album=album, error=str(exc))
+        logger.warning("[ENRICH] Navidrome album-art provider failed", error=_safe_error(exc), **context)
+
+    try:
+        data = _call_with_heartbeat(
+            "album_art.musicbrainz_caa",
+            fetch_album_art_from_musicbrainz,
+            artist,
+            clean_album,
+            log_context=context,
+        )
+        if data:
+            _call_with_heartbeat(
+                "album_art.musicbrainz_caa.persist",
+                save_album_art_to_db,
+                artist,
+                album,
+                data,
+                source="musicbrainz",
+                log_context=context,
+            )
+            return "musicbrainz"
+        logger.info("[ENRICH] MusicBrainz/CAA returned no album art", **context)
+    except Exception as exc:
+        logger.warning("[ENRICH] MusicBrainz/CAA album-art provider failed", error=_safe_error(exc), **context)
 
     try:
         from api_clients.audiodb import get_album_artwork
-        art_url = get_album_artwork(artist, clean_album, enabled=True)
+        art_url = _call_with_heartbeat(
+            "album_art.audiodb.lookup",
+            get_album_artwork,
+            artist,
+            clean_album,
+            enabled=True,
+            log_context=context,
+        )
         if art_url:
-            resp = httpx.get(art_url, timeout=10)
-            if resp.status_code == 200 and resp.content:
-                save_album_art_to_db(artist, album, resp.content, source="audiodb")
+            data = _http_get_bytes(str(art_url), section="album_art.audiodb.download", context=context)
+            if data:
+                _call_with_heartbeat(
+                    "album_art.audiodb.persist",
+                    save_album_art_to_db,
+                    artist,
+                    album,
+                    data,
+                    source="audiodb",
+                    log_context=context,
+                )
                 return "audiodb"
+        logger.info("[ENRICH] AudioDB returned no album art", **context)
     except Exception as exc:
-        logger.debug("AudioDB art fetch failed", artist=artist, album=album, error=str(exc))
+        logger.warning("[ENRICH] AudioDB album-art provider failed", error=_safe_error(exc), **context)
 
-    try:
-        from api_clients.discogs_http import DiscogsHttpClient
-        if discogs_token and len(discogs_token) >= 10 and discogs_token.lower() not in ("your_discogs_token", "your_token", "placeholder"):
+    token_is_valid = bool(
+        discogs_token
+        and len(discogs_token) >= 10
+        and discogs_token.casefold() not in {"your_discogs_token", "your_token", "placeholder"}
+    )
+    if not token_is_valid:
+        logger.info("[ENRICH] Discogs album-art provider skipped", reason="token unavailable", **context)
+    else:
+        try:
+            from api_clients.discogs_http import DiscogsHttpClient
             client = DiscogsHttpClient(discogs_token)
-            results = client.search_album_release(artist, clean_album)
-            if results and results[0].get("cover_image"):
-                resp = httpx.get(results[0]["cover_image"], timeout=10)
-                if resp.status_code == 200 and resp.content:
-                    save_album_art_to_db(artist, album, resp.content, source="discogs")
+            results = _call_with_heartbeat(
+                "album_art.discogs.lookup",
+                client.search_album_release,
+                artist,
+                clean_album,
+                log_context=context,
+            ) or []
+            cover_url = results[0].get("cover_image") if results and isinstance(results[0], dict) else None
+            if cover_url:
+                data = _http_get_bytes(str(cover_url), section="album_art.discogs.download", context=context)
+                if data:
+                    _call_with_heartbeat(
+                        "album_art.discogs.persist",
+                        save_album_art_to_db,
+                        artist,
+                        album,
+                        data,
+                        source="discogs",
+                        log_context=context,
+                    )
                     return "discogs"
-    except Exception as exc:
-        logger.debug("Discogs art fetch failed", artist=artist, album=album, error=str(exc))
+            logger.info("[ENRICH] Discogs returned no album art", **context)
+        except Exception as exc:
+            logger.warning("[ENRICH] Discogs album-art provider failed", error=_safe_error(exc), **context)
 
+    logger.info("[ENRICH] album-art pipeline completed without artwork", **context)
     return None
 
 
-# ---------------------------------------------------------------------------
-# Artist metadata helper
-# ---------------------------------------------------------------------------
-
-def _fetch_artist_metadata(artist: str, conn: Any) -> dict[str, Any]:
-    """Fetch artist country, bio, and image, delegating to existing services."""
+def _fetch_artist_metadata(artist: str, conn: Any = None) -> dict[str, Any]:
+    del conn
     result: dict[str, Any] = {"country": None, "bio": None, "image_url": None}
-    
-    with db_session() as session:
-        existing = session.execute(
-            text("SELECT country, bio, image_url FROM artists WHERE name = :artist"),
-            {"artist": artist},
-        ).mappings().first()
-        if existing:
-            result = {
-                "country": existing.get("country") or None,
-                "bio": existing.get("bio") or None,
-                "image_url": existing.get("image_url") or None,
-            }
+    context = {"artist": artist}
 
-    if not result["bio"]:
-        try:
-            bio = get_artist_biography(artist)
-            result["bio"] = str(bio) if bio else None
-        except Exception as exc:
-            logger.debug("Bio lookup failed", artist=artist, error=str(exc))
-
-    if not result["country"]:
-        try:
-            mb = get_shared_mb_client()
-            country = mb.get_artist_country(artist)
-            result["country"] = str(country) if country else None
-        except Exception as exc:
-            logger.debug("Country lookup failed", artist=artist, error=str(exc))
-
-    if not result["image_url"]:
-        try:
-            from api_clients.audiodb import get_artist_fanart
-            img = get_artist_fanart(artist, enabled=True)
-            result["image_url"] = str(img) if img else None
-        except Exception as exc:
-            logger.debug("Image lookup failed", artist=artist, error=str(exc))
-
-    try:
+    with _log_section("artist_metadata.database_read", **context):
         with db_session() as session:
-            session.execute(
-                text("""
-                    INSERT INTO artists (id, name, country, bio, image_url)
-                    VALUES (:artist, :artist, :country, :bio, :image_url)
-                    ON CONFLICT (name) DO UPDATE SET
-                        country = COALESCE(excluded.country, artists.country),
-                        bio = COALESCE(excluded.bio, artists.bio),
-                        image_url = COALESCE(excluded.image_url, artists.image_url)
-                """),
-                {"artist": artist, "country": result["country"], "bio": result["bio"], "image_url": result["image_url"]},
-            )
-    except Exception as exc:
-        logger.debug("Persist artist metadata failed", artist=artist, error=str(exc))
-
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Similar artists helper
-# ---------------------------------------------------------------------------
-
-def _fetch_similar_artists(artist: str, conn: Any, options: dict[str, Any]) -> dict[str, list[Any]]:
-    """Fetch and cache similar artists from Last.fm and ListenBrainz."""
-    result: dict[str, list[Any]] = {"lastfm": [], "listenbrainz": []}
-
-    if bool(options.get("singles_only")) or bool(options.get("singles_with_missing_popularity")):
-        return result
-
-    try:
-        with db_session() as session:
-            cached = session.execute(
-                text("""
-                    SELECT similar_artists_lastfm, similar_artists_listenbrainz, similar_artists_last_updated
-                    FROM artists WHERE name = :artist
-                """),
+            existing = session.execute(
+                text("SELECT country, bio, image_url FROM artists WHERE name = :artist"),
                 {"artist": artist},
             ).mappings().first()
-            
-        cached_lf_fresh = False
-        cached_lb_fresh = False
-        
-        if cached:
-            lf_raw = row_get(cached, "similar_artists_lastfm")
-            lb_raw = row_get(cached, "similar_artists_listenbrainz")
-            ts_raw = row_get(cached, "similar_artists_last_updated")
-            if lf_raw:
-                try:
-                    result["lastfm"] = json.loads(lf_raw)
-                except Exception:
-                    pass
-            if lb_raw:
-                try:
-                    result["listenbrainz"] = json.loads(lb_raw)
-                except Exception:
-                    pass
-            if ts_raw:
-                try:
-                    ts = ts_raw if isinstance(ts_raw, datetime) else datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
-                    if ts.tzinfo is None:
-                        ts = ts.replace(tzinfo=timezone.utc)
-                    age = (datetime.now(timezone.utc) - ts).days
-                    cached_lf_fresh = bool(result["lastfm"]) and age < 90
-                    cached_lb_fresh = bool(result["listenbrainz"]) and age < 90
-                except Exception:
-                    pass
+        if existing:
+            result.update(
+                country=existing.get("country") or None,
+                bio=existing.get("bio") or None,
+                image_url=existing.get("image_url") or None,
+            )
 
-        if cached_lf_fresh and cached_lb_fresh:
-            return result
-
-        from helpers.config_helpers import get_config
-        cfg = get_config()
-        if not cached_lf_fresh:
-            lf_cfg = cfg.get("api_integrations", {}).get("lastfm", {})
-            if lf_cfg.get("enabled") and lf_cfg.get("api_key"):
-                from api_clients.lastfm import LastFmClient
-                lf = LastFmClient(lf_cfg["api_key"])
-                similar = lf.get_similar_artists(artist, limit=10) or []
-                result["lastfm"] = [s.get("name", "") for s in similar if isinstance(s, dict)]
-
-        if not cached_lb_fresh:
-            try:
-                artist_mbid = None
-                with db_session() as session:
-                    row = session.execute(
-                        text("SELECT NULLIF(TRIM(musicbrainz_artistid), '') AS mbid "
-                             "FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
-                             "AND COALESCE(NULLIF(TRIM(musicbrainz_artistid), ''), '') <> '' LIMIT 1"),
-                        {"artist": artist},
-                    ).fetchone()
-                    if row and row_get(row, "mbid"):
-                        artist_mbid = row_get(row, "mbid")
-                if not artist_mbid:
-                    from services.enrichment.musicbrainz_persistence_service import lookup_and_save_artist_mbid
-                    artist_mbid = lookup_and_save_artist_mbid(artist, None)
-                if artist_mbid:
-                    from api_clients.listenbrainz import ListenBrainzClient
-                    lb_similar = ListenBrainzClient().get_similar_artists(artist_mbid, limit=10) or []
-                    result["listenbrainz"] = [s.get("name", "") for s in lb_similar if isinstance(s, dict) and s.get("name")]
-            except Exception as exc:
-                logger.debug("ListenBrainz similar artists failed", artist=artist, error=str(exc))
-
+    if result["bio"]:
+        logger.info("[ENRICH] artist biography lookup skipped", reason="already cached", **context)
+    else:
         try:
+            bio = _call_with_heartbeat(
+                "artist_metadata.biography",
+                get_artist_biography,
+                artist,
+                log_context=context,
+            )
+            result["bio"] = str(bio) if bio else None
+        except Exception as exc:
+            logger.warning("[ENRICH] biography lookup failed", error=_safe_error(exc), **context)
+
+    if result["country"]:
+        logger.info("[ENRICH] artist country lookup skipped", reason="already cached", **context)
+    else:
+        try:
+            mb_client = get_shared_mb_client()
+            country = _call_with_heartbeat(
+                "artist_metadata.country",
+                mb_client.get_artist_country,
+                artist,
+                log_context=context,
+            )
+            result["country"] = str(country) if country else None
+        except Exception as exc:
+            logger.warning("[ENRICH] country lookup failed", error=_safe_error(exc), **context)
+
+    if result["image_url"]:
+        logger.info("[ENRICH] artist image lookup skipped", reason="already cached", **context)
+    else:
+        try:
+            from api_clients.audiodb import get_artist_fanart
+            image = _call_with_heartbeat(
+                "artist_metadata.image",
+                get_artist_fanart,
+                artist,
+                enabled=True,
+                log_context=context,
+            )
+            result["image_url"] = str(image) if image else None
+        except Exception as exc:
+            logger.warning("[ENRICH] artist image lookup failed", error=_safe_error(exc), **context)
+
+    try:
+        with _log_section("artist_metadata.database_write", **context):
             with db_session() as session:
                 session.execute(
                     text("""
-                        INSERT INTO artists (id, name, similar_artists_lastfm, similar_artists_listenbrainz, similar_artists_last_updated)
-                        VALUES (:artist, :artist, :lf, :lb, :updated)
+                        INSERT INTO artists (id, name, country, bio, image_url)
+                        VALUES (:artist, :artist, :country, :bio, :image_url)
                         ON CONFLICT (name) DO UPDATE SET
-                            similar_artists_lastfm = excluded.similar_artists_lastfm,
-                            similar_artists_listenbrainz = excluded.similar_artists_listenbrainz,
-                            similar_artists_last_updated = excluded.similar_artists_last_updated
+                            country = COALESCE(excluded.country, artists.country),
+                            bio = COALESCE(excluded.bio, artists.bio),
+                            image_url = COALESCE(excluded.image_url, artists.image_url)
                     """),
-                    {
-                        "artist": artist,
-                        "lf": json.dumps(result["lastfm"]) if result["lastfm"] else None,
-                        "lb": json.dumps(result["listenbrainz"]) if result["listenbrainz"] else None,
-                        "updated": datetime.now().isoformat(),
-                    },
+                    {"artist": artist, **result},
                 )
-        except Exception as exc:
-            logger.debug("Similar-artist persist failed", artist=artist, error=str(exc))
-            
     except Exception as exc:
-        logger.debug("Similar artists failed entirely", artist=artist, error=str(exc))
+        logger.warning("[ENRICH] artist metadata persistence failed", error=_safe_error(exc), **context)
 
+    logger.info(
+        "[ENRICH] artist metadata result",
+        country=result["country"],
+        has_bio=bool(result["bio"]),
+        has_image=bool(result["image_url"]),
+        **context,
+    )
+    return result
+
+
+def _json_list(raw: Any) -> list[Any]:
+    if raw in (None, "", "null"):
+        return []
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+        return list(parsed) if isinstance(parsed, (list, tuple)) else []
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+
+
+def _fetch_similar_artists(
+    artist: str,
+    conn: Any,
+    options: dict[str, Any],
+) -> dict[str, list[Any]]:
+    del conn
+    result: dict[str, list[Any]] = {"lastfm": [], "listenbrainz": []}
+    context = {"artist": artist}
+
+    if options.get("singles_only") or options.get("singles_with_missing_popularity"):
+        logger.info("[ENRICH] similar artists skipped", reason="singles pass", **context)
+        return result
+
+    try:
+        with _log_section("similar_artists.cache_read", **context):
+            with db_session() as session:
+                cached = session.execute(
+                    text("""
+                        SELECT similar_artists_lastfm,
+                               similar_artists_listenbrainz,
+                               similar_artists_last_updated
+                        FROM artists WHERE name = :artist
+                    """),
+                    {"artist": artist},
+                ).mappings().first()
+
+        cache_fresh = False
+        cache_age_days: int | None = None
+        if cached:
+            result["lastfm"] = _json_list(row_get(cached, "similar_artists_lastfm"))
+            result["listenbrainz"] = _json_list(row_get(cached, "similar_artists_listenbrainz"))
+            timestamp_raw = row_get(cached, "similar_artists_last_updated")
+            if timestamp_raw:
+                try:
+                    timestamp = (
+                        timestamp_raw
+                        if isinstance(timestamp_raw, datetime)
+                        else datetime.fromisoformat(str(timestamp_raw).replace("Z", "+00:00"))
+                    )
+                    if timestamp.tzinfo is None:
+                        timestamp = timestamp.replace(tzinfo=timezone.utc)
+                    cache_age_days = max(0, (datetime.now(timezone.utc) - timestamp).days)
+                    cache_fresh = cache_age_days < 90
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "[ENRICH] invalid similar-artist cache timestamp",
+                        timestamp=str(timestamp_raw),
+                        **context,
+                    )
+
+        lastfm_fresh = cache_fresh and bool(result["lastfm"])
+        listenbrainz_fresh = cache_fresh and bool(result["listenbrainz"])
+        logger.info(
+            "[ENRICH] similar-artist cache status",
+            cache_age_days=cache_age_days,
+            lastfm_fresh=lastfm_fresh,
+            listenbrainz_fresh=listenbrainz_fresh,
+            lastfm_count=len(result["lastfm"]),
+            listenbrainz_count=len(result["listenbrainz"]),
+            **context,
+        )
+        if lastfm_fresh and listenbrainz_fresh:
+            return result
+
+        from helpers.config_helpers import get_config
+        config = get_config()
+
+        if lastfm_fresh:
+            logger.info("[ENRICH] Last.fm similar artists skipped", reason="fresh cache", **context)
+        else:
+            lastfm_config = config.get("api_integrations", {}).get("lastfm", {})
+            if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
+                try:
+                    from api_clients.lastfm import LastFmClient
+                    similar = _call_with_heartbeat(
+                        "similar_artists.lastfm",
+                        LastFmClient(lastfm_config["api_key"]).get_similar_artists,
+                        artist,
+                        limit=10,
+                        log_context=context,
+                    ) or []
+                    result["lastfm"] = [
+                        str(item.get("name"))
+                        for item in similar
+                        if isinstance(item, dict) and item.get("name")
+                    ]
+                except Exception as exc:
+                    logger.warning("[ENRICH] Last.fm similar artists failed", error=_safe_error(exc), **context)
+            else:
+                logger.info("[ENRICH] Last.fm similar artists skipped", reason="integration disabled or key missing", **context)
+
+        if listenbrainz_fresh:
+            logger.info("[ENRICH] ListenBrainz similar artists skipped", reason="fresh cache", **context)
+        else:
+            try:
+                artist_mbid: str | None = None
+                with _log_section("similar_artists.musicbrainz_id_read", **context):
+                    with db_session() as session:
+                        row = session.execute(
+                            text(
+                                "SELECT NULLIF(TRIM(musicbrainz_artistid), '') AS mbid "
+                                "FROM tracks "
+                                "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
+                                "AND COALESCE(NULLIF(TRIM(musicbrainz_artistid), ''), '') <> '' "
+                                "LIMIT 1"
+                            ),
+                            {"artist": artist},
+                        ).mappings().first()
+                    if row:
+                        artist_mbid = row_get(row, "mbid")
+
+                if not artist_mbid:
+                    from services.enrichment.musicbrainz_persistence_service import lookup_and_save_artist_mbid
+                    artist_mbid = _call_with_heartbeat(
+                        "similar_artists.musicbrainz_id_lookup",
+                        lookup_and_save_artist_mbid,
+                        artist,
+                        None,
+                        log_context=context,
+                    )
+
+                if artist_mbid:
+                    from api_clients.listenbrainz import ListenBrainzClient
+                    lb_similar = _call_with_heartbeat(
+                        "similar_artists.listenbrainz",
+                        ListenBrainzClient().get_similar_artists,
+                        artist_mbid,
+                        limit=10,
+                        log_context={**context, "artist_mbid": artist_mbid},
+                    ) or []
+                    result["listenbrainz"] = [
+                        str(item.get("name"))
+                        for item in lb_similar
+                        if isinstance(item, dict) and item.get("name")
+                    ]
+                else:
+                    logger.info("[ENRICH] ListenBrainz similar artists skipped", reason="artist MBID unavailable", **context)
+            except Exception as exc:
+                logger.warning("[ENRICH] ListenBrainz similar artists failed", error=_safe_error(exc), **context)
+
+        try:
+            with _log_section("similar_artists.cache_write", **context):
+                with db_session() as session:
+                    session.execute(
+                        text("""
+                            INSERT INTO artists (
+                                id, name, similar_artists_lastfm,
+                                similar_artists_listenbrainz,
+                                similar_artists_last_updated
+                            )
+                            VALUES (:artist, :artist, :lf, :lb, :updated)
+                            ON CONFLICT (name) DO UPDATE SET
+                                similar_artists_lastfm = excluded.similar_artists_lastfm,
+                                similar_artists_listenbrainz = excluded.similar_artists_listenbrainz,
+                                similar_artists_last_updated = excluded.similar_artists_last_updated
+                        """),
+                        {
+                            "artist": artist,
+                            "lf": json.dumps(result["lastfm"]) if result["lastfm"] else None,
+                            "lb": json.dumps(result["listenbrainz"]) if result["listenbrainz"] else None,
+                            "updated": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+        except Exception as exc:
+            logger.warning("[ENRICH] similar-artist cache persistence failed", error=_safe_error(exc), **context)
+    except Exception as exc:
+        logger.exception("[ENRICH] similar artists pipeline failed", error=_safe_error(exc), **context)
+
+    logger.info(
+        "[ENRICH] similar artists result",
+        lastfm_count=len(result["lastfm"]),
+        listenbrainz_count=len(result["listenbrainz"]),
+        **context,
+    )
     return result
 
 
 _discogs_artist_id_cache: dict[str, str] = {}
 _discogs_artist_id_lock = threading.Lock()
 
+
 def _fetch_discogs_artist_id(artist: str, conn: Any, options: dict[str, Any]) -> None:
-    """Fetch and cache the Discogs artist ID."""
-    if bool(options.get("singles_only")) or bool(options.get("singles_with_missing_popularity")):
+    del conn
+    context = {"artist": artist}
+    if options.get("singles_only") or options.get("singles_with_missing_popularity"):
+        logger.info("[ENRICH] Discogs artist ID skipped", reason="singles pass", **context)
         return
-    if artist.lower() in ("various artists", "various", "compilation", "soundtrack"):
+    if artist.casefold().strip() in _COMPILATION_ARTISTS:
+        logger.info("[ENRICH] Discogs artist ID skipped", reason="compilation artist", **context)
         return
+
     try:
         from helpers.config_helpers import get_config
-        cfg = get_config()
-        discogs_cfg = cfg.get("api_integrations", {}).get("discogs", {})
-        token = discogs_cfg.get("token", "")
-        if not (discogs_cfg.get("enabled") and token):
+        discogs_config = get_config().get("api_integrations", {}).get("discogs", {})
+        token = str(discogs_config.get("token") or "")
+        if not discogs_config.get("enabled") or token.casefold() in {
+            "", "your_discogs_token", "your_token", "placeholder"
+        }:
+            logger.info("[ENRICH] Discogs artist ID skipped", reason="integration disabled or token missing", **context)
             return
-        if token.lower() in ("your_discogs_token", "your_token", "placeholder", ""):
-            return
-            
-        _cache_key = artist.casefold().strip()
 
+        cache_key = artist.casefold().strip()
         with _discogs_artist_id_lock:
-            discogs_artist_id = _discogs_artist_id_cache.get(_cache_key, "")
-        if not discogs_artist_id:
+            discogs_artist_id = _discogs_artist_id_cache.get(cache_key, "")
+
+        if discogs_artist_id:
+            logger.info("[ENRICH] Discogs artist ID memory-cache hit", discogs_id=discogs_artist_id, **context)
+        else:
             from api_clients.discogs_http import DiscogsHttpClient
-            client = DiscogsHttpClient(token=token)
-            discogs_artist_id = str(client.get_artist_id(artist) or "")
+            value = _call_with_heartbeat(
+                "artist_id.discogs.lookup",
+                DiscogsHttpClient(token=token).get_artist_id,
+                artist,
+                log_context=context,
+            )
+            discogs_artist_id = str(value or "").strip()
             with _discogs_artist_id_lock:
-                _discogs_artist_id_cache[_cache_key] = discogs_artist_id
+                _discogs_artist_id_cache[cache_key] = discogs_artist_id
 
         if not discogs_artist_id:
+            logger.info("[ENRICH] Discogs artist ID not found", **context)
             return
-            
-        with db_session() as session:
-            session.execute(
-                text(
-                    "UPDATE tracks SET discogs_artist_id = :did "
-                    "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
-                    "AND (discogs_artist_id IS NULL OR TRIM(CAST(discogs_artist_id AS TEXT)) = '')"
-                ),
-                {"did": discogs_artist_id, "artist": artist},
-            )
-        logger.info("Retrieved and persisted Discogs artist ID", artist=artist, discogs_id=discogs_artist_id)
+
+        with _log_section("artist_id.discogs.persist", **context):
+            with db_session() as session:
+                result = session.execute(
+                    text(
+                        "UPDATE tracks SET discogs_artist_id = :did "
+                        "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
+                        "AND (discogs_artist_id IS NULL OR TRIM(CAST(discogs_artist_id AS TEXT)) = '')"
+                    ),
+                    {"did": discogs_artist_id, "artist": artist},
+                )
+                rowcount = result.rowcount
+        logger.info("[ENRICH] Discogs artist ID persisted", discogs_id=discogs_artist_id, rows_updated=rowcount, **context)
     except Exception as exc:
-        logger.debug("Discogs artist ID lookup failed", artist=artist, error=str(exc))
+        logger.exception("[ENRICH] Discogs artist ID lookup failed", error=_safe_error(exc), **context)
 
 
 def _fetch_musicbrainz_artist_id(artist: str, conn: Any, options: dict[str, Any]) -> None:
-    """Resolve and persist the MusicBrainz artist ID."""
-    if artist.lower() in ("various artists", "various", "compilation", "soundtrack"):
+    del conn, options
+    context = {"artist": artist}
+    if artist.casefold().strip() in _COMPILATION_ARTISTS:
+        logger.info("[ENRICH] MusicBrainz artist ID skipped", reason="compilation artist", **context)
         return
     try:
-        with db_session() as session:
-            row = session.execute(
-                text(
-                    "SELECT NULLIF(TRIM(musicbrainz_artistid), '') AS mbid "
-                    "FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
-                    "AND COALESCE(NULLIF(TRIM(musicbrainz_artistid), ''), '') <> '' LIMIT 1"
-                ),
-                {"artist": artist},
-            ).fetchone()
-        if row and row[0]:
+        with _log_section("artist_id.musicbrainz.database_read", **context):
+            with db_session() as session:
+                row = session.execute(
+                    text(
+                        "SELECT NULLIF(TRIM(musicbrainz_artistid), '') AS mbid "
+                        "FROM tracks "
+                        "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
+                        "AND COALESCE(NULLIF(TRIM(musicbrainz_artistid), ''), '') <> '' "
+                        "LIMIT 1"
+                    ),
+                    {"artist": artist},
+                ).mappings().first()
+        existing_mbid = row_get(row, "mbid") if row else None
+        if existing_mbid:
+            logger.info("[ENRICH] MusicBrainz artist ID already present", mbid=existing_mbid, **context)
             return
 
         from services.enrichment.musicbrainz_persistence_service import lookup_and_save_artist_mbid
-        mbid = lookup_and_save_artist_mbid(artist)
-        if mbid:
-            logger.info("Persisted MusicBrainz artist ID", artist=artist, mbid=mbid)
+        mbid = _call_with_heartbeat(
+            "artist_id.musicbrainz.lookup_and_persist",
+            lookup_and_save_artist_mbid,
+            artist,
+            log_context=context,
+        )
+        logger.info("[ENRICH] MusicBrainz artist ID lookup result", found=bool(mbid), mbid=mbid, **context)
     except Exception as exc:
-        logger.debug("MusicBrainz artist ID lookup failed", artist=artist, error=str(exc))
+        logger.exception("[ENRICH] MusicBrainz artist ID lookup failed", error=_safe_error(exc), **context)
 
 
 def _lookup_musicbrainz_album_type(artist: str, album: str) -> tuple[str | None, str | None]:
-    """Query MusicBrainz release-group for a confident album-type match with a fail-safe timeout."""
     clean_album = _sanitize_release_name(album)
+    context = {"artist": artist, "album": album, "query_album": clean_album}
     try:
-        svc = get_shared_mb_service()
-        # Non-blocking search with fail-safe guard
-        matches = svc.search_releasegroup_matches(artist, clean_album, limit=3)
+        service = get_shared_mb_service()
+        matches = _call_with_heartbeat(
+            "album_type.musicbrainz.release_group_search",
+            service.search_releasegroup_matches,
+            artist,
+            clean_album,
+            limit=3,
+            log_context=context,
+        ) or []
         if not matches:
+            logger.info("[ENRICH] MusicBrainz album type had no matches", **context)
             return None, None
-        best = matches[0]
-        if (best.get("match_score") or 0) < 0.6:
+
+        best = matches[0] if isinstance(matches[0], dict) else {}
+        score = float(best.get("match_score") or 0)
+        if score < 0.6:
+            logger.info("[ENRICH] MusicBrainz album type match rejected", match_score=score, **context)
             return None, None
-        primary = (best.get("primary_type") or "").lower()
-        rg_mbid = best.get("id")
-        
-        secondary = " ".join(str(s).lower() for s in (best.get("secondary_types") or []) if s)
+
+        primary = str(best.get("primary_type") or "").casefold()
+        release_group_mbid = str(best.get("id") or "").strip() or None
+        secondary = {
+            str(value).casefold()
+            for value in (best.get("secondary_types") or [])
+            if value
+        }
         mapping = {
-            "single": "single",
-            "ep": "ep",
-            "album": "album",
-            "compilation": "album+compilation",
-            "live": "album+live",
+            "single": "single", "ep": "ep", "album": "album",
+            "compilation": "album+compilation", "live": "album+live",
             "remix": "album+remix",
         }
+
+        resolved: str | None
         if primary == "album" or primary not in mapping:
             if "live" in secondary:
-                return "album+live", rg_mbid
-            if "acoustic" in secondary or "unplugged" in secondary:
-                return "album+acoustic", rg_mbid
-            if "compilation" in secondary:
-                return "album+compilation", rg_mbid
-            if "remix" in secondary:
-                return "album+remix", rg_mbid
-        return mapping.get(primary), rg_mbid
+                resolved = "album+live"
+            elif {"acoustic", "unplugged"} & secondary:
+                resolved = "album+acoustic"
+            elif "compilation" in secondary:
+                resolved = "album+compilation"
+            elif "remix" in secondary:
+                resolved = "album+remix"
+            else:
+                resolved = mapping.get(primary)
+        else:
+            resolved = mapping.get(primary)
+
+        logger.info(
+            "[ENRICH] MusicBrainz album type result",
+            primary_type=primary,
+            secondary_types=sorted(secondary),
+            resolved_type=resolved,
+            match_score=score,
+            release_group_mbid=release_group_mbid,
+            **context,
+        )
+        return resolved, release_group_mbid
     except Exception as exc:
-        logger.debug("MB album-type lookup failed safely", artist=artist, album=album, error=str(exc))
+        logger.exception("[ENRICH] MusicBrainz album-type lookup failed safely", error=_safe_error(exc), **context)
         return None, None
 
 
-def _persist_album_type_to_tracks(conn: Any, cursor: Any, artist: str, album: str, tracks: list[dict[str, Any]], album_type: str, release_group_mbid: str | None) -> None:
-    """Propagate the detected album type to album tracks."""
+def _persist_album_type_to_tracks(
+    conn: Any,
+    cursor: Any,
+    artist: str,
+    album: str,
+    tracks: list[dict[str, Any]],
+    album_type: str,
+    release_group_mbid: str | None,
+) -> None:
+    del conn, cursor
+    context = {"artist": artist, "album": album, "album_type": album_type}
     if not album_type:
+        logger.info("[ENRICH] album type persistence skipped", reason="empty album type", **context)
         return
-        
+
     primary = normalize_primary_release_type(album_type)
+    attempted = 0
     updated = 0
-    with db_session() as session:
-        for track in tracks or []:
-            track_id = track.get("id")
-            if not track_id:
-                continue
-            current_type = str(track.get("musicbrainz_albumtype") or "")
-            if current_type == album_type:
-                continue
-            try:
-                session.execute(
-                    text("""
-                        UPDATE tracks
-                        SET spotify_album_type = :album_type, releasetype = :primary, musicbrainz_albumtype = :album_type
-                        WHERE id = :tid
-                    """),
-                    {"album_type": album_type, "primary": primary, "tid": str(track_id)},
-                )
-                updated += 1
-            except Exception as exc:
-                logger.debug("Album-type persist failed", track_id=track_id, error=str(exc))
-                
-    if updated:
-        logger.info("Persisted album type", album_type=album_type, tracks_updated=updated, artist=artist, album=album)
-
-    if release_group_mbid:
+    with _log_section("album_type.track_persist", track_count=len(tracks or []), **context):
         with db_session() as session:
-            try:
-                session.execute(
-                    text("""
-                        UPDATE tracks
-                        SET musicbrainz_releasegroupid = :rg_mbid
-                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album
-                          AND (musicbrainz_releasegroupid IS NULL OR TRIM(musicbrainz_releasegroupid) = '')
-                    """),
-                    {"rg_mbid": release_group_mbid, "artist": artist, "album": album},
-                )
-            except Exception as exc:
-                logger.debug("Release-group MBID propagation failed", error=str(exc))
-
-        release_mbid = ""
-        try:
-            from services.enrichment.musicbrainz_service import resolve_release_id
-            release_mbid = resolve_release_id(release_group_mbid)
-        except Exception as exc:
-            logger.debug("Release MBID resolution failed", release_group_mbid=release_group_mbid, error=str(exc))
-            release_mbid = ""
-            
-        if release_mbid and str(release_mbid).strip() and str(release_mbid).strip() != str(release_group_mbid).strip():
-            try:
-                with db_session() as session:
-                    session.execute(
+            for track in tracks or []:
+                track_id = track.get("id")
+                if not track_id or str(track.get("musicbrainz_albumtype") or "") == album_type:
+                    continue
+                attempted += 1
+                try:
+                    result = session.execute(
                         text("""
                             UPDATE tracks
-                            SET musicbrainz_album_mbid = :mbid, musicbrainz_albumid = :mbid
-                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album
-                              AND (musicbrainz_album_mbid IS NULL OR TRIM(musicbrainz_album_mbid) = '')
+                            SET spotify_album_type = :album_type,
+                                releasetype = :primary,
+                                musicbrainz_albumtype = :album_type
+                            WHERE id = :track_id
                         """),
-                        {"mbid": release_mbid, "artist": artist, "album": album},
+                        {"album_type": album_type, "primary": primary, "track_id": str(track_id)},
                     )
-            except Exception as exc:
-                logger.debug("Release MBID propagation failed", error=str(exc))
+                    if result.rowcount and result.rowcount > 0:
+                        updated += result.rowcount
+                except Exception as exc:
+                    logger.warning(
+                        "[ENRICH] album type track update failed",
+                        track_id=track_id,
+                        error=_safe_error(exc),
+                        **context,
+                    )
+    logger.info("[ENRICH] album type track persistence result", attempted=attempted, rows_updated=updated, **context)
 
-
-def _inject_album_genre(track_id: str, label: str, mb_genres_raw: Any, genres_raw: Any) -> None:
-    """Insert a genre label (Live/Acoustic/Remix) into stored genre columns."""
-    mb_list: list[str] = []
-    try:
-        if mb_genres_raw and str(mb_genres_raw) not in ("null", "[]", ""):
-            mb_list = json.loads(mb_genres_raw) if isinstance(mb_genres_raw, str) else list(mb_genres_raw)
-    except Exception:
-        mb_list = []
-        
-    if not isinstance(mb_list, list):
-        mb_list = []
-        
-    if label.lower() not in [str(g).lower() for g in mb_list]:
-        mb_list.insert(0, label)
-
-    genre_list = [g.strip() for g in str(genres_raw or "").split(",") if g.strip()]
-    if label.lower() not in [g.lower() for g in genre_list]:
-        genre_list.insert(0, label)
+    if not release_group_mbid:
+        logger.info("[ENRICH] release-group persistence skipped", reason="release-group MBID unavailable", **context)
+        return
 
     try:
-        with db_session() as session:
-            session.execute(
-                text("UPDATE tracks SET musicbrainz_genres = :mb, genres = :genres WHERE id = :tid"),
-                {"mb": json.dumps(mb_list), "genres": ", ".join(genre_list), "tid": str(track_id)},
-            )
+        with _log_section("album_type.release_group_persist", release_group_mbid=release_group_mbid, **context):
+            with db_session() as session:
+                result = session.execute(
+                    text("""
+                        UPDATE tracks
+                        SET musicbrainz_releasegroupid = :release_group_mbid
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+                          AND album = :album
+                          AND (musicbrainz_releasegroupid IS NULL OR TRIM(musicbrainz_releasegroupid) = '')
+                    """),
+                    {"release_group_mbid": release_group_mbid, "artist": artist, "album": album},
+                )
+                release_group_rows = result.rowcount
+        logger.info("[ENRICH] release-group MBID persisted", rows_updated=release_group_rows, release_group_mbid=release_group_mbid, **context)
     except Exception as exc:
-        logger.debug("Genre label inject failed", track_id=track_id, error=str(exc))
+        logger.exception("[ENRICH] release-group MBID propagation failed", error=_safe_error(exc), **context)
+
+    release_mbid = ""
+    try:
+        from services.enrichment.musicbrainz_service import resolve_release_id
+        value = _call_with_heartbeat(
+            "album_type.musicbrainz.release_resolution",
+            resolve_release_id,
+            release_group_mbid,
+            log_context={**context, "release_group_mbid": release_group_mbid},
+        )
+        release_mbid = str(value or "").strip()
+    except Exception as exc:
+        logger.warning("[ENRICH] release MBID resolution failed", error=_safe_error(exc), release_group_mbid=release_group_mbid, **context)
+
+    if not release_mbid or release_mbid == str(release_group_mbid).strip():
+        logger.info(
+            "[ENRICH] release MBID persistence skipped",
+            reason="release MBID unavailable or identical to release-group MBID",
+            release_mbid=release_mbid or None,
+            **context,
+        )
+        return
+
+    try:
+        with _log_section("album_type.release_mbid_persist", release_mbid=release_mbid, **context):
+            with db_session() as session:
+                result = session.execute(
+                    text("""
+                        UPDATE tracks
+                        SET musicbrainz_album_mbid = :release_mbid,
+                            musicbrainz_albumid = :release_mbid
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist
+                          AND album = :album
+                          AND (musicbrainz_album_mbid IS NULL OR TRIM(musicbrainz_album_mbid) = '')
+                    """),
+                    {"release_mbid": release_mbid, "artist": artist, "album": album},
+                )
+                rows_updated = result.rowcount
+        logger.info("[ENRICH] release MBID persisted", rows_updated=rows_updated, release_mbid=release_mbid, **context)
+    except Exception as exc:
+        logger.exception("[ENRICH] release MBID propagation failed", error=_safe_error(exc), **context)
+
+
+def _genre_values(label: str, mb_genres_raw: Any, genres_raw: Any) -> tuple[str, str]:
+    mb_list = [str(value).strip() for value in _json_list(mb_genres_raw) if str(value).strip()]
+    if label.casefold() not in {value.casefold() for value in mb_list}:
+        mb_list.insert(0, label)
+    genres = [value.strip() for value in str(genres_raw or "").split(",") if value.strip()]
+    if label.casefold() not in {value.casefold() for value in genres}:
+        genres.insert(0, label)
+    return json.dumps(mb_list), ", ".join(genres)
+
+
+def _inject_album_genre(
+    track_id: str,
+    label: str,
+    mb_genres_raw: Any,
+    genres_raw: Any,
+    *,
+    session: Any | None = None,
+) -> None:
+    """Insert a genre label, reusing an outer write session when supplied."""
+    mb_json, genres_csv = _genre_values(label, mb_genres_raw, genres_raw)
+    params = {"mb": mb_json, "genres": genres_csv, "track_id": str(track_id)}
+    try:
+        if session is not None:
+            session.execute(
+                text("UPDATE tracks SET musicbrainz_genres = :mb, genres = :genres WHERE id = :track_id"),
+                params,
+            )
+        else:
+            with db_session() as owned_session:
+                owned_session.execute(
+                    text("UPDATE tracks SET musicbrainz_genres = :mb, genres = :genres WHERE id = :track_id"),
+                    params,
+                )
+    except Exception as exc:
+        logger.warning("[ENRICH] genre label injection failed", track_id=track_id, label=label, error=_safe_error(exc))
+        raise
 
 
 def _fetch_artist_lastfm_tags(artist: str, conn: Any) -> None:
-    """Fetch and cache Last.fm artist top tags."""
+    del conn
+    context = {"artist": artist}
     try:
-        with db_session() as session:
-            row = session.execute(
-                text("SELECT lastfm_artist_tags FROM artists WHERE name = :artist"),
-                {"artist": artist},
-            ).fetchone()
-            if row and row[0]:
-                return
+        with _log_section("artist_tags.lastfm.cache_read", **context):
+            with db_session() as session:
+                row = session.execute(
+                    text("SELECT lastfm_artist_tags FROM artists WHERE name = :artist"),
+                    {"artist": artist},
+                ).first()
+        if row and row[0]:
+            logger.info("[ENRICH] Last.fm artist tags skipped", reason="already cached", **context)
+            return
 
         from helpers.config_helpers import get_config
-        cfg = get_config()
-        lf_cfg = cfg.get("api_integrations", {}).get("lastfm", {})
-        if not (lf_cfg.get("enabled") and lf_cfg.get("api_key")):
-            return
-        api_key = lf_cfg["api_key"]
-        if api_key in ("your_lastfm_api_key", "YOUR_API_KEY", "<your_api_key>", ""):
+        lastfm_config = get_config().get("api_integrations", {}).get("lastfm", {})
+        api_key = str(lastfm_config.get("api_key") or "")
+        if not lastfm_config.get("enabled") or api_key in {
+            "", "your_lastfm_api_key", "YOUR_API_KEY", "<your_api_key>"
+        }:
+            logger.info("[ENRICH] Last.fm artist tags skipped", reason="integration disabled or key missing", **context)
             return
 
         from api_clients.lastfm import LastFmClient
-        lf = LastFmClient(api_key)
-        tags = lf.get_artist_top_tags(artist, limit=15) or []
-        names = [t.get("name") for t in tags if isinstance(t, dict) and t.get("name")]
-        if names:
+        tags = _call_with_heartbeat(
+            "artist_tags.lastfm.lookup",
+            LastFmClient(api_key).get_artist_top_tags,
+            artist,
+            limit=15,
+            log_context=context,
+        ) or []
+        names = [str(tag.get("name")) for tag in tags if isinstance(tag, dict) and tag.get("name")]
+        if not names:
+            logger.info("[ENRICH] Last.fm artist tags returned no values", **context)
+            return
+
+        with _log_section("artist_tags.lastfm.persist", tag_count=len(names), **context):
             with db_session() as session:
-                session.execute(
+                result = session.execute(
                     text("UPDATE artists SET lastfm_artist_tags = :tags WHERE name = :artist"),
                     {"tags": json.dumps(names), "artist": artist},
                 )
-            logger.info("Stored Last.fm tag(s)", tag_count=len(names), artist=artist)
+                rows_updated = result.rowcount
+        logger.info("[ENRICH] Last.fm artist tags persisted", tag_count=len(names), rows_updated=rows_updated, **context)
     except Exception as exc:
-        logger.debug("Last.fm artist tags failed", artist=artist, error=str(exc))
+        logger.exception("[ENRICH] Last.fm artist tags failed", error=_safe_error(exc), **context)
 
 
 def ensure_album_type(album_row: dict[str, Any], options: dict[str, Any] | None = None) -> str | None:
-    """Lightweight album-type enrichment for SKIPPED albums."""
     options = options or {}
-    artist = str(album_row.get("artist") or "")
-    album = str(album_row.get("album") or "")
+    artist = str(album_row.get("artist") or "").strip()
+    album = str(album_row.get("album") or "").strip()
     tracks = album_row.get("tracks") or []
+    context = {"artist": artist, "album": album}
+    logger.info("[ENRICH] ensure album type started", track_count=len(tracks), **context)
+
     if not artist or not album:
+        logger.warning("[ENRICH] ensure album type skipped", reason="artist or album missing", **context)
         return None
 
     stored = {
-        str(t.get("musicbrainz_albumtype") or "").strip()
-        for t in tracks
-        if t.get("id")
+        str(track.get("musicbrainz_albumtype") or "").strip()
+        for track in tracks
+        if track.get("id")
     }
     stored.discard("")
     if len(stored) == 1 and not options.get("force"):
-        return next(iter(stored))
+        value = next(iter(stored))
+        logger.info("[ENRICH] ensure album type cache hit", detected_type=value, **context)
+        return value
 
     detected: str | None = None
     try:
@@ -610,93 +1024,127 @@ def ensure_album_type(album_row: dict[str, Any], options: dict[str, Any] | None 
             str(album_row.get("album_artist") or "") or None,
             str(album_row.get("spotify_album_type") or "") or None,
         )
-        mb_type, rg_mbid = _lookup_musicbrainz_album_type(artist, album)
+        mb_type, release_group_mbid = _lookup_musicbrainz_album_type(artist, album)
         if mb_type:
             track_count = len(tracks)
-            if mb_type in ("single", "ep") and track_count > 6:
+            if mb_type in {"single", "ep"} and track_count > 6:
                 mb_type = "album"
             elif mb_type == "single" and track_count > 3:
                 mb_type = "ep"
-            if detected == "album" or mb_type in ("single", "ep"):
+            if detected == "album" or mb_type in {"single", "ep"}:
                 detected = mb_type
+
         if not detected:
+            logger.warning("[ENRICH] ensure album type produced no type", **context)
             return None
-        _persist_album_type_to_tracks(None, None, artist, album, tracks, detected, rg_mbid)
-        logger.info("Ensured album type", detected=detected, artist=artist, album=album)
+
+        _persist_album_type_to_tracks(None, None, artist, album, tracks, detected, release_group_mbid)
+        logger.info("[ENRICH] ensure album type completed", detected_type=detected, **context)
         return detected
     except Exception as exc:
-        logger.debug("ensure_album_type failed", artist=artist, album=album, error=str(exc))
+        logger.exception("[ENRICH] ensure album type failed", detected_type=detected, error=_safe_error(exc), **context)
         return detected
 
 
-def _apply_live_remix_album_tagging(artist: str, album: str, album_type: str, tracks: list[dict[str, Any]]) -> None:
-    """Tag live/acoustic/remix albums."""
-    lower = (album_type or "").lower()
-    is_live_album = "+live" in lower or "(live)" in lower
+def _apply_live_remix_album_tagging(
+    artist: str,
+    album: str,
+    album_type: str,
+    tracks: list[dict[str, Any]],
+) -> None:
+    lower = (album_type or "").casefold()
+    is_live_album = "+live" in lower or "(live)" in lower or "+acoustic" in lower
     is_remix_album = "+remix" in lower or "(remix)" in lower
+    context = {"artist": artist, "album": album, "album_type": album_type}
+
+    logger.info(
+        "[ENRICH] live/remix tagging evaluated",
+        is_live_album=is_live_album,
+        is_remix_album=is_remix_album,
+        track_count=len(tracks or []),
+        **context,
+    )
 
     if is_live_album:
         live_type = detect_live_album_type(album, album_type) or "live"
         label = "Acoustic" if live_type == "acoustic" else "Live"
-        tagged = 0
-        with db_session() as session:
-            for track in tracks or []:
-                track_id = track.get("id")
-                title = str(track.get("title") or "")
-                if not track_id or not title:
-                    continue
-                is_live_flag = int(track.get("is_live") or 0)
-                is_acoustic_flag = int(track.get("is_acoustic") or 0)
-                already_tagged = (
-                    (label == "Live" and is_live_flag)
-                    or (label == "Acoustic" and is_acoustic_flag)
-                )
-                if already_tagged:
-                    continue
-                new_title = title
-                has_suffix = bool(re.search(rf"\({label}[^)]*\)\s*$", title, re.IGNORECASE))
-                if not is_live_or_unplugged_track_title(title) and not has_suffix:
-                    new_title = f"{title} ({label})"
-                try:
-                    session.execute(
-                        text("""
-                            UPDATE tracks
-                            SET is_live = :is_live, is_acoustic = :is_acoustic,
-                                album_context_live = 1, title = :title
-                            WHERE id = :tid
-                        """),
-                        {
-                            "is_live": 1 if label == "Live" else 0,
-                            "is_acoustic": 1 if label == "Acoustic" else 0,
-                            "title": new_title,
-                            "tid": str(track_id),
-                        },
+        attempted = 0
+        updated = 0
+        with _log_section("album_tagging.live_acoustic", label=label, **context):
+            with db_session() as session:
+                for track in tracks or []:
+                    track_id = track.get("id")
+                    title = str(track.get("title") or "")
+                    if not track_id or not title:
+                        continue
+                    already_tagged = (
+                        (label == "Live" and bool(track.get("is_live")))
+                        or (label == "Acoustic" and bool(track.get("is_acoustic")))
                     )
-                    tagged += 1
-                    _inject_album_genre(str(track_id), label, track.get("musicbrainz_genres"), track.get("genres"))
-                except Exception as exc:
-                    logger.debug("Live tagging failed", track_id=track_id, error=str(exc))
-        if tagged:
-            logger.info("Tagged as Live/Acoustic album", artist=artist, album=album, label=label)
+                    if already_tagged:
+                        continue
+                    attempted += 1
+                    new_title = title
+                    has_suffix = bool(re.search(rf"\({re.escape(label)}[^)]*\)\s*$", title, re.IGNORECASE))
+                    if not is_live_or_unplugged_track_title(title) and not has_suffix:
+                        new_title = f"{title} ({label})"
+                    try:
+                        result = session.execute(
+                            text("""
+                                UPDATE tracks
+                                SET is_live = :is_live,
+                                    is_acoustic = :is_acoustic,
+                                    album_context_live = 1,
+                                    title = :title
+                                WHERE id = :track_id
+                            """),
+                            {
+                                "is_live": 1 if label == "Live" else 0,
+                                "is_acoustic": 1 if label == "Acoustic" else 0,
+                                "title": new_title,
+                                "track_id": str(track_id),
+                            },
+                        )
+                        _inject_album_genre(
+                            str(track_id),
+                            label,
+                            track.get("musicbrainz_genres"),
+                            track.get("genres"),
+                            session=session,
+                        )
+                        if result.rowcount and result.rowcount > 0:
+                            updated += result.rowcount
+                    except Exception as exc:
+                        logger.warning("[ENRICH] live/acoustic track tagging failed", track_id=track_id, error=_safe_error(exc), **context)
+        logger.info("[ENRICH] live/acoustic tagging result", label=label, attempted=attempted, rows_updated=updated, **context)
 
     if is_remix_album:
-        tagged = 0
-        with db_session() as session:
-            for track in tracks or []:
-                track_id = track.get("id")
-                if not track_id:
-                    continue
-                try:
-                    session.execute(
-                        text("UPDATE tracks SET is_remix = 1 WHERE id = :tid AND COALESCE(is_remix, 0) = 0"),
-                        {"tid": str(track_id)},
-                    )
-                    tagged += 1
-                    _inject_album_genre(str(track_id), "Remix", track.get("musicbrainz_genres"), track.get("genres"))
-                except Exception as exc:
-                    logger.debug("Remix tagging failed", track_id=track_id, error=str(exc))
-        if tagged:
-            logger.info("Tagged as Remix album", artist=artist, album=album)
+        attempted = 0
+        updated = 0
+        with _log_section("album_tagging.remix", **context):
+            with db_session() as session:
+                for track in tracks or []:
+                    track_id = track.get("id")
+                    if not track_id:
+                        continue
+                    attempted += 1
+                    try:
+                        result = session.execute(
+                            text("UPDATE tracks SET is_remix = 1 WHERE id = :track_id AND COALESCE(is_remix, 0) = 0"),
+                            {"track_id": str(track_id)},
+                        )
+                        _inject_album_genre(
+                            str(track_id),
+                            "Remix",
+                            track.get("musicbrainz_genres"),
+                            track.get("genres"),
+                            session=session,
+                        )
+                        if result.rowcount and result.rowcount > 0:
+                            updated += result.rowcount
+                    except Exception as exc:
+                        logger.warning("[ENRICH] remix track tagging failed", track_id=track_id, error=_safe_error(exc), **context)
+        logger.info("[ENRICH] remix tagging result", attempted=attempted, rows_updated=updated, **context)
 
 
 _LIVE_SUFFIX_RE = re.compile(r"\s*\((?:Live|Acoustic)[^)]*\)\s*$", re.IGNORECASE)
@@ -707,118 +1155,141 @@ def strip_live_acoustic_suffix(title: str) -> str:
 
 
 def _drop_live_genres_from_json(raw: Any) -> str | None:
-    try:
-        if not raw:
-            return None
-        parsed = json.loads(raw) if isinstance(raw, str) else list(raw)
-        kept = [g for g in parsed if str(g).strip().lower() not in ("live", "acoustic")]
-        return json.dumps(kept) if kept != parsed else None
-    except Exception:
+    if not raw:
         return None
+    parsed = _json_list(raw)
+    kept = [value for value in parsed if str(value).strip().casefold() not in {"live", "acoustic"}]
+    return json.dumps(kept) if kept != parsed else None
 
 
 def _drop_live_genres_from_csv(raw: Any) -> str | None:
-    try:
-        if not raw:
-            return None
-        parts = [g.strip() for g in str(raw).split(",") if g.strip()]
-        kept = [g for g in parts if g.lower() not in ("live", "acoustic")]
-        return ", ".join(kept) if kept != parts else None
-    except Exception:
+    if not raw:
         return None
+    parts = [value.strip() for value in str(raw).split(",") if value.strip()]
+    kept = [value for value in parts if value.casefold() not in {"live", "acoustic"}]
+    return ", ".join(kept) if kept != parts else None
 
 
 def revert_track_live_state(track_id: str) -> bool:
-    """Undo album-stage live/acoustic tagging for a single track."""
+    context = {"track_id": str(track_id)}
+    logger.info("[ENRICH] live-state revert started", **context)
     try:
-        import os as _os
         with db_session() as session:
             row = session.execute(
-                text("SELECT title, file_path, genres, musicbrainz_genres "
-                     "FROM tracks WHERE CAST(id AS TEXT) = :id"),
-                {"id": str(track_id)},
-            ).fetchone()
+                text(
+                    "SELECT title, file_path, genres, musicbrainz_genres "
+                    "FROM tracks WHERE CAST(id AS TEXT) = :track_id"
+                ),
+                {"track_id": str(track_id)},
+            ).mappings().first()
             if not row:
+                logger.warning("[ENRICH] live-state revert skipped", reason="track not found", **context)
                 return False
-            r = row._mapping
-            old_title = str(r.get("title") or "")
+
+            old_title = str(row_get(row, "title") or "")
             new_title = strip_live_acoustic_suffix(old_title)
-            new_mb = _drop_live_genres_from_json(r.get("musicbrainz_genres"))
-            new_genres = _drop_live_genres_from_csv(r.get("genres"))
+            new_mb = _drop_live_genres_from_json(row_get(row, "musicbrainz_genres"))
+            new_genres = _drop_live_genres_from_csv(row_get(row, "genres"))
             session.execute(
                 text("""
                     UPDATE tracks
-                    SET title = :title, is_live = 0, is_acoustic = 0,
+                    SET title = :title,
+                        is_live = 0,
+                        is_acoustic = 0,
                         album_context_live = 0,
                         musicbrainz_genres = COALESCE(:mb, musicbrainz_genres),
                         genres = COALESCE(:genres, genres)
-                    WHERE CAST(id AS TEXT) = :id
+                    WHERE CAST(id AS TEXT) = :track_id
                 """),
-                {"id": str(track_id), "title": new_title or old_title,
-                 "mb": new_mb, "genres": new_genres},
+                {
+                    "track_id": str(track_id),
+                    "title": new_title or old_title,
+                    "mb": new_mb,
+                    "genres": new_genres,
+                },
             )
-            file_path = r.get("file_path")
+            file_path = row_get(row, "file_path")
 
         if new_title != old_title and file_path:
             try:
                 from services.metadata.tag_file_service import update_file_tags
                 resolved = str(file_path)
-                if not _os.path.isabs(resolved):
+                if not os.path.isabs(resolved):
                     from helpers.config_helpers import get_config
-                    music_root = (get_config().get("music", {}) or {}).get("root") or _os.environ.get("MUSIC_ROOT", "/music")
-                    resolved = _os.path.join(music_root, resolved)
-                if _os.path.exists(resolved):
+                    music_root = (
+                        (get_config().get("music", {}) or {}).get("root")
+                        or os.environ.get("MUSIC_ROOT", "/music")
+                    )
+                    resolved = os.path.join(music_root, resolved)
+                if os.path.exists(resolved):
                     tags: dict[str, Any] = {"title": new_title or old_title}
                     if new_genres is not None:
-                        tags["genres"] = [g.strip() for g in new_genres.split(",") if g.strip()]
-                    update_file_tags(resolved, tags)
-            except Exception as tag_err:
-                logger.debug("Live revert tag write failed", track_id=track_id, error=str(tag_err))
+                        tags["genres"] = [value.strip() for value in new_genres.split(",") if value.strip()]
+                    _call_with_heartbeat(
+                        "live_state.file_tag_write",
+                        update_file_tags,
+                        resolved,
+                        tags,
+                        log_context=context,
+                    )
+                else:
+                    logger.warning("[ENRICH] live-state file tag write skipped", reason="file does not exist", file_path=resolved, **context)
+            except Exception as exc:
+                logger.warning("[ENRICH] live-state file tag write failed", error=_safe_error(exc), **context)
 
-        logger.info("Reverted live/acoustic tagging for track", track_id=track_id, old_title=old_title, new_title=new_title or old_title)
+        logger.info("[ENRICH] live-state revert completed", old_title=old_title, new_title=new_title or old_title, **context)
         return True
     except Exception as exc:
-        logger.debug("Live-state revert failed", track_id=track_id, error=str(exc))
+        logger.exception("[ENRICH] live-state revert failed", error=_safe_error(exc), **context)
         return False
 
 
 def _persist_alternate_takes(album_context: dict[str, Any]) -> None:
-    """Mark alternate takes (``alternate_take`` / ``base_track_id``)."""
     alternate_takes = (album_context or {}).get("alternate_takes") or {}
+    groups_seen = 0
+    attempted = 0
     updated = 0
-    with db_session() as session:
-        for base_key, variants in alternate_takes.items():
-            if not variants or len(variants) < 2:
-                continue
-            base_track = variants[0]
-            base_id = base_track.get("id") if isinstance(base_track, dict) else None
-            if not base_id:
-                continue
-            for variant in variants[1:]:
-                alt_id = variant.get("id") if isinstance(variant, dict) else None
-                if alt_id and str(alt_id) != str(base_id):
+    with _log_section("alternate_takes.persist", group_count=len(alternate_takes)):
+        with db_session() as session:
+            for _, variants in alternate_takes.items():
+                if not isinstance(variants, list) or len(variants) < 2:
+                    continue
+                groups_seen += 1
+                base_track = variants[0]
+                base_id = base_track.get("id") if isinstance(base_track, dict) else None
+                if not base_id:
+                    continue
+                for variant in variants[1:]:
+                    alternate_id = variant.get("id") if isinstance(variant, dict) else None
+                    if not alternate_id or str(alternate_id) == str(base_id):
+                        continue
+                    attempted += 1
                     try:
-                        session.execute(
-                            text("UPDATE tracks SET alternate_take = 1, base_track_id = :base_id "
-                                 "WHERE id = :alt_id AND COALESCE(alternate_take, 0) = 0"),
-                            {"base_id": str(base_id), "alt_id": str(alt_id)},
+                        result = session.execute(
+                            text(
+                                "UPDATE tracks SET alternate_take = 1, base_track_id = :base_id "
+                                "WHERE id = :alternate_id AND COALESCE(alternate_take, 0) = 0"
+                            ),
+                            {"base_id": str(base_id), "alternate_id": str(alternate_id)},
                         )
-                        updated += 1
+                        if result.rowcount and result.rowcount > 0:
+                            updated += result.rowcount
                     except Exception as exc:
-                        logger.debug("Alternate-take persist failed", alt_id=alt_id, error=str(exc))
-    if updated:
-        logger.info("Marked alternate take(s) in album", count=updated)
+                        logger.warning("[ENRICH] alternate-take persistence failed", alternate_id=alternate_id, error=_safe_error(exc))
+    logger.info("[ENRICH] alternate-take persistence result", groups_seen=groups_seen, attempted=attempted, rows_updated=updated)
 
 
 def _get_discogs_token() -> str | None:
     try:
         from helpers.config_helpers import get_config
-        cfg = get_config()
-        token = cfg.get("api_integrations", {}).get("discogs", {}).get("token")
-        if token and str(token).lower() in ("your_discogs_token", "your_token", "placeholder", ""):
+        token = get_config().get("api_integrations", {}).get("discogs", {}).get("token")
+        token_text = str(token or "").strip()
+        if token_text.casefold() in {"", "your_discogs_token", "your_token", "placeholder"}:
+            logger.info("[ENRICH] Discogs token unavailable")
             return None
-        return token
-    except Exception:
+        return token_text
+    except Exception as exc:
+        logger.warning("[ENRICH] Discogs configuration read failed", error=_safe_error(exc))
         return None
 
 
@@ -831,107 +1302,63 @@ def _run_full_enrichment(
     options: dict[str, Any],
     discogs_token: str | None,
 ) -> tuple[dict[str, Any], dict[str, list[Any]]]:
-    _enrich_start = time.monotonic()
+    start = time.monotonic()
+    context = {"artist": artist, "album": album, "detected_type": detected_type}
+    logger.info("[ENRICH] full album enrichment started", track_count=len(album_tracks), **context)
 
-    _step_start = time.monotonic()
-    logger.info(
-        "[ENRICH] ▶ album art lookup (Navidrome → MB/CAA → AudioDB → Discogs)",
-        artist=artist, album=album,
-    )
-    art_source = _fetch_album_art_with_fallback(artist, album, discogs_token)
-    if art_source:
-        logger.info("Album art cached", artist=artist, album=album, source=art_source)
-    logger.info(
-        "[ENRICH] ✓ album art lookup done",
-        artist=artist, album=album, source=art_source,
-        elapsed_s=round(time.monotonic() - _step_start, 1),
-    )
+    with _log_section("full.album_art", **context):
+        art_source = _fetch_album_art_with_fallback(artist, album, discogs_token)
+    logger.info("[ENRICH] album-art result", source=art_source, found=bool(art_source), **context)
 
-    _step_start = time.monotonic()
-    logger.info(
-        "[ENRICH] ▶ artist metadata (bio / country / image)",
-        artist=artist,
-    )
-    meta = _fetch_artist_metadata(artist, None)
-    logger.info(
-        "[ENRICH] ✓ artist metadata done",
-        artist=artist,
-        country=meta.get("country"), has_bio=bool(meta.get("bio")), has_image=bool(meta.get("image_url")),
-        elapsed_s=round(time.monotonic() - _step_start, 1),
-    )
+    with _log_section("full.artist_metadata", **context):
+        metadata = _fetch_artist_metadata(artist)
 
-    _step_start = time.monotonic()
-    logger.info(
-        "[ENRICH] ▶ artist lastfm tags",
-        artist=artist,
-    )
-    _fetch_artist_lastfm_tags(artist, None)
-    logger.info(
-        "[ENRICH] ✓ artist lastfm tags done",
-        artist=artist,
-        elapsed_s=round(time.monotonic() - _step_start, 1),
-    )
+    with _log_section("full.lastfm_tags", **context):
+        _fetch_artist_lastfm_tags(artist, None)
 
-    if meta.get("country"):
+    if metadata.get("country"):
         try:
-            with db_session() as session:
-                session.execute(
-                    text("UPDATE tracks SET releasecountry = :country "
-                         "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
-                         "AND (releasecountry IS NULL OR TRIM(releasecountry) = '')"),
-                    {"country": meta["country"], "artist": artist},
-                )
+            with _log_section("full.release_country_backfill", **context):
+                with db_session() as session:
+                    result = session.execute(
+                        text(
+                            "UPDATE tracks SET releasecountry = :country "
+                            "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
+                            "AND (releasecountry IS NULL OR TRIM(releasecountry) = '')"
+                        ),
+                        {"country": metadata["country"], "artist": artist},
+                    )
+                    rows_updated = result.rowcount
+            logger.info("[ENRICH] release-country backfill result", country=metadata["country"], rows_updated=rows_updated, **context)
         except Exception as exc:
-            logger.debug("releasecountry backfill failed", error=str(exc))
+            logger.exception("[ENRICH] release-country backfill failed", error=_safe_error(exc), **context)
+    else:
+        logger.info("[ENRICH] release-country backfill skipped", reason="country unavailable", **context)
 
-    _step_start = time.monotonic()
-    logger.info(
-        "[ENRICH] ▶ artist musicbrainz id",
-        artist=artist,
-    )
-    _fetch_musicbrainz_artist_id(artist, None, options)
-    logger.info(
-        "[ENRICH] ✓ artist musicbrainz id done",
-        artist=artist,
-        elapsed_s=round(time.monotonic() - _step_start, 1),
-    )
+    with _log_section("full.musicbrainz_artist_id", **context):
+        _fetch_musicbrainz_artist_id(artist, None, options)
 
-    _step_start = time.monotonic()
-    logger.info(
-        "[ENRICH] ▶ similar artists (Last.fm + ListenBrainz)",
-        artist=artist,
-    )
-    similar = _fetch_similar_artists(artist, None, options)
-    logger.info(
-        "[ENRICH] ✓ similar artists done",
-        artist=artist,
-        lastfm_count=len(similar.get("lastfm") or []),
-        listenbrainz_count=len(similar.get("listenbrainz") or []),
-        elapsed_s=round(time.monotonic() - _step_start, 1),
-    )
+    with _log_section("full.similar_artists", **context):
+        similar = _fetch_similar_artists(artist, None, options)
 
-    _step_start = time.monotonic()
-    logger.info(
-        "[ENRICH] ▶ artist discogs id",
-        artist=artist,
-    )
-    _fetch_discogs_artist_id(artist, None, options)
-    logger.info(
-        "[ENRICH] ✓ artist discogs id done",
-        artist=artist,
-        elapsed_s=round(time.monotonic() - _step_start, 1),
-    )
+    with _log_section("full.discogs_artist_id", **context):
+        _fetch_discogs_artist_id(artist, None, options)
 
-    _apply_live_remix_album_tagging(artist, album, detected_type, album_tracks)
-    _persist_alternate_takes(album_context)
+    with _log_section("full.live_remix_tagging", **context):
+        _apply_live_remix_album_tagging(artist, album, detected_type, album_tracks)
+
+    with _log_section("full.alternate_takes", **context):
+        _persist_alternate_takes(album_context)
 
     logger.info(
-        "[ENRICH] ✓ album enrichment complete",
-        artist=artist, album=album,
-        total_s=round(time.monotonic() - _enrich_start, 1),
+        "[ENRICH] full album enrichment completed",
+        total_s=round(time.monotonic() - start, 3),
+        art_source=art_source,
+        lastfm_similar_count=len(similar.get("lastfm") or []),
+        listenbrainz_similar_count=len(similar.get("listenbrainz") or []),
+        **context,
     )
-
-    return meta, similar
+    return metadata, similar
 
 
 def enrich_album_extras(
@@ -943,7 +1370,8 @@ def enrich_album_extras(
     detected_type: str,
     options: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, list[Any]], dict[str, Any]]:
-    meta, similar = _run_full_enrichment(
+    logger.info("[ENRICH] enrich_album_extras started", artist=artist, album=album)
+    metadata, similar = _run_full_enrichment(
         artist,
         album,
         album_context,
@@ -953,13 +1381,14 @@ def enrich_album_extras(
         _get_discogs_token(),
     )
     extra_context: dict[str, Any] = {}
-    if meta.get("country"):
-        extra_context["artist_country"] = meta["country"]
-    if similar["lastfm"]:
+    if metadata.get("country"):
+        extra_context["artist_country"] = metadata["country"]
+    if similar.get("lastfm"):
         extra_context["similar_artists_lastfm"] = similar["lastfm"]
-    if similar["listenbrainz"]:
+    if similar.get("listenbrainz"):
         extra_context["similar_artists_listenbrainz"] = similar["listenbrainz"]
-    return extra_context, similar, meta
+    logger.info("[ENRICH] enrich_album_extras completed", artist=artist, album=album, extra_context_keys=sorted(extra_context))
+    return extra_context, similar, metadata
 
 
 def enrich_album(
@@ -969,123 +1398,191 @@ def enrich_album(
     stat_eligible_tracks: list[dict[str, Any]],
     options: dict[str, Any],
 ) -> dict[str, Any]:
-    """Run album-level enrichment."""
-    artist = str(album_row.get("artist") or "")
-    album = str(album_row.get("album") or "")
-    album_artist = str(album_row.get("album_artist") or "")
+    """Run album-level enrichment with full stage-level diagnostics."""
+    scan_start = time.monotonic()
+    artist = str(album_row.get("artist") or "").strip()
+    album = str(album_row.get("album") or "").strip()
+    album_artist = str(album_row.get("album_artist") or "").strip()
     spotify_type = str(
         album_row.get("musicbrainz_album_type")
         or album_row.get("spotify_album_type")
         or ""
-    )
+    ).strip()
+    album_tracks = album_row.get("tracks") or []
+    context = {"artist": artist, "album": album}
 
-    _singles_pass = bool(
+    singles_pass = bool(
         options.get("singles_only")
         or options.get("singles_with_missing_popularity")
         or options.get("singles_detection_only")
     )
-    _popularity_pass = bool(options.get("popularity_only"))
-    _meta: dict[str, Any] = {"country": None, "bio": None, "image_url": None}
-    _similar: dict[str, list[Any]] = {"lastfm": [], "listenbrainz": []}
+    popularity_pass = bool(options.get("popularity_only"))
+    defer_full = bool(options.get("defer_full_enrichment"))
+    metadata: dict[str, Any] = {"country": None, "bio": None, "image_url": None}
+    similar: dict[str, list[Any]] = {"lastfm": [], "listenbrainz": []}
+    detected_type = "album"
+    is_heterogeneous = False
 
-    discogs_token = _get_discogs_token()
-    album_tracks = album_row.get("tracks") or []
-    
+    logger.info(
+        "[ENRICH] album scan started",
+        track_count=len(album_tracks),
+        stat_eligible_track_count=len(stat_eligible_tracks or []),
+        singles_pass=singles_pass,
+        popularity_pass=popularity_pass,
+        defer_full_enrichment=defer_full,
+        **context,
+    )
+
+    if not artist or not album:
+        logger.warning("[ENRICH] album scan has incomplete identity", artist_present=bool(artist), album_present=bool(album), **context)
+
     try:
-        _detect_start = time.monotonic()
-        logger.info(
-            "[ENRICH] ▶ album type detection",
-            artist=artist, album=album,
-        )
-        detected_type = _detect_album_type(artist, album, album_artist or None, spotify_type or None)
-        if _popularity_pass:
-            is_hetero = any(m in detected_type.lower() for m in _HETEROGENEOUS_MARKERS)
+        with _log_section("scan.album_type.local_detection", **context):
+            detected_type = _detect_album_type(
+                artist,
+                album,
+                album_artist or None,
+                spotify_type or None,
+            )
+        logger.info("[ENRICH] local album type detected", detected_type=detected_type, **context)
+
+        if popularity_pass:
+            is_heterogeneous = any(marker in detected_type.casefold() for marker in _HETEROGENEOUS_MARKERS)
+            logger.info(
+                "[ENRICH] MusicBrainz album-type lookup skipped",
+                reason="popularity-only pass",
+                detected_type=detected_type,
+                heterogeneous=is_heterogeneous,
+                **context,
+            )
         else:
-            mb_type, rg_mbid = _lookup_musicbrainz_album_type(artist, album)
+            with _log_section("scan.album_type.musicbrainz_lookup", **context):
+                mb_type, release_group_mbid = _lookup_musicbrainz_album_type(artist, album)
+
+            original_mb_type = mb_type
             if mb_type:
                 track_count = len(album_tracks)
-                if mb_type in ("single", "ep") and track_count > 6:
+                if mb_type in {"single", "ep"} and track_count > 6:
                     mb_type = "album"
                 elif mb_type == "single" and track_count > 3:
                     mb_type = "ep"
-                if detected_type == "album" or mb_type in ("single", "ep"):
+                if original_mb_type != mb_type:
+                    logger.info(
+                        "[ENRICH] MusicBrainz album type adjusted by track count",
+                        original_type=original_mb_type,
+                        adjusted_type=mb_type,
+                        track_count=track_count,
+                        **context,
+                    )
+                if detected_type == "album" or mb_type in {"single", "ep"}:
                     detected_type = mb_type
-                    logger.info("MB album type detected", artist=artist, album=album, type=detected_type)
-                    
-            is_hetero = any(m in detected_type.lower() for m in _HETEROGENEOUS_MARKERS)
-            logger.info("Album type resolved", artist=artist, album=album, type=detected_type, heterogeneous=is_hetero)
+
+            is_heterogeneous = any(marker in detected_type.casefold() for marker in _HETEROGENEOUS_MARKERS)
             logger.info(
-                "[ENRICH] ✓ album type detection done",
-                artist=artist, album=album,
+                "[ENRICH] album type resolved",
                 detected_type=detected_type,
-                mb_type=mb_type,
-                elapsed_s=round(time.monotonic() - _detect_start, 1),
+                musicbrainz_type=mb_type,
+                release_group_mbid=release_group_mbid,
+                heterogeneous=is_heterogeneous,
+                **context,
             )
 
-            _persist_start = time.monotonic()
-            logger.info(
-                "[ENRICH] ▶ persist album type + release resolution (resolve_release_id)",
-                artist=artist, album=album,
-            )
-            _persist_album_type_to_tracks(None, None, artist, album, album_tracks, detected_type, rg_mbid)
-            logger.info(
-                "[ENRICH] ✓ persist album type done",
-                artist=artist, album=album,
-                elapsed_s=round(time.monotonic() - _persist_start, 1),
-            )
+            with _log_section("scan.album_type.persist", **context):
+                _persist_album_type_to_tracks(
+                    None,
+                    None,
+                    artist,
+                    album,
+                    album_tracks,
+                    detected_type,
+                    release_group_mbid,
+                )
 
-            if "+compilation" in detected_type.lower() or "+soundtrack" in detected_type.lower():
+            if "+compilation" in detected_type.casefold() or "+soundtrack" in detected_type.casefold():
                 try:
-                    with db_session() as session:
-                        session.execute(
-                            text("UPDATE tracks SET is_compilation = 1 "
-                                 "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album "
-                                 "AND COALESCE(is_compilation, 0) = 0"),
-                            {"artist": artist, "album": album},
-                        )
+                    with _log_section("scan.compilation_flag.persist", **context):
+                        with db_session() as session:
+                            result = session.execute(
+                                text(
+                                    "UPDATE tracks SET is_compilation = 1 "
+                                    "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
+                                    "AND album = :album AND COALESCE(is_compilation, 0) = 0"
+                                ),
+                                {"artist": artist, "album": album},
+                            )
+                            rows_updated = result.rowcount
+                    logger.info("[ENRICH] compilation flag persistence result", rows_updated=rows_updated, **context)
                 except Exception as exc:
-                    logger.debug("Compilation flag persist failed", error=str(exc))
+                    logger.exception("[ENRICH] compilation flag persistence failed", error=_safe_error(exc), **context)
+            else:
+                logger.info("[ENRICH] compilation flag persistence skipped", reason="album is not compilation/soundtrack", **context)
 
-        if _popularity_pass or _singles_pass:
-            art_source = None
-            meta = _meta
-            similar = _similar
-            if _singles_pass:
+        discogs_token = _get_discogs_token()
+        if popularity_pass or singles_pass:
+            logger.info(
+                "[ENRICH] full enrichment skipped",
+                reason="popularity-only pass" if popularity_pass else "singles pass",
+                **context,
+            )
+            if singles_pass:
+                with _log_section("scan.singles.musicbrainz_artist_id", **context):
+                    _fetch_musicbrainz_artist_id(artist, None, options)
+        elif defer_full:
+            logger.info("[ENRICH] full enrichment deferred", **context)
+            with _log_section("scan.deferred.musicbrainz_artist_id", **context):
                 _fetch_musicbrainz_artist_id(artist, None, options)
         else:
-            if bool(options.get("defer_full_enrichment")):
-                art_source = None
-                meta = _meta
-                similar = _similar
-                _fetch_musicbrainz_artist_id(artist, None, options)
-            else:
-                meta, similar = _run_full_enrichment(
-                    artist, album, album_context, album_tracks,
-                    detected_type, options, discogs_token,
+            with _log_section("scan.full_enrichment", **context):
+                metadata, similar = _run_full_enrichment(
+                    artist,
+                    album,
+                    album_context,
+                    album_tracks,
+                    detected_type,
+                    options,
+                    discogs_token,
                 )
 
     except Exception as exc:
-        logger.error("Enrichment failed", artist=artist, album=album, error=str(exc), exc_info=True)
-        detected_type = "album"
-        is_hetero = False
-        art_source = None
-        meta = {"country": None, "bio": None, "image_url": None}
+        logger.exception(
+            "[ENRICH] album scan failed",
+            elapsed_s=round(time.monotonic() - scan_start, 3),
+            error=_safe_error(exc),
+            **context,
+        )
+        detected_type = detected_type or "album"
+        is_heterogeneous = False
+        metadata = {"country": None, "bio": None, "image_url": None}
         similar = {"lastfm": [], "listenbrainz": []}
 
-    extra_context = {}
-    if meta.get("country"):
-        extra_context["artist_country"] = meta["country"]
-    if similar["lastfm"]:
+    extra_context: dict[str, Any] = {}
+    if metadata.get("country"):
+        extra_context["artist_country"] = metadata["country"]
+    if similar.get("lastfm"):
         extra_context["similar_artists_lastfm"] = similar["lastfm"]
-    if similar["listenbrainz"]:
+    if similar.get("listenbrainz"):
         extra_context["similar_artists_listenbrainz"] = similar["listenbrainz"]
+
+    logger.info(
+        "[ENRICH] album scan completed",
+        elapsed_s=round(time.monotonic() - scan_start, 3),
+        detected_type=detected_type,
+        heterogeneous=is_heterogeneous,
+        metadata_country=metadata.get("country"),
+        has_bio=bool(metadata.get("bio")),
+        has_image=bool(metadata.get("image_url")),
+        lastfm_similar_count=len(similar.get("lastfm") or []),
+        listenbrainz_similar_count=len(similar.get("listenbrainz") or []),
+        extra_context_keys=sorted(extra_context),
+        **context,
+    )
 
     return {
         "album_row": album_row,
         "album_context": {**album_context, **extra_context},
         "stat_eligible_tracks": stat_eligible_tracks,
         "detected_album_type": detected_type,
-        "is_heterogeneous": is_hetero,
+        "is_heterogeneous": is_heterogeneous,
         "similar_artists": similar,
-        "artist_metadata": meta,
+        "artist_metadata": metadata,
     }
