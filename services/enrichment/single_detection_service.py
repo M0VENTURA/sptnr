@@ -368,21 +368,9 @@ def _detect_musicbrainz(title: str, artist: str, artist_mbid: str | None,
                     "metadata": {}, "cached": True}
     try:
         if mb_client is None:
-            # ALWAYS use the SHARED client — a fresh MusicBrainzHttpClient()
-            # here bypasses the process-wide 1 req/s throttle + LRU caches, so
-            # concurrent track workers would slam the API (429 storms → 60s
-            # backoff retries → the 600s per-track hangs seen in the scan log).
             from services.enrichment.musicbrainz_service import get_shared_mb_client
             mb_client = get_shared_mb_client()
 
-        # ── Wall-clock budget ─────────────────────────────────────────────
-        # MusicBrainz singles detection can make up to 4 sequential 1 req/s
-        # calls (get_recording + 2× search_release_groups + release date).
-        # Under 429 retry storms those serialise to 60s+ per track, and with
-        # 4 concurrent workers per album the shared turnstile becomes the
-        # bottleneck — exactly the "Singles detection ... 60-100s" + 600s
-        # timeouts in the scan log.  Abandon the MB arm after a hard budget
-        # so a stuck/rate-limited track is released to the next track.
         import time as _time
         _MB_BUDGET_S = 45.0
         _mb_deadline = _time.monotonic() + _MB_BUDGET_S
@@ -528,12 +516,6 @@ def _detect_discogs(title: str, artist: str, album: str | None,
                     "metadata": {"is_promo": is_promo, "similarity_ratio": 1.0},
                     "cached": True}
     try:
-        # NOTE: the Discogs arm is a single blocking get_single_status call
-        # (3-6+ rate-limited requests inside).  Each Discogs HTTP request is
-        # itself bounded by _DISCOGS_REQUEST_BUDGET_SECONDS in
-        # api_clients/discogs_http.py (30s hard cap incl. 429 cooldowns), so a
-        # shared rate-limit cooldown can no longer stall the album's track
-        # workers for minutes (the reported 240s+ singles-detection hang).
         from services.enrichment.discogs_service import (
             _get_service as _get_discogs_service,
             calculate_discogs_confidence,
@@ -949,8 +931,21 @@ def detect_single_for_track(
         _lb_ctx = _get_lb_artist_context_cached(artist_mbid)
         _lb_threshold = int(_lb_ctx.get("threshold") or 0)
         if _lb_threshold > 0 and int(listenbrainz_listens) >= _lb_threshold:
-            lb_top10 = True
-            reasons.append("lb_top10")
+            # Protect against the "Legendary Album" effect where EVERY track on a classic album
+            # surpasses the global artist threshold just by virtue of the album's massive popularity.
+            is_legendary_rider = False
+            if album_lb_listens and len(album_lb_listens) >= 3:
+                _valid_lb = [float(x) for x in album_lb_listens if x > 0]
+                if _valid_lb:
+                    alb_med = stat_median(_valid_lb)
+                    # A true single should perform noticeably better than the album median.
+                    # If it's performing at or below the median (even with a 10% buffer), it's a deep cut.
+                    if listenbrainz_listens <= alb_med * 1.1:
+                        is_legendary_rider = True
+                        
+            if not is_legendary_rider:
+                lb_top10 = True
+                reasons.append("lb_top10")
 
     if check_high_confidence_dynamic(discogs_confirmed, musicbrainz_confirmed):
         pass  
