@@ -422,12 +422,10 @@ def _release_group_artist(
         if join_phrase:
             parts.append(str(join_phrase))
 
-    return "".join(parts).strip()
-
-
 def _release_group_credit_names(
     release_group: dict[str, Any],
-) -> list"""Return individual artist names from MusicBrainz artist credits."""
+) -> list[str]:
+    """Return individual artist names from MusicBrainz artist credits."""
     names: list[str] = []
 
     for credit in release_group.get("artist-credit") or []:
@@ -456,6 +454,7 @@ def _release_group_credit_names(
             names.append(name)
 
     return names
+
 
 
 def _collection_artists(limit: int) -> list"""Return distinct album artists from the local tracks table."""
