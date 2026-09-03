@@ -288,7 +288,7 @@ class MusicBrainzService:
         query = f'recording:"{escape_lucene_special_chars(query_title)}" AND artist:"{escape_lucene_special_chars(artist)}"'
 
         try:
-            recordings = self.http.search_recordings(query, limit=limit, timeout=15.0)
+            recordings = self.http.search_recordings(query, limit=limit)
 
             best_mbid = ""
             best_score = 0.0
@@ -337,7 +337,11 @@ class MusicBrainzService:
             if not mbid:
                 return {}
 
-            recording = self.http.get_recording(mbid, inc="artist-credits+releases", timeout=15.0)
+            # FIXED: Added work-rels and genres to ensure complete metadata mapping
+            recording = self.http.get_recording(
+                mbid, 
+                inc="artist-credits+releases+work-rels+genres"
+            )
 
             if not recording:
                 return {}
@@ -356,8 +360,7 @@ class MusicBrainzService:
         try:
             payload = self.http.get_recordings_bulk(
                 mbids, 
-                inc="artist-credits+releases+work-rels+genres",
-                timeout=30.0
+                inc="artist-credits+releases+work-rels+genres"
             )
             
             recordings = payload.get("recordings", [])
@@ -470,11 +473,13 @@ class MusicBrainzService:
                         " OR ".join(groups),
                         limit=min(100, len(chunk) * candidates_per_entry),
                         inc="releases+work-rels+genres",
-                        timeout=30.0,
                     )
                 except Exception as exc:
                     logger.debug("Album batch search failed", chunk_start=chunk_start, error=str(exc))
                     continue
+                    
+                # FIXED: Defer to bulk lookup to fetch correct metadata including genres 
+                batch_mbids: list[tuple[str, str, float]] = []
 
                 for title, artist in chunk:
                     norm_title = normalize_title_for_mbid_match(title)
@@ -512,11 +517,20 @@ class MusicBrainzService:
                         continue
                         
                     confidence = round(best_score, 3)
-                    results[self._cache_key(title, artist)] = self._recording_to_metadata(best, mbid, confidence)
+                    cache_key = self._cache_key(title, artist)
+                    batch_mbids.append((cache_key, mbid, confidence))
                     
                     with self._mem_lock:
-                        self._mbid_cache[self._cache_key(title, artist)] = (mbid, confidence)
+                        self._mbid_cache[cache_key] = (mbid, confidence)
                         
+                if batch_mbids:
+                    real_metadata = self.lookup_recordings_by_mbid_bulk([m for _, m, _ in batch_mbids])
+                    for cache_key, mbid, confidence in batch_mbids:
+                        if mbid in real_metadata:
+                            track_data = real_metadata[mbid]
+                            track_data["confidence"] = confidence
+                            results[cache_key] = track_data
+
                 has_items = False
                 with self._mem_lock:
                     has_items = bool(self._mbid_cache)
@@ -553,12 +567,11 @@ class MusicBrainzService:
             f'releasegroup:"{escape_lucene_special_chars(query_title)}" '
             f'AND artist:"{escape_lucene_special_chars(artist)}"'
         )
-        groups = self.http.search_release_groups(rg_query, limit=10, timeout=15.0)
+        groups = self.http.search_release_groups(rg_query, limit=10)
         if not groups:
             groups = self.http.search_release_groups(
                 f'artist:"{escape_lucene_special_chars(artist)}"',
                 limit=50,
-                timeout=15.0,
             )
         norm_title = normalize_title_for_lookup(title)
         for group in groups:
@@ -586,7 +599,7 @@ class MusicBrainzService:
             f'recording:"{escape_lucene_special_chars(query_title)}" '
             f'AND artist:"{escape_lucene_special_chars(artist)}"'
         )
-        for rec in self.http.search_recordings(query, limit=10, timeout=15.0):
+        for rec in self.http.search_recordings(query, limit=10):
             for release in rec.get("releases") or []:
                 rg = release.get("release-group") or {}
                 pt = (
@@ -616,7 +629,6 @@ class MusicBrainzService:
         recording = self.http.get_recording(
             mbid,
             inc="releases+release-groups",
-            timeout=15.0,
         )
         if not recording:
             return False
@@ -643,7 +655,6 @@ class MusicBrainzService:
                 f'artist:"{escape_lucene_special_chars(artist)}"',
                 limit=1,
                 inc="area",
-                timeout=15.0,
             )
 
             if not result:
@@ -663,16 +674,18 @@ class MusicBrainzService:
         if not self.enabled:
             return []
 
-        query = f'recording:"{escape_lucene_special_chars(strip_search_keywords(title))}" AND artist:"{escape_lucene_special_chars(artist)}"'
-
         try:
-            recordings = self.http.search_recordings(query, limit=1, inc="tags+releases", timeout=15.0)
-
-            if not recordings:
+            # FIXED: Search API ignores 'inc', must resolve MBID and do direct lookup
+            mbid, _ = self.get_suggested_mbid(title, artist)
+            if not mbid:
                 return []
-
-            tags = recordings[0].get("tags") or []
-            return [t["name"] for t in tags if t.get("name")]
+                
+            recording = self.http.get_recording(mbid, inc="genres")
+            if not recording:
+                return []
+                
+            genres = recording.get("genres") or []
+            return [g["name"] for g in genres if g.get("name")]
 
         except Exception as exc:
             logger.debug("Genre lookup failed", artist=artist, title=title, error=str(exc))
@@ -690,7 +703,7 @@ class MusicBrainzService:
         query = f'artist:"{escape_lucene_special_chars(artist_name)}" AND releasegroup:"{escape_lucene_special_chars(clean_album)}"'
 
         try:
-            groups = self.http.search_release_groups(query, limit=limit, timeout=15.0)
+            groups = self.http.search_release_groups(query, limit=limit)
         except Exception as exc:
             logger.debug("Release-group search failed", artist=artist_name, album=album_name, error=str(exc))
             groups = []
@@ -702,7 +715,6 @@ class MusicBrainzService:
                     groups = self.http.search_release_groups(
                         f'artist:"{escape_lucene_special_chars(artist_name)}" AND releasegroup:{terms}',
                         limit=limit,
-                        timeout=15.0,
                     )
                 except Exception as exc:
                     logger.debug("Release-group fallback search failed", artist=artist_name, album=album_name, error=str(exc))
@@ -770,7 +782,7 @@ class MusicBrainzService:
         inc = inc_map.get(relation_type, "artist-rels")
 
         try:
-            data = self.http.get_artist(artist_mbid, inc=inc, timeout=15.0)
+            data = self.http.get_artist(artist_mbid, inc=inc)
             return data.get("relations", []) or []
         except Exception as exc:
             logger.debug("Failed to fetch relationships for artist", artist_mbid=artist_mbid, error=str(exc))
@@ -784,7 +796,6 @@ class MusicBrainzService:
             data = self.http.get_recording(
                 recording_mbid,
                 inc="artist-rels+work-rels+work-level-rels+recording-level-rels",
-                timeout=15.0,
             )
             return data.get("relations", []) or []
         except Exception as exc:
@@ -823,7 +834,7 @@ class MusicBrainzService:
         query = f'recording:"{escape_lucene_special_chars(title)}" AND artist:"{escape_lucene_special_chars(artist)}"'
 
         try:
-            recordings = self.http.search_recordings_with_genres(query, limit=3, timeout=15.0)
+            recordings = self.http.search_recordings_with_genres(query, limit=3)
             if not recordings:
                 return []
             genres = []
@@ -871,7 +882,6 @@ def fetch_musicbrainz_release_metadata(release_id: str) -> dict[str, Any] | None
         data = get_shared_mb_client().get_release(
             release_id,
             inc="recordings+artist-credits+release-groups+work-rels+genres",
-            timeout=15.0,
         )
 
         if not data:
@@ -1035,7 +1045,7 @@ def resolve_release_id(release_id: str) -> str:
 
     try:
         http = _get_service().http
-        data = http.get_release(release_id, inc="", timeout=15.0)
+        data = http.get_release(release_id, inc="")
         if data and data.get("id"):
             return release_id
     except Exception:
@@ -1069,89 +1079,13 @@ def resolve_release_id(release_id: str) -> str:
     return release_id
 
 
-def fetch_release_metadata(release_id: str) -> dict[str, Any] | None:
-    try:
-        service = _get_service()
-        http = service.http
-
-        data = http.get_release(
-            release_id,
-            inc="recordings+artist-credits+release-groups",
-            timeout=15.0,
-        )
-
-        if not data:
-            return None
-
-        rg = data.get("release-group", {})
-
-        release_year = (
-            (rg.get("first-release-date") or "")[:4]
-            or (data.get("date") or "")[:4]
-        )
-
-        release_info: dict[str, Any] = {
-            "release_title": rg.get("title") or data.get("title"),
-            "release_year": release_year,
-            "artist": "",
-            "disc_count": len(data.get("media", [])),
-            "tracks": [],
-            "release_mbid": data.get("id"),
-        }
-
-        if data.get("artist-credit"):
-            release_info["artist"] = primary_album_artist(data["artist-credit"])
-            release_info["artist_credit"] = build_artist_credit_string(data["artist-credit"])
-
-        for disc_index, media in enumerate(data.get("media", []), start=1):
-            for track in media.get("tracks", []):
-                recording = track.get("recording", {})
-
-                release_info["tracks"].append({
-                    "disc_number": disc_index,
-                    "track_number": track.get("position"),
-                    "title": track.get("title") or recording.get("title"),
-                    "recording_mbid": recording.get("id"),
-                    "duration": track.get("length"),
-                    "artist": (
-                        build_artist_credit_string(recording.get("artist-credit"))
-                        if recording.get("artist-credit")
-                        else release_info.get("artist_credit") or release_info.get("artist")
-                    ),
-                })
-
-        return release_info
-
-    except Exception as e:
-        logger.error("MB RELEASE track fetch error", error=str(e), exc_info=True)
-        return None
-
-
-def _mb_artist_credit_name(artist_credit: list[Any] | str) -> str:
-    if isinstance(artist_credit, list) and artist_credit:
-        first = artist_credit[0]
-        if isinstance(first, dict):
-            return str(first.get("name") or "")
-    elif isinstance(artist_credit, str):
-        return artist_credit
-    return ""
-
-
-def _cover_art_url(rg_id: str, release_id: str = "") -> str:
-    if rg_id:
-        return f"https://coverartarchive.org/release-group/{rg_id}/front-250"
-    if release_id:
-        return f"https://coverartarchive.org/release/{release_id}/front-250"
-    return ""
-
-
 def _lookup_existing_mbid(existing_mbid: str, artist: str, album: str) -> dict[str, Any] | None:
     if not existing_mbid:
         return None
     client = get_shared_mb_client()
 
     try:
-        rel_data = client.get_release(existing_mbid, inc="artist-credits+release-groups", timeout=15.0)
+        rel_data = client.get_release(existing_mbid, inc="artist-credits+release-groups")
         if rel_data:
             rel_artist = primary_album_artist(rel_data.get("artist-credit") or []) or artist
             rg = rel_data.get("release-group") or {}
@@ -1177,7 +1111,7 @@ def _lookup_existing_mbid(existing_mbid: str, artist: str, album: str) -> dict[s
         logger.debug("Stored release lookup failed", existing_mbid=existing_mbid, error=str(exc))
 
     try:
-        rg_data = client.get_release_group(existing_mbid, inc="artist-credits", timeout=15.0)
+        rg_data = client.get_release_group(existing_mbid, inc="artist-credits")
         if rg_data:
             rg_artist = _mb_artist_credit_name(rg_data.get("artist-credit") or []) or artist
             return {
@@ -1210,7 +1144,7 @@ def lookup_musicbrainz_album(artist: str, album: str, existing_mbid: str = "") -
 
     query = f'release:"{escape_lucene_special_chars(album)}" AND artist:"{escape_lucene_special_chars(artist)}"'
     try:
-        groups = get_shared_mb_client().search_release_groups(query, limit=10, timeout=15.0)
+        groups = get_shared_mb_client().search_release_groups(query, limit=10)
     except Exception as exc:
         logger.warning("MusicBrainz album search unavailable", error=str(exc))
         groups = []
@@ -1252,7 +1186,7 @@ def lookup_musicbrainz_album(artist: str, album: str, existing_mbid: str = "") -
 
 def get_release_group_releases(rg_mbid: str, include_track_counts: bool = False) -> dict[str, Any]:
     try:
-        data = get_shared_mb_client().get_release_group(rg_mbid, inc="releases", timeout=15.0)
+        data = get_shared_mb_client().get_release_group(rg_mbid, inc="releases")
         if not data:
             return {"success": False, "error": "No release-group data returned"}
         raw_releases = data.get("releases", []) or []
@@ -1330,7 +1264,7 @@ def compare_musicbrainz_release(artist: str, album: str, rg_mbid: str) -> dict[s
 
         _direct = None
         try:
-            _direct = get_shared_mb_client().get_release(rg_mbid, inc="", timeout=15.0)
+            _direct = get_shared_mb_client().get_release(rg_mbid, inc="")
         except Exception:
             _direct = None
 
