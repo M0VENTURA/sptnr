@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64 as _b64
 import os
+import re
 import time as _time
 from typing import Any, Optional, Tuple
 
@@ -35,6 +36,19 @@ logger = structlog.get_logger(__name__)
 # Negative-result cache for the Navidrome art lookup
 _navidrome_art_miss_cache: dict[tuple[str, str], float] = {}
 _NAVIDROME_MISS_TTL_SECONDS = 6 * 3600
+
+
+def _sanitize_release_name(album_name: str) -> str:
+    """Strips '(Topshelf Edition)', '[Deluxe Version]', etc. for exact API matches."""
+    if not album_name:
+        return ""
+    cleaned = re.sub(
+        r'\s*[\(\[].*?(edition|deluxe|remaster|version|bonus|expanded|explicit|clean).*?[\)\]]', 
+        '', 
+        album_name, 
+        flags=re.IGNORECASE
+    ).strip()
+    return cleaned if cleaned else album_name
 
 
 def save_album_art_to_db(
@@ -76,9 +90,10 @@ def save_album_art_to_db(
 
 def fetch_album_art_from_musicbrainz(artist_name: str, album_name: str) -> bytes | None:
     """Fetch cover art cleanly via MusicBrainz release-group and Cover Art Archive client."""
+    clean_album = _sanitize_release_name(album_name)
     try:
         musicbrainz = MusicBrainzHttpClient()
-        release_groups = musicbrainz.search_release_groups(f'release:"{album_name}" AND artist:"{artist_name}"', limit=1)
+        release_groups = musicbrainz.search_release_groups(f'release:"{clean_album}" AND artist:"{artist_name}"', limit=1)
         if not release_groups:
             return None
         release_group_mbid = release_groups[0].get("id")
@@ -115,11 +130,12 @@ def fetch_album_art_from_itunes(
     if not artist_name or not album_name:
         return None
 
+    clean_album = _sanitize_release_name(album_name)
     try:
         headers = {"User-Agent": "Popularr/1.0"}
         search_url = "https://itunes.apple.com/search"
         params = {
-            "term": f"{artist_name} {album_name}",
+            "term": f"{artist_name} {clean_album}",
             "entity": "album",
             "limit": 5,
         }
@@ -140,7 +156,7 @@ def fetch_album_art_from_itunes(
             return None
 
         wanted_artist = normalize_artist(artist_name)
-        wanted_album = normalize_album(album_name)
+        wanted_album = normalize_album(clean_album)
 
         for result in results:
             result_artist = normalize_artist(result.get("artistName", ""))
@@ -177,9 +193,11 @@ def fetch_album_art_from_discogs(artist_name: str, album_name: str, token: str) 
     """Fetch cover art cleanly using the low-level DiscogsHttpClient."""
     if not token:
         return None
+        
+    clean_album = _sanitize_release_name(album_name)
     try:
         discogs = DiscogsHttpClient(token=token)
-        results = discogs.search_database({"q": f"{artist_name} {album_name}", "type": "release", "per_page": 1})
+        results = discogs.search_database({"q": f"{artist_name} {clean_album}", "type": "release", "per_page": 1})
 
         if not results or not results[0].get("cover_url"):
             return None
@@ -196,6 +214,21 @@ def fetch_album_art_from_discogs(artist_name: str, album_name: str, token: str) 
 
 def fetch_album_art_from_navidrome(artist_name: str, album_name: str) -> bytes | None:
     """Pull album art straight from Navidrome (Subsonic ``getCoverArt``)."""
+    
+    # GUARD: Never execute heavy fuzzy searches against Navidrome for missing albums.
+    try:
+        with db_session() as session:
+            row = session.execute(
+                text("SELECT 1 FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album LIMIT 1"),
+                {"artist": artist_name, "album": album_name}
+            ).fetchone()
+            if not row:
+                logger.debug("Skipping Navidrome art search (album not in local library)", artist=artist_name, album=album_name)
+                return None
+    except Exception as exc:
+        logger.debug("Navidrome guard check failed", error=str(exc))
+        pass # Fail open to prevent regressions
+        
     try:
         from helpers.config_helpers import get_config
         from api_clients.navidrome import NavidromeClient
@@ -263,9 +296,10 @@ def fetch_album_art_from_navidrome(artist_name: str, album_name: str) -> bytes |
 
 def fetch_album_art_from_audiodb(artist_name: str, album_name: str) -> bytes | None:
     """Fetch album art from TheAudioDB as an additional fallback source."""
+    clean_album = _sanitize_release_name(album_name)
     try:
         url = "https://theaudiodb.com/api/v1/json/2/searchalbum.php"
-        resp = httpx.get(url, params={"s": artist_name, "a": album_name}, timeout=10)
+        resp = httpx.get(url, params={"s": artist_name, "a": clean_album}, timeout=10)
         if resp.status_code != 200:
             return None
             
@@ -346,6 +380,22 @@ def get_or_fetch_album_art(artist: str, album: str, discogs_token: str = "") -> 
     data, mime = fetch_album_art_blob(artist=artist, album=album)
     if data:
         return data, mime
+
+    # FAST PATH for Missing Releases: Check the missing_releases table for a cached cover URL
+    try:
+        with db_session() as session:
+            row = session.execute(
+                text("SELECT cover_art_url FROM missing_releases WHERE LOWER(artist) = LOWER(:artist) AND LOWER(title) = LOWER(:album) LIMIT 1"),
+                {"artist": artist, "album": album}
+            ).fetchone()
+            if row and row[0] and str(row[0]).strip():
+                url = str(row[0]).strip()
+                resp = httpx.get(url, timeout=5)
+                if resp.status_code == 200:
+                    save_album_art_to_db(artist, album, resp.content, source="missing_releases")
+                    return resp.content, "image/jpeg"
+    except Exception as exc:
+        logger.debug("Missing release art shortcut failed", error=str(exc))
 
     data = fetch_album_art_from_navidrome(artist, album)
     if data:
