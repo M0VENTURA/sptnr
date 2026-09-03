@@ -308,7 +308,7 @@ def _build_album_model(
                 album_years.setdefault(_album, _year)
 
         for r in album_results:
-            _score = float(r.get("popularity_score") or 0)
+            _score = float(r.get("popularity_score") or r.get("final_score") or 0)
             if _score > 0 and not bool(r.get("exclude_from_stats")):
                 by_album.setdefault(current_album, []).append(_score)
             _lf = int(r.get("lastfm_listeners") or 0)
@@ -395,7 +395,7 @@ def _assign_stars(
     artist_listen_distribution: list[float] | None = None,
 ) -> int:
     """Assign 1–5 star rating to a single track."""
-    score = float(track.get("popularity_score") or 0)
+    score = float(track.get("popularity_score") or track.get("final_score") or 0)
     single_confidence = str(track.get("single_confidence") or "low")
     is_live = (
         bool(track.get("is_live"))
@@ -1256,7 +1256,7 @@ def _create_genre_top_track_playlists(
                 "file_path": str(row.get("file_path") or ""),
                 "duration": row.get("duration"),
                 "stars": int(row.get("stars") or 0),
-                "score": float(row.get("popularity_score") or 0),
+                "score": float(row.get("popularity_score") or row.get("final_score") or 0),
                 "artist": str(row.get("artist") or row.get("album_artist") or ""),
                 "is_live": int(row.get("is_live") or 0),
                 "is_compilation": int(row.get("is_compilation") or 0),
@@ -1488,16 +1488,16 @@ def post_album_star_ratings(
             is_compilation = False
             
         album_scores = [
-            float(r.get("popularity_score") or 0)
+            float(r.get("popularity_score") or r.get("final_score") or 0)
             for r in album_results
-            if float(r.get("popularity_score") or 0) > 0
+            if float(r.get("popularity_score") or r.get("final_score") or 0) > 0
         ]
         
         if len(album_scores) >= 3:
             _eligible = [
-                float(r.get("popularity_score") or 0)
+                float(r.get("popularity_score") or r.get("final_score") or 0)
                 for r in album_results
-                if float(r.get("popularity_score") or 0) > 0
+                if float(r.get("popularity_score") or r.get("final_score") or 0) > 0
                 and not bool(r.get("exclude_from_stats"))
             ]
             if len(_eligible) >= 3:
@@ -1628,7 +1628,7 @@ def post_album_star_ratings(
                     
                 track["stars"] = stars
                 total_star_ratings += 1
-                _track_score = float(track.get("popularity_score") or 0)
+                _track_score = float(track.get("popularity_score") or track.get("final_score") or 0)
                 _final_score = float(track.get("final_score") or _track_score or 0)
                 _album_z = _compute_album_z(_track_score, album_scores)[0]
                 _artist_z = _compute_artist_z(_track_score, artist_scores)[0]
@@ -1694,7 +1694,7 @@ def post_album_star_ratings(
                     locked_kept = [t for t in slot_tracks if t.get("_global_5star_locked")]
                     demotable = [t for t in slot_tracks if not t.get("_global_5star_locked")]
                     demotable.sort(
-                        key=lambda t: _compute_album_z(float(t.get("popularity_score") or 0), album_scores)[0],
+                        key=lambda t: _compute_album_z(float(t.get("popularity_score") or t.get("final_score") or 0), album_scores)[0],
                         reverse=True,
                     )
                     reordered = list(locked_kept) + list(demotable)
@@ -1930,9 +1930,9 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
             artist_scores = compute_artist_scores(
                 artist,
                 [
-                    float(r.get("popularity_score") or 0)
+                    float(r.get("popularity_score") or r.get("final_score") or 0)
                     for r in artist_results
-                    if float(r.get("popularity_score") or 0) > 0
+                    if float(r.get("popularity_score") or r.get("final_score") or 0) > 0
                     and not bool(r.get("exclude_from_stats"))
                 ],
                 scanned_titles=scanned_titles,
