@@ -341,7 +341,10 @@ class ListenBrainzClient:
             url = "https://labs.api.listenbrainz.org/similar-artists/json"
             response = self.session.get(
                 url,
-                params={"artist_mbids": artist_mbid},
+                params={
+                    "artist_mbids": artist_mbid,
+                    "algorithm": "session_based_days_1825_session_300_contribution_3_threshold_10_limit_100_filter_True_skip_30"
+                },
                 headers=self._headers(authenticated=False),
                 timeout=10.0,
             )
