@@ -124,7 +124,7 @@ def _collection_artists(limit: int) -> list[str]:
                     ORDER BY artist_sort
                     LIMIT :limit
                 """),
-                {"limit": max(1, min(limit, 5000))},
+                {"limit": max(1, min(limit, 50000))},
             )
             return [str(r[0]).strip() for r in result.fetchall() or [] if r[0]]
     except Exception as exc:
@@ -294,10 +294,8 @@ def _persist_artist_releases(artist: str, releases: list[dict[str, Any]]) -> tup
                 dup = session.execute(
                     text("""
                         SELECT id FROM upcoming_releases
-                        WHERE LOWER(REGEXP_REPLACE(artist_name, '[^a-zA-Z0-9]', '', 'g'))
-                              = LOWER(REGEXP_REPLACE(:artist, '[^a-zA-Z0-9]', '', 'g'))
-                          AND LOWER(REGEXP_REPLACE(album_name, '[^a-zA-Z0-9]', '', 'g'))
-                              = LOWER(REGEXP_REPLACE(:album, '[^a-zA-Z0-9]', '', 'g'))
+                        WHERE LOWER(artist_name) = LOWER(:artist)
+                          AND LOWER(album_name) = LOWER(:album)
                         LIMIT 1
                     """),
                     {"artist": _artist, "album": album},
@@ -465,10 +463,8 @@ def _persist_global_releases(releases: list[dict[str, Any]]) -> tuple[int, int]:
                 dup = session.execute(
                     text("""
                         SELECT id FROM upcoming_releases
-                        WHERE LOWER(REGEXP_REPLACE(artist_name, '[^a-zA-Z0-9]', '', 'g'))
-                              = LOWER(REGEXP_REPLACE(:artist, '[^a-zA-Z0-9]', '', 'g'))
-                          AND LOWER(REGEXP_REPLACE(album_name, '[^a-zA-Z0-9]', '', 'g'))
-                              = LOWER(REGEXP_REPLACE(:album, '[^a-zA-Z0-9]', '', 'g'))
+                        WHERE LOWER(artist_name) = LOWER(:artist)
+                          AND LOWER(album_name) = LOWER(:album)
                         LIMIT 1
                     """),
                     {"artist": _artist, "album": album},
@@ -609,8 +605,10 @@ def fetch_musicbrainz_upcoming_releases(
     if not enabled:
         return {"skipped": True, "reason": "upcoming_releases_scan_enabled is false"}
 
-    artists_limit = artists_limit or _feature_int("daily_musicbrainz_release_max_artists", 500)
+    # Fix: Expand limit to encompass entire libraries
+    artists_limit = artists_limit or _feature_int("daily_musicbrainz_release_max_artists", 50000)
     per_artist_limit = per_artist_limit or _feature_int("daily_musicbrainz_release_per_artist_limit", 100)
+    
     if lookback_days is None:
         lookback_days = _feature_int("daily_musicbrainz_release_lookback_days", 42)
     if lookahead_days is None:
