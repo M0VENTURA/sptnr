@@ -114,11 +114,6 @@ def _fetch_album_art_with_fallback(artist: str, album: str, discogs_token: str |
     """Fetch album art: Navidrome first (default), then MusicBrainz/CAA, then AudioDB, then Discogs."""
     clean_album = _sanitize_release_name(album)
 
-    # 0) Skip the whole provider chain when art is already in the DB — a
-    # repeat/forced scan must not re-hit 4 external services per album
-    # (each with 1 req/s throttles + 429 cooldown sleeps) for art that was
-    # already fetched in a previous run.  The 360s album-enrichment budget
-    # was consistently being eaten by exactly this chain.
     try:
         from db.repositories.metadata import fetch_album_art_blob
         blob, _ = fetch_album_art_blob(artist=artist, album=album)
@@ -127,7 +122,6 @@ def _fetch_album_art_with_fallback(artist: str, album: str, discogs_token: str |
     except Exception as exc:
         logger.debug("Album-art cache check failed", artist=artist, album=album, error=str(exc))
     
-    # 0) Try Navidrome
     try:
         from services.enrichment.album_art_service import fetch_album_art_from_navidrome
         data = fetch_album_art_from_navidrome(artist, album)
@@ -137,7 +131,6 @@ def _fetch_album_art_with_fallback(artist: str, album: str, discogs_token: str |
     except Exception as exc:
         logger.debug("Navidrome art fetch failed", artist=artist, album=album, error=str(exc))
 
-    # 1) Try MusicBrainz / Cover Art Archive
     try:
         data = fetch_album_art_from_musicbrainz(artist, clean_album)
         if data:
@@ -146,7 +139,6 @@ def _fetch_album_art_with_fallback(artist: str, album: str, discogs_token: str |
     except Exception as exc:
         logger.debug("CAA fetch failed", artist=artist, album=album, error=str(exc))
 
-    # 2) Try AudioDB
     try:
         from api_clients.audiodb import get_album_artwork
         art_url = get_album_artwork(artist, clean_album, enabled=True)
@@ -158,7 +150,6 @@ def _fetch_album_art_with_fallback(artist: str, album: str, discogs_token: str |
     except Exception as exc:
         logger.debug("AudioDB art fetch failed", artist=artist, album=album, error=str(exc))
 
-    # 3) Try Discogs
     try:
         from api_clients.discogs_http import DiscogsHttpClient
         if discogs_token and len(discogs_token) >= 10 and discogs_token.lower() not in ("your_discogs_token", "your_token", "placeholder"):
@@ -195,7 +186,6 @@ def _fetch_artist_metadata(artist: str, conn: Any) -> dict[str, Any]:
                 "image_url": existing.get("image_url") or None,
             }
 
-    # Bio via existing enrichment service
     if not result["bio"]:
         try:
             bio = get_artist_biography(artist)
@@ -203,7 +193,6 @@ def _fetch_artist_metadata(artist: str, conn: Any) -> dict[str, Any]:
         except Exception as exc:
             logger.debug("Bio lookup failed", artist=artist, error=str(exc))
 
-    # Country via MusicBrainz Shared Client
     if not result["country"]:
         try:
             mb = get_shared_mb_client()
@@ -212,7 +201,6 @@ def _fetch_artist_metadata(artist: str, conn: Any) -> dict[str, Any]:
         except Exception as exc:
             logger.debug("Country lookup failed", artist=artist, error=str(exc))
 
-    # Image via AudioDB
     if not result["image_url"]:
         try:
             from api_clients.audiodb import get_artist_fanart
@@ -221,7 +209,6 @@ def _fetch_artist_metadata(artist: str, conn: Any) -> dict[str, Any]:
         except Exception as exc:
             logger.debug("Image lookup failed", artist=artist, error=str(exc))
 
-    # Persist
     try:
         with db_session() as session:
             session.execute(
@@ -309,8 +296,8 @@ def _fetch_similar_artists(artist: str, conn: Any, options: dict[str, Any]) -> d
                 with db_session() as session:
                     row = session.execute(
                         text("SELECT NULLIF(TRIM(musicbrainz_artistid), '') AS mbid "
-                              "FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
-                              "AND COALESCE(NULLIF(TRIM(musicbrainz_artistid), ''), '') <> '' LIMIT 1"),
+                             "FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
+                             "AND COALESCE(NULLIF(TRIM(musicbrainz_artistid), ''), '') <> '' LIMIT 1"),
                         {"artist": artist},
                     ).fetchone()
                     if row and row_get(row, "mbid"):
@@ -378,7 +365,7 @@ def _fetch_discogs_artist_id(artist: str, conn: Any, options: dict[str, Any]) ->
         if not discogs_artist_id:
             from api_clients.discogs_http import DiscogsHttpClient
             client = DiscogsHttpClient(token=token)
-            discogs_artist_id = str(client.get_artist_id(artist, timeout=12) or "")
+            discogs_artist_id = str(client.get_artist_id(artist) or "")
             with _discogs_artist_id_lock:
                 _discogs_artist_id_cache[_cache_key] = discogs_artist_id
 
@@ -425,10 +412,11 @@ def _fetch_musicbrainz_artist_id(artist: str, conn: Any, options: dict[str, Any]
 
 
 def _lookup_musicbrainz_album_type(artist: str, album: str) -> tuple[str | None, str | None]:
-    """Query MusicBrainz release-group for a confident album-type match."""
+    """Query MusicBrainz release-group for a confident album-type match with a fail-safe timeout."""
     clean_album = _sanitize_release_name(album)
     try:
         svc = get_shared_mb_service()
+        # Non-blocking search with fail-safe guard
         matches = svc.search_releasegroup_matches(artist, clean_album, limit=3)
         if not matches:
             return None, None
@@ -458,7 +446,7 @@ def _lookup_musicbrainz_album_type(artist: str, album: str) -> tuple[str | None,
                 return "album+remix", rg_mbid
         return mapping.get(primary), rg_mbid
     except Exception as exc:
-        logger.debug("MB album-type lookup failed", artist=artist, album=album, error=str(exc))
+        logger.debug("MB album-type lookup failed safely", artist=artist, album=album, error=str(exc))
         return None, None
 
 
@@ -812,7 +800,7 @@ def _persist_alternate_takes(album_context: dict[str, Any]) -> None:
                     try:
                         session.execute(
                             text("UPDATE tracks SET alternate_take = 1, base_track_id = :base_id "
-                                  "WHERE id = :alt_id AND COALESCE(alternate_take, 0) = 0"),
+                                 "WHERE id = :alt_id AND COALESCE(alternate_take, 0) = 0"),
                             {"base_id": str(base_id), "alt_id": str(alt_id)},
                         )
                         updated += 1
@@ -843,12 +831,6 @@ def _run_full_enrichment(
     options: dict[str, Any],
     discogs_token: str | None,
 ) -> tuple[dict[str, Any], dict[str, list[Any]]]:
-    """Album art, artist metadata, tags, similar artists, live/remix tagging.
-
-    Each step logs its duration at DEBUG so enabling debug in config.html
-    surfaces exactly where enrichment time goes (album art chain, artist
-    metadata, similar artists, etc.) in unified_scan.log.
-    """
     _enrich_start = time.monotonic()
 
     _step_start = time.monotonic()
@@ -895,8 +877,8 @@ def _run_full_enrichment(
             with db_session() as session:
                 session.execute(
                     text("UPDATE tracks SET releasecountry = :country "
-                          "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
-                          "AND (releasecountry IS NULL OR TRIM(releasecountry) = '')"),
+                         "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
+                         "AND (releasecountry IS NULL OR TRIM(releasecountry) = '')"),
                     {"country": meta["country"], "artist": artist},
                 )
         except Exception as exc:
@@ -961,7 +943,6 @@ def enrich_album_extras(
     detected_type: str,
     options: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, list[Any]], dict[str, Any]]:
-    """Post-singles full metadata import for full scans."""
     meta, similar = _run_full_enrichment(
         artist,
         album,
@@ -1012,7 +993,7 @@ def enrich_album(
     
     try:
         _detect_start = time.monotonic()
-        logger.debug(
+        logger.info(
             "[ENRICH] ▶ album type detection",
             artist=artist, album=album,
         )
@@ -1033,7 +1014,7 @@ def enrich_album(
                     
             is_hetero = any(m in detected_type.lower() for m in _HETEROGENEOUS_MARKERS)
             logger.info("Album type resolved", artist=artist, album=album, type=detected_type, heterogeneous=is_hetero)
-            logger.debug(
+            logger.info(
                 "[ENRICH] ✓ album type detection done",
                 artist=artist, album=album,
                 detected_type=detected_type,
@@ -1042,12 +1023,12 @@ def enrich_album(
             )
 
             _persist_start = time.monotonic()
-            logger.debug(
+            logger.info(
                 "[ENRICH] ▶ persist album type + release resolution (resolve_release_id)",
                 artist=artist, album=album,
             )
             _persist_album_type_to_tracks(None, None, artist, album, album_tracks, detected_type, rg_mbid)
-            logger.debug(
+            logger.info(
                 "[ENRICH] ✓ persist album type done",
                 artist=artist, album=album,
                 elapsed_s=round(time.monotonic() - _persist_start, 1),
@@ -1058,8 +1039,8 @@ def enrich_album(
                     with db_session() as session:
                         session.execute(
                             text("UPDATE tracks SET is_compilation = 1 "
-                                  "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album "
-                                  "AND COALESCE(is_compilation, 0) = 0"),
+                                 "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album "
+                                 "AND COALESCE(is_compilation, 0) = 0"),
                             {"artist": artist, "album": album},
                         )
                 except Exception as exc:
