@@ -90,13 +90,24 @@ def classify_album_type(album_row: dict[str, Any]) -> str:
 
     album_name = str(album_row.get("album") or "").lower()
 
+    # Prioritize official MusicBrainz primary/secondary types if available and non-live
+    if "album" in raw_type and "live" not in raw_type and "acoustic" not in raw_type:
+        if "compilation" in raw_type:
+            return "compilation"
+        return "album"
+
     if "compilation" in raw_type:
         return "compilation"
     if "soundtrack" in raw_type or "soundtrack" in album_name:
         return "compilation"
 
-    if "live" in raw_type or re.search(r"\blive\b", album_name) or "unplugged" in album_name:
+    if "live" in raw_type or "unplugged" in raw_type:
         return "live_album"
+
+    # Fallback to string matching only if raw_type is ambiguous, but protect embedded words like 'how to live'
+    if not raw_type or raw_type == "album":
+        if "how to live" not in album_name and is_live_or_alternate_album(album_name):
+            return "live_album"
 
     if "remix" in raw_type or "remix" in album_name:
         return "remix_album"
@@ -111,6 +122,10 @@ def classify_album_type(album_row: dict[str, Any]) -> str:
 
 
 def is_live_or_alternate_album(album: str) -> bool:
+    album_lower = (album or "").lower()
+    # Explicitly bypass strings containing 'how to live' to prevent false positives
+    if "how to live" in album_lower:
+        return False
     return any(re.search(pattern, album or "", re.IGNORECASE) for pattern in LIVE_ALBUM_PATTERNS)
 
 
@@ -121,10 +136,14 @@ def detect_live_album_type(album: str, album_type_from_field: str = "") -> str:
             return "acoustic"
         if "live" in field_text:
             return "live"
-        return ""
+        if "album" in field_text and "live" not in field_text:
+            return ""
 
     title = album or ""
     title_text = title.lower()
+    if "how to live" in title_text:
+        return ""
+
     if "acoustic" in title_text or "unplugged" in title_text:
         return "acoustic"
         
@@ -343,4 +362,6 @@ def is_live_album_enhanced(album_title: str) -> bool:
     if not album_title:
         return False
     text = album_title.lower()
+    if "how to live" in text:
+        return False
     return any(re.search(pattern, text) for pattern in _LIVE_ALBUM_ENHANCED_PATTERNS)
