@@ -352,15 +352,29 @@ def enrich_genres_aggressively(artist_name: str, conn: Any = None, verbose: bool
     except Exception as e:
         logger.debug("AudioDB genre lookup failed", artist=artist_name, error=str(e))
 
-    # Collect from MusicBrainz (✅ Using shared service singleton)
+    # Collect from MusicBrainz (✅ Using shared service singleton + 2-step lookup)
     try:
-        from services.enrichment.musicbrainz_service import get_shared_mb_service
-        mb = get_shared_mb_service()
-        mb_genres = mb.get_genres(artist_name, "")
-        if mb_genres:
-            genres_collected.update(g.lower() for g in mb_genres)
-            if verbose:
-                logger.info("MusicBrainz genres found", artist=artist_name, count=len(mb_genres))
+        from services.enrichment.musicbrainz_service import get_shared_mb_client
+        from api_clients.musicbrainz_http import escape_lucene_special_chars
+        
+        client = get_shared_mb_client()
+        # Step 1: Resolve the artist MBID (Search API drops inc requests)
+        query = f'artist:"{escape_lucene_special_chars(artist_name)}"'
+        search_results = client.search_artists(query, limit=1)
+        
+        if search_results and search_results[0].get("id"):
+            artist_mbid = search_results[0]["id"]
+            
+            # Step 2: Do a direct Lookup to get the genres array
+            artist_data = client.get_artist(artist_mbid, inc="genres")
+            if artist_data and artist_data.get("genres"):
+                mb_genres = [str(g.get("name") or "").strip() for g in artist_data["genres"]]
+                mb_genres = [g for g in mb_genres if g]
+                
+                if mb_genres:
+                    genres_collected.update(g.lower() for g in mb_genres)
+                    if verbose:
+                        logger.info("MusicBrainz genres found", artist=artist_name, count=len(mb_genres))
     except Exception as e:
         logger.debug("MusicBrainz genre lookup failed", artist=artist_name, error=str(e))
 
