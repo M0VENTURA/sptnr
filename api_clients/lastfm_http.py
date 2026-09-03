@@ -157,6 +157,28 @@ def _parse_json_response(response: httpx.Response, method: str, log_prefix: str 
             logger.warning(f"{log_prefix} API error", error_code=error_code, method=method, error_msg=error_msg)
         return {"error": True, "error_code": error_code, "message": error_msg, "original": payload}
 
+    # --- Normalize Last.fm's broken JSON tag structures ---
+    def _fix_tags_node(parent: dict[str, Any], node_key: str) -> None:
+        if node_key in parent:
+            node = parent[node_key]
+            # 1. Last.fm returns a literal string "\n      " instead of {} when tags are empty
+            if isinstance(node, str):
+                parent[node_key] = {"tag": []}
+            # 2. Last.fm returns {"tag": {...}} instead of {"tag": [{...}]} if there is exactly 1 tag
+            elif isinstance(node, dict) and "tag" in node:
+                if isinstance(node["tag"], dict):
+                    node["tag"] = [node["tag"]]
+                elif isinstance(node["tag"], str):
+                    node["tag"] = [{"name": node["tag"]}]
+
+    for entity in ["track", "album", "artist"]:
+        if entity in payload and isinstance(payload[entity], dict):
+            _fix_tags_node(payload[entity], "toptags")
+            _fix_tags_node(payload[entity], "tags")
+
+    _fix_tags_node(payload, "toptags")
+    _fix_tags_node(payload, "tags")
+
     return payload
 
 
@@ -172,6 +194,9 @@ class LastFmHttpClient:
 
     def build_params(self, method: str, **kwargs: Any) -> dict[str, Any]:
         params = {"method": method, "api_key": self.api_key, "format": "json"}
+        # Force autocorrect to ensure minor spelling variants still return tags
+        if method in ("track.getInfo", "album.getInfo", "artist.getInfo"):
+            params.setdefault("autocorrect", "1")
         params.update(kwargs)
         return params
 
