@@ -6,6 +6,7 @@ High-level orchestration for library and Navidrome scanning operations.
 from __future__ import annotations
 
 import threading
+import time
 from typing import Any, Callable
 import structlog
 
@@ -235,7 +236,11 @@ def run_full_library_scan(force: bool = False, restart: bool = False):
     record_scan("full", "started", message="Full library scan")
     try:
         write_progress_with_current_artist(progress, "library_scan", True)
-        artists = list((build_artist_index() or {}).items())
+        
+        # Pull raw artists and sort them strictly and case-insensitively alphabetically A-Z
+        raw_artists = list((build_artist_index() or {}).items())
+        artists = sorted(raw_artists, key=lambda x: str(x[0]).lower())
+
         resume_from = _validated_resume_artist(artists, checkpoint_path, force, restart)
         resume_mode = bool(resume_from)
 
@@ -259,6 +264,9 @@ def run_full_library_scan(force: bool = False, restart: bool = False):
                 log_unified(f"Artist scan failed for '{name}': {exc} — continuing")
 
             save_artist_scan_checkpoint(name, checkpoint_path)
+            
+            # Brief inter-artist pacing guard to clear socket connection pools and avoid rate locks
+            time.sleep(0.25)
 
         clear_scan_checkpoint(checkpoint_path)
         write_progress_with_current_artist(progress, "library_scan", False)
@@ -282,7 +290,10 @@ def start_boot_navidrome_import():
         try:
             write_progress_with_current_artist(progress, "navidrome_scan", True)
             pre_import_sync_album_artists()
-            artists = list((build_artist_index() or {}).items())
+            
+            # Also sort alphabetical for the boot import pass
+            raw_artists = list((build_artist_index() or {}).items())
+            artists = sorted(raw_artists, key=lambda x: str(x[0]).lower())
 
             for name, data in artists:
                 if is_stop_requested(progress):
