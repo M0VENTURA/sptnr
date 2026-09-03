@@ -18,8 +18,8 @@ import structlog
 from sqlalchemy import text
 
 # Enforce a global OS-level socket timeout for the entire worker process.
-# This acts as an absolute kill-switch for poorly coded third-party API clients 
-# (like musicbrainzngs or pylast) that forget to set timeouts and hang indefinitely.
+# This acts as an absolute kill-switch for any standard library socket calls
+# preventing infinite hangs from underlying connection issues.
 socket.setdefaulttimeout(30.0)
 
 # Database
@@ -127,49 +127,6 @@ def _is_comp_artist(artist_name: str) -> bool:
     )
 
 
-def _bounded_call(fn, seconds: float, label: str) -> None:
-    """Run ``fn()`` with a hard time budget. Spawns an isolated pool to avoid deadlocks."""
-    if seconds is None or seconds <= 0:
-        fn()
-        return
-
-    logger.debug(f"[BOUNDED-TRACE] Starting bounded task: {label} (budget {seconds}s)")
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    future = executor.submit(fn)
-    try:
-        future.result(timeout=seconds)
-        logger.debug(f"[BOUNDED-TRACE] Finished bounded task: {label}")
-    except concurrent.futures.TimeoutError:
-        logger.warning(f"[BOUNDED-TRACE] Budget exceeded — abandoned, scan continues: {label}", budget_seconds=seconds)
-    except Exception as exc:
-        logger.warning(f"[BOUNDED-TRACE] Bounded call failed: {label}", error=str(exc))
-    finally:
-        executor.shutdown(wait=False, cancel_futures=True)
-
-
-def _bounded_call_result(fn, seconds: float, label: str, default: Any = None) -> Any:
-    """Run ``fn()`` with a hard time budget. Spawns an isolated pool to avoid deadlocks."""
-    if seconds is None or seconds <= 0:
-        try:
-            return fn()
-        except Exception:
-            return default
-
-    logger.debug(f"[BOUNDED-TRACE] Starting bounded task: {label} (budget {seconds}s)")
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    future = executor.submit(fn)
-    try:
-        res = future.result(timeout=seconds)
-        logger.debug(f"[BOUNDED-TRACE] Finished bounded task: {label}")
-        return res
-    except concurrent.futures.TimeoutError:
-        logger.warning(f"[BOUNDED-TRACE] Budget exceeded — abandoned, using default: {label}", budget_seconds=seconds)
-        return default
-    except Exception as exc:
-        logger.warning(f"[BOUNDED-TRACE] Bounded call failed: {label}", error=str(exc))
-        return default
-    finally:
-        executor.shutdown(wait=False, cancel_futures=True)
 def _duration_seconds(value: Any) -> float | None:
     """Best-effort track duration in seconds (None when unknown/zero)."""
     try:
@@ -679,10 +636,14 @@ def _persist_popularity_marking(rows: list[dict[str, Any]]) -> None:
     except Exception as exc:
         logger.debug("Popularity marking persist failed", error=str(exc))
 
+
 def _execute_track_jobs_safely(
-    track_jobs, max_workers, timeout_sec, artist, album, max_retries=2, pause_sec=60
+    track_jobs, max_workers, artist, album
 ) -> list[dict[str, Any] | None]:
-    """Executes track processing in an isolated thread pool with tracing."""
+    """
+    Executes track processing synchronously inside an isolated thread pool. 
+    Removed timeouts to prevent zombie thread leaks and DB connection pool starvation.
+    """
     results = [None] * len(track_jobs)
     if not track_jobs:
         return results
@@ -690,8 +651,6 @@ def _execute_track_jobs_safely(
     def _run_single(job_tuple):
         _prepared, _tc, _opts, _frozen = job_tuple
         title = _prepared.get("title", "Unknown")
-        thread_name = threading.current_thread().name
-        logger.debug(f"[TRACK-TRACE] [{thread_name}] Starting processing for track: '{title}'")
         try:
             res = process_track(
                 track=_prepared,
@@ -708,59 +667,25 @@ def _execute_track_jobs_safely(
                 discogs_cached_promos=_opts.get("discogs_cached_promos", set()),
                 prefetched_popularity=_opts.get("prefetched_popularity", {}),
             )
-            logger.debug(f"[TRACK-TRACE] [{thread_name}] Finished processing for track: '{title}'")
             return res
         except Exception as exc:
-            logger.error(f"[TRACK-TRACE] [{thread_name}] ERROR processing track: '{title}' - {repr(exc)}")
-            raise
+            logger.error(f"[TRACK-WORKER] Error processing track '{title}': {exc}")
+            return None
 
-    pending_indices = set(range(len(track_jobs)))
-    attempt = 0
-
-    while pending_indices and attempt <= max_retries:
-        if attempt > 0:
-            logger.warning(f"[TRACK-TRACE] Pausing scan for {pause_sec}s before restarting thread pool...", artist=artist, album=album)
-            time.sleep(pause_sec)
-
-        pool = concurrent.futures.ThreadPoolExecutor(
-            max_workers=max_workers, 
-            thread_name_prefix=f"track_worker_retry_{attempt}"
-        )
-        
-        future_to_idx = {}
-        for idx in pending_indices:
-            future = pool.submit(_run_single, track_jobs[idx])
-            future_to_idx[future] = idx
-            
-        try:
-            for future in concurrent.futures.as_completed(future_to_idx.keys(), timeout=timeout_sec):
-                idx = future_to_idx[future]
-                try:
-                    results[idx] = future.result()
-                    pending_indices.remove(idx)
-                except Exception as exc:
-                    logger.warning("Track worker crashed", artist=artist, album=album, track=track_jobs[idx][0].get('title'), error=str(exc))
-                    pending_indices.remove(idx)
-                    
-        except concurrent.futures.TimeoutError:
-            stuck_tracks = [track_jobs[future_to_idx[f]][0].get("title", "?") for f in future_to_idx if not f.done()]
-            logger.warning(
-                f"[TRACK-TRACE] Track deadline ({timeout_sec}s) reached on attempt {attempt + 1}. "
-                f"Threads stalled on tracks: {stuck_tracks}", 
-                artist=artist, 
-                album=album
-            )
-        finally:
-            for f in future_to_idx:
-                f.cancel()
-            pool.shutdown(wait=False, cancel_futures=True)
-
-        attempt += 1
-
-    if pending_indices:
-        logger.warning(f"[TRACK-TRACE] Abandoning {len(pending_indices)} tracks after {max_retries} failed restarts.", artist=artist, album=album)
-        
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=max_workers, 
+        thread_name_prefix="track_worker"
+    ) as pool:
+        future_to_idx = {pool.submit(_run_single, job): i for i, job in enumerate(track_jobs)}
+        for future in concurrent.futures.as_completed(future_to_idx.keys()):
+            idx = future_to_idx[future]
+            try:
+                results[idx] = future.result()
+            except Exception as exc:
+                logger.warning("Track worker crashed", artist=artist, album=album, error=str(exc))
+                
     return results
+
 
 def run_scan(
     *,
@@ -837,8 +762,6 @@ def run_scan(
     albums_processed = 0
     tracks_processed = 0
     skipped_albums = 0
-    consecutive_failures = 0
-    MAX_CONSECUTIVE_FAILURES = 3
 
     results: list[dict[str, Any]] = []
     last_checkpoint_artist: str | None = None
@@ -853,16 +776,6 @@ def run_scan(
     except Exception:
         pass
     _scan_threads = max(1, min(_scan_threads, 8))
-
-    try:
-        _track_timeout_seconds = get_track_timeout_seconds()
-    except Exception:
-        _track_timeout_seconds = 600
-
-    try:
-        _prefetch_budget_seconds = get_prefetch_budget_seconds()
-    except Exception:
-        _prefetch_budget_seconds = 360
 
     log_unified(f"[POPULARITY] Scan mode: {scan_type.capitalize()} — {total_albums} album(s) queued")
     if force:
@@ -1109,10 +1022,6 @@ def run_scan(
             options["_essential_featured_rows"] = _essential_featured_rows
 
     for album_index, album_row in enumerate(albums, start=1):
-        if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-            log_unified(f"[CIRCUIT BREAKER] Aborting scan due to {consecutive_failures} consecutive unrecoverable album failures. Try restarting the worker.")
-            record_scan(scan_type, "failed", message="Circuit breaker triggered.")
-            break
 
         if effective_stop_file and is_stop_requested(effective_stop_file):
             _close_artist_section(_section_artist)
@@ -1305,17 +1214,18 @@ def run_scan(
                 options["defer_full_enrichment"] = True
 
             log_unified(f"[POPULARITY] Enriching album: {artist} - {album}")
-            album_result = _bounded_call_result(
-                lambda: enrich_album(
+            
+            # Removed the buggy _bounded_call logic. This executes directly.
+            try:
+                album_result = enrich_album(
                     album_row=album_row,
                     album_context=album_context,
                     stat_eligible_tracks=stat_eligible_tracks,
                     options=options,
-                ),
-                seconds=_prefetch_budget_seconds,
-                label=f"album enrichment '{artist} - {album}'",
-                default={},
-            ) or {}
+                ) or {}
+            except Exception as e:
+                logger.error(f"[POPULARITY] enrich_album crashed: {e}")
+                album_result = {}
             
             log_unified(f"[POPULARITY] Album enriched: {artist} - {album} (type={album_result.get('detected_album_type')})")
 
@@ -1371,9 +1281,12 @@ def run_scan(
                         except Exception as exc:
                             logger.debug("Missing-releases refresh failed", artist=artist, error=str(exc))
 
-                log_unified(f"[POPULARITY] Prefetching popularity + release data for '{artist}' (budget {int(_prefetch_budget_seconds or 0)}s)")
+                log_unified(f"[POPULARITY] Prefetching popularity + release data for '{artist}'")
                 _prefetch_start = time.monotonic()
-                _bounded_call(_prefetch_artist_work, seconds=_prefetch_budget_seconds, label=f"per-artist prefetch for '{artist}'")
+                try:
+                    _prefetch_artist_work()
+                except Exception as e:
+                    logger.error(f"[POPULARITY] Prefetch crashed: {e}")
                 _prefetch_elapsed = time.monotonic() - _prefetch_start
                 prefetched_popularity = _prefetch_state["prefetched_popularity"]
                 log_unified(f"[POPULARITY] Prefetch complete for '{artist}' in {_prefetch_elapsed:.1f}s ({len(prefetched_popularity or {})} tracks pre-loaded)")
@@ -1392,12 +1305,12 @@ def run_scan(
                                 
                     if _needs_album_lb:
                         _clean_album = _sanitize_release_name(album)
-                        _album_lb_by_title, _album_release_mbid = _bounded_call_result(
-                            lambda: get_listenbrainz_album_tracklist_with_release(artist, _clean_album, track_dicts) or ({}, ""),
-                            seconds=min(_track_timeout_seconds, 120),
-                            label=f"album-tracklist LB for '{artist} - {_clean_album}'",
-                            default=({}, ""),
-                        )
+                        try:
+                            _album_lb_by_title, _album_release_mbid = get_listenbrainz_album_tracklist_with_release(artist, _clean_album, track_dicts) or ({}, "")
+                        except Exception as e:
+                            logger.error(f"album-tracklist LB failed for '{artist} - {_clean_album}': {e}")
+                            _album_lb_by_title, _album_release_mbid = {}, ""
+
                         _cache_rows: list[dict[str, Any]] = []
                         for _t in track_dicts:
                             if not _t.get("title"):
@@ -1441,12 +1354,11 @@ def run_scan(
 
             artist_max_lf = 0
             if not _singles_pass:
-                artist_max_lf = _bounded_call_result(
-                    lambda: get_lastfm_artist_max_listeners(artist),
-                    seconds=min(_track_timeout_seconds, 90),
-                    label=f"artist max LF listeners for '{artist}'",
-                    default=0,
-                )
+                try:
+                    artist_max_lf = get_lastfm_artist_max_listeners(artist) or 0
+                except Exception as e:
+                    logger.error(f"artist max LF listeners failed for '{artist}': {e}")
+                    artist_max_lf = 0
 
             album_count = len(track_contexts)
             log_unified(f"[POPULARITY] Album {album_index}/{total_albums} ({scan_type}): {artist} - {album} ({album_count} tracks)")
@@ -1465,14 +1377,12 @@ def run_scan(
                             
                     if _mb_entries:
                         _clean_album = _sanitize_release_name(album)
-                        _raw_mb_batch = _bounded_call_result(
-                            lambda: MusicBrainzHttpClient().search_releases(str(_clean_album or ""), limit=10),
-                            seconds=min(_track_timeout_seconds, 120),
-                            label=f"MB album batch for '{artist} - {_clean_album}'",
-                            default={},
-                        ) or {}
+                        try:
+                            _raw_mb_batch = MusicBrainzHttpClient().search_releases(str(_clean_album or ""), limit=10) or {}
+                        except Exception as e:
+                            logger.error(f"MB album batch failed for '{artist} - {_clean_album}': {e}")
+                            _raw_mb_batch = {}
                         
-                        # Coerce list responses into a dictionary to prevent AttributeErrors
                         _mb_batch = {}
                         if isinstance(_raw_mb_batch, list):
                             for idx, item in enumerate(_raw_mb_batch):
@@ -1505,12 +1415,11 @@ def run_scan(
                             _lb_tag_mbids.append(_m)
                             
                     if _lb_tag_mbids:
-                        options["lb_recording_tags_batch"] = _bounded_call_result(
-                            lambda: get_recording_tags_batch(_lb_tag_mbids),
-                            seconds=min(_track_timeout_seconds, 90),
-                            label=f"LB tag batch for '{artist} - {album}'",
-                            default={},
-                        ) or {}
+                        try:
+                            options["lb_recording_tags_batch"] = get_recording_tags_batch(_lb_tag_mbids) or {}
+                        except Exception as e:
+                            logger.error(f"LB tag batch failed for '{artist} - {album}': {e}")
+                            options["lb_recording_tags_batch"] = {}
                 except Exception as exc:
                     logger.debug("LB tag batch failed", artist=artist, album=album, error=str(exc))
 
@@ -1568,13 +1477,10 @@ def run_scan(
                     _track_options["frozen_track"] = True
                     
                 _track_jobs.append((prepared_track, track_context, _track_options, _frozen))
-
-            _track_worker_hard_timeout = max(60, min(_track_timeout_seconds, 600))
             
             _track_results_ordered = _execute_track_jobs_safely(
                 track_jobs=_track_jobs, 
                 max_workers=_scan_threads, 
-                timeout_sec=_track_worker_hard_timeout, 
                 artist=artist, 
                 album=album
             )
@@ -1622,22 +1528,6 @@ def run_scan(
                 except Exception:
                     pass
 
-            _track_failure_ratio = (
-                (len(_track_jobs) - sum(1 for r in _track_results_ordered if r is not None)) / max(1, len(_track_jobs))
-                if _track_jobs else 0.0
-            )
-
-            # Circuit breaker logic
-            if _track_failure_ratio >= 0.5:
-                consecutive_failures += 1
-                logger.warning(f"Skipping post-singles enrichment — track workers stalled", artist=artist, album=album, failure_ratio_pct=_track_failure_ratio * 100)
-                record_scan(scan_type, "failed", message=f"Skipped album completion due to {_track_failure_ratio*100:.0f}% track failure rate.", artist=artist, album=album)
-                albums_processed += 1
-                continue
-            else:
-                # Reset consecutive breaker on successful execution
-                consecutive_failures = 0
-
             if _full_pass:
                 def _post_singles_enrichment_work() -> None:
                     try:
@@ -1657,11 +1547,10 @@ def run_scan(
                         logger.debug("Post-singles enrichment failed", artist=artist, album=album, error=str(exc))
 
                 log_unified(f"[POPULARITY] Post-singles enrichment for '{artist} - {album}' (covers, genres, artist metadata)")
-                _bounded_call(
-                    _post_singles_enrichment_work,
-                    seconds=_prefetch_budget_seconds,
-                    label=f"post-singles enrichment for '{artist} - {album}'",
-                )
+                try:
+                    _post_singles_enrichment_work()
+                except Exception as e:
+                    logger.error(f"[POPULARITY] Post-singles enrichment crashed: {e}")
 
             _run_album_cover_detection(artist=artist, album=album, tracks=tracks, options=options)
 
