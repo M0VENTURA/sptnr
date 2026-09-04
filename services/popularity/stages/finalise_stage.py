@@ -162,8 +162,6 @@ def _resolve_navidrome_artist_id(artist: str) -> str | None:
     except Exception as exc:
         logger.debug("tracks id lookup failed", artist=artist, error=str(exc))
     return None
-
-
 # ---------------------------------------------------------------------------
 # Star rating assignment
 # ---------------------------------------------------------------------------
@@ -343,43 +341,40 @@ def _assign_stars(
             track["_era_5star"] = True
         return 5
 
-        if album_model and album_model.get("has_benchmark") and score > 0:
-            era = str(album_model.get("era") or "")
-            _rules, _, _ = _live_album_scaling()
-            rules = _rules.get(era)
-            catalog_cutoff = album_model.get("catalog_cutoff")
-            qualifies_catalog = catalog_cutoff is not None and score >= float(catalog_cutoff)
+    if album_model and album_model.get("has_benchmark") and score > 0:
+        era = str(album_model.get("era") or "")
+        _rules, _, _ = _live_album_scaling()
+        rules = _rules.get(era)
+        catalog_cutoff = album_model.get("catalog_cutoff")
+        qualifies_catalog = catalog_cutoff is not None and score >= float(catalog_cutoff)
+        
+        _rank_ref = ref_scores if is_compilation else album_scores
+        qualifies_album = (
+            not popularity_only
+            and organic
+            and rules is not None
+            and _album_rank(score, _rank_ref) <= int(rules["album_top_n"])
+        )
+        if qualifies_catalog or qualifies_album:
+            track["_era_5star"] = True
+            return 5
             
-            _rank_ref = ref_scores if is_compilation else album_scores
-            qualifies_album = (
-                not popularity_only
-                and organic
-                and rules is not None
-                and _album_rank(score, _rank_ref) <= int(rules["album_top_n"])
-            )
-            if qualifies_catalog or qualifies_album:
-                track["_era_5star"] = True
-                return 5
-                
-            if not popularity_only and single_confidence == "high":
-                band = _album_z_band_star(
-                    score, ref_scores, artist_scores=artist_scores,
-                    is_live=is_live, single_confidence=single_confidence,
-                )
-                return max(band, 4) if organic else min(band, 3)
-                
-            return _album_z_band_star(
+        if not popularity_only and single_confidence == "high":
+            band = _album_z_band_star(
                 score, ref_scores, artist_scores=artist_scores,
                 is_live=is_live, single_confidence=single_confidence,
             )
-
-        return 5
+            return max(band, 4) if organic else min(band, 3)
+            
+        return _album_z_band_star(
+            score, ref_scores, artist_scores=artist_scores,
+            is_live=is_live, single_confidence=single_confidence,
+        )
 
     return _album_z_band_star(
         score, ref_scores, artist_scores=artist_scores,
         is_live=is_live, single_confidence=single_confidence,
     )
-
 
 # ---------------------------------------------------------------------------
 # 3-step scaling model helpers
