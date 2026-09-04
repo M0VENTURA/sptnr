@@ -6,9 +6,9 @@ function openJumpPicker() {
     if (overlay) overlay.classList.remove('d-none');
 }
 
-// Close the jump grid overlay only when clicking the backdrop background
+// Close the jump grid overlay when clicking backdrop or close button
 function closeJumpPicker(event) {
-    if (event && event.target !== event.currentTarget) return;
+    if (event && event.target !== event.currentTarget && !event.target.closest('.btn-close')) return;
     const overlay = document.getElementById('metroJumpOverlay');
     if (overlay) overlay.classList.add('d-none');
 }
