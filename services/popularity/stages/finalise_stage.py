@@ -351,12 +351,18 @@ def _assign_stars(
         raw_lf = float(track.get("lastfm_listeners") or 0)
         is_verified_single = single_confidence in ("high", "medium")
 
-        # 1. Singles Bypass: Guaranteed 4★ or 5★
+        # 1. Verified Single Scoring
         if is_verified_single and not popularity_only:
-            if score >= 85.0 or raw_lf >= 500_000:
+            if score >= 55.0 or raw_lf >= 1_000_000:
                 comp_stars = 5
-            else:
+            elif score >= 45.0 or raw_lf >= 250_000:
                 comp_stars = 4
+            elif score >= 30.0 or raw_lf >= 50_000:
+                comp_stars = 3
+            elif score >= 15.0 or raw_lf >= 10_000:
+                comp_stars = 2
+            else:
+                comp_stars = 1
 
         # 2. Non-Singles Bypass: Driven exclusively by Popularity
         else:
@@ -1945,7 +1951,7 @@ def post_album_star_ratings(
             log_unified(f"{'RATING':<7} {'TRACK TITLE':<34} {'Z-SCORE':>7} {'SCORE':>6} {'LF LISTENS':>10}  SINGLE CONF")
             log_unified("-" * 80)
             for r in rows:
-                star_str = "★" * r["stars"] + "☆" * (5 - r["stars"])
+                star_str = "★" * r r["stars"] + "☆" * (5 - r["stars"])
                 log_unified(f"{star_str:<7} {r['title']:<34} {r['z']:>+7.2f} {r['score']:>6.1f} {r['lf']:>10}  {r['conf']}{r['note']}")
             log_unified("-" * 80)
             log_unified(f"⭐ Distribution: 5★: {star_counts[5]} | 4★: {star_counts[4]} | 3★: {star_counts[3]} | 2★: {star_counts[2]} | 1★: {star_counts[1]}")
