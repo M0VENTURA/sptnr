@@ -2071,6 +2071,37 @@ function renderQueueList(kind, items) {
   restoreQueueGroupExpansion(listEl);
 }
 function buildQueueGroups(items) {
+  var groups = [];
+  var map = {};
+  items.forEach(function(item) {
+    // Correctly group by the actual folder path or fallback metadata
+    var album = (item.album || item.queue_folder || '').trim();
+    var artist = (item.album_artist || item.artist || '').trim();
+    var title = (item.title || '').trim();
+
+    var key, label, sublabel;
+    if (item.import_group) {
+      key = 'grp_' + String(item.import_group);
+      label = album || String(item.import_group);
+      sublabel = artist;
+    } else if (album && album !== title) {
+      key = 'alb_' + artist.toLowerCase() + '|' + album.toLowerCase();
+      label = album;
+      sublabel = artist;
+    } else {
+      key = 'solo_' + (item.id || item.filename);
+      label = album || 'Unmatched Files';
+      sublabel = artist || 'Various';
+    }
+
+    if (!map[key]) {
+      map[key] = { key: key, label: label, sublabel: sublabel, items: [] };
+      groups.push(map[key]);
+    }
+    map[key].items.push(item);
+  });
+  return groups;
+}
 
 function manualQueueSlskdSearch(encodedQuery, queueIdRaw) {
   const query = decodeURIComponent(encodedQuery || '');
