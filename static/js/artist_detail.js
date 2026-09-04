@@ -3194,7 +3194,26 @@ document.addEventListener('DOMContentLoaded', () => {
   initArtistSingleExpansion();
 });
 
+// Toggle hiding/showing missing releases for an individual category section
+function toggleMissingReleasesForCategory(btn, catId) {
+  const section = document.getElementById(catId + '-section');
+  if (!section) return;
+  const missingRows = section.querySelectorAll('.missing-album-item');
+  const isHidden = btn.getAttribute('data-hidden') === 'true';
 
+  missingRows.forEach(row => {
+    row.style.display = isHidden ? '' : 'none';
+  });
+
+  if (isHidden) {
+    btn.setAttribute('data-hidden', 'false');
+    btn.innerHTML = '<i class="bi bi-eye-slash me-1"></i><span>Hide Missing</span>';
+  } else {
+    btn.setAttribute('data-hidden', 'true');
+    btn.innerHTML = '<i class="bi bi-eye me-1"></i><span>Show Missing</span>';
+  }
+}
+window.toggleMissingReleasesForCategory = toggleMissingReleasesForCategory;
 
 
 
