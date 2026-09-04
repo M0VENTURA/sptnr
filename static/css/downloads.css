@@ -17,6 +17,25 @@
     background-color: var(--brand-lastfm, #d51007) !important;
 }
 
+/* ==========================================================================
+   Folder Groups & Unmatched Folders
+   ========================================================================== */
+#folderGroupsSection, #unmatchedFoldersSection {
+    background-color: var(--secondary-bg, #1e1e1e) !important;
+    border: 1px solid var(--border-color, #282828);
+}
+
+#folderGroupsSection .card-header, #unmatchedFoldersSection .card-header {
+    background-color: var(--tertiary-bg, #282828) !important;
+    border-bottom: 1px solid var(--border-color, #333) !important;
+}
+
+.queue-item, .list-group-item {
+    background-color: var(--secondary-bg, #1e1e1e) !important;
+    color: var(--text-primary, #fff) !important;
+    border-color: var(--border-color, #282828) !important;
+}
+
 /* Album-folder queue groups */
 .queue-group-toggle .queue-group-chevron {
     transition: transform 0.15s ease;
@@ -26,13 +45,18 @@
     transform: rotate(180deg);
 }
 
+.queue-group-body {
+    background-color: rgba(0, 0, 0, 0.15);
+    border-left: 2px solid var(--spotify-green, #1db954) !important;
+}
+
 .queue-group-body .list-group-item {
     border: none;
-    border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+    border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.08)) !important;
 }
 
 .queue-group-body .list-group-item:last-child {
-    border-bottom: none;
+    border-bottom: none !important;
 }
 
 /* Slim outlined status pills */
