@@ -2070,40 +2070,7 @@ function renderQueueList(kind, items) {
   attachQueueGroupToggles(listEl);
   restoreQueueGroupExpansion(listEl);
 }
-
 function buildQueueGroups(items) {
-  const groups = [];
-  const map = {};
-  items.forEach(function(item) {
-    const album = (item.album || '').trim();
-    const artist = (item.album_artist || item.artist || '').trim();
-    const title = (item.title || '').trim();
-
-    let key;
-    let label;
-    let sublabel;
-    if (item.import_group) {
-      key = 'grp_' + String(item.import_group);
-      label = album || String(item.import_group);
-      sublabel = artist;
-    } else if (album && album !== title) {
-      key = 'alb_' + artist.toLowerCase() + '|' + album.toLowerCase();
-      label = album;
-      sublabel = artist;
-    } else {
-      key = 'solo_' + item.id;
-      label = null;
-      sublabel = null;
-    }
-
-    if (!map[key]) {
-      map[key] = { key: key, label: label, sublabel: sublabel, items: [] };
-      groups.push(map[key]);
-    }
-    map[key].items.push(item);
-  });
-  return groups;
-}
 
 function manualQueueSlskdSearch(encodedQuery, queueIdRaw) {
   const query = decodeURIComponent(encodedQuery || '');
