@@ -324,67 +324,51 @@ def _assign_stars(
         return _force_stars
 
 # Bypass the restrictive Album Z-Curve and Top-N Slot Caps for Compilation Albums
+# ── Compilation Album Scoring ──────────────────────────────────────────
     if is_compilation:
-        if artist_z >= th["star5_artist_z"] - _star_epsilon_z(artist_spread, th["epsilon"]):
-            comp_stars = 5
-        elif artist_z >= th["star4_artist_z"] - _star_epsilon_z(artist_spread, th["epsilon"]):
-            comp_stars = 4
-        elif artist_z >= (th["star4_artist_z"] + th["star3_album_z"]) / 2: # Midpoint fallback for 3 stars
-            comp_stars = 3
-        elif artist_z >= th["star2_album_z"]: 
-            comp_stars = 2
-        else:
-            comp_stars = 1
+        # Check if we have an established catalog in the DB beyond this album
+        has_deep_catalog = len([s for s in artist_scores if s > 0]) >= max(len(album_scores) + 15, 30)
 
+        if has_deep_catalog:
+            # Score strictly against the full artist catalogue Z-score
+            if artist_z >= th["star5_artist_z"] - _star_epsilon_z(artist_spread, th["epsilon"]):
+                comp_stars = 5
+            elif artist_z >= th["star4_artist_z"] - _star_epsilon_z(artist_spread, th["epsilon"]):
+                comp_stars = 4
+            elif artist_z >= 0.0:  # Above average for the artist's total career
+                comp_stars = 3
+            elif artist_z >= th["star2_album_z"]:
+                comp_stars = 2
+            else:
+                comp_stars = 1
+        else:
+            # Catalog is sparse (e.g. only this compilation is in the library).
+            # Fall back to absolute popularity score and listener count tiers.
+            raw_lf = float(track.get("lastfm_listeners") or 0)
+
+            if score >= 95.0 or raw_lf >= 1_500_000:
+                comp_stars = 5
+            elif score >= 88.0 or raw_lf >= 500_000:
+                comp_stars = 4
+            elif score >= 75.0 or raw_lf >= 150_000:
+                comp_stars = 3
+            elif score >= 40.0 or raw_lf >= 25_000:
+                comp_stars = 2
+            else:
+                comp_stars = 1
+
+        # Singles boost: verified commercial singles shouldn't fall into 1★
+        if single_confidence in ("high", "medium") and organic:
+            comp_stars = max(comp_stars, 2)
+
+        # Apply minor penalty to live tracks on compilations
         if is_live:
-            comp_stars = max(1, comp_stars - 1)  # Apply a minor penalty to live tracks on compilations
+            comp_stars = max(1, comp_stars - 1)
+
         if comp_stars == 5:
             track["_era_5star"] = True
-        return max(comp_stars, 2) if organic else comp_stars # Give an organic floor for compilation hits
 
-    if not is_live and (
-        popularity_marked
-        or (not popularity_only and single_confidence == "high" and organic)
-        or is_standout
-    ):
-        if is_standout:
-            track["_era_5star"] = True
-        return 5
-
-    if album_model and album_model.get("has_benchmark") and score > 0:
-        era = str(album_model.get("era") or "")
-        _rules, _, _ = _live_album_scaling()
-        rules = _rules.get(era)
-        catalog_cutoff = album_model.get("catalog_cutoff")
-        qualifies_catalog = catalog_cutoff is not None and score >= float(catalog_cutoff)
-        
-        _rank_ref = ref_scores if is_compilation else album_scores
-        qualifies_album = (
-            not popularity_only
-            and organic
-            and rules is not None
-            and _album_rank(score, _rank_ref) <= int(rules["album_top_n"])
-        )
-        if qualifies_catalog or qualifies_album:
-            track["_era_5star"] = True
-            return 5
-            
-        if not popularity_only and single_confidence == "high":
-            band = _album_z_band_star(
-                score, ref_scores, artist_scores=artist_scores,
-                is_live=is_live, single_confidence=single_confidence,
-            )
-            return max(band, 4) if organic else min(band, 3)
-            
-        return _album_z_band_star(
-            score, ref_scores, artist_scores=artist_scores,
-            is_live=is_live, single_confidence=single_confidence,
-        )
-
-    return _album_z_band_star(
-        score, ref_scores, artist_scores=artist_scores,
-        is_live=is_live, single_confidence=single_confidence,
-    )
+        return comp_stars
 
 # ---------------------------------------------------------------------------
 # 3-step scaling model helpers
