@@ -16,7 +16,7 @@
         cursor: pointer;
         font-size: 0.75rem;
     }
-    /* Flex-child truncation helper (Bootstrap has no .min-w-0 utility) */
+    /* Flex-child truncation helper */
     .min-w-0 { min-width: 0; }
     /* Compact hero: 64×64 art beside the title on phones, full-size on desktop */
     @media (max-width: 575.98px) {
@@ -34,7 +34,7 @@
         .album-track-mobile-row td { padding: 0.45rem 0.75rem; }
         .album-track-mobile-row .btn { min-height: 0; padding: 0.15rem 0.4rem; }
     }
-    /* Floating bulk-actions bar on phones (shown by JS only when tracks are selected) */
+    /* Floating bulk-actions bar on phones */
     @media (max-width: 991.98px) {
         #bulkActionsToolbar {
             position: fixed;
@@ -50,12 +50,9 @@
         }
         #bulkActionsToolbar .btn { min-height: 40px; }
     }
-    /* Compact MBID correction banner */
-    /* Clearance above the floating bulk-actions bar while tracks are selected */
     body.bulk-actions-visible main.container-fluid {
         padding-bottom: 120px;
     }
-    /* Album edit-form accordion toggles */
     .album-form-toggle[aria-expanded="true"] .bi-chevron-down { transform: rotate(180deg); }
     .album-form-toggle .bi-chevron-down { transition: transform 0.2s ease; }
 </style>
@@ -70,20 +67,21 @@
         </ol>
     </nav>
     
-    <!-- Album Hero: art + title + top genres + metadata grid + scanner/action toolbar -->
-    <div class="card mb-4 position-relative" id="album-details-section">
-        <div class="card-body p-3">
+    <!-- Album Hero: art + title + top genres + metadata grid + scanner toolbar + Play CTA -->
+    <div class="card mb-4 position-relative shadow-sm" id="album-details-section">
+        <div class="card-body p-3 p-md-4">
             <!-- Borderless top-right favourite heart -->
-            <button type="button" class="btn btn-link p-0 text-danger border-0 shadow-none position-absolute top-0 end-0 m-2"
+            <button type="button" class="btn btn-link p-0 text-danger border-0 shadow-none position-absolute top-0 end-0 m-3"
                     id="albumFavouriteBtn"
                     onclick='toggleAlbumFavourite({{ artist_name|tojson }}, {{ album_name|tojson }})'
                     title="Favourite this album" aria-label="Favourite this album">
-                <i class="bi {{ 'bi-heart-fill' if is_album_favourite else 'bi-heart' }} fs-5" id="albumFavouriteIcon"></i>
+                <i class="bi {{ 'bi-heart-fill' if is_album_favourite else 'bi-heart' }} fs-4" id="albumFavouriteIcon"></i>
             </button>
+
             <!-- 1. Header: artwork + title + artist + rating + top 2 genres -->
             <div class="d-flex align-items-start gap-3 mb-3">
                 <div class="flex-shrink-0">
-                    <div class="album-art-container position-relative rounded overflow-hidden" style="width: 80px; height: 80px;">
+                    <div class="album-art-container position-relative rounded overflow-hidden shadow-sm" style="width: 80px; height: 80px;">
                         <img id="albumArtImage" src="/api/album/{{ artist_name|path_segment }}/{{ album_name|path_segment }}/art" 
                              alt="{{ album_name }}" 
                              style="width: 100%; height: 100%; object-fit: cover;"
@@ -93,12 +91,11 @@
                         </button>
                     </div>
                 </div>
-                <div class="overflow-hidden flex-grow-1 min-w-0">
-                    <h1 class="h5 fw-bold mb-0 album-hero-title text-truncate pe-4">
+                <div class="overflow-hidden flex-grow-1 min-w-0 pe-4">
+                    <h1 class="h5 fw-bold mb-0 album-hero-title text-truncate">
                         {{ album_name }}{% if album_data and album_data.album_year %} <span class="text-muted fw-normal" style="font-size:0.85rem;">({{ album_data.album_year }})</span>{% endif %}
                     </h1>
                     {% if all_album_years and all_album_years|length > 1 %}
-                    <!-- Same-name albums across years: pick the edition -->
                     <div class="d-flex align-items-center gap-2 mt-1 flex-wrap">
                         <small class="text-muted" style="font-size:0.7rem;">Edition:</small>
                         {% for y in all_album_years %}
@@ -120,7 +117,6 @@
                         {% endif %}
                     </div>
                     {% if album_data and album_data.spotify_album_type %}
-                    <!-- Entity type badge (Zone B: neutral solid pill) -->
                     <span class="badge bg-secondary" style="font-size:0.7rem;">{{ album_data.spotify_album_type|title }}</span>
                     {% endif %}
                     {% if hero_genres %}
@@ -186,27 +182,32 @@
                 {% endif %}
             </div>
 
-            <!-- 3. Horizontal scanner toolbar (scan selector + force + run + actions) -->
-            <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 pt-1 scan-toolbar">
-                <div class="d-flex align-items-center gap-2 flex-wrap">
-                    <form method="POST" action="{{ url_for('scans.scan_album_custom') }}" class="d-flex align-items-center gap-2 flex-wrap">
-                        <input type="hidden" name="artist" value="{{ artist_name }}">
-                        <input type="hidden" name="album" value="{{ album_name }}">
+            <!-- 3. Streamlined Scanner Toolbar (Above the Play CTA) -->
+            <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 pt-1 mb-3 scan-toolbar">
+                <form method="POST" action="{{ url_for('scans.scan_album_custom') }}" class="d-flex align-items-center gap-2 flex-wrap">
+                    <input type="hidden" name="artist" value="{{ artist_name }}">
+                    <input type="hidden" name="album" value="{{ album_name }}">
+                    
+                    <div class="input-group input-group-sm" style="width: auto; max-width: 220px;">
                         {% include 'components/_scan_selector.html' %}
-                        <button class="btn btn-warning btn-sm order-first" type="submit" title="Run selected scan for this album">
-                            <i class="bi bi-lightning-fill"></i> <span class="d-none d-sm-inline">Run</span>
+                        <button class="btn btn-warning fw-bold px-3" type="submit" title="Run selected scan for this album">
+                            <i class="bi bi-lightning-fill"></i> Run
                         </button>
-                        <div class="form-check form-check-inline mb-0" title="Force full rescan for this album">
+                    </div>
+
+                    <div class="d-flex align-items-center px-3 py-1 bg-dark rounded border border-secondary">
+                        <div class="form-check form-check-inline m-0" title="Force full rescan for this album">
                             <input class="form-check-input" type="checkbox" id="albumForceScan" name="force" value="1">
-                            <label class="form-check-label small" for="albumForceScan">Force</label>
+                            <label class="form-check-label small text-muted" for="albumForceScan">Force</label>
                         </div>
-                    </form>
-                </div>
+                    </div>
+                </form>
+
                 <div class="dropdown ms-auto">
                     <button type="button" class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="More actions">
                         <i class="bi bi-three-dots-vertical"></i> <span class="d-none d-sm-inline">Actions</span>
                     </button>
-                    <ul class="dropdown-menu dropdown-menu-end">
+                    <ul class="dropdown-menu dropdown-menu-end shadow">
                         <li><a class="dropdown-item" href="javascript:void(0)" onclick="openAlbumLookupModal()"><i class="bi bi-search me-2"></i>Lookup on MusicBrainz</a></li>
                         <li><a class="dropdown-item" href="javascript:void(0)" onclick="downloadMissingTracks()"><i class="bi bi-download me-2"></i>Download Missing Tracks</a></li>
                         <li><a class="dropdown-item" href="javascript:void(0)" onclick="renameAlbumFiles('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')"><i class="bi bi-files me-2"></i>Rename Files</a></li>
@@ -221,7 +222,7 @@
             </div>
 
             <!-- 4. Full-width Play Album action bar -->
-            <button type="button" class="btn btn-success w-100 fw-bold d-flex align-items-center justify-content-center gap-2 py-2 mt-3 shadow-sm"
+            <button type="button" class="btn btn-success w-100 fw-bold d-flex align-items-center justify-content-center gap-2 py-2 shadow-sm"
                     onclick="playAlbum()" title="Play all downloaded tracks">
                 <i class="bi bi-play-circle-fill fs-5"></i>
                 <span>PLAY ALBUM{% if album_data and album_data.track_count %} ({{ album_data.track_count }} TRACKS){% endif %}</span>
@@ -230,13 +231,13 @@
     </div>
 
     <!-- Navigation Tabs -->
-    <div class="card mb-4 sticky-top" style="top: 0; z-index: 1000;">
+    <div class="card mb-4 sticky-top shadow-sm" style="top: 0; z-index: 1000;">
         <div class="card-body py-2 px-3">
-            <ul class="nav nav-pills gap-2 small d-none d-lg-flex">
-                <li class="nav-item"><a class="nav-link" href="#album-information-section">Information</a></li>
-                <li class="nav-item"><a class="nav-link" href="#album-genres-section">Genres and Moods</a></li>
-                <li class="nav-item"><a class="nav-link" href="#album-similar-section">Similar</a></li>
-                <li class="nav-item"><a class="nav-link" href="#album-tracks-section">Tracks</a></li>
+            <ul class="nav nav-pills nav-fill gap-2 small d-none d-lg-flex bg-secondary p-1 rounded">
+                <li class="nav-item"><a class="nav-link py-1" href="#album-information-section">Information</a></li>
+                <li class="nav-item"><a class="nav-link py-1" href="#album-genres-section">Genres and Moods</a></li>
+                <li class="nav-item"><a class="nav-link py-1" href="#album-similar-section">Similar</a></li>
+                <li class="nav-item"><a class="nav-link active py-1" href="#album-tracks-section">Tracks</a></li>
             </ul>
             <div class="mobile-tab-bar d-lg-none" role="tablist" aria-label="Album sections" id="albumMobileTabBar" data-mobile-tabs data-group-attr="data-album-group" data-active-class="album-mobile-active">
                 <button type="button" class="tab-btn active" data-tab="tracks" role="tab" aria-selected="true"><i class="bi bi-music-note-list"></i> Tracks</button>
@@ -253,10 +254,10 @@
             <!-- EDIT FORM -->
             <div class="col-12 order-2">
                 <!-- Album Edit Card -->
-                <div class="card album-mobile-group" id="album-information-section" data-album-group="details">
+                <div class="card album-mobile-group shadow-sm" id="album-information-section" data-album-group="details">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h5 class="card-title mb-0">
-                            <i class="bi bi-pencil-square"></i> Edit Album
+                            <i class="bi bi-pencil-square text-primary"></i> Edit Album
                         </h5>
                         <div class="d-flex gap-2">
                             <button type="submit" class="btn btn-sm btn-success">
@@ -398,7 +399,6 @@
                         <div class="collapse" id="albumFormExtended">
                         <h6 class="text-muted mb-3">Release Information <small class="text-muted">(applied to all tracks on save)</small></h6>
                         
-                        <!-- Fixed Extended Metadata Form Values (Snake Case) -->
                         <div class="row g-2">
                             <div class="col-12 col-md-6">
                                 <label for="album_recordlabel" class="form-label">Record Label</label>
@@ -469,127 +469,126 @@
     </form>
     
     <!-- FULL-WIDTH SECTIONS BELOW FORM -->
-
     
     <!-- Genres & Tags Card -->
-    <div class="card mb-4 album-mobile-group" id="album-genres-section" data-album-group="genres">
-                    <div class="card-header">
-                        <h5 class="card-title mb-0">
-                            <i class="bi bi-tags-fill"></i> Genres and Moods
-                        </h5>
-                    </div>
-                    <div class="card-body">
-                        <!-- Genre Recommendations -->
-                        <h6 class="text-muted mb-2">Get Suggestions</h6>
-                        <button type="button" class="btn btn-sm btn-outline-primary w-100 mb-2" onclick="fetchGenreRecommendations()" id="fetchGenresBtn">
-                            <i class="bi bi-cloud-download"></i> Recommendations
-                        </button>
-                        <div class="mb-3" id="recommendedGenresSection" style="display: none;">
-                            <h6 class="mb-2 mt-2"><i class="bi bi-stars"></i> Suggested Genres</h6>
-                            <p class="text-muted small mb-2">From Spotify, MusicBrainz & Discogs</p>
-                            <div class="d-flex flex-wrap gap-2" id="recommendedGenres">
-                                <span class="text-muted small">Loading...</span>
-                            </div>
-                        </div>
-
-                        <hr class="my-3">
-
-                        <!-- Detected Genre Source Display -->
-                        <h6 class="text-muted mb-2">Detected Genres</h6>
-                        <p class="text-muted small mb-2">All genres detected from external sources (Last.fm, Discogs, MusicBrainz, Essentia, etc.) across all tracks on this album.</p>
-                        <div id="albumGenreSourcesContainer">
-                          {% set sources = [
-                            ('mood', 'Essentia Moods', 'F59C00', 'black', 'bi-emoji-smile-fill'),
-                            ('lastfm_tags', 'Last.fm Genres', 'D51007', 'white', 'bi-music-note-beamed'),
-                            ('listenbrainz_genres', 'ListenBrainz', '0066FF', 'white', 'bi-headphones'),
-                            ('discogs_genres', 'Discogs', '6c757d', 'white', 'bi-vinyl-fill'),
-                            ('essentia_genres', 'Essentia Genres', '6f42c1', 'white', 'bi-cpu-fill'),
-                            ('navidrome_genres', 'Navidrome', '17A589', 'white', 'bi-music-note-list'),
-                            ('musicbrainz_genres', 'MusicBrainz Genres', 'EB743B', 'white', 'bi-hexagon-fill'),
-                            ('spotify_genres', 'Spotify', '1DB954', 'white', 'bi-spotify')
-                          ] %}
-                          {% set ns = namespace(has_any=False) %}
-                          {% for key, label, bgcolor, textcolor, icon in sources %}
-                            {% if genre_sources and genre_sources.get(key) %}{% set ns.has_any = True %}{% endif %}
-                          {% endfor %}
-                          {% if ns.has_any %}
-                            {% set ns2 = namespace(first=True) %}
-                            <ul class="nav nav-tabs" role="tablist">
-                              {% for key, label, bgcolor, textcolor, icon in sources %}
-                                {% if genre_sources and genre_sources.get(key) %}
-                                  <li class="nav-item" role="presentation">
-                                    <button class="nav-link {{ 'active' if ns2.first else '' }}"
-                                            id="albumGenreTab{{ key }}-tab" data-bs-toggle="tab"
-                                            data-bs-target="#albumGenreTab{{ key }}-content"
-                                            type="button" role="tab" style="color: #{{ bgcolor }};">
-                                      <i class="bi {{ icon }}"></i> {{ label }}
-                                      <span class="badge ms-2" style="background-color: #{{ bgcolor }}; color: {{ textcolor }};">{{ genre_sources[key]|length }}</span>
-                                    </button>
-                                  </li>
-                                  {% set ns2.first = False %}
-                                {% endif %}
-                              {% endfor %}
-                            </ul>
-                            {% set ns3 = namespace(first=True) %}
-                            <div class="tab-content mt-3">
-                              {% for key, label, bgcolor, textcolor, icon in sources %}
-                                {% if genre_sources and genre_sources.get(key) %}
-                                  <div class="tab-pane fade {{ 'active show' if ns3.first else '' }}"
-                                       id="albumGenreTab{{ key }}-content" role="tabpanel">
-                                    <p class="text-muted small mb-2">Tags/moods from {{ label }} · sorted by frequency</p>
-                                    <div class="d-flex flex-wrap gap-2 mb-3">
-                                      {% for genre in genre_sources[key]|sort(reverse=True, attribute='count') %}
-                                        <label class="badge genre-source-selectable" style="background-color: #{{ bgcolor }}; color: {{ textcolor }}; cursor:pointer; user-select:none; font-size:0.85rem;" title="Click to select">
-                                          <input type="checkbox" class="album-source-tag-check" value="{{ genre.name }}" style="margin-right:0.3rem;cursor:pointer;">
-                                          {{ genre.name }}{% if genre.count %} <small class="opacity-75">({{ genre.count }})</small>{% endif %}
-                                        </label>
-                                      {% endfor %}
-                                    </div>
-                                    <button class="btn btn-sm btn-outline-success album-apply-source-tags-btn" style="display:none" onclick="applySelectedAlbumSourceTags()">
-                                                                                        <i class="bi bi-check-circle"></i> Add Selected to Save List
-                                    </button>
-                                  </div>
-                                  {% set ns3.first = False %}
-                                {% endif %}
-                              {% endfor %}
-                            </div>
-                          {% else %}
-                            <div class="alert alert-info mb-0">
-                              <i class="bi bi-info-circle"></i> No genre/mood source data yet.
-                              <br><small>Run the popularity scan to populate genres and moods from Last.fm, Discogs, etc.</small>
-                            </div>
-                          {% endif %}
-                        </div>
-                    </div>
+    <div class="card mb-4 album-mobile-group shadow-sm" id="album-genres-section" data-album-group="genres">
+        <div class="card-header border-secondary">
+            <h5 class="card-title mb-0 fw-bold">
+                <i class="bi bi-tags-fill text-warning"></i> Genres and Moods
+            </h5>
+        </div>
+        <div class="card-body">
+            <!-- Genre Recommendations -->
+            <h6 class="text-muted mb-2">Get Suggestions</h6>
+            <button type="button" class="btn btn-sm btn-outline-primary w-100 mb-2" onclick="fetchGenreRecommendations()" id="fetchGenresBtn">
+                <i class="bi bi-cloud-download"></i> Recommendations
+            </button>
+            <div class="mb-3" id="recommendedGenresSection" style="display: none;">
+                <h6 class="mb-2 mt-2"><i class="bi bi-stars"></i> Suggested Genres</h6>
+                <p class="text-muted small mb-2">From Spotify, MusicBrainz & Discogs</p>
+                <div class="d-flex flex-wrap gap-2" id="recommendedGenres">
+                    <span class="text-muted small">Loading...</span>
                 </div>
+            </div>
+
+            <hr class="my-3">
+
+            <!-- Detected Genre Source Display -->
+            <h6 class="text-muted mb-2">Detected Genres</h6>
+            <p class="text-muted small mb-2">All genres detected from external sources across all tracks on this album.</p>
+            <div id="albumGenreSourcesContainer">
+              {% set sources = [
+                ('mood', 'Essentia Moods', 'F59C00', 'black', 'bi-emoji-smile-fill'),
+                ('lastfm_tags', 'Last.fm Genres', 'D51007', 'white', 'bi-music-note-beamed'),
+                ('listenbrainz_genres', 'ListenBrainz', '0066FF', 'white', 'bi-headphones'),
+                ('discogs_genres', 'Discogs', '6c757d', 'white', 'bi-vinyl-fill'),
+                ('essentia_genres', 'Essentia Genres', '6f42c1', 'white', 'bi-cpu-fill'),
+                ('navidrome_genres', 'Navidrome', '17A589', 'white', 'bi-music-note-list'),
+                ('musicbrainz_genres', 'MusicBrainz Genres', 'EB743B', 'white', 'bi-hexagon-fill'),
+                ('spotify_genres', 'Spotify', '1DB954', 'white', 'bi-spotify')
+              ] %}
+              {% set ns = namespace(has_any=False) %}
+              {% for key, label, bgcolor, textcolor, icon in sources %}
+                {% if genre_sources and genre_sources.get(key) %}{% set ns.has_any = True %}{% endif %}
+              {% endfor %}
+              {% if ns.has_any %}
+                {% set ns2 = namespace(first=True) %}
+                <ul class="nav nav-tabs" role="tablist">
+                  {% for key, label, bgcolor, textcolor, icon in sources %}
+                    {% if genre_sources and genre_sources.get(key) %}
+                      <li class="nav-item" role="presentation">
+                        <button class="nav-link {{ 'active' if ns2.first else '' }}"
+                                id="albumGenreTab{{ key }}-tab" data-bs-toggle="tab"
+                                data-bs-target="#albumGenreTab{{ key }}-content"
+                                type="button" role="tab" style="color: #{{ bgcolor }};">
+                          <i class="bi {{ icon }}"></i> {{ label }}
+                          <span class="badge ms-2" style="background-color: #{{ bgcolor }}; color: {{ textcolor }};">{{ genre_sources[key]|length }}</span>
+                        </button>
+                      </li>
+                      {% set ns2.first = False %}
+                    {% endif %}
+                  {% endfor %}
+                </ul>
+                {% set ns3 = namespace(first=True) %}
+                <div class="tab-content mt-3">
+                  {% for key, label, bgcolor, textcolor, icon in sources %}
+                    {% if genre_sources and genre_sources.get(key) %}
+                      <div class="tab-pane fade {{ 'active show' if ns3.first else '' }}"
+                           id="albumGenreTab{{ key }}-content" role="tabpanel">
+                        <p class="text-muted small mb-2">Tags/moods from {{ label }} · sorted by frequency</p>
+                        <div class="d-flex flex-wrap gap-2 mb-3">
+                          {% for genre in genre_sources[key]|sort(reverse=True, attribute='count') %}
+                            <label class="badge genre-source-selectable" style="background-color: #{{ bgcolor }}; color: {{ textcolor }}; cursor:pointer; user-select:none; font-size:0.85rem;" title="Click to select">
+                              <input type="checkbox" class="album-source-tag-check" value="{{ genre.name }}" style="margin-right:0.3rem;cursor:pointer;">
+                              {{ genre.name }}{% if genre.count %} <small class="opacity-75">({{ genre.count }})</small>{% endif %}
+                            </label>
+                          {% endfor %}
+                        </div>
+                        <button class="btn btn-sm btn-outline-success album-apply-source-tags-btn" style="display:none" onclick="applySelectedAlbumSourceTags()">
+                            <i class="bi bi-check-circle"></i> Add Selected to Save List
+                        </button>
+                      </div>
+                      {% set ns3.first = False %}
+                    {% endif %}
+                  {% endfor %}
+                </div>
+              {% else %}
+                <div class="alert alert-info mb-0">
+                  <i class="bi bi-info-circle"></i> No genre/mood source data yet.
+                  <br><small>Run the popularity scan to populate genres and moods from Last.fm, Discogs, etc.</small>
+                </div>
+              {% endif %}
+            </div>
+        </div>
+    </div>
 
     <!-- Similar Artists Card -->
-    <div class="card mb-4 album-mobile-group" id="album-similar-section" data-album-group="similar">
-                    <div class="card-header p-0" id="album-similar-heading">
-                        <button class="btn btn-link w-100 text-start d-flex justify-content-between align-items-center px-3 py-2 text-decoration-none similar-artists-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#album-similar-collapse" aria-expanded="false" aria-controls="album-similar-collapse" style="color: inherit;">
-                            <h5 class="card-title mb-0">
-                                <i class="bi bi-person-heart"></i> Similar Artists
-                            </h5>
-                            <i class="bi bi-chevron-down similar-chevron"></i>
-                        </button>
-                    </div>
-                    <div id="album-similar-collapse" class="collapse">
-                        <div class="card-body">
-                            <div id="albumSimilarArtistsContainer">
-                                <div class="text-center py-3 text-muted">
-                                    <i class="bi bi-chevron-down"></i>
-                                    <span>Expand to load similar artists from Last.fm and ListenBrainz.</span>
-                                </div>
-                            </div>
-                        </div>
+    <div class="card mb-4 album-mobile-group shadow-sm" id="album-similar-section" data-album-group="similar">
+        <div class="card-header border-secondary p-0" id="album-similar-heading">
+            <button class="btn btn-link w-100 text-start d-flex justify-content-between align-items-center px-3 py-2 text-decoration-none similar-artists-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#album-similar-collapse" aria-expanded="false" aria-controls="album-similar-collapse" style="color: inherit;">
+                <h5 class="card-title mb-0 fw-bold">
+                    <i class="bi bi-person-heart text-danger"></i> Similar Artists
+                </h5>
+                <i class="bi bi-chevron-down similar-chevron"></i>
+            </button>
+        </div>
+        <div id="album-similar-collapse" class="collapse">
+            <div class="card-body">
+                <div id="albumSimilarArtistsContainer">
+                    <div class="text-center py-3 text-muted">
+                        <i class="bi bi-chevron-down"></i>
+                        <span>Expand to load similar artists from Last.fm and ListenBrainz.</span>
                     </div>
                 </div>
+            </div>
+        </div>
+    </div>
     
-    <div class="card mb-4 album-mobile-group album-mobile-active" id="album-tracks-section" data-album-group="tracks">
-        <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+    <div class="card mb-4 album-mobile-group album-mobile-active shadow-sm" id="album-tracks-section" data-album-group="tracks">
+        <div class="card-header border-secondary d-flex justify-content-between align-items-center flex-wrap gap-2">
             <div class="d-flex align-items-center flex-wrap gap-2">
-                <h5 class="card-title mb-0">
-                    <i class="bi bi-music-note-list"></i> Tracks
+                <h5 class="card-title mb-0 fw-bold">
+                    <i class="bi bi-music-note-list text-success"></i> Tracks
                     <span class="text-muted small fw-normal">(<span id="albumTrackCount">{{ tracks|length }}</span>)</span>
                     <span id="albumMissingHeaderBadge" class="badge bg-warning text-dark ms-1 d-none" title="Tracks on the MusicBrainz release that are missing from the library"></span>
                 </h5>
@@ -620,7 +619,6 @@
             </div>
         </div>
         <div class="table-responsive">
-            {# ── Track actions dropdown (shared by mobile + desktop cells) ── #}
             {% macro track_actions_dropdown(track) %}
             <div class="dropdown">
                 <button class="btn btn-sm row-icon-btn text-muted" data-bs-toggle="dropdown" aria-label="Track actions">
@@ -640,15 +638,10 @@
             </div>
             {% endmacro %}
 
-            {# Macro: unified track row — checkbox · # · title · duration ·
-               rating · status · actions.  One implementation for both
-               single-disc and multi-disc albums (missing rows are injected
-               inline by JS at their Disc#/Track# position). #}
             {% macro track_row(track, row_index) %}
             {% set _queued = track.file_path and '__queued_for_download__' in track.file_path %}
             {% set _has_mbid = track.musicbrainz_trackid or track.recording_mbid %}
             <tr class="album-track-mobile-row d-flex flex-column d-md-table-row{% if _queued %} table-secondary opacity-75{% endif %}" data-track-id="{{ track.id }}" data-disc-number="{{ track.disc_number or 1 }}" data-track-number="{{ track.track_number or row_index }}"{% if not _has_mbid %} data-missing-mbid="1"{% endif %}>
-                {# ── Mobile two-line cell ── #}
                 <td class="d-md-none" colspan="7" style="padding: 0.5rem 0.75rem; border: none;">
                     <div class="d-flex align-items-center gap-2">
                         <input type="checkbox" class="form-check-input track-checkbox flex-shrink-0" data-track-id="{{ track.id }}" onchange="updateBulkActionsUI()"{% if _queued %} disabled{% endif %}>
@@ -686,7 +679,6 @@
                         </span>
                     </div>
                 </td>
-                {# ── Desktop cells ── #}
                 <td class="d-none d-md-table-cell">
                     <input type="checkbox" class="form-check-input track-checkbox" data-track-id="{{ track.id }}" onchange="updateBulkActionsUI()"{% if _queued %} disabled{% endif %}>
                 </td>
@@ -796,7 +788,6 @@
                         </td>
                     </tr>
                     {% elif album_data.total_discs and album_data.total_discs > 1 %}
-                        <!-- Multi-disc album view -->
                         {% for disc_num in tracks_by_disc|dictsort %}
                             <tr class="table-secondary" data-disc="{{ disc_num[0] or 1 }}">
                                 <td colspan="7" style="padding: 0.75rem 0.5rem;">
@@ -810,7 +801,6 @@
                             {% endfor %}
                         {% endfor %}
                     {% else %}
-                        <!-- Single-disc album view -->
                         {% for track in tracks %}
                         {{ track_row(track, loop.index) }}
                         {% endfor %}
@@ -820,23 +810,23 @@
         </div>
     </div>
 
-    <div class="card mb-4 album-mobile-group" id="artist-appears-on-section">
-      <div class="card-header d-flex justify-content-between align-items-center">
-        <h5 class="card-title mb-0">
-          <i class="bi bi-people"></i> Appears On
+    <div class="card mb-4 album-mobile-group shadow-sm" id="artist-appears-on-section">
+      <div class="card-header border-secondary d-flex justify-content-between align-items-center">
+        <h5 class="card-title mb-0 fw-bold">
+          <i class="bi bi-people text-info"></i> Appears On
         </h5>
         <small class="text-muted">Featured on other artists' releases</small>
       </div>
       <div class="table-responsive">
-        <table class="table table-hover mb-0" data-mobile-cards>
+        <table class="table table-hover align-middle mb-0" data-mobile-cards>
           <thead>
-            <tr class="d-none d-md-table-row">
+            <tr class="d-none d-md-table-row text-muted small text-uppercase">
               <th style="width: 100px;">Art</th>
               <th>Release</th>
               <th class="text-center" style="width: 80px;">Year</th>
               <th class="text-center" style="width: 80px;">Tracks</th>
               <th class="text-center" style="width: 100px;">Avg ★</th>
-              <th class="text-center" style="width: 70px;">Open</th>
+              <th class="text-end" style="width: 70px;">Open</th>
             </tr>
           </thead>
           <tbody>
@@ -848,7 +838,7 @@
                     <a href="/album/{{ entry.album_artist|path_segment }}/{{ entry.album|path_segment }}{% if entry.album_year %}/{{ entry.album_year }}{% endif %}">
                       <img src="/api/album/{{ entry.album_artist|path_segment }}/{{ entry.album|path_segment }}/art"
                            alt="{{ entry.album }}"
-                           class="img-thumbnail"
+                           class="img-thumbnail shadow-sm"
                            style="width: 80px; height: 80px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;"
                            onerror="this.src='/api/album-art-placeholder'">
                     </a>
@@ -881,12 +871,12 @@
                   <td class="text-center" data-label="Tracks">{{ entry.track_count or 0 }}</td>
                   <td class="text-center" data-label="Avg ★">
                     {% if entry.avg_stars %}
-                      <span class="badge bg-info">{{ entry.avg_stars|round(2) }}★</span>
+                      <span class="badge bg-info text-dark">{{ entry.avg_stars|round(2) }}★</span>
                     {% else %}
                       <span class="text-muted">—</span>
                     {% endif %}
                   </td>
-                  <td class="text-center" data-label="Open">
+                  <td class="text-end" data-label="Open">
                     <a class="btn btn-sm btn-outline-secondary" href="/album/{{ entry.album_artist|path_segment }}/{{ entry.album|path_segment }}{% if entry.album_year %}/{{ entry.album_year }}{% endif %}" title="View album">
                       <i class="bi bi-arrow-right"></i>
                     </a>
@@ -896,7 +886,7 @@
             {% else %}
               <tr>
                 <td colspan="6" class="text-center text-muted py-4">
-                  <i class="bi bi-info-circle"></i> No featured-release appearances found
+                  <i class="bi bi-info-circle me-1"></i> No featured-release appearances found
                 </td>
               </tr>
             {% endif %}
@@ -907,48 +897,11 @@
 </div>
 
 <style>
-  /* Page-specific overrides for album page — shared dark theme is in popularr.css */
-  .d-contents {
-    display: contents;
-  }
-  .mb-extra-badge {
-    font-size: 0.65rem;
-    vertical-align: middle;
-  }
-  .btn-musicbrainz-scan {
-    background: #f06a34;
-    color: #fff;
-    border: none;
-    border-radius: 0.375rem;
-    font-weight: 600;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-    font-size: 0.875rem;
-    padding: 0.25rem 0.5rem;
-    line-height: 1.5;
-  }
-  .btn-musicbrainz-scan::before {
-    content: '';
-    width: 0.65rem;
-    height: 0.65rem;
-    background: #d45aa3;
-    clip-path: polygon(25% 5%, 75% 5%, 100% 50%, 75% 95%, 25% 95%, 0% 50%);
-    display: inline-block;
-    flex-shrink: 0;
-  }
-  .btn-musicbrainz-scan:hover {
-    background: #d4562a;
-    color: #fff;
-  }
-  /* Ensure sticky nav doesn't cover section headers */
-  [id$="-section"] {
-    scroll-margin-top: 130px;
-  }
+  .d-contents { display: contents; }
+  .mb-extra-badge { font-size: 0.65rem; vertical-align: middle; }
+  [id$="-section"] { scroll-margin-top: 130px; }
 </style>
 
-{# Track-id → audio file basename map, used by the delete confirmation modal
-   to list exactly which files an action will affect. #}
 {% set _track_files = {} %}
 {% for _t in tracks %}{% if _t.get('file_path') %}{% set _ = _track_files.update({_t.id: _t.file_path|replace('\\', '/')|split('/')|last}) %}{% endif %}{% endfor %}
 <script id="page-data" type="application/json">{{ {"artistName": artist_name, "albumName": album_name, "trackFiles": _track_files} | tojson | safe }}</script>
@@ -957,7 +910,7 @@
 <script src="{{ versioned_static('js/genre-utils.js') }}"></script>
 <script src="{{ versioned_static('js/add_to_playlist.js') }}"></script>
 
-<!-- Bulk Genre Tagger Modal (used by the Tracks toolbar "Add Tags" button) -->
+<!-- Bulk Genre Tagger Modal -->
 <div class="modal fade" id="bulkGenreTaggerModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog">
     <div class="modal-content">
@@ -985,8 +938,7 @@
   </div>
 </div>
 
-<!-- Bulk Delete Modal (used by the Tracks toolbar "Delete Selected" button
-     and the per-track ⋮ menu) -->
+<!-- Bulk Delete Modal -->
 <div class="modal fade" id="bulkDeleteModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog">
     <div class="modal-content">
@@ -1014,12 +966,9 @@
   </div>
 </div>
 
-{# Component modals #}
 {% include 'components/modals/_track_edit.html' %}
 {% include 'components/modals/_release_picker.html' %}
 {% include 'components/modals/_track_match.html' %}
 {% include 'components/modals/_musicbrainz_release_match.html' %}
-
-{# The shared MusicBrainz search modal is included globally by base.html — do not include it again here. #}
 
 {% endblock %}
