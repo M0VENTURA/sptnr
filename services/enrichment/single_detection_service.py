@@ -175,6 +175,10 @@ def is_special_edition_album(album_title: str) -> bool:
 # ── Stage 1: Pre-filter ───────────────────────────────────────────────────
 
 def should_skip_single_detection(title: str, album_type: str | None = None) -> bool:
+    # Safely exempt true radio/single edits from being ignored by "mix"/"edit" keywords
+    if has_single_or_radio_edit_marker(title):
+        return False
+        
     t = (title or "").lower()
     at = (album_type or "").lower()
     if _IGNORE_KEYWORD_RE.search(t):
@@ -248,17 +252,6 @@ def get_dynamic_z_threshold(track_count: int, release_year: int | None = None, i
 
 
 # ── Stage 3-4: Source confidence ──────────────────────────────────────────
-
-def check_high_confidence_dynamic(
-    discogs: bool = False, musicbrainz: bool = False,
-    discogs_video: bool = False, lastfm: bool = False,
-    radio_edit: bool = False, compilation: bool = False,
-    date_match: bool = False,
-) -> bool:
-    high = sum([discogs, musicbrainz])
-    medium = sum([discogs_video, lastfm, radio_edit, compilation, date_match])
-    return high >= 1 or medium >= 2
-
 
 def _source_confidence_levels() -> dict[str, str]:
     feats: dict[str, Any] = {}
@@ -646,15 +639,11 @@ def _detect_lastfm(artist: str, album: str, title: str, lastfm_client: Any = Non
 def determine_final_status(
     discogs: bool = False, musicbrainz: bool = False,
     album_z: float = 0.0, artist_z: float = 0.0,
-    discogs_video: bool = False, lastfm: bool = False,
-    mb_video: bool = False, mb_compilation: bool = False,
-    radio_edit: bool = False, popularity: float = 0.0,
-    album_mean: float = 0.0, has_metadata: bool = False,
-    is_remastered_only: bool = False, date_match: bool = False,
+    is_remastered_only: bool = False,
     is_title_track: bool = False, is_compilation: bool = False,
     zscore_high: float = 1.0, zscore_medium: float = 0.6,
-    high_sources: int | None = None, medium_sources: int | None = None,
-    metadata_medium_sources: int | None = None,
+    high_sources: int = 0, medium_sources: int = 0,
+    metadata_medium_sources: int = 0,
     discogs_promo: bool = False, musicbrainz_promo: bool = False,
     z_standout: bool = False,
 ) -> str:
@@ -662,19 +651,9 @@ def determine_final_status(
     if is_compilation:
         max_z = 0.0
         
-    if high_sources is not None and medium_sources is not None:
-        high = high_sources
-        medium = medium_sources
-    else:
-        high = sum([discogs, musicbrainz])
-        medium = sum([discogs_video, lastfm, mb_video, mb_compilation, radio_edit, date_match])
-        
-    if metadata_medium_sources is None:
-        metadata_medium_sources = sum(
-            [discogs_video, lastfm, mb_video, mb_compilation, date_match]
-        )
-        
-    metadata_medium = max(0, metadata_medium_sources or 0)
+    high = high_sources
+    medium = medium_sources
+    metadata_medium = max(0, metadata_medium_sources)
     if metadata_medium > medium:
         metadata_medium = medium
 
@@ -947,9 +926,6 @@ def detect_single_for_track(
                 lb_top10 = True
                 reasons.append("lb_top10")
 
-    if check_high_confidence_dynamic(discogs_confirmed, musicbrainz_confirmed):
-        pass  
-
     if has_single_or_radio_edit_marker(title):
         radio_edit_found = True
         reasons.append("radio_edit_marker")
@@ -1082,14 +1058,8 @@ def detect_single_for_track(
 
     final = determine_final_status(
         discogs=discogs_confirmed, musicbrainz=musicbrainz_confirmed,
-        album_z=z_composite or album_z, artist_z=0.0,
-        discogs_video=discogs_video_confirmed, lastfm=lastfm_confirmed,
-        mb_compilation=mb_compilation_confirmed,
-        radio_edit=radio_edit_found,
-        popularity=popularity or 0,
-        album_mean=0, has_metadata=has_meta or isrc_single_confirmed,
+        album_z=z_composite or album_z, artist_z=artist_z,
         is_remastered_only=is_remastered,
-        date_match=single_release_date_match,
         is_title_track=is_title,
         is_compilation=is_compilation,
         zscore_high=zscore_high,
@@ -1138,7 +1108,7 @@ def detect_single_for_track(
     result = {
         "is_single": is_single,
         "confidence": label_map.get(final, "low"),
-        "confidence_score": score_map.get(final, 0.0),
+        "confidence_score": score_map.get(final, "low"),
         "sources": sources,
         "reasons": reasons or ["no_source_match"],
         "single_status": final,
