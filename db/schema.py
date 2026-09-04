@@ -15,6 +15,24 @@ TABLES_TO_ENSURE: dict[str, str] = {
             album_count INTEGER, track_count INTEGER, last_updated TEXT
         )
     """,
+    "artist_tags": """
+        CREATE TABLE IF NOT EXISTS artist_tags (
+            id BIGSERIAL PRIMARY KEY,
+            artist_name TEXT NOT NULL,
+            tag TEXT NOT NULL,
+            weight REAL DEFAULT 1.0,
+            CONSTRAINT uq_artist_tag UNIQUE (artist_name, tag)
+        )
+    """,
+    "artist_metadata": """
+        CREATE TABLE IF NOT EXISTS artist_metadata (
+            artist_name TEXT PRIMARY KEY,
+            genres TEXT,
+            lastfm_tags TEXT,
+            musicbrainz_genres TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """,
     "scan_history": """
         CREATE TABLE IF NOT EXISTS scan_history (
             id BIGSERIAL PRIMARY KEY, scan_type TEXT, artist TEXT, album TEXT, 
@@ -242,9 +260,6 @@ COLUMN_REGISTRY: dict[str, dict[str, str]] = {
         "is_live": "BIGINT DEFAULT 0", "is_acoustic": "BIGINT DEFAULT 0", "is_remix": "BIGINT DEFAULT 0",
         "album_context_live": "BIGINT DEFAULT 0", "alternate_take": "BIGINT DEFAULT 0", 
         "is_compilation": "BIGINT DEFAULT 0",
-        # MusicBrainz work/credits metadata (composer/lyricist/iswc/original
-        # title — the MB lookup checklist: links the underlying composition,
-        # names the songwriters, and names the original song for covers).
         "iswc": "TEXT", "lyricist": "TEXT", "original_title": "TEXT",
         
         # Single Detection
@@ -289,43 +304,28 @@ COLUMN_REGISTRY: dict[str, dict[str, str]] = {
         "verification_status": "TEXT", "verification_checked_at": "TIMESTAMP", "verification_error": "TEXT",
     },
     "download_queue": {
-        # Core & Identifiers
         "source": "TEXT DEFAULT 'soulseek'", "source_id": "TEXT", "search_query": "TEXT",
         "import_group": "TEXT", "import_type": "TEXT DEFAULT 'song'",
         "album_artist": "TEXT", "track_number": "TEXT", "disc_number": "TEXT", 
         "year": "TEXT", "release_year": "INTEGER", "release_date": "TEXT", 
         "duration": "DOUBLE PRECISION", "cover_art_url": "TEXT", "queue_folder": "TEXT",
-        
-        # Processing & State
         "priority": "INTEGER DEFAULT 5", "status_changed_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
         "progress": "DOUBLE PRECISION DEFAULT 0", "speed": "BIGINT DEFAULT 0",
         "is_manual_download": "BOOLEAN DEFAULT FALSE",
-        
-        # Files & Storage
         "found_filename": "TEXT", "file_path": "TEXT", 
         "matched_file_path": "TEXT", "music_file_path": "TEXT",
-        
-        # Retry Logic
         "failure_reason": "TEXT", "retry_count": "INTEGER DEFAULT 0", 
         "max_retries": "INTEGER DEFAULT 5", "retry_delay_minutes": "INTEGER DEFAULT 30", 
         "next_retry_at": "TIMESTAMP", "last_failure_time": "TIMESTAMP",
-        
-        # Lifecycle Timestamps
         "updated_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP", "imported_at": "TIMESTAMP", 
         "verified_in_music_at": "TIMESTAMP", "moved_at": "TIMESTAMP", 
         "auto_delete_at": "TIMESTAMP", "copied_individually_at": "TIMESTAMP", 
-        
-        # External Linking
         "release_id": "TEXT", "release_source": "TEXT", "release_mbid": "TEXT", 
         "recording_mbid": "TEXT", "metadata_id": "BIGINT", "release_metadata_id": "BIGINT",
         "metadata": "JSONB DEFAULT '{}'::jsonb", "collection_track_id": "TEXT", 
         "collection_matched_at": "TEXT", "in_collection": "INTEGER DEFAULT 0", 
-        
-        # Metadata Matching
         "match_method": "TEXT", "match_confidence": "DOUBLE PRECISION",
         "copied_individually": "BOOLEAN DEFAULT FALSE",
-        
-        # Slskd Specific
         "slskd_username": "TEXT", "slskd_transfer_id": "TEXT", "slskd_state": "TEXT", 
         "slskd_queue_position": "INTEGER", "slskd_last_sync_at": "TIMESTAMP",
     },
@@ -342,6 +342,7 @@ COLUMN_REGISTRY: dict[str, dict[str, str]] = {
         "similar_artists_lastfm": "TEXT", "similar_artists_listenbrainz": "TEXT",
         "similar_artists_last_updated": "TEXT", "lastfm_artist_tags": "TEXT",
         "members": "TEXT", "members_last_updated": "TEXT",
+        "musicbrainz_artistid": "TEXT", "discogs_artist_id": "TEXT",
     },
     "artist_stats": {
         "mean_popularity": "DOUBLE PRECISION", "median_popularity": "DOUBLE PRECISION",
@@ -400,19 +401,6 @@ INDEXES_TO_ENSURE: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_tracks_artist_norm ON tracks (LOWER(COALESCE(NULLIF(album_artist, ''), artist)))",
     "CREATE INDEX IF NOT EXISTS idx_tracks_album_norm ON tracks (LOWER(COALESCE(album, '')))",
     "CREATE INDEX IF NOT EXISTS idx_tracks_album_artist_trim ON tracks (LOWER(TRIM(COALESCE(NULLIF(album_artist, ''), artist))))",
-    # pg_trgm GIN indexes make the universal search's contains patterns
-    # (``LOWER(col) LIKE '%query%'``) use an index instead of a full table
-    # scan.  The universal search fires on every keystroke (50 ms debounce),
-    # and without these the whole tracks table is scanned three times per
-    # query — the recent slowdown.  The extension + indexes are best-effort:
-    # CREATE EXTENSION may need superuser, so each statement is tolerated by
-    # the bootstrap's _ensure_index (which ignores "already exists") and the
-    # missing-extension case is caught by the index DDL failing and being
-    # logged, never failing the whole bootstrap.
-    #
-    # Expressions EXACTLY mirror the /api/search WHERE clauses so Postgres
-    # can use them (an index on lower(artist) is useless for
-    # LOWER(COALESCE(artist, '')) LIKE ...).
     "CREATE EXTENSION IF NOT EXISTS pg_trgm",
     "CREATE INDEX IF NOT EXISTS idx_tracks_title_trgm ON tracks USING gin (lower(coalesce(title, '')) gin_trgm_ops)",
     "CREATE INDEX IF NOT EXISTS idx_tracks_artist_trgm ON tracks USING gin (lower(coalesce(artist, '')) gin_trgm_ops)",
