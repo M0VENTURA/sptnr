@@ -98,15 +98,15 @@
         return '500';
     }
 
-    // ── Log level + stage-tag parsing ──
-    var LEVEL_RE = /\[(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL)\]/;
+    // ── Fixed Log level + stage-tag parsing for Python logs (with or without brackets) ──
+    var LEVEL_RE = /(?:\[(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL)\]|\b(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL)\b)/i;
     var TAG_RE = /\[([A-Za-z0-9_.\-]+)\]/;
     var TS_RE = /^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})/;
 
     function lineLevel(line) {
         var m = LEVEL_RE.exec(line);
         if (!m) return null;
-        var lvl = m[1].toLowerCase();
+        var lvl = (m[1] || m[2]).toLowerCase();
         if (lvl === 'warn') return 'warning';
         return lvl;
     }
@@ -127,7 +127,8 @@
         }
         var lvlMatch = LEVEL_RE.exec(rest);
         if (lvlMatch) {
-            html += '<span class="log-level log-level-' + esc(lvl) + '">' + esc(lvlMatch[1]) + '</span> ';
+            var matchedLevelText = lvlMatch[1] || lvlMatch[2];
+            html += '<span class="log-level log-level-' + esc(lvl) + '">' + esc(matchedLevelText) + '</span> ';
             rest = rest.slice(0, lvlMatch.index) + rest.slice(lvlMatch.index + lvlMatch[0].length);
         }
         var tagMatch = TAG_RE.exec(rest);
@@ -240,7 +241,6 @@
             } catch (_) { /* ignore malformed frame */ }
         });
         streamSource.onerror = function() {
-            // Automatically attempt reconnect or safely handle dropped SSE channels
             console.warn("SSE stream connection lost or reset.");
         };
         streamBtn.classList.replace('btn-success', 'btn-danger');
@@ -316,7 +316,7 @@
 
     logSelector.addEventListener('change', function () {
         stopStream();
-        loadingAll = false; // Reset full-load state when switching active files (e.g. unified_scan.log)
+        loadingAll = false;
         loadLog({});
     });
 
