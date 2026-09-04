@@ -7,7 +7,7 @@
   <div class="mb-4 d-flex align-items-center justify-content-between gap-2 flex-wrap">
     {% include 'components/_downloads_header.html' %}
     <div class="d-flex gap-2 flex-shrink-0 ms-auto">
-      <button type="button" class="btn btn-sm btn-outline-success flex-shrink-0" onclick="jumpToUpcomingReleases()" title="Jump to the upcoming releases list">
+      <button type="button" class="btn btn-sm btn-outline-success flex-shrink-0" onclick="jumpToUpcomingReleases()" title="Jump to the upcoming releases section">
         <i class="bi bi-arrow-down-circle"></i> <span class="d-none d-sm-inline">Upcoming Releases</span>
       </button>
       <a href="/downloads/banned-words" class="btn btn-sm btn-outline-danger flex-shrink-0" title="Manage banned words">
@@ -35,7 +35,7 @@
     </li>
   </ul>
 
-  <div class="tab-content" id="searchTabsContent">
+  <div class="tab-content mb-5" id="searchTabsContent">
     <div class="tab-pane fade show active" id="soulseek" role="tabpanel" aria-labelledby="soulseek-tab">
       {% include 'components/search/_soulseek.html' %}
     </div>
@@ -46,14 +46,30 @@
        {% include 'components/search/_queue_status.html' %}
     </div>
   </div>
+
+  <!-- Upcoming Releases Section (Restored for view page context) -->
+  <div class="card shadow-sm mt-5" id="upcomingReleasesSection">
+    <div class="card-header bg-dark border-secondary d-flex align-items-center justify-content-between py-3">
+      <h5 class="card-title mb-0 fw-bold"><i class="bi bi-calendar-event text-success me-2"></i>Upcoming Releases</h5>
+      <a href="/downloads/discover/upcoming" class="btn btn-sm btn-outline-secondary">View All</a>
+    </div>
+    <div class="card-body">
+      <div id="upcomingReleasesContainer">
+        <div class="text-center py-4 text-muted">
+          <span class="spinner-border spinner-border-sm me-2"></span>Loading upcoming releases...
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
-{# Shared Modals #}
+{# Shared Modals (Explicitly included so JS targets render properly) #}
 {% include 'components/modals/_track_edit.html' ignore missing %}
 {% include 'components/modals/_organize_group.html' ignore missing %}
 {% include 'components/modals/_slskd_results.html' ignore missing %}
 {% include 'components/modals/_manual_match.html' ignore missing %}
 {% include 'components/modals/_soulseek_manual_search.html' ignore missing %}
+{% include 'components/modals/_release_picker.html' ignore missing %}
 {% endblock %}
 
 {% block scripts %}
@@ -62,6 +78,15 @@
     slskdEnabled: {{ slskd_config.enabled | default(false) | tojson }},
     queueStatusConfig: {{ queue_status_config | default({}) | tojson }}
   };
+
+  function jumpToUpcomingReleases() {
+    const section = document.getElementById('upcomingReleasesSection');
+    if (section) {
+      section.scrollIntoView({ behavior: 'smooth' });
+    } else {
+      window.location.href = '/downloads/discover/upcoming';
+    }
+  }
 </script>
 <link rel="stylesheet" href="{{ versioned_static('css/downloads.css') }}">
 <script src="{{ versioned_static('js/downloads.js') }}"></script>
