@@ -323,51 +323,51 @@ def _assign_stars(
         track["_force_floor"] = _force_stars
         return _force_stars
 
-# Bypass the restrictive Album Z-Curve and Top-N Slot Caps for Compilation Albums
 # ── Compilation Album Scoring ──────────────────────────────────────────
     if is_compilation:
-        # Check if we have an established catalog in the DB beyond this album
-        has_deep_catalog = len([s for s in artist_scores if s > 0]) >= max(len(album_scores) + 15, 30)
+        raw_lf = float(track.get("lastfm_listeners") or 0)
+        is_verified_single = str(track.get("single_confidence") or "low").lower() in ("high", "medium")
 
-        if has_deep_catalog:
-            # Score strictly against the full artist catalogue Z-score
-            if artist_z >= th["star5_artist_z"] - _star_epsilon_z(artist_spread, th["epsilon"]):
+        # 1. Singles Bypass: Guaranteed 4★ or 5★
+        if is_verified_single and not popularity_only:
+            if score >= 85.0 or raw_lf >= 500_000:
                 comp_stars = 5
-            elif artist_z >= th["star4_artist_z"] - _star_epsilon_z(artist_spread, th["epsilon"]):
-                comp_stars = 4
-            elif artist_z >= 0.0:  # Above average for the artist's total career
-                comp_stars = 3
-            elif artist_z >= th["star2_album_z"]:
-                comp_stars = 2
             else:
-                comp_stars = 1
+                comp_stars = 4
+
+        # 2. Non-Singles Bypass: Driven exclusively by Popularity
         else:
-            # Catalog is sparse (e.g. only this compilation is in the library).
-            # Fall back to absolute popularity score and listener count tiers.
-            raw_lf = float(track.get("lastfm_listeners") or 0)
-
-            if score >= 95.0 or raw_lf >= 1_500_000:
-                comp_stars = 5
-            elif score >= 88.0 or raw_lf >= 500_000:
-                comp_stars = 4
-            elif score >= 75.0 or raw_lf >= 150_000:
-                comp_stars = 3
-            elif score >= 40.0 or raw_lf >= 25_000:
-                comp_stars = 2
+            has_deep_catalog = len([s for s in artist_scores if s > 0]) >= max(len(album_scores) + 15, 30)
+            
+            if has_deep_catalog:
+                if artist_z >= th["star5_artist_z"]:
+                    comp_stars = 5
+                elif artist_z >= th["star4_artist_z"]:
+                    comp_stars = 4
+                elif artist_z >= 0.0:  
+                    comp_stars = 3
+                elif artist_z >= th["star2_album_z"]:
+                    comp_stars = 2
+                else:
+                    comp_stars = 1
             else:
-                comp_stars = 1
-
-        # Singles boost: verified commercial singles shouldn't fall into 1★
-        if single_confidence in ("high", "medium") and organic:
-            comp_stars = max(comp_stars, 2)
-
-        # Apply minor penalty to live tracks on compilations
-        if is_live:
-            comp_stars = max(1, comp_stars - 1)
+                if score >= 95.0 or raw_lf >= 1_500_000:
+                    comp_stars = 5
+                elif score >= 85.0 or raw_lf >= 500_000:
+                    comp_stars = 4
+                elif score >= 70.0 or raw_lf >= 75_000:
+                    comp_stars = 3
+                elif score >= 35.0 or raw_lf >= 10_000:
+                    comp_stars = 2
+                else:
+                    comp_stars = 1
 
         if comp_stars == 5:
             track["_era_5star"] = True
-
+            
+        if is_live:
+            comp_stars = max(1, comp_stars - 1)
+            
         return comp_stars
 
 # ---------------------------------------------------------------------------
