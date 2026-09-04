@@ -255,6 +255,7 @@ function setArtistFilter(filter) {
     const status = row.dataset.status || 'discovered';
     const isMissing = status === 'missing';
     
+    // Check if category has an active "Hide Missing" state enabled
     const categorySection = row.closest('.category-section');
     const hideMissingBtn = categorySection ? categorySection.querySelector('.toggle-missing-btn') : null;
     const isCategoryHidingMissing = hideMissingBtn && hideMissingBtn.getAttribute('data-hidden') === 'true';
