@@ -8,19 +8,18 @@
     {% set subtitle = 'Discover and download music from similar artists' %}
     {% include 'components/_downloads_header.html' %}
   </div>
-<!-- Page intro -->
-  <div class="alert alert-info mb-4">
-    <i class="bi bi-info-circle"></i>
-    Similar artists that appear in your collection's artist recommendations but are <strong>not yet in your collection</strong>, sorted by how many of your artists recommend them.
+
+  <div class="alert alert-info shadow-sm mb-4">
+    <i class="bi bi-info-circle me-1"></i>
+    Similar artists that appear in your collection's recommendations but are <strong>not yet in your library</strong>, sorted by how many of your artists recommend them.
   </div>
 
-  <!-- Loading / Results container -->
   <div id="similarArtistsDiscoverContainer">
     <div class="text-center py-5">
       <div class="spinner-border text-primary" role="status">
         <span class="visually-hidden">Loading similar artists...</span>
       </div>
-      <p class="text-muted mt-3">Loading similar artists from your collection...</p>
+      <p class="text-muted mt-3 fw-semibold">Loading similar artists from your collection...</p>
     </div>
   </div>
 </div>
@@ -43,21 +42,20 @@
       const data = await resp.json();
 
       if (!data.success || !data.similar_artists || data.similar_artists.length === 0) {
-        container.innerHTML = '<div class="alert alert-info"><i class="bi bi-info-circle"></i> No similar artists data found. Scan some artists first to populate recommendations.</div>';
+        container.innerHTML = '<div class="alert alert-warning shadow-sm"><i class="bi bi-exclamation-circle me-1"></i> No similar artists data found. Scan some artists first to populate recommendations.</div>';
         return;
       }
 
-      // Only show artists NOT in the collection
       const notInCollection = data.similar_artists.filter(a => !a.in_collection);
 
       if (notInCollection.length === 0) {
-        container.innerHTML = '<div class="alert alert-success"><i class="bi bi-check-circle"></i> Great news — all similar artists recommended by your collection are already in your library!</div>';
+        container.innerHTML = '<div class="alert alert-success shadow-sm"><i class="bi bi-check-circle-fill me-1"></i> Great news — all similar artists recommended by your collection are already in your library!</div>';
         return;
       }
 
       let html = `
         <div class="d-flex justify-content-between align-items-center mb-3">
-          <span class="text-muted">${notInCollection.length} artist${notInCollection.length !== 1 ? 's' : ''} recommended but not in your collection</span>
+          <span class="text-muted fw-semibold">${notInCollection.length} artist${notInCollection.length !== 1 ? 's' : ''} recommended but not in your collection</span>
         </div>
         <div class="row g-3">
       `;
@@ -65,29 +63,31 @@
       notInCollection.forEach(artist => {
         const artistImageUrl = `/api/artist/image?name=${encodeURIComponent(artist.name)}`;
         const countBadge = artist.count > 1
-          ? `<span class="badge bg-warning text-dark position-absolute" style="top: 8px; right: 8px;" title="Recommended by ${artist.count} of your artists">${artist.count}×</span>`
+          ? `<span class="badge bg-warning text-dark position-absolute shadow-sm" style="top: 10px; right: 10px;" title="Recommended by ${artist.count} of your artists">${artist.count}×</span>`
           : '';
         const fromArtistsList = (artist.from_artists || []).slice(0, 3).map(n => escapeHtml(n)).join(', ');
-        const fromArtistsNote = fromArtistsList ? `<small class="text-muted d-block mt-1">Via: ${fromArtistsList}${(artist.from_artists || []).length > 3 ? ' & more' : ''}</small>` : '';
+        const fromArtistsNote = fromArtistsList ? `<small class="text-muted d-block mt-2 lh-sm">Via: ${fromArtistsList}${(artist.from_artists || []).length > 3 ? ' & more' : ''}</small>` : '';
 
         html += `
-          <div class="col-6 col-md-4 col-lg-3">
-            <div class="card h-100 overflow-hidden" style="position: relative;">
+          <div class="col-6 col-md-4 col-lg-3 col-xl-2">
+            <div class="card h-100 overflow-hidden shadow-sm" style="position: relative;">
               ${countBadge}
-              <div style="aspect-ratio: 1; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); display: flex; align-items: center; justify-content: center; position: relative;">
+              <div style="aspect-ratio: 1; background: linear-gradient(135deg, #2b2b2b 0%, #1a1a1a 100%); display: flex; align-items: center; justify-content: center; position: relative;">
                 <img src="${artistImageUrl}" alt="${escapeHtml(artist.name)}" style="width: 100%; height: 100%; object-fit: cover;"
-                     onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
-                <i class="bi bi-person-circle" style="font-size: 3rem; color: white; opacity: 0.8; display: none;"></i>
+                     onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                <div style="display: none; align-items: center; justify-content: center; width: 100%; height: 100%;">
+                  <i class="bi bi-person-circle" style="font-size: 4rem; color: #444;"></i>
+                </div>
               </div>
-              <div class="card-body d-flex flex-column">
-                <h6 class="card-title mb-1 fw-bold text-truncate" title="${escapeHtml(artist.name)}">${escapeHtml(artist.name)}</h6>
+              <div class="card-body p-3 d-flex flex-column">
+                <h6 class="card-title mb-0 fw-bold text-truncate" title="${escapeHtml(artist.name)}">${escapeHtml(artist.name)}</h6>
                 ${fromArtistsNote}
-                <div class="btn-group-vertical btn-group-sm mt-auto pt-2" role="group">
-                  <button class="btn btn-outline-secondary btn-sm" data-artist-name="${escapeHtml(artist.name)}" data-action="find-releases" title="Search MusicBrainz for releases">
-                    <i class="bi bi-download"></i> Find Releases
+                <div class="btn-group w-100 mt-auto pt-3">
+                  <button class="btn btn-outline-primary btn-sm" data-artist-name="${escapeHtml(artist.name)}" data-action="find-releases" title="Search MusicBrainz for releases">
+                    <i class="bi bi-cloud-download"></i> Search
                   </button>
-                  <a href="https://www.last.fm/music/${encodeURIComponent(artist.name)}" target="_blank" class="btn btn-outline-info btn-sm" title="View on Last.fm">
-                    <i class="bi bi-box-arrow-up-right"></i> Last.fm
+                  <a href="https://www.last.fm/music/${encodeURIComponent(artist.name)}" target="_blank" class="btn btn-outline-secondary btn-sm" title="View on Last.fm">
+                    <i class="bi bi-box-arrow-up-right"></i>
                   </a>
                 </div>
               </div>
@@ -110,36 +110,11 @@
       });
 
     } catch (err) {
-      container.innerHTML = `<div class="alert alert-danger"><i class="bi bi-exclamation-triangle"></i> Failed to load similar artists: ${escapeHtml(err.message)}</div>`;
+      container.innerHTML = `<div class="alert alert-danger shadow-sm"><i class="bi bi-exclamation-triangle-fill me-1"></i> Failed to load similar artists: ${escapeHtml(err.message)}</div>`;
     }
   }
 
   document.addEventListener('DOMContentLoaded', loadSimilarArtistsDiscover);
 })();
 </script>
-
-<style>
-  #musicBrainzModal .modal-content,
-  #musicBrainzModal .accordion-item,
-  #musicBrainzModal .accordion-button {
-    background-color: #1a1a1a;
-    color: #e0e0e0;
-    border-color: #333;
-  }
-  #musicBrainzModal .accordion-button:not(.collapsed) {
-    background-color: #2a2a2a;
-    color: #e0e0e0;
-  }
-  #musicBrainzModal .table { color: #e0e0e0; border-color: #333; }
-  #musicBrainzModal .table th, #musicBrainzModal .table td { border-color: #333; }
-  #musicBrainzModal .table tbody tr:hover { background-color: #2a2a2a; }
-  #musicBrainzModal .badge { background-color: #555; }
-  #musicBrainzModal .alert { background-color: #2a2a2a; border-color: #333; color: #e0e0e0; }
-  #musicBrainzModal .text-muted { color: var(--text-secondary, #d0d0d0); }
-  #musicBrainzModal .modal-body { background-color: #1a1a1a; }
-</style>
-
-{# The shared MusicBrainz search modal is included globally by base.html — a legacy inline copy used to duplicate the musicBrainzModal id here. #}
-
 {% endblock %}
-

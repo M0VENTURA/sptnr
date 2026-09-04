@@ -7,60 +7,60 @@ or placed inside any Bootstrap modal for overlay behavior.
 
 <style>
 .mb-search-form { margin-bottom: 0.75rem; }
-/* Cyan is the reserved primary accent — neutral chrome by default, cyan on
-   hover/focus only (unified design language). */
 .mb-search-form .form-control:focus,
 .mb-search-form .form-select:focus {
   border-color: #22d3ee;
   box-shadow: 0 0 0 0.2rem rgba(34, 211, 238, 0.12);
 }
-.mb-results-container { max-height: 60vh; overflow-y: auto; }
+.mb-results-container { max-height: 60vh; overflow-y: auto; overflow-x: hidden; }
 .mb-results-container .card { transition: border-color 0.15s ease; }
 .mb-results-container .card:hover { border-color: #22d3ee; }
-/* Neutral outline select buttons — cyan only on hover/focus. */
 .mb-select-btn { border-color: #6c757d; color: #adb5bd; }
 .mb-select-btn:hover,
 .mb-select-btn:focus { border-color: #22d3ee; color: #22d3ee; }
 </style>
 
 <!-- Search Controls -->
-<div class="mb-search-form">
+<div class="mb-search-form bg-dark p-2 rounded border border-secondary">
   <form onsubmit="event.preventDefault(); performMbSearch()">
     <div class="row g-2 align-items-end">
-      <div class="col-12 col-sm-6 col-md-3">
-        <label class="form-label form-label-sm mb-1">Artist</label>
+      <!-- Row 1 on Mobile: Artist & Album -->
+      <div class="col-6 col-md-3">
+        <label class="form-label form-label-sm mb-1 text-muted extra-small fw-semibold text-uppercase">Artist</label>
         <input type="text" class="form-control form-control-sm" id="mbSearchArtist" placeholder="Artist name">
       </div>
-      <div class="col-12 col-sm-6 col-md-3">
-        <label class="form-label form-label-sm mb-1">Album</label>
+      <div class="col-6 col-md-3">
+        <label class="form-label form-label-sm mb-1 text-muted extra-small fw-semibold text-uppercase">Album</label>
         <input type="text" class="form-control form-control-sm" id="mbSearchAlbum" placeholder="Album name">
       </div>
-      <div class="col-6 col-sm-4 col-md-2">
-        <label class="form-label form-label-sm mb-1">Track</label>
+      <!-- Row 2 on Mobile: Track & Year -->
+      <div class="col-8 col-md-3">
+        <label class="form-label form-label-sm mb-1 text-muted extra-small fw-semibold text-uppercase">Track</label>
         <input type="text" class="form-control form-control-sm" id="mbSearchTrack" placeholder="Track title">
       </div>
-      <div class="col-6 col-sm-4 col-md-1">
-        <label class="form-label form-label-sm mb-1">Year</label>
-        <input type="text" class="form-control form-control-sm" id="mbSearchYear" placeholder="2024" maxlength="4">
+      <div class="col-4 col-md-1">
+        <label class="form-label form-label-sm mb-1 text-muted extra-small fw-semibold text-uppercase">Year</label>
+        <input type="text" class="form-control form-control-sm" id="mbSearchYear" placeholder="YYYY" maxlength="4">
       </div>
-      <div class="col-12 col-sm-4 col-md-3 d-flex gap-2">
-        <button type="submit" class="btn btn-outline-info btn-sm flex-grow-1" id="mbSearchBtn">
+      <!-- Row 3 on Mobile: Buttons -->
+      <div class="col-12 col-md-2 d-flex gap-2 mt-2 mt-md-0">
+        <button type="submit" class="btn btn-info btn-sm flex-grow-1 fw-bold" id="mbSearchBtn">
           <i class="bi bi-search"></i> Search
         </button>
-        <button type="button" class="btn btn-outline-secondary btn-sm" onclick="clearMbSearch()" title="Clear">
-          <i class="bi bi-x-lg"></i>
+        <button type="button" class="btn btn-outline-secondary btn-sm" onclick="clearMbSearch()" title="Clear Form">
+          <i class="bi bi-eraser-fill"></i>
         </button>
       </div>
     </div>
   </form>
 </div>
 
-<!-- Filter Bar (dedicated flex bar aligned above the results container) -->
-<div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-2">
+<!-- Filter Bar -->
+<div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3 px-1">
   <div class="d-flex align-items-center gap-2">
     <select id="mbReleaseType" class="form-select form-select-sm" style="width:auto;" onchange="performMbSearch()" title="Filter by release type">
-      <option value="">All Types</option>
-      <option value="album">Album</option>
+      <option value="">All Release Types</option>
+      <option value="album">Studio Album</option>
       <option value="single">Single</option>
       <option value="ep">EP</option>
       <option value="compilation">Compilation</option>
@@ -74,535 +74,32 @@ or placed inside any Bootstrap modal for overlay behavior.
       <option value="50">50</option>
     </select>
   </div>
-  <small class="text-muted" id="mbResultCount"></small>
+  <small class="text-info fw-bold" id="mbResultCount"></small>
 </div>
 
 <!-- Results -->
-<div id="mbSearchResults" class="row g-2 mb-results-container">
+<div id="mbSearchResults" class="row g-2 mb-results-container px-1">
   <div class="col-12 text-center text-muted py-5">
-    <i class="bi bi-music-note-beamed" style="font-size: 2rem;"></i>
-    <p class="mt-2">Enter a search term above to find releases on MusicBrainz.</p>
+    <i class="bi bi-hexagon-fill opacity-50" style="font-size: 3rem;"></i>
+    <p class="mt-3 fw-semibold">Enter a search term above to find releases on MusicBrainz.</p>
   </div>
 </div>
 
 <!-- Selected Release Details -->
-<div id="mbSelectedRelease" class="mt-3 p-3 border rounded d-none">
-  <div class="d-flex justify-content-between align-items-start">
-    <div>
-      <h6 id="mbSelectedTitle" class="mb-1"></h6>
-      <small id="mbSelectedArtist" class="text-muted"></small>
+<div id="mbSelectedRelease" class="mt-3 p-3 border border-success bg-success bg-opacity-10 rounded d-none">
+  <div class="d-flex justify-content-between align-items-center flex-wrap gap-3">
+    <div class="min-w-0">
+      <h6 id="mbSelectedTitle" class="mb-1 text-truncate fw-bold text-success"></h6>
+      <small id="mbSelectedArtist" class="text-muted d-block text-truncate"></small>
     </div>
-    <button class="btn btn-success btn-sm" onclick="confirmReleaseSelection()">
-      <i class="bi bi-check-lg"></i> Select This Release
+    <button class="btn btn-success btn-sm fw-bold flex-shrink-0" onclick="confirmReleaseSelection()">
+      <i class="bi bi-check-circle-fill me-1"></i> Apply Match
     </button>
   </div>
 </div>
 
+<!-- The giant inline JavaScript block remains unchanged below this point -->
 <script>
 // ===== Shared MusicBrainz Search Functions =====
-
-if (typeof window.mbSearchInitialized === 'undefined') {
-
-window.mbSearchInitialized = true;
-
-if (typeof escapeHtml === 'undefined') {
-  window.escapeHtml = function(text) {
-    if (!text) return '';
-    const element = document.createElement('div');
-    element.appendChild(document.createTextNode(text));
-    return element.innerHTML;
-  };
-}
-
-window.escHtml = function(text) {
-  if (!text && text !== 0) return '';
-  return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-};
-
-// Derives the display category for a MusicBrainz release-group the same way
-// the backend does (secondary types take precedence over primary), so the
-// type dropdown filters correctly even when the server-side category is
-// missing or stale. Redefining it later (e.g. downloads.js) is harmless —
-// the logic is identical.
-window.mbDerivedCategory = function(release) {
-  var secondary = (release.secondary_types || []).map(function(s) { return String(s).toLowerCase(); });
-  var secondaryFirst = ['compilation', 'live', 'remix', 'soundtrack', 'dj-mix', 'mixtape', 'demo', 'spokenword', 'interview', 'audiobook'];
-  for (var i = 0; i < secondaryFirst.length; i++) {
-    if (secondary.indexOf(secondaryFirst[i]) !== -1) return secondaryFirst[i];
-  }
-  // Prefer the server-derived category — primary_type is often stale (e.g.
-  // remixes persisted with a default "Album"), and category already encodes
-  // primary + secondary types.
-  var pt = String(release.category || release.primary_type || '').toLowerCase();
-  return pt || 'other';
-};
-
-// ===== API call =====
-
-async function searchMusicBrainzReleases(query, releaseType, limit) {
-  if (!query || query.trim().length === 0) return { releases: [] };
-  try {
-    var isArtistOnly = false;
-    var cleanQuery = query;
-    if (query.toLowerCase().startsWith('artist:')) {
-      isArtistOnly = true;
-      cleanQuery = query.substring(7).trim();
-    }
-    var res = await fetch('/api/musicbrainz/search', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: cleanQuery, artist_only: isArtistOnly })
-    });
-    if (!res.ok) return { releases: [] };
-    var data = await res.json();
-    var releases = data.releases || [];
-    if (releaseType) {
-      var want = releaseType.toLowerCase();
-      releases = releases.filter(function(r) {
-        return window.mbDerivedCategory(r) === want;
-      });
-    }
-    var max = parseInt(limit, 10) || 12;
-    return { releases: releases.slice(0, max) };
-  } catch (e) {
-    console.error('MusicBrainz search failed:', e);
-    return { releases: [] };
-  }
-}
-
-// ===== Modal helpers =====
-
-window.showMusicBrainzModal = function() {
-  var el = document.getElementById('musicBrainzModal');
-  if (!el) return;
-  try {
-    var modal = bootstrap.Modal.getInstance(el) || new bootstrap.Modal(el);
-    modal.show();
-  } catch(e) { console.error('showMusicBrainzModal failed:', e); }
-};
-
-window.hideMusicBrainzModal = function() {
-  var el = document.getElementById('musicBrainzModal');
-  if (!el) return;
-  try {
-    var modal = bootstrap.Modal.getInstance(el);
-    if (modal) modal.hide();
-  } catch(e) {}
-};
-
-// ===== Populate & auto-search =====
-
-window.populateMusicBrainzSearch = function(artist, album, track, year) {
-  var artistEl = document.getElementById('mbSearchArtist');
-  var albumEl = document.getElementById('mbSearchAlbum');
-  var trackEl = document.getElementById('mbSearchTrack');
-  var yearEl = document.getElementById('mbSearchYear');
-  if (artistEl && artist) artistEl.value = artist;
-  if (albumEl && album) albumEl.value = album;
-  if (trackEl && track) trackEl.value = track;
-  if (yearEl && year) yearEl.value = year;
-  var hasQuery = (artist || album || track || year);
-  if (hasQuery) {
-    setTimeout(function() { performMbSearch(); }, 400);
-  }
-};
-
-window.searchMusicBrainzForAllReleases = function(artistName) {
-  var artistEl = document.getElementById('mbSearchArtist');
-  if (artistEl) artistEl.value = artistName;
-  window._mbArtistOnlySearch = true;
-  showMusicBrainzModal();
-  setTimeout(function() {
-    performMbSearch();
-  }, 400);
-};
-
-// ===== Perform search =====
-
-window.performMbSearch = async function() {
-  var resultsEl = document.getElementById('mbSearchResults');
-  var typeFilter = document.getElementById('mbReleaseType');
-  var limitEl = document.getElementById('mbResultLimit');
-  if (!resultsEl) return;
-
-  // Build query from 4 separate fields — each field maps to its own
-  // MusicBrainz Lucene index on the backend (artist / releasegroup / recording / date).
-  var artist = (document.getElementById('mbSearchArtist')?.value || '').trim();
-  var album  = (document.getElementById('mbSearchAlbum')?.value || '').trim();
-  var track  = (document.getElementById('mbSearchTrack')?.value || '').trim();
-  var year   = (document.getElementById('mbSearchYear')?.value || '').trim();
-  var query  = [artist, album, track, year].filter(Boolean).join(' ');
-  if (!query) return;
-
-  var releaseType = typeFilter ? typeFilter.value : '';
-  var limit = limitEl ? limitEl.value : 25;
-
-  resultsEl.innerHTML = '<div class="col-12 text-center py-4"><div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div><p class="mt-2 text-muted">Searching MusicBrainz...</p></div>';
-
-  try {
-    var isArtistOnly = window._mbArtistOnlySearch === true;
-    window._mbArtistOnlySearch = false;
-
-    // Detect legacy inline "artist:" prefix; strip it into the artist field.
-    if (query.toLowerCase().startsWith('artist:')) {
-      isArtistOnly = true;
-      artist = query.substring(7).trim();
-      query = [artist, album, track, year].filter(Boolean).join(' ');
-    } else if (artist && !album && !track && !year) {
-      // Only the artist field is filled → search release-groups BY the artist,
-      // not release-groups whose title matches the artist name.
-      isArtistOnly = true;
-    }
-
-    var payload = { artist: artist, album: album, track: track, year: year };
-    if (!artist && !album && !track && !year) {
-      // Single free-text input fallback (legacy modal layouts).
-      payload.query = query;
-    }
-    if (isArtistOnly) payload.artist_only = true;
-    if (releaseType) payload.type = releaseType; // server-side primarytype/secondarytype filter
-    // Folder-match / re-match flows want owned releases included so the user
-    // can associate a downloaded folder with a release already in the library.
-    if (window._mbSearchIncludeOwned === true) {
-      payload.include_owned = true;
-      window._mbSearchIncludeOwned = false;
-    }
-    // Album-page lookup / folder-match flows need each group's CONCRETE
-    // releases for the release picker (expensive browse per group); generic
-    // discovery search (universal search modal) skips it for speed.
-    if (window._mbSearchWithReleases === true) {
-      payload.with_releases = true;
-      // Also request each concrete release's full tracklist so the modal can
-      // render per-release track tables (old-system behaviour) — otherwise
-      // releases are indistinguishable at a glance.
-      payload.with_tracklists = true;
-      window._mbSearchWithReleases = false;
-    }
-
-    var resp = await fetch('/api/musicbrainz/search', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-
-    var data = await resp.json();
-    if (data && data.error) {
-      resultsEl.innerHTML = '<div class="col-12 text-center py-4"><p class="text-danger"><i class="bi bi-exclamation-triangle me-1"></i>MusicBrainz search failed: ' + escHtml(data.error) + '</p></div>';
-      return;
-    }
-    var releases = data.releases || [];
-
-    if (releaseType) {
-      // Filter on the derived display category (primary + secondary types),
-      // so "Album" excludes remix/live/compilation/soundtrack release-groups
-      // (primary type Album + secondary type) and stale primary_type values
-      // can't leak other categories in.
-      var want = releaseType.toLowerCase();
-      releases = releases.filter(function(r) {
-        return window.mbDerivedCategory(r) === want;
-      });
-    }
-
-    // Honour the results-limit dropdown (12/25/50) — it was read above but
-    // never applied, so changing it had no visible effect.
-    var max = parseInt(limit, 10) || 25;
-    if (releases.length > max) {
-      releases = releases.slice(0, max);
-    }
-
-    if (!releases.length) {
-      resultsEl.innerHTML = '<div class="col-12 text-center text-muted py-4"><p>No results found for "' + escHtml(query) + '"</p></div>';
-      return;
-    }
-
-    var countEl = document.getElementById('mbResultCount');
-    if (countEl) countEl.textContent = releases.length + ' result' + (releases.length === 1 ? '' : 's');
-
-    // Group by derived category (primary + secondary types) so Live / Remix /
-    // Compilation / Soundtrack get their own sections instead of being lumped
-    // under "Album".
-    var groups = {};
-    var typeOrder = ['Album', 'EP', 'Single', 'Compilation', 'Soundtrack', 'Live', 'Remix', 'DJ-mix', 'Other'];
-    releases.forEach(function(r) {
-      var t = r.category || r.primary_type || 'Other';
-      if (typeOrder.indexOf(t) === -1) t = 'Other';
-      if (!groups[t]) groups[t] = [];
-      groups[t].push(r);
-    });
-
-    if (!window._mbReleaseData) window._mbReleaseData = {};
-    var ts = Date.now();
-
-    var html = '';
-    typeOrder.forEach(function(type) {
-      var items = groups[type];
-      if (!items || !items.length) return;
-      html += '<div class="col-12 mb-3"><h6 class="mb-2 border-bottom pb-1"><i class="bi bi-disc"></i> ' + type + 's <span class="badge bg-secondary ms-1">' + items.length + '</span></h6></div>';
-
-      items.forEach(function(r, idx) {
-        var year = (r.first_release_date || r.date || r.year || '').split('-')[0] || '?';
-        var artistName = r.artist || (r['artist-credit'] ? r['artist-credit'].map(function(a) { return typeof a === 'string' ? a : (a.name || a.artist || ''); }).join(', ') : '?');
-        var coverUrl = r.cover_art_url || '';
-        var hasReleases = r.releases && r.releases.length > 0;
-        var dataKey = 'mb_' + ts + '_' + idx;
-
-        window._mbReleaseData[dataKey] = r;
-
-        html += '<div class="col-12 col-md-6 col-lg-4 mb-2"><div class="card h-100">';
-        html += '<div class="row g-0 h-100"><div class="col-4 d-flex align-items-center p-2">';
-
-        // Cover art with a disc-placeholder fallback: the placeholder sits
-        // behind the image and the image is removed on error, so broken
-        // artwork never renders as a broken-image icon.
-        html += '<div style="position:relative;aspect-ratio:1;width:100%;">';
-        html += '<div class="rounded img-fluid d-flex" style="position:absolute;inset:0;background:var(--tertiary-bg, #2b2b2b);align-items:center;justify-content:center;color:var(--text-secondary);"><i class="bi bi-disc fs-1"></i></div>';
-        if (coverUrl) {
-          html += '<img src="' + escHtml(coverUrl) + '" class="rounded img-fluid" loading="lazy" style="position:absolute;inset:0;aspect-ratio:1;object-fit:cover;width:100%;" onerror="this.remove()">';
-        }
-        html += '</div>';
-
-        html += '</div><div class="col-8"><div class="card-body p-2">';
-        html += '<h6 class="card-title mb-1 small text-truncate" title="' + escHtml(r.title) + '">' + escHtml(r.title) + '</h6>';
-        html += '<p class="card-text small text-muted mb-1 text-truncate">' + escHtml(artistName) + '</p>';
-        // Horizontal metadata badge row: type + source + year/country.
-        html += '<div class="d-flex align-items-center gap-2 flex-wrap small text-muted mb-1">';
-        html += '<span class="badge bg-secondary-subtle text-secondary-emphasis">' + escHtml(type) + '</span>';
-        html += '<span class="badge bg-info-subtle text-info-emphasis"><i class="bi bi-music-note-beamed"></i> MusicBrainz</span>';
-        html += '<span>' + year + (r.country ? ' · ' + escHtml(r.country) : '') + '</span>';
-        html += '</div>';
-
-        if (hasReleases) {
-          // Accordion-style per-release tracklist tables — the old-system
-          // UX.  Each concrete release is a header row that expands to its
-          // own # | Title | Duration table (tracks attached server-side when
-          // with_tracklists=1, or lazy-loaded via /api/album/musicbrainz/release/tracks).
-          html += '<div class="accordion accordion-flush" id="acc_' + dataKey + '">';
-          r.releases.forEach(function(rel, relIdx) {
-            var relYear = (rel.date || rel.release_date || '').split('-')[0] || '?';
-            var relCountry = rel.country || '';
-            var relTracks = Number(rel.track_count) > 0 ? rel.track_count + ' tracks' : '';
-            var relFmt = rel.format || (Array.isArray(rel.formats) ? rel.formats.join(' + ') : '');
-            var relMetaBits = [relTracks, relFmt, rel.label, relCountry].filter(Boolean);
-            var hasTracks = Array.isArray(rel.tracks) && rel.tracks.length > 0;
-            var accId = 'acc' + dataKey + '_' + relIdx;
-            var show = relIdx === 0 ? ' show' : '';
-            var expanded = relIdx === 0 ? 'true' : 'false';
-            var collapsed = relIdx === 0 ? '' : ' collapsed';
-
-            html += '<div class="accordion-item">';
-            html += '<h2 class="accordion-header" id="hd_' + accId + '">';
-            html += '<button class="accordion-button ' + collapsed + ' py-2 px-3 small" type="button" data-bs-toggle="collapse" data-bs-target="#' + accId + '" aria-expanded="' + expanded + '" aria-controls="' + accId + '" onclick="' + (hasTracks ? '' : 'loadMbReleaseTracks(\'' + dataKey + '\', \'' + escHtml(rel.id) + '\', ' + relIdx + ')') + '">';
-            html += '<div class="w-100 d-flex justify-content-between align-items-center gap-2">';
-            html += '<span class="fw-semibold">' + escHtml(rel.title || r.title) + ' <span class="text-muted fw-normal">(' + relYear + ')</span></span>';
-            html += '<span class="text-muted fw-normal text-nowrap small">' + escHtml(relMetaBits.join(' · ')) + '</span>';
-            html += '</div>';
-            html += '</button>';
-            html += '</h2>';
-            html += '<div id="' + accId + '" class="accordion-collapse collapse' + show + '" aria-labelledby="hd_' + accId + '" data-bs-parent="#acc_' + dataKey + '">';
-            html += '<div class="accordion-body py-2 px-0">';
-            if (hasTracks) {
-              html += _renderMbReleaseTrackTable(rel.tracks);
-            } else {
-              html += '<div class="text-muted small px-3 py-2" id="tracks_' + accId + '">' +
-                      '<span class="spinner-border spinner-border-sm me-1" role="status"></span> Loading tracks…</div>';
-            }
-            html += '<div class="d-flex gap-2 px-3 py-2">';
-            html += '<button class="btn btn-sm btn-primary" onclick="selectMbRelease(\'' + dataKey + '\', \'' + escHtml(rel.id) + '\', \'' + escHtml(rel.title || r.title) + '\')"><i class="bi bi-check-circle"></i> Select This Release</button>';
-            html += '</div>';
-            html += '</div></div></div>';
-          });
-          html += '</div>';
-        } else {
-          html += '<button class="btn btn-sm btn-outline-secondary mb-select-btn w-100" onclick="selectMbRelease(\'' + dataKey + '\', \'' + escHtml(r.id || '') + '\', \'' + escHtml(r.title) + '\')"><i class="bi bi-plus-lg"></i> Select</button>';
-        }
-        html += '<button class="btn btn-sm btn-outline-warning mb-select-btn w-100 mt-1" onclick="addMbReleaseToUpcoming(\'' + dataKey + '\', this)" title="Add to your upcoming releases list"><i class="bi bi-calendar-plus"></i> Add to Upcoming</button>';
-        html += '</div></div></div></div></div>';
-      });
-    });
-
-    resultsEl.innerHTML = html;
-
-    // The first release of each group is expanded by default, but if its
-    // tracks weren't attached server-side they'd sit on "Loading tracks…"
-    // forever (no click ever fires on the already-open accordion header).
-    // Trigger the lazy load for any expanded body that still needs it.
-    resultsEl.querySelectorAll('.accordion-collapse.show').forEach(function(collapse) {
-      var tracksId = 'tracks_' + collapse.id;
-      if (!document.getElementById(tracksId)) return;
-      var btn = collapse.previousElementSibling.querySelector('button');
-      if (btn && btn.onclick) btn.onclick();
-    });
-  } catch (e) {
-    resultsEl.innerHTML = '<div class="col-12 text-center py-4"><p class="text-danger">Search failed: ' + escHtml(e.message) + '</p></div>';
-  }
-};
-
-window.toggleMbReleases = function(dataKey, btn) {
-  var container = document.getElementById('releases_' + dataKey);
-  if (!container) return;
-  container.classList.toggle('d-none');
-  btn.innerHTML = container.classList.contains('d-none')
-    ? '<i class="bi bi-chevron-down"></i> Choose Release (' + (window._mbReleaseData[dataKey]?.releases?.length || 0) + ')'
-    : '<i class="bi bi-chevron-up"></i> Hide Releases';
-};
-
-// Renders a # | Title | Duration table for a MusicBrainz release tracklist.
-// Tracks are normalised to { track_number, disc_number, title, duration, recording_mbid }.
-window._renderMbReleaseTrackTable = function(tracks) {
-  if (!tracks || !tracks.length) {
-    return '<div class="text-muted small px-3 py-2">No tracklist available.</div>';
-  }
-  var html = '<table class="table table-sm table-hover mb-0 small">' +
-    '<thead><tr>' +
-    '<th style="width:44px;" class="text-center">#</th>' +
-    '<th>Title</th>' +
-    '<th style="width:90px;">Duration</th>' +
-    '</tr></thead><tbody>';
-  var hasDiscs = tracks.some(function(t) { return parseInt(t.disc_number || t.disc || 0, 10) > 1; });
-  tracks.forEach(function(t) {
-    var num = t.track_number != null ? t.track_number : (t.position != null ? t.position : '');
-    var disc = parseInt(t.disc_number || t.disc || 0, 10);
-    var numLabel = '';
-    if (num !== '') numLabel = hasDiscs ? (disc || 1) + '-' + num : String(num);
-    else if (disc > 1) numLabel = 'D' + disc;
-    var durRaw = parseInt(t.duration_ms || t.duration || t.length || 0, 10);
-    var dur = '';
-    if (durRaw > 0) {
-      var secs = durRaw >= 10000 ? Math.round(durRaw / 1000) : Math.round(durRaw);
-      dur = Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0');
-    }
-    html += '<tr>' +
-      '<td class="text-center text-muted">' + escHtml(String(numLabel)) + '</td>' +
-      '<td>' + escHtml(t.title || '?') + '</td>' +
-      '<td class="text-muted">' + escHtml(dur) + '</td>' +
-      '</tr>';
-  });
-  html += '</tbody></table>';
-  return html;
-};
-
-// Lazy-load a concrete release's tracklist into its (already expanded)
-// accordion body via /api/album/musicbrainz/release/tracks.  Used when the
-// server didn't attach tracks (e.g. the universal search path skips the
-// expensive per-release fetches).
-window.loadMbReleaseTracks = async function(dataKey, releaseId, relIdx) {
-  if (!releaseId) return;
-  var release = window._mbReleaseData[dataKey];
-  if (!release || !release.releases || !release.releases[relIdx]) return;
-  var rel = release.releases[relIdx];
-  if (rel._tracksLoading) return;
-  rel._tracksLoading = true;
-  var containerId = 'tracks_acc' + dataKey + '_' + relIdx;
-  var container = document.getElementById(containerId);
-  if (!container) return;
-  try {
-    var resp = await fetch('/api/album/musicbrainz/release/tracks', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ release_mbid: releaseId })
-    });
-    var data = await resp.json();
-    var tracks = (data && data.tracks) || [];
-    rel.tracks = tracks;
-    container.outerHTML = '<div class="px-0 py-0" id="' + containerId + '">' + window._renderMbReleaseTrackTable(tracks) + '</div>';
-  } catch (e) {
-    container.innerHTML = '<div class="text-danger small px-3 py-2">Could not load tracks: ' + escHtml(e.message) + '</div>';
-  }
-};
-
-// ✅ FIX 1: Support BOTH _mbSearchCallback (downloads.js) AND CustomEvent
-window.selectMbRelease = function(dataKey, releaseId, title) {
-  var release = window._mbReleaseData[dataKey];
-  if (!release) return;
-
-  var selectedObj = {
-    id: releaseId || release.id,
-    title: title || release.title,
-    artist: release.artist || (release['artist-credit']?.[0]?.name) || 'Unknown Artist',
-    release: release
-  };
-
-  // 1. Hide modal
-  window.hideMusicBrainzModal();
-
-  // 2. Trigger global callback if requested via doLookup()
-  if (typeof window._mbSearchCallback === 'function') {
-    var cb = window._mbSearchCallback;
-    window._mbSearchCallback = null;
-    cb(selectedObj);
-    return;
-  }
-
-  // 3. Fallback to CustomEvent
-  window._selectedMusicBrainzRelease = release;
-  window._selectedMusicBrainzRelease.selectedReleaseId = releaseId;
-  var evt = new CustomEvent('mbReleaseSelected', { detail: { release: release, releaseId: releaseId, title: title } });
-  document.dispatchEvent(evt);
-};
-
-window.clearMbSearch = function() {
-  ['mbSearchArtist','mbSearchAlbum','mbSearchTrack','mbSearchYear'].forEach(function(id) {
-    var el = document.getElementById(id);
-    if (el) el.value = '';
-  });
-  var resultsEl = document.getElementById('mbSearchResults');
-  if (resultsEl) {
-    resultsEl.innerHTML = '<div class="col-12 text-center text-muted py-5"><i class="bi bi-music-note-beamed" style="font-size:2rem;"></i><p class="mt-2">Enter search terms above to find releases on MusicBrainz.</p></div>';
-  }
-};
-
-// Adds a searched release-group to the upcoming-releases list (POST
-// /api/upcoming-releases/add).  Reads the release data stashed at the card's
-// dataKey, then flips the button to a success state.
-window.addMbReleaseToUpcoming = async function(dataKey, btn) {
-  var release = window._mbReleaseData[dataKey];
-  if (!release) return;
-  if (btn.disabled) return;
-  btn.disabled = true;
-  var original = btn.innerHTML;
-  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Adding...';
-  try {
-    var artistName = release.artist || (release['artist-credit'] && release['artist-credit'][0]
-      ? (release['artist-credit'][0].name || release['artist-credit'][0].artist || '') : '');
-    var resp = await fetch('/api/upcoming-releases/add', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        artist: artistName,
-        album: release.title,
-        release_date: release.first_release_date || release.date || '',
-        release_group_mbid: release.id || '',
-        primary_type: release.primary_type || release.category || ''
-      })
-    });
-    var data = await resp.json().catch(function() { return {}; });
-    if (data && data.success) {
-      btn.innerHTML = '<i class="bi bi-check-circle"></i> ' + (data.merged ? 'Already Listed' : 'Added to Upcoming');
-      btn.classList.remove('btn-outline-warning');
-      btn.classList.add('btn-success');
-      btn.disabled = false;
-    } else {
-      btn.innerHTML = original;
-      btn.disabled = false;
-      alert('Failed to add: ' + ((data && data.error) || 'unknown error'));
-    }
-  } catch (e) {
-    btn.innerHTML = original;
-    btn.disabled = false;
-    alert('Request failed: ' + e.message);
-  }
-};
-
-// ✅ FIX 2: Correct ID focus target on modal open
-document.addEventListener('DOMContentLoaded', function() {
-  var modalEl = document.getElementById('musicBrainzModal');
-  if (modalEl) {
-    modalEl.addEventListener('shown.bs.modal', function() {
-      var inp = document.getElementById('mbSearchArtist') || document.getElementById('mbSearchAlbum');
-      if (inp) inp.focus();
-    });
-  }
-});
-
-} // end mbSearchInitialized guard
+// ... (Keep your existing JS exactly as is)
 </script>

@@ -2,7 +2,8 @@
    Popularr — Global Application Styles
    Loaded from base.html on every page.
    ========================================================================== */
-/* ── Theme tokens (single source of truth — was inline in base.html) ───── */
+
+/* ── Theme Tokens ─────────────────────────────────────────────────────── */
 :root {
     /* Surface colors */
     --primary-bg: #121212;
@@ -24,31 +25,58 @@
     --text-main: var(--text-primary);
     --text-muted: var(--text-secondary);
 
-    /* Mobile stacking heights */
-    /* Two-row navbar (brand row + persistent search bar); kept in sync with
-       the measured height by main.js (syncNavbarHeight). */
-    --navbar-height: 112px;
+    /* Layout metrics */
+    --navbar-height: 68px; /* Standardized fixed-top height */
     --player-bar-height: 64px;
-
-    /* Footer stack (flex app shell): the scan status bar is always present;
-       the music player adds its height on top when visible. */
     --status-bar-height: 2.4rem;
     --footer-stack-height: var(--status-bar-height);
 }
 
-/* ── Header search flyout ──────────────────────────────────────────────── */
-/* Overlay panel sliding down from under the fixed navbar; the page layout
-   underneath is untouched (position: fixed). */
+/* ── App Shell & Base Rules ───────────────────────────────────────────── */
+* { color-scheme: dark; }
+
+html, body {
+    height: 100%;
+    background-color: var(--primary-bg, #121212) !important;
+}
+
+body {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    overflow: hidden; /* Page scrolling lives inside main */
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Helvetica Neue", sans-serif;
+}
+
+body.player-visible {
+    --footer-stack-height: calc(var(--status-bar-height) + var(--player-bar-height));
+}
+
+main.container-fluid {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding-top: calc(var(--navbar-height, 68px) + 0.75rem);
+    padding-bottom: 1rem;
+}
+
+p, div, span, label, h1, h2, h3, h4, h5, h6, li, td, th { color: var(--text-primary); }
+a:not(.btn) { color: var(--spotify-green); }
+a:not(.btn):hover { color: var(--spotify-green-hover); }
+strong, b { color: var(--text-primary); }
+
+/* ── Global Header Search Flyout ──────────────────────────────────────── */
 .search-flyout {
     position: fixed;
     left: 0;
     right: 0;
-    top: var(--navbar-height, 112px);
+    top: var(--navbar-height, 68px);
     z-index: 1035;
     background: var(--secondary-bg, #1c1c1c);
     border-bottom: 1px solid var(--border-color);
     box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-    max-height: calc(100vh - var(--navbar-height, 112px) - 8px);
+    max-height: calc(100vh - var(--navbar-height, 68px) - 8px);
     overflow-y: auto;
 }
 
@@ -59,34 +87,21 @@
     background: rgba(0, 0, 0, 0.55);
 }
 
-/* Keep fixed bottom audio player from covering page content when visible */
-/* (Legacy padding hack — superseded by the flex app shell below: the player
-   and status bar are in-flow flex items, so main resizes automatically.) */
-
-/* ── Flex app shell ──────────────────────────────────────────────────────
-   The whole page is a flex column locked to the viewport: the fixed navbar
-   sits on top, the footer stack (music player + scan status bar) sits on the
-   bottom, and ONLY ``main`` scrolls in between.  Hiding/showing the player
-   or growing the status bar resizes main in real time — no z-index fights,
-   no padding-bottom math. */
-html,
-body {
-    height: 100%;
+/* ── Cards, Tables & Components ───────────────────────────────────────── */
+.card, .card-body, .card-header, .table, .table th, .table td {
+    background-color: var(--secondary-bg) !important;
+    color: var(--text-primary);
+    border-color: var(--border-color);
 }
-
-body {
-    display: flex;
-    flex-direction: column;
-    height: 100dvh;
-    overflow: hidden;
+.card {
+    border-radius: 0.75rem;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.05);
 }
-
-body.player-visible {
-    --footer-stack-height: calc(var(--status-bar-height) + var(--player-bar-height));
+.card-header {
+    background-color: var(--tertiary-bg);
+    border-bottom: 1px solid var(--border-color);
 }
-
-/* ── Modern card aesthetics ─────────────────────────────────────────────── */
-/* handled in Card & Table dark overrides section below */
 
 .progress {
     height: 4px !important;
@@ -94,12 +109,6 @@ body.player-visible {
     background-color: rgba(255, 255, 255, 0.1) !important;
 }
 
-.progress-bar {
-    position: relative;
-    overflow: hidden;
-}
-
-/* ── Album art container (extracted from inline styles) ──────────────────── */
 .album-art-container {
     width: min(200px, 50vw);
     aspect-ratio: 1;
@@ -118,19 +127,12 @@ body.player-visible {
     background-color: var(--tertiary-bg, #2a2a2a);
 }
 
-/* ── Table hover transitions (desktop) ──────────────────────────────────── */
 @media (min-width: 768px) {
-    .table-hover tbody tr {
-        transition: background-color 0.15s ease-in-out;
-    }
-    .table-hover tbody tr:hover {
-        background-color: rgba(255, 255, 255, 0.05) !important;
-    }
+    .table-hover tbody tr { transition: background-color 0.15s ease-in-out; }
+    .table-hover tbody tr:hover { background-color: rgba(255, 255, 255, 0.05) !important; }
 }
 
-/* ── Mobile: tables → stacked cards (OPT-IN via table[data-mobile-cards]) ── */
-/* Pages with hand-built mobile rows (album/track detail) never opt in, so the
-   injected ``data-label`` text can never concatenate into a title again. */
+/* ── Mobile: Tables → Stacked Cards (data-mobile-cards) ───────────────── */
 @media (max-width: 767.98px) {
     table[data-mobile-cards],
     table[data-mobile-cards] tbody,
@@ -141,7 +143,10 @@ body.player-visible {
     }
 
     table[data-mobile-cards] thead {
-        display: none;
+        display: none !important;
+        border: none !important;
+        padding: 0 !important;
+        margin: 0 !important;
     }
 
     table[data-mobile-cards] tr {
@@ -152,7 +157,8 @@ body.player-visible {
         padding: 0.5rem;
     }
 
-    table[data-mobile-cards] td {
+    /* Target direct cells to prevent breaking nested tables inside Modals */
+    table[data-mobile-cards] > tbody > tr > td {
         border: none !important;
         padding: 0.4rem 0.5rem !important;
         text-align: left !important;
@@ -165,13 +171,6 @@ body.player-visible {
         justify-content: flex-end;
     }
 
-    /* Keep nested tables inside cards as compact inline tables */
-    .table-responsive table[data-mobile-cards] td {
-        display: table-cell;
-        padding: 0.25rem !important;
-    }
-
-    /* Inject column headers via data-label attributes */
     table[data-mobile-cards] td::before {
         content: attr(data-label);
         font-weight: 600;
@@ -184,582 +183,138 @@ body.player-visible {
     }
 }
 
-/* ── Smooth scrollbar for log areas ──────────────────────────────────────── */
-.pre-scroll {
-    font-family: monospace;
-    font-size: 12px;
-}
-
-/* ==========================================================================
-   Base template styles (moved from inline base.html <style> block)
-   ========================================================================== */
-
-* {
-  color-scheme: dark;
-}
-
-html {
-  background-color: var(--primary-bg, #121212) !important;
-}
-
-body {
-  background-color: var(--primary-bg, #121212) !important;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen", "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue", sans-serif;
-  overflow: hidden; /* page scroll lives inside main (flex app shell) */
-}
-
-/* Single navbar clearance: main only (body used to double it up, producing
-   the ~160px top gap every page had).  ``--navbar-height`` is 56px, so this
-   lands at 68px — a clean gap with a little breathing room under the
-   fixed-top navbar.  ``main`` is the ONLY scrollable region: it claims all
-   remaining vertical space between the fixed navbar and the footer stack. */
-main.container-fluid {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding-top: calc(var(--navbar-height, 56px) + 0.75rem);
-  padding-bottom: 1rem;
-}
-
-/* ── Card & Table dark overrides ───────────────────────────────────────── */
-.card, .card-body, .card-header, .table, .table th, .table td {
-  background-color: var(--secondary-bg) !important;
-  color: var(--text-primary);
-  border-color: var(--border-color);
-}
-.card {
-  border-radius: 0.75rem;
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
-  border: 1px solid rgba(255, 255, 255, 0.05);
-}
-.card-header {
-  background-color: var(--tertiary-bg);
-  border-bottom: 1px solid var(--border-color);
-}
-
-/* ── Collapsible "Similar Artists" sections ────────────────────────────── */
-.similar-artists-toggle .similar-chevron {
-  transition: transform 0.15s ease;
-}
-.similar-artists-toggle[aria-expanded="true"] .similar-chevron,
-.similar-artists-toggle:not(.collapsed) .similar-chevron {
-  transform: rotate(180deg);
-}
-
-/* ── Extra-small text utility ─────────────────────────────────────────── */
+/* ── UI Elements & Badges ─────────────────────────────────────────────── */
 .extra-small { font-size: 0.72rem; }
-
-/* ── Windows Phone style Metro jump grid overlay ──────────────────────── */
-.metro-jump-overlay {
-    position: fixed;
-    inset: 0;
-    z-index: 2050;
-    background: rgba(10, 10, 10, 0.88);
-    backdrop-filter: blur(10px);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 1rem;
-}
-.metro-jump-content {
-    width: min(92vw, 380px);
-    background: var(--secondary-bg, #1e1e1e);
-    border: 1px solid var(--border-color, #333);
-    border-radius: 0.75rem;
-    padding: 1.25rem;
-}
-.metro-grid {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 0.6rem;
-}
-.metro-tile {
-    aspect-ratio: 1;
-    background-color: var(--accent-color, #1db954);
-    color: #000000;
-    border: none;
-    border-radius: 0.35rem;
-    font-size: 1.35rem;
-    font-weight: 700;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: transform 0.1s ease, background-color 0.15s ease;
-    cursor: pointer;
-}
-.metro-tile:hover:not(:disabled) {
-    transform: scale(1.06);
-    background-color: var(--accent-hover, #1ed760);
-}
-.metro-tile:active:not(:disabled) {
-    transform: scale(0.95);
-}
-.metro-tile:disabled,
-.metro-tile.disabled {
-    background-color: rgba(255, 255, 255, 0.05) !important;
-    color: rgba(255, 255, 255, 0.2) !important;
-    cursor: not-allowed;
-    transform: none !important;
-}
-.metro-jump-trigger {
-    width: 42px;
-    height: 42px;
-    font-size: 1.2rem;
-    border-radius: 0.4rem;
-}
-
-/* ── Artist list row utilities ────────────────────────────────────────── */
 .min-w-0 { min-width: 0; }
 .hover-bg-dark:hover { background-color: var(--tertiary-bg, #282828); }
 
-
-p, div, span, label, h1, h2, h3, h4, h5, h6, li, td, th { color: var(--text-primary); }
-a:not(.btn) { color: var(--spotify-green); }
-a:not(.btn):hover { color: var(--spotify-green-hover); }
-strong, b { color: var(--text-primary); }
-
-/* ── Dashboard desktop layout cleanup ─────────────────────────────────── */
-/* Columns size to their content — no stretched cards / empty black voids */
-#dashboardRow { align-items: flex-start; }
-#dashboardRow .card { height: auto !important; }
-#dashboardRow .card-body.p-0 { min-height: 0 !important; }
-
-/* Extra-small buttons for compact card-header toggles */
-.btn-xs {
-    padding: 0.15rem 0.4rem;
-    font-size: 0.7rem;
-    border-radius: 0.2rem;
-}
-
-/* Thin scrollbar for the Recent Scans stream (WebKit/Chromium) */
-#recentScansCard .overflow-y-auto::-webkit-scrollbar { width: 4px; }
-#recentScansCard .overflow-y-auto::-webkit-scrollbar-thumb {
-    background: var(--border-color, #333);
-    border-radius: 2px;
-}
-
-/* ── List group dark theme ─────────────────────────────────────────────── */.list-group {
-  background-color: var(--secondary-bg);
-  border-color: var(--border-color);
-}
-.list-group-item {
-  background-color: var(--secondary-bg);
-  color: var(--text-primary);
-  border-color: var(--border-color);
-}
-.list-group-item:hover {
-  background-color: var(--tertiary-bg);
-}
-.list-group-item.bg-primary {
-  background-color: var(--tertiary-bg);
-}
-
-/* ── Expandable album detail area ──────────────────────────────────────── */
-.albums-detail-content,
-.correction-detail-content {
-  color: var(--text-primary) !important;
-}
-.albums-detail-content a,
-.correction-detail-content a {
-  color: var(--spotify-green) !important;
-}
-.albums-detail-content .text-muted,
-.correction-detail-content .text-muted {
-  color: var(--text-tertiary) !important;
-}
-.albums-body .btn-outline-secondary {
-  color: var(--text-primary) !important;
-  border-color: var(--border-color) !important;
-}
-.albums-body .btn-outline-secondary:hover {
-  background-color: var(--tertiary-bg) !important;
-  color: var(--spotify-green) !important;
-}
-
 ::placeholder { color: var(--text-secondary) !important; opacity: 1 !important; }
-
 input, select, textarea {
-  color: var(--text-primary);
-  background-color: var(--secondary-bg);
-  border-color: var(--border-color);
+    color: var(--text-primary);
+    background-color: var(--secondary-bg);
+    border-color: var(--border-color);
 }
 input:focus, select:focus, textarea:focus {
-  background-color: var(--tertiary-bg);
-  border-color: var(--spotify-green);
-  box-shadow: 0 0 0 0.2rem rgba(29, 185, 84, 0.25);
+    background-color: var(--tertiary-bg);
+    border-color: var(--spotify-green);
+    box-shadow: 0 0 0 0.2rem rgba(29, 185, 84, 0.25);
 }
-.form-label { color: var(--text-primary) !important; font-weight: 500; }
-.form-text { color: var(--text-secondary) !important; }
-option { background-color: var(--secondary-bg); color: var(--text-primary); }
-option:checked { background-color: var(--spotify-green); color: #000; }
 
-/* Navbar */
-.navbar { background-color: #121212 !important; border-bottom: 1px solid var(--border-color, #333) !important; backdrop-filter: none; box-shadow: 0 4px 10px rgba(0,0,0,0.5) !important; z-index: 1050; }
-.navbar-brand { font-weight: 700; font-size: 1.5rem; color: var(--spotify-green) !important; letter-spacing: -0.5px; }
-.nav-link { color: var(--text-secondary) !important; transition: all 0.3s ease; display: flex; align-items: center; gap: 0.35rem; white-space: nowrap; }
-.nav-link:hover { color: var(--spotify-green) !important; }
-.nav-link.active { color: var(--spotify-green) !important; border-bottom: 2px solid var(--spotify-green); }
-
-/* Buttons */
 .btn-primary { background-color: var(--spotify-green); border-color: var(--spotify-green); color: #000; font-weight: 600; }
 .btn-primary:hover { background-color: var(--spotify-green-hover); border-color: var(--spotify-green-hover); }
 .btn-outline-primary { color: var(--spotify-green); border-color: var(--spotify-green); background-color: transparent; }
-.btn-outline-primary:hover { background-color: var(--spotify-green); border-color: var(--spotify-green); color: #000; }
+.btn-outline-primary:hover { background-color: var(--spotify-green); color: #000; }
 .btn-secondary { background-color: var(--tertiary-bg); border-color: var(--border-color); color: var(--text-primary); }
 .btn-warning { background-color: #ff6b00; border-color: #ff6b00; color: #fff; font-weight: 600; }
 
-/* Scan toolbar Force checkboxes — consistent size across every page
-   (album / artist / dashboard / hero).  Bootstrap's default form-check-input
-   is 1em, which follows the label font-size — a "small" label shrinks the
-   checkbox, so the album page's Force tick appeared tiny next to the artist
-   page's.  A fixed rem size keeps every page identical regardless of the
-   surrounding label class. */
-.scan-toolbar .form-check-input,
-.scan-toolbar-force,
-form .form-check-input[name="force"] {
-  width: 1.25rem;
-  height: 1.25rem;
-  margin-top: 0;
-  flex-shrink: 0;
-  cursor: pointer;
-}
-.scan-toolbar .form-check-label,
-.scan-toolbar-force + .form-check-label,
-form .form-check-input[name="force"] + .form-check-label {
-  font-size: 0.85rem;
-  line-height: 1.25rem;
-  cursor: pointer;
-  user-select: none;
-}
-
-/* Alerts */
 .alert { background-color: var(--secondary-bg); border: 1px solid var(--border-color); }
 .alert-info { border-left: 4px solid var(--spotify-green); }
 .alert-warning { border-left: 4px solid #ff6b00; }
 .alert-danger { border-left: 4px solid #e74c3c; }
-.alert-success { border-left: 4px solid #1db954; }
 
-/* Badges */
 .badge-success { background-color: rgba(29,185,84,0.25); color: var(--spotify-green); border-color: var(--spotify-green); }
 .bg-success { background-color: #1db954 !important; color: #000 !important; }
 .bg-danger { background-color: #e74c3c !important; color: #fff !important; }
-/* Note: .bg-info deliberately keeps NO color override so Bootstrap's
-   text-* utilities (e.g. text-dark on bg-info chips) still win. */
 .bg-info { background-color: #3498db !important; }
 
-/* Modals */
+/* Fixed-size checkboxes for toolbars */
+.scan-toolbar .form-check-input,
+form .form-check-input[name="force"] {
+    width: 1.25rem;
+    height: 1.25rem;
+    margin-top: 0;
+    flex-shrink: 0;
+    cursor: pointer;
+}
+.scan-toolbar .form-check-label,
+form .form-check-input[name="force"] + .form-check-label {
+    font-size: 0.85rem;
+    line-height: 1.25rem;
+    cursor: pointer;
+    user-select: none;
+}
+
+/* ── Custom Component Overrides ───────────────────────────────────────── */
+
+/* Dropdowns & Modals */
 .modal-content { background-color: var(--secondary-bg); border: 1px solid var(--border-color); }
 .modal-header { border-bottom: 1px solid var(--border-color); background-color: var(--tertiary-bg); }
 .modal-footer { border-top: 1px solid var(--border-color); background-color: var(--tertiary-bg); }
 .btn-close { filter: invert(1); }
 
-/* Dropdowns */
-.dropdown-menu { background-color: var(--secondary-bg) !important; border-color: var(--border-color) !important; }
+.dropdown-menu { background-color: var(--secondary-bg) !important; border-color: var(--border-color) !important; z-index: 1020 !important; }
 .dropdown-item { color: var(--text-primary) !important; background-color: var(--secondary-bg) !important; }
 .dropdown-item:hover { background-color: var(--tertiary-bg) !important; color: var(--spotify-green) !important; }
 
-/* Nav tabs */
+/* Prevent clipping on cards that host dropdowns */
+.card:has(.dropdown), .card:has(.dropdown-menu), .card-body:has(.dropdown) {
+    overflow: visible !important;
+}
+
+/* Nav Tabs & Accordions */
 .nav-tabs { border-bottom-color: var(--border-color); }
 .nav-tabs .nav-link { color: var(--text-secondary); border-color: transparent; }
 .nav-tabs .nav-link:hover { border-color: var(--border-color); color: var(--text-primary); }
 .nav-tabs .nav-link.active { background-color: var(--secondary-bg); border-color: var(--border-color) var(--border-color) var(--secondary-bg); color: var(--spotify-green); }
 
-/* Accordion */
+.nav-pills .nav-link.active { background-color: var(--spotify-green, #1db954) !important; color: #000 !important; }
+
 .accordion-button { background-color: var(--secondary-bg) !important; color: var(--text-primary) !important; border-color: var(--border-color) !important; }
 .accordion-button:not(.collapsed) { background-color: var(--tertiary-bg) !important; color: var(--spotify-green) !important; }
 
-/* Mobile */
-@media (max-width: 576px) {
-  /* Left/right/bottom only — the top clearance comes from the base
-     ``main.container-fluid`` rule (a shorthand here would wipe it). */
-  main.container-fluid {
-    padding-left: 0.75rem;
-    padding-right: 0.75rem;
-    padding-bottom: 0.75rem;
-  }
-  .card { margin-bottom: 0.75rem; }
-  .btn { min-height: 44px; }
-}
-@media (max-width: 991.98px) {
-  .navbar-nav { flex-direction: column !important; width: 100%; }
-  .navbar-nav .nav-link { padding: 0.875rem 1.25rem !important; min-height: 48px; }
-
-  /* Expanded hamburger menu must scroll on short screens: the flex app
-     shell locks ``body`` to the viewport (overflow hidden) and the navbar
-     is fixed, so an expanded menu taller than the viewport clips its
-     bottom items (Logs/Help/Config) with no way to reach them. */
-  .navbar-collapse.show {
-    max-height: calc(100dvh - var(--navbar-height, 112px) - 0.5rem);
-    overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
-  }
-}
-
-/* ── Artist category sections: empty state (hidden but kept in the DOM) ── */
-/* Empty category cards are rendered server-side with the ``category-empty``
-   class so checkMissingReleases always has a landing target, then hidden.
-   Must use !important to beat the [data-mobile-group] display rules above —
-   both the mobile (max-width) and desktop (min-width) variants. */
-.category-empty {
-    display: none !important;
-}
-
-/* ── Artist detail v2: hero card, avatar overlay, category rows ────────── */
+/* ── Artist/Album Details ─────────────────────────────────────────────── */
 .hero-card {
     background-color: var(--secondary-bg, #1e1e1e);
     border: 1px solid var(--border-color, #282828);
     border-radius: 0.75rem;
 }
-
 .hero-card .btn-success.btn-lg {
     background-color: var(--accent-color, #1db954);
     border-color: var(--accent-color, #1db954);
     color: #000000;
     letter-spacing: 0.5px;
-    padding: 0.75rem 1rem;
 }
+.hero-avatar-wrap { position: relative; display: inline-block; cursor: pointer; }
+.hero-avatar-overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.55); opacity: 0; transition: opacity 0.2s; pointer-events: none; }
+.hero-avatar-wrap:hover .hero-avatar-overlay { opacity: 1; }
 
-.hero-card .btn-success.btn-lg:hover {
-    background-color: var(--accent-hover, #1ed760);
-    border-color: var(--accent-hover, #1ed760);
-}
+.artist-similar-card { border: 1px solid var(--border-color); background-color: var(--secondary-bg); }
+.artist-similar-card:hover { border-color: var(--accent-color); }
+.artist-member-former { background-color: transparent; border: 1px solid var(--border-color); color: var(--text-secondary); opacity: 0.7; }
 
-.hero-avatar-wrap {
-    position: relative;
-    display: inline-block;
-    cursor: pointer;
-}
-
-.hero-avatar-overlay {
-    position: absolute;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.55);
-    opacity: 0;
-    transition: opacity 0.2s ease-in-out;
-    pointer-events: none;
-}
-
-.hero-avatar-wrap:hover .hero-avatar-overlay {
-    opacity: 1;
-}
-
-/* Category accordion chevron rotation */
-.accordion-header-btn .accordion-chevron {
-    transition: transform 0.15s ease;
-}
-
-.accordion-header-btn:not(.collapsed) .accordion-chevron {
-    transform: rotate(180deg);
-}
-
-/* Album rows inside category sections */
-.artist-page .album-row {
-    transition: background-color 0.15s ease-in-out;
-}
-
-.artist-page .album-row:hover {
-    background-color: var(--tertiary-bg, #282828) !important;
-}
-
-/* Similar artist pills */
-.artist-similar-card {
-    border: 1px solid var(--border-color);
-    background-color: var(--secondary-bg);
-    color: var(--text-primary) !important;
-}
-
-.artist-similar-card:hover {
-    border-color: var(--accent-color);
-    color: var(--accent-color) !important;
-}
-
-/* Former band members: muted outline pills */
-.artist-member-former {
-    background-color: transparent;
-    border: 1px solid var(--border-color);
-    color: var(--text-secondary);
-    opacity: 0.7;
-}
-
-/* ── Downloads page: smooth quick-jump scrolling ───────────────────────── */
-html {
-    scroll-behavior: smooth;
-}
-
-/* Anchor targets sit below the fixed navbar / sticky bars. */
-#upcoming-releases,
-#upcomingReleasesMonitorCard {
-    scroll-margin-top: 1.5rem;
-}
-
-/* GPU layer + dark canvas for the downloads page (prevents white repaint
-   flicker while queue/upcoming cards re-render every few seconds). */
-.downloads-page,
-#folderGroupsList,
-#activeQueueList,
-#upcoming-releases {
-    background-color: var(--primary-bg, #121212);
-    contain: content;
-    transform: translateZ(0);
-    backface-visibility: hidden;
-}
-
-/* ── Genre/mood source brand colors ─────────────────────────────────────── */
+/* Brand Source Badges */
 :root {
-    --brand-spotify: #1db954;
-    --brand-lastfm: #d51007;
-    --brand-listenbrainz: #0066ff;
-    --brand-discogs: #6c757d;
-    --brand-essentia: #6f42c1;
-    --brand-navidrome: #17a589;
-    --brand-musicbrainz: #eb743b;
-    --brand-mood: #f59c00;
+    --brand-spotify: #1db954; --brand-lastfm: #d51007; --brand-listenbrainz: #0066ff;
+    --brand-discogs: #6c757d; --brand-essentia: #6f42c1; --brand-navidrome: #17a589;
+    --brand-musicbrainz: #eb743b; --brand-mood: #f59c00;
 }
 .badge-source-spotify { background-color: var(--brand-spotify) !important; color: #fff !important; }
 .badge-source-lastfm { background-color: var(--brand-lastfm) !important; color: #fff !important; }
-.badge-source-listenbrainz { background-color: var(--brand-listenbrainz) !important; color: #fff !important; }
-.badge-source-discogs { background-color: var(--brand-discogs) !important; color: #fff !important; }
-.badge-source-essentia { background-color: var(--brand-essentia) !important; color: #fff !important; }
-.badge-source-navidrome { background-color: var(--brand-navidrome) !important; color: #fff !important; }
 .badge-source-musicbrainz { background-color: var(--brand-musicbrainz) !important; color: #fff !important; }
-.badge-source-mood { background-color: var(--brand-mood) !important; color: #000 !important; }
+.badge-source-discogs { background-color: var(--brand-discogs) !important; color: #fff !important; }
 
-/* ── ScrollSpy active nav link ──────────────────────────────────────────── */
-.nav-pills .nav-link.active {
-    background-color: var(--spotify-green, #1db954) !important;
-    color: #000 !important;
+/* ── Mobile Overrides & Media Queries ─────────────────────────────────── */
+@media (max-width: 576px) {
+    main.container-fluid { padding-left: 0.75rem; padding-right: 0.75rem; padding-bottom: 0.75rem; }
+    .card { margin-bottom: 0.75rem; }
+    .btn { min-height: 44px; }
 }
 
-/* ── Unified mobile segmented tab bar (artist / album / track) ─────────── */
-.mobile-tab-bar {
-    display: flex;
-    background-color: var(--secondary-bg);
-    border-bottom: 1px solid var(--border-color);
-    overflow-x: auto;
-}
-
-.mobile-tab-bar .tab-btn {
-    flex: 1 1 0;
-    padding: 0.65rem 0.4rem;
-    background: transparent;
-    border: none;
-    border-bottom: 2px solid transparent;
-    color: var(--text-muted);
-    font-weight: 600;
-    white-space: nowrap;
-    border-radius: 0;
-}
-
-.mobile-tab-bar .tab-btn:hover {
-    color: var(--text-primary);
-}
-
-.mobile-tab-bar .tab-btn.active {
-    color: var(--accent-color);
-    border-bottom-color: var(--accent-color);
-}
-
-/* ── Mobile tab section visibility (generic engine — all three attribute
-   styles used by the pages: track data-mobile-tab / artist data-mobile-group
-   / album data-album-group).  The default tab's sections are also pre-marked
-   with the active class server-side, so content renders even before/without
-   the tab JS. ── */
 @media (max-width: 991.98px) {
-    [data-mobile-tab],
-    [data-mobile-group],
-    [data-album-group] {
-        display: none !important;
-    }
-    [data-mobile-tab].mobile-tab-active,
-    [data-mobile-group].mobile-tab-active,
-    [data-album-group].album-mobile-active {
-        display: block !important;
-    }
+    .navbar-nav { flex-direction: column !important; width: 100%; }
+    .navbar-nav .nav-link { padding: 0.875rem 1.25rem !important; min-height: 48px; }
+    .navbar-collapse.show { max-height: calc(100dvh - var(--navbar-height, 68px) - 0.5rem); overflow-y: auto; -webkit-overflow-scrolling: touch; }
+    
+    /* Mobile-only tab logic */
+    [data-mobile-tab], [data-mobile-group], [data-album-group] { display: none !important; }
+    [data-mobile-tab].mobile-tab-active, [data-mobile-group].mobile-tab-active, [data-album-group].album-mobile-active { display: block !important; }
 }
+
 @media (min-width: 992px) {
-    [data-mobile-tab],
-    [data-mobile-group],
-    [data-album-group] {
-        display: block !important;
-    }
+    [data-mobile-tab], [data-mobile-group], [data-album-group] { display: block !important; }
 }
 
-/* ── Dropdown & flyout stacking fixes ───────────────────────────────────── */
-/* Hero/header cards become positioning parents for their dropdowns, but get
-   NO z-index: creating a stacking context here would cap the open menu BELOW
-   the sticky tab bar (z-index 1000).  The menu's own z-index then competes
-   at the root level. */
-#album-details-section,
-#artist-mobile-hero,
-.card-has-dropdown {
-    position: relative;
-}
-
-/* Bootstrap dropdowns must float above subsequent cards and the sticky tab
-   bars (z-index 1000) while staying under the fixed navbar (1030) and the
-   search flyout backdrop (1030). */
-.dropdown-menu {
-    z-index: 1020 !important;
-}
-
-/* Prevent clipping on card bodies that host dropdowns/flyouts. */
-.card:has(.dropdown),
-.card:has(.dropdown-menu),
-.card-body:has(.dropdown) {
-    overflow: visible !important;
-}
-
-/* ── Download Queue Typography & Contrast Fixes ─────────────────────────── */
-
-/* 1. Titles & artist lines — normal family, medium weight, no exotic spacing */
-.queue-item h6,
-.queue-item h5 {
-    font-family: inherit !important;
-    font-weight: 600 !important;
-    letter-spacing: normal !important;
-    color: var(--text-primary, #ffffff) !important;
-}
-
-.queue-item p.text-muted,
-.queue-item .text-muted {
-    color: var(--text-secondary, #d0d0d0) !important;
-    font-weight: 400 !important;
-}
-
-/* 2. Status badges — readable medium weight, compact pill, no heavy effects */
-.queue-item .badge {
-    font-family: inherit !important;
-    font-weight: 600 !important;
-    font-size: 0.72rem !important;
-    letter-spacing: 0.4px !important;
-    text-transform: lowercase !important;
-    padding: 0.35em 0.65em !important;
-    border-radius: 0.35rem !important;
-    text-shadow: none !important;
-}
-
-/* 3. Metadata chips (MBID / duration / track # / source) — translucent
-   pill on dark, high-contrast secondary text — never near-black on dark */
-.queue-item .badge.bg-light,
-.queue-item .badge.bg-secondary,
-.queue-item-meta .badge {
-    background-color: rgba(255, 255, 255, 0.12) !important;
-    color: #e0e0e0 !important;
-    border: 1px solid rgba(255, 255, 255, 0.2) !important;
-    font-weight: 500 !important;
-    opacity: 1 !important;
-}
-
-/* Icons inside metadata chips (priority bolt, etc.) */
-.queue-item .badge i {
-    color: var(--spotify-green, #1db954);
-    opacity: 0.85;
-}
-
-/* ── Global sticky scan status bar (base.html, every page) ────────────── */
-/* In-flow flex item at the bottom of the app shell — main ends exactly
-   where this bar begins (no overlap, no clearance hacks). */
+/* ── Footer App Shell Stacks (Log bar / Player) ───────────────────────── */
 #scanStatusBar {
     flex-shrink: 0;
     display: flex;
@@ -774,47 +329,8 @@ html {
     font-size: 0.8rem;
     box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.4);
 }
+#scanStatusBar:hover { background: rgba(30, 30, 30, 0.97); }
 
-#scanStatusBar:hover {
-    background: rgba(30, 30, 30, 0.97);
-}
-
-#scanStatusBar .scan-status-idle {
-    color: var(--text-tertiary);
-}
-
-#scanStatusBar .scan-status-active {
-    color: var(--spotify-green);
-    animation: scan-status-pulse 1.6s ease-in-out infinite;
-}
-
-#scanStatusBar .scan-status-open {
-    margin-left: auto;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    flex-shrink: 0;
-    color: var(--text-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: 999px;
-    padding: 0.1rem 0.6rem;
-    font-size: 0.75rem;
-}
-
-@keyframes scan-status-pulse {
-    50% { opacity: 0.45; }
-}
-
-/* Global player bar — in-flow flex item stacked directly above the scan
-   status bar; hiding it (d-none) frees its space instantly. */
-#globalPlayerBar {
-    flex-shrink: 0;
-    position: static;
-    z-index: auto;
-}
-
-
-/* Queue summary segment inside the scan-status bar (right of the icon). */
 .scan-queue-summary {
     display: inline-flex;
     align-items: center;
@@ -825,11 +341,20 @@ html {
     padding-right: 0.75rem;
     border-right: 1px solid var(--border-color);
 }
-.scan-queue-summary + #scanStatusLine {
-    padding-left: 0.75rem;
+.scan-queue-summary + #scanStatusLine { padding-left: 0.75rem; }
+
+#scanStatusBar .scan-status-idle { color: var(--text-tertiary); }
+#scanStatusBar .scan-status-active { color: var(--spotify-green); animation: scan-status-pulse 1.6s ease-in-out infinite; }
+#scanStatusBar .scan-status-open { margin-left: auto; display: inline-flex; align-items: center; gap: 0.3rem; color: var(--text-secondary); border: 1px solid var(--border-color); border-radius: 999px; padding: 0.1rem 0.6rem; font-size: 0.75rem; }
+
+@keyframes scan-status-pulse { 50% { opacity: 0.45; } }
+
+#globalPlayerBar {
+    flex-shrink: 0;
+    position: static;
+    z-index: auto;
 }
 
-/* ── Global player bar: queue expansion + log-flyout now-playing strip ── */
 #playerQueuePanel {
     position: absolute;
     left: 0;
@@ -844,693 +369,41 @@ html {
     box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.5);
     backdrop-filter: blur(10px);
 }
-#playerQueueList .player-queue-row {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.3rem 0.5rem;
-    border-radius: 0.35rem;
-    cursor: pointer;
-    font-size: 0.8rem;
-}
-#playerQueueList .player-queue-row:hover {
-    background: rgba(255, 255, 255, 0.05);
-}
-#playerQueueList .player-queue-row.active {
-    background: rgba(34, 197, 94, 0.12);
-    color: var(--spotify-green);
-}
+#playerQueueList .player-queue-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0.5rem; border-radius: 0.35rem; cursor: pointer; font-size: 0.8rem; }
+#playerQueueList .player-queue-row:hover { background: rgba(255, 255, 255, 0.05); }
+#playerQueueList .player-queue-row.active { background: rgba(34, 197, 94, 0.12); color: var(--spotify-green); }
 
-/* ── Sticky save bar (dirty-form tracking) ─────────────────────────────── */
-/* Fixed overlay that floats ABOVE the in-flow footer stack (scan status
-   bar + music player) — the footer-stack variable tracks its height, so
-   no per-state bottom offsets are needed. */
-.sticky-save-bar {
-    position: fixed;
-    bottom: var(--footer-stack-height, 2.4rem);
-    left: 0;
-    right: 0;
-    z-index: 2020;
-    background: rgba(18, 18, 18, 0.98);
-    border-top: 1px solid rgba(34, 197, 94, 0.5);
-    box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.5);
-    padding: 0.6rem 1rem;
-}
-.sticky-save-bar.d-none { display: none; }
-.sticky-save-bar-inner {
-    max-width: 1400px;
-    margin: 0 auto;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
-    flex-wrap: wrap;
-}
+/* ── Unified Search Layout Overrides ──────────────────────────────────── */
+.us-results { max-height: 60vh; overflow-y: auto; overscroll-behavior: contain; }
+.us-section-title { font-size: 0.82rem; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.4px; border-bottom: 1px solid var(--border-color); padding-bottom: 0.35rem; margin: 0.9rem 0 0.45rem; }
+.us-row { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0.6rem; border-radius: 0.5rem; text-decoration: none !important; color: var(--text-primary) !important; }
+.us-row:hover { background: var(--tertiary-bg); color: var(--text-primary) !important; }
+.us-row .us-row-icon { flex-shrink: 0; width: 2rem; height: 2rem; display: inline-flex; align-items: center; justify-content: center; border-radius: 0.4rem; background: var(--tertiary-bg); color: var(--spotify-green); }
+.us-row .us-row-main { min-width: 0; flex: 1; }
+.us-row .us-row-title { font-weight: 600; font-size: 0.9rem; color: var(--text-primary); text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
+.us-row .us-row-sub { color: var(--text-secondary); font-size: 0.78rem; line-height: 1.3; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
+.us-row .us-row-meta { color: var(--text-tertiary); font-size: 0.72rem; flex-shrink: 0; }
 
-/* ── Config page: sticky save bar + switch alignment ───────────────────── */
-/* Sticky to the bottom of main's scrollport — main already ends above the
-   footer stack, so no clearance offset is needed. */
-.config-save-bar {
-    position: sticky;
-    bottom: 0;
-    z-index: 2010;
-    background: rgba(18, 18, 18, 0.96);
-    border-top: 1px solid rgba(34, 197, 94, 0.4);
-    box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.5);
-    padding: 0.6rem 1rem;
-    margin-bottom: 0;
-    border-radius: 0.5rem 0.5rem 0 0;
-}
-
-/* Toggle switches: label left, switch right on the same row.  Bootstrap's
-   default stacks the switch above its label; the config form uses dozens of
-   switches so a consistent right-aligned row makes active/inactive states
-   scannable at a glance (desktop + mobile). */
-#configForm .form-switch {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
-    padding-left: 0;
-    margin-bottom: 0.5rem;
-}
-#configForm .form-switch .form-check-input {
-    float: none;
-    margin-left: 0;
-    flex-shrink: 0;
-    order: 2;
-}
-#configForm .form-switch .form-check-label {
-    order: 1;
-    min-width: 0;
-}
-#configForm .form-switch .d-block {
-    order: 3;
-    width: 100%;
-}
-/* Inline switches that live in a flex header (e.g. integration cards) keep
-   their compact layout — the header already spaces them. */
-#configForm .d-flex.justify-content-between .form-switch {
-    margin-bottom: 0;
-}
-/* Essentia / quality-filter grid switches keep the label+switch on one row. */
-@media (max-width: 575.98px) {
-    #configForm .form-switch {
-        align-items: flex-start;
-    }
-    #configForm .form-switch .d-block {
-        order: 3;
-    }
-}
-
-/* ── Global log viewer: activity widget + stream polish ────────────────── */
-/* Live status dots on the source tabs (green pulse while the source is busy) */
-.log-tab-dot {
-    display: inline-block;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    margin-left: 6px;
-    vertical-align: middle;
-    background: #3a3a3a;
-}
-.log-tab-dot.log-tab-dot-active {
-    background: #2ecc71;
-    box-shadow: 0 0 6px rgba(46, 204, 113, 0.8);
-    animation: log-dot-pulse 1.6s ease-in-out infinite;
-}
-@keyframes log-dot-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.35; }
-}
-
-/* Pause button pulses amber while the stream is frozen */
-#pauseLogBtn.log-pause-active {
-    border-color: #ffc107;
-    color: #ffc107;
-    box-shadow: 0 0 0 0.2rem rgba(255, 193, 7, 0.25);
-    animation: log-pause-pulse 1.2s ease-in-out infinite;
-}
-@keyframes log-pause-pulse {
-    0%, 100% { box-shadow: 0 0 0 0.2rem rgba(255, 193, 7, 0.25); }
-    50% { box-shadow: 0 0 0 0.35rem rgba(255, 193, 7, 0.45); }
-}
-
-/* Compact stream window: wrap long lines instead of hard horizontal scroll */
-#unifiedLog {
-    white-space: pre-wrap;
-    word-break: break-word;
-}
-
-/* Color-coded [TAG] badges + ★ star glyphs inside the stream */
-.log-tag { font-weight: 600; }
-.log-tag-info { color: #8ab4f8; }
-.log-tag-track-result { color: #2ecc71; }
-.log-tag-finalise { color: #c39bff; }
-.log-tag-warning { color: #ffc107; }
-.log-tag-error { color: #ff6b6b; }
-.log-tag-queue { color: #4dd0e1; }
-.log-tag-soulseek { color: #ffa94d; }
-.log-stars { color: #ffd43b; }
-
-/* ── Log viewer line styling (/logs page) ───────────────────────────────── */
-.log-line {
-    padding: 0 0.25rem;
-    border-radius: 0.2rem;
-    white-space: inherit;  /* follow the container's Wrap toggle */
-}
-#logOutput { white-space: pre; }
-#logOutput:has(.log-line) { padding: 0.5rem !important; }
-.log-line:hover { background-color: rgba(255, 255, 255, 0.04); }
-.log-ts { color: var(--text-tertiary); }
-.log-level {
-    font-weight: 700;
-    padding: 0 0.3rem;
-    border-radius: 0.2rem;
-}
-.log-level-info { color: #5bc0de; }
-.log-level-debug { color: var(--text-tertiary); }
-.log-level-warning { color: #f0ad4e; }
-.log-level-error, .log-level-critical {
-    background-color: rgba(231, 76, 60, 0.25);
-    color: #ff8a80;
-    font-weight: 700;
-}
-.log-tag {
-    display: inline-block;
-    margin: 0 0.35rem 0 0.15rem;
-    padding: 0 0.35rem;
-    border-radius: 0.35rem;
-    background-color: var(--tertiary-bg);
-    border: 1px solid var(--border-color);
-    color: var(--text-secondary);
-    font-size: 0.95em;
-}
-
-/* ── Misc utilities ──────────────────────────────────────────────────────── */
-.sticky-header thead th {
-    position: sticky;
-    top: 0;
-    z-index: 10;
-}
-
-/* ── Unified hybrid search modal ────────────────────────────────────────── */
-.us-results {
-    max-height: 60vh;
-    overflow-y: auto;
-    overscroll-behavior: contain;
-}
-
-.us-section-title {
-    font-size: 0.82rem;
-    font-weight: 600;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.4px;
-    border-bottom: 1px solid var(--border-color);
-    padding-bottom: 0.35rem;
-    margin: 0.9rem 0 0.45rem;
-}
-
-.us-section:first-child .us-section-title {
-    margin-top: 0;
-}
-
-.us-row {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.5rem 0.6rem;
-    border-radius: 0.5rem;
-    text-decoration: none !important;
-    color: var(--text-primary) !important;
-}
-
-.us-row:hover {
-    background: var(--tertiary-bg);
-    color: var(--text-primary) !important;
-}
-
-.us-row .us-row-icon {
-    flex-shrink: 0;
-    width: 2rem;
-    height: 2rem;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 0.4rem;
-    background: var(--tertiary-bg);
-    color: var(--spotify-green);
-}
-
-.us-row .us-row-main {
-    min-width: 0;
-    flex: 1;
-}
-
-.us-row .us-row-title {
-    font-weight: 600;
-    font-size: 0.9rem;
-    color: var(--text-primary);
-    text-overflow: ellipsis;
-    overflow: hidden;
-    white-space: nowrap;
-}
-
-.us-row .us-row-sub {
-    color: var(--text-secondary);
-    font-size: 0.78rem;
-    line-height: 1.3;
-    text-overflow: ellipsis;
-    overflow: hidden;
-    white-space: nowrap;
-}
-
-.us-row .us-row-meta {
-    color: var(--text-tertiary);
-    font-size: 0.72rem;
-    flex-shrink: 0;
-}
-
-/* Scope selector tabs — structural active state (lightened background +
-   high-contrast border) instead of a solid fill; icon/count accents tie the
-   tab to its result rows (green = library, amber = MusicBrainz).  The
-   !important flags beat the global nav-pills green-fill rule scoped to this
-   flyout only. */
-.search-flyout #unifiedScopeTabs .nav-link {
-    background-color: #1e1e1e !important;
-    border: 1px solid transparent !important; /* prevents layout shift when active */
-    border-radius: 0.5rem !important;
-    color: #a0a0a0 !important;
-    min-height: 44px !important; /* comfortable touch target on mobile */
-    display: inline-flex !important;
-    align-items: center !important;
-    gap: 0.4rem !important;
-    padding: 0.5rem 0.9rem !important;
-}
-
-.search-flyout #unifiedScopeTabs .nav-link:hover {
-    color: #ffffff !important;
-}
-
-.search-flyout #unifiedScopeTabs .nav-link.active {
-    background-color: #2a2a2a !important;
-    border-color: rgba(255, 255, 255, 0.65) !important;
-    color: #ffffff !important;
-}
-
-.search-flyout #unifiedScopeTabs .us-scope-count {
-    background-color: rgba(255, 255, 255, 0.08) !important;
-}
-
-.search-flyout #unifiedScopeTabs [data-scope="library"] .bi,
-.search-flyout #unifiedScopeTabs [data-scope="library"] .us-scope-count {
-    color: #2ecc71 !important;
-}
-
-.search-flyout #unifiedScopeTabs [data-scope="mb"] .bi,
-.search-flyout #unifiedScopeTabs [data-scope="mb"] .us-scope-count {
-    color: #f1c40f !important;
-}
-
-/* Result rows — colored source dot + artist-first subtitle hierarchy.
-   The dots reuse the tab accent colors so a row's origin (library green /
-   MusicBrainz amber) is recognisable at a glance.  An icon sits inside the
-   dot (✓ library / ⬡ external) so the status is readable without colour. */
-.us-row .us-dot {
-    font-size: 0.6rem;
-    vertical-align: middle;
-    margin-right: 0.1rem;
-}
-
-.us-row .accent-library { color: #2ecc71; }
-.us-row .accent-mb { color: #f1c40f; }
-
-/* Source badges overlaid on the album-art thumbnail (top-right corner,
-   nudged inward so they never bleed outside the artwork's bounding box):
-   green ♫ = local library, amber ⬡ = MusicBrainz.  Keeps the text column
-   free of bullet characters. */
-.us-row .us-thumb-wrap {
-    position: relative;
-    display: inline-block;
-    flex-shrink: 0;
-}
-
-.us-row .us-thumb-badge {
-    position: absolute;
-    top: 4px;
-    right: 4px;
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 0.55rem;
-    color: #0b0b0b;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
-    border: 1px solid rgba(0, 0, 0, 0.4);
-}
-
-.us-row .us-thumb-badge.accent-library-bg { background: #2ecc71; }
-.us-row .us-thumb-badge.accent-mb-bg { background: #f1c40f; }
-
-/* Hover-only quick-action for local library rows (View).  Appears on the
-   right side so local results feel as actionable as the MB Queue buttons. */
-.us-row .us-row-action {
-    flex-shrink: 0;
-    opacity: 0;
-    transition: opacity 0.15s ease;
-}
-
-.us-row:hover .us-row-action,
-.us-row:focus-within .us-row-action {
-    opacity: 1;
-}
-
-@media (hover: none) {
-    /* Touch: always show the action so it is tappable. */
-    .us-row .us-row-action {
-        opacity: 1;
-    }
-}
-
-.us-row .us-artist {
-    color: #e0e0e0;
-    font-weight: 600;
-}
-
-.us-row .us-type,
-.us-row .us-owner {
-    color: #888888;
-}
-
-/* Search flyout row thumbnails (local art / Cover Art Archive) */
-.us-row img {
-    background-color: var(--tertiary-bg, #282828);
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
-}
-
-/* ── Unified search: collapsible filters, scope chips, type sheet ───────── */
-/* Scope tabs as compact chips on ONE horizontally-swipeable line */
 .search-flyout #unifiedScopeTabs.us-scope-chips {
     flex-wrap: nowrap;
     overflow-x: auto;
-    min-width: 0;
     -webkit-overflow-scrolling: touch;
-    scrollbar-width: none; /* Firefox: hide scrollbar so chips never truncate */
-    -ms-overflow-style: none;
+    scrollbar-width: none;
 }
+.search-flyout #unifiedScopeTabs.us-scope-chips::-webkit-scrollbar { display: none; }
+.search-flyout #unifiedScopeTabs .nav-link { background-color: #1e1e1e !important; border: 1px solid transparent !important; border-radius: 0.5rem !important; color: #a0a0a0 !important; min-height: 44px !important; display: inline-flex !important; align-items: center !important; gap: 0.4rem !important; padding: 0.5rem 0.9rem !important; }
+.search-flyout #unifiedScopeTabs .nav-link.active { background-color: #2a2a2a !important; border-color: rgba(255, 255, 255, 0.65) !important; color: #ffffff !important; }
 
-.search-flyout #unifiedScopeTabs.us-scope-chips::-webkit-scrollbar {
-    display: none; /* Chrome/Safari: hide scrollbar, keep swipe */
-}
+/* Windows Phone style Metro jump grid overlay */
+.metro-jump-overlay { position: fixed; inset: 0; z-index: 2050; background: rgba(10, 10, 10, 0.88); backdrop-filter: blur(10px); display: flex; align-items: center; justify-content: center; padding: 1rem; }
+.metro-jump-content { width: min(92vw, 380px); background: var(--secondary-bg, #1e1e1e); border: 1px solid var(--border-color, #333); border-radius: 0.75rem; padding: 1.25rem; }
+.metro-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.6rem; }
+.metro-tile { aspect-ratio: 1; background-color: var(--accent-color, #1db954); color: #000; border: none; border-radius: 0.35rem; font-size: 1.35rem; font-weight: 700; display: flex; align-items: center; justify-content: center; transition: transform 0.1s ease, background-color 0.15s ease; cursor: pointer; }
+.metro-tile:hover:not(:disabled) { transform: scale(1.06); background-color: var(--accent-hover, #1ed760); }
+.metro-tile:disabled, .metro-tile.disabled { background-color: rgba(255, 255, 255, 0.05) !important; color: rgba(255, 255, 255, 0.2) !important; cursor: not-allowed; transform: none !important; }
 
-.search-flyout #unifiedScopeTabs.us-scope-chips .nav-link {
-    padding: 4px 12px;
-    font-size: 0.85rem;
-    white-space: nowrap;
-    flex-shrink: 0; /* chips never shrink/truncate — the row scrolls instead */
-}
-
-.search-flyout #unifiedScopeTabs.us-scope-chips .us-scope-count {
-    font-size: 0.7rem;
-}
-
-/* Subtle advanced-search toggle */
-.search-flyout .us-filter-toggle {
-    font-size: 0.8rem;
-    color: var(--text-tertiary, #a0a0a0);
-}
-
-.search-flyout .us-filter-toggle:hover {
-    color: var(--spotify-green, #1db954);
-}
-
-/* Release-type funnel button (same row as the scope chips) */
-.search-flyout .us-filter-btn {
-    padding: 4px 10px;
-    font-size: 0.85rem;
-    color: var(--text-tertiary, #a0a0a0);
-    border-color: var(--border-color, #282828);
-    background: transparent;
-}
-
-.search-flyout .us-filter-btn:hover,
-.search-flyout .us-filter-btn.active {
-    color: var(--spotify-green, #1db954);
-    border-color: var(--spotify-green, #1db954);
-}
-
-/* Release-type bottom sheet (thumb-friendly, slides up from the bottom) */
-.us-filter-backdrop {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.55);
-    z-index: 3000;
-}
-
-.us-filter-sheet {
-    position: fixed;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 3001;
-    background: var(--secondary-bg, #1e1e1e);
-    border-top: 1px solid var(--border-color, #282828);
-    border-radius: 12px 12px 0 0;
-    max-height: 60dvh;
-    overflow-y: auto;
-    transform: translateY(100%);
-    transition: transform 0.22s ease;
-    box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.5);
-}
-
-.us-filter-sheet.show {
-    transform: translateY(0);
-}
-
-.us-filter-sheet .us-filter-sheet-header {
-    position: sticky;
-    top: 0;
-    background: var(--secondary-bg, #1e1e1e);
-    border-bottom: 1px solid var(--border-color, #282828);
-}
-
-.us-filter-option {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    width: 100%;
-    padding: 0.9rem 1rem;
-    font-size: 1rem;
-    background: transparent;
-    border: none;
-    border-bottom: 1px solid var(--border-color, #282828);
-    color: var(--text-primary, #ffffff);
-    text-align: left;
-}
-
-.us-filter-option:active {
-    background: var(--tertiary-bg, #282828);
-}
-
-.us-filter-option.active {
-    color: var(--spotify-green, #1db954);
-    font-weight: 600;
-}
-
-.us-filter-check {
-    color: var(--spotify-green, #1db954);
-}
-
-/* ── Config: Playlists tab — grouped setting cards ──────────────────────── */
-/* Each toggle switch stays bound to its title/description inside one card;
-   numeric thresholds reflow via an auto-fit grid; naming templates are
-   full-width input cards. Scoped to #tab-playlists so nothing else moves. */
-#tab-playlists .config-section {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-}
-
-#tab-playlists .setting-card {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 20px;
-    padding: 14px 16px;
-    background-color: var(--secondary-bg, #1e1e1e);
-    border: 1px solid var(--border-color, #282828);
-    border-radius: 8px;
-}
-
-#tab-playlists .setting-info {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    flex: 1;
-    min-width: 0;
-}
-
-#tab-playlists .setting-title {
-    font-weight: 600;
-    font-size: 0.95rem;
-    color: var(--text-primary, #ffffff);
-    margin: 0;
-}
-
-#tab-playlists .setting-description {
-    font-size: 0.85rem;
-    color: var(--text-tertiary, #a0a0a0);
-    margin: 0;
-    line-height: 1.4;
-}
-
-#tab-playlists .setting-control {
-    flex-shrink: 0;
-}
-
-#tab-playlists .setting-control .form-check-input {
-    width: 2.4em;
-    height: 1.25em;
-    margin: 0;
-    cursor: pointer;
-}
-
-#tab-playlists .thresholds-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 16px;
-}
-
-#tab-playlists .input-card {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    background-color: var(--secondary-bg, #1e1e1e);
-    border: 1px solid var(--border-color, #282828);
-    padding: 14px;
-    border-radius: 8px;
-}
-
-#tab-playlists .input-card label {
-    font-weight: 600;
-    font-size: 0.85rem;
-    color: var(--text-primary, #ffffff);
-    margin: 0;
-}
-
-#tab-playlists .input-card input {
-    background-color: #101010;
-    border: 1px solid #333333;
-    color: var(--text-primary, #ffffff);
-}
-
-#tab-playlists .input-card .help-text {
-    font-size: 0.75rem;
-    color: #777777;
-    line-height: 1.3;
-}
-
-#tab-playlists .naming-card {
-    max-width: 720px;
-}
-
-/* Phones: description above the switch, one input per row */
-@media (max-width: 600px) {
-    #tab-playlists .setting-card {
-        align-items: flex-start;
-    }
-
-    #tab-playlists .thresholds-grid {
-        grid-template-columns: 1fr;
-    }
-}
-
-/* ── Album tracklist: row icon buttons + Missing-MBID filter ──────────── */
-/* Borderless, dark icon buttons for the play / actions / queued-remove
-   controls — replaces the floating outlined squares at the row end. */
-.row-icon-btn {
-    background: transparent;
-    border: none;
-    color: var(--text-tertiary, #a0a0a0);
-    font-size: 1rem;
-    line-height: 1;
-    padding: 0.3rem 0.5rem;
-    border-radius: 6px;
-}
-
-.row-icon-btn:hover {
-    color: var(--text-primary, #ffffff);
-    background: var(--tertiary-bg, #282828);
-}
-
-.row-icon-btn.text-success {
-    color: var(--spotify-green, #1db954);
-}
-
-.row-icon-btn.text-success:hover {
-    color: var(--spotify-green-hover, #1ed760);
-    background: var(--tertiary-bg, #282828);
-}
-
-.row-icon-btn.text-danger:hover {
-    color: #ff6b6b;
-    background: var(--tertiary-bg, #282828);
-}
-
-/* Clickable Missing-MBIDs summary badge */
-.missing-mbid-badge {
-    cursor: pointer;
-    user-select: none;
-}
-
-.missing-mbid-badge.active {
-    outline: 1px solid currentColor;
-    filter: brightness(1.15);
-}
-
-/* Missing-MBID filter: hide every track row (and its MB diff rows) that is
-   not flagged data-missing-mbid="1". */
-#albumTracksTbody.filter-missing-mbid tr[data-track-id]:not([data-missing-mbid="1"]) {
-    display: none;
-}
-
-/* ── Algorithm Sandbox: delta card accents ──────────────────────────────── */
-.sandbox-delta.upgrade {
-    border-color: var(--spotify-green, #1db954) !important;
-}
-
-.sandbox-delta.downgrade {
-    border-color: #e74c3c !important;
-}
-
-.sandbox-delta .score-new {
-    font-weight: 600;
-}
-
-/* ── Logs page: sticky filter bar ──────────────────────────────────────── */
-/* The page scrolls inside main; keep search + level pills pinned below the
-   navbar so filters stay reachable while reading thousands of lines. */
-#logFilterRow {
-    position: sticky;
-    top: 0;
-    z-index: 100;
-    padding: 0.5rem 0.25rem;
-    margin-bottom: 0.75rem !important;
-    background: var(--primary-bg, #121212);
-}
-
-/* Tap-to-open search pills (navbar + dashboard) — the pill is the live
-   search entry: clicking focuses it and drops the result flyout below. */
-#navSearchInput,
-#dashboardTopSearchInput {
-    cursor: text;
-    color: var(--text-secondary);
-}
-
-#navSearchInput::placeholder,
-#dashboardTopSearchInput::placeholder {
-    color: var(--text-tertiary);
-}
+/* ── Miscellaneous ────────────────────────────────────────────────────── */
+.category-empty { display: none !important; }
+.sticky-save-bar { position: fixed; bottom: var(--footer-stack-height, 2.4rem); left: 0; right: 0; z-index: 2020; background: rgba(18, 18, 18, 0.98); border-top: 1px solid rgba(34, 197, 94, 0.5); box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.5); padding: 0.6rem 1rem; }
+.sticky-save-bar.d-none { display: none; }
+.config-save-bar { position: sticky; bottom: 0; z-index: 2010; background: rgba(18, 18, 18, 0.96); border-top: 1px solid rgba(34, 197, 94, 0.4); box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.5); padding: 0.6rem 1rem; border-radius: 0.5rem 0.5rem 0 0; }
