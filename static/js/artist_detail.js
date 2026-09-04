@@ -1,20 +1,4 @@
-// Artist Detail Page JS
-
-const SLSKD_MAX_POLL_ATTEMPTS = 60;
-const SLSKD_POLL_INTERVAL_MS = 2000;
-const BYTES_TO_MB = 1024 * 1024;
-
-// Event listener for Soulseek tab - show track queue option when tab is clicked
-document.addEventListener('DOMContentLoaded', function() {
-  const slskdTab = document.getElementById('slskd-tab');
-  if (slskdTab) {
-    slskdTab.addEventListener('shown.bs.tab', function() {
-      if (typeof currentDownloadAlbum !== 'undefined' && currentDownloadAlbum.album) {
-        showSlskdTrackQueueOption();
-      }
-    });
-  }
-});
+// ===== Artist Detail Page JS =====
 
 // Fallback functions if genre-utils.js fails to load
 if (typeof toggleGenreCheckbox === 'undefined') {
@@ -219,14 +203,22 @@ function sanitizeBio(text) {
 function toggleMissingReleasesForCategory(btn, catId) {
   const section = document.getElementById(catId + '-section');
   if (!section) return;
+  
   const missingRows = section.querySelectorAll('.missing-album-item');
-  const isHidden = btn.getAttribute('data-hidden') === 'true';
+  const isCurrentlyHidden = btn.getAttribute('data-hidden') === 'true';
 
   missingRows.forEach(row => {
-    row.style.display = isHidden ? '' : 'none';
+    if (isCurrentlyHidden) {
+        // We are currently hidden, so we want to SHOW them
+        row.style.display = '';
+    } else {
+        // We are currently showing them, so we want to HIDE them.
+        // Use setProperty with !important because Bootstrap d-flex overrides standard display: none
+        row.style.setProperty('display', 'none', 'important');
+    }
   });
 
-  if (isHidden) {
+  if (isCurrentlyHidden) {
     btn.setAttribute('data-hidden', 'false');
     btn.innerHTML = '<i class="bi bi-eye-slash me-1"></i><span>Hide Missing</span>';
   } else {
@@ -272,19 +264,27 @@ function setArtistFilter(filter) {
     const isCategoryHidingMissing = hideMissingBtn && hideMissingBtn.getAttribute('data-hidden') === 'true';
 
     if (effective === 'all') {
-      // If user is filtering 'all', respect individual category 'Hide Missing' states
       if (isMissing && isCategoryHidingMissing) {
-        row.style.display = 'none';
+        row.style.setProperty('display', 'none', 'important');
       } else {
         row.style.display = '';
       }
     } else if (effective === 'library') {
-      row.style.display = isMissing ? 'none' : '';
+      if (isMissing) {
+          row.style.setProperty('display', 'none', 'important');
+      } else {
+          row.style.display = '';
+      }
     } else if (effective === 'missing') {
-      row.style.display = isMissing ? '' : 'none';
+      if (!isMissing) {
+          row.style.setProperty('display', 'none', 'important');
+      } else {
+          row.style.display = '';
+      }
     }
   });
 
+  // Hide the category header if all rows inside it are hidden
   document.querySelectorAll('.category-section').forEach(section => {
     const rows = Array.from(section.querySelectorAll('.album-row'));
     const hasVisible = rows.some(row => row.style.display !== 'none');
@@ -335,7 +335,8 @@ async function loadArtistCoveredBy(artistName) {
     if (countEl) countEl.textContent = `${covers.length} cover(s) found`;
     let html = '<div class="table-responsive"><table class="table table-hover mb-0"><thead><tr><th>Covering Artist</th><th>Song Title</th><th>Album</th><th class="text-center">Year</th></tr></thead><tbody>';
     
-    codes.forEach(cover => {
+    // Fixed: Loop over covers, not codes
+    covers.forEach(cover => {
       html += `<tr>
         <td>${escapeHtml(cover.artist)}</td>
         <td>${escapeHtml(cover.title)}</td>
