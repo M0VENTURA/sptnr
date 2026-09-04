@@ -203,8 +203,8 @@ def _persist_artist_external_ids(artist: str, mbid: str | None = None, discogs_i
         with db_session() as session:
             session.execute(
                 text("""
-                    INSERT INTO artists (name, musicbrainz_artistid, discogs_artist_id)
-                    VALUES (:name, :mbid, :did)
+                    INSERT INTO artists (id, name, musicbrainz_artistid, discogs_artist_id)
+                    VALUES (:name, :name, :mbid, :did)
                     ON CONFLICT (name) DO UPDATE SET
                         musicbrainz_artistid = COALESCE(NULLIF(EXCLUDED.musicbrainz_artistid, ''), artists.musicbrainz_artistid),
                         discogs_artist_id = COALESCE(NULLIF(EXCLUDED.discogs_artist_id, ''), artists.discogs_artist_id)
