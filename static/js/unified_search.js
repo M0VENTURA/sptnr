@@ -184,9 +184,6 @@
       'onerror="this.onerror=null;this.src=\'' + _IMG_PLACEHOLDER + '\';">';
   }
 
-  // Thumbnail + source badge overlaid on its top-right corner: green ♫ for
-  // library-owned rows, amber ⬡ for MusicBrainz rows (matches the scope-tab
-  // accents) — no bullet characters cluttering the text column.
   function thumbWithBadge(thumb, badgeIcon, badgeClass) {
     return '<span class="us-thumb-wrap">' + thumb +
       '<span class="us-thumb-badge ' + badgeClass + '">' + badgeIcon + '</span></span>';
@@ -202,11 +199,8 @@
 
   // ===== Result rendering =====
 
-  // Max rows shown per section before the inline "Show All N ▼" toggle.
   var SECTION_INLINE_LIMIT = 5;
 
-  // Build a section with an inline Show All / Show Less toggle when the row
-  // count exceeds the inline limit.  ``rower`` maps an item array to row HTML.
   function buildSection(title, items, rower) {
     var count = items.length;
     var visible = items.slice(0, SECTION_INLINE_LIMIT);
@@ -222,7 +216,7 @@
       '</div>';
   }
 
-  function toggleUsSection(btn) {
+  window.toggleUsSection = function(btn) {
     var hiddenEl = btn.closest('.us-section').querySelector('.us-section-more');
     if (!hiddenEl) return;
     var expanded = !hiddenEl.classList.contains('d-none');
@@ -230,10 +224,8 @@
     btn.innerHTML = expanded
       ? 'Show All ' + (btn.dataset.count || '') + ' <i class="bi bi-chevron-down"></i>'
       : 'Show Less <i class="bi bi-chevron-up"></i>';
-  }
+  };
 
-  // Keep only the bucket(s) matching the active Type filter; artists and
-  // tracks are suppressed whenever a specific type is selected.
   function filterLocalByType(local, type) {
     if (!type) return local;
     var bucketMap = {
@@ -253,9 +245,6 @@
 
   function artistRows(artists) {
     return artists.map(function (a) {
-      // "Various Artists" is the library-wide compilation placeholder — flag
-      // it so it isn't mistaken for a solo musician (the backend now merges
-      // all casing variants into this single row).
       var isVarious = String(a.name || '').trim().toLowerCase() === 'various artists';
       return '<a class="us-row" href="/artist/' + encodeURIComponent(a.name) + '">' +
         thumbHtml('/api/artist/image?name=' + encodeURIComponent(a.name), 'rounded-circle border border-secondary', a.name) +
@@ -296,10 +285,6 @@
     return String(r.first_release_date || r.date || r.year || '').split('-')[0] || '?';
   }
 
-  // Release buckets mirror the artist page discography: Albums (studio),
-  // Compilations, Live Albums, EPs, Singles.  MusicBrainz releases are
-  // classified into the SAME buckets so the "All" scope merges local 🟢 and
-  // external 🟡 results into one consistent structure.
   var SECTION_DEFS = [
     { key: 'albums', label: 'Albums', localLabel: 'Studio Album' },
     { key: 'compilations', label: 'Compilations', localLabel: 'Compilation' },
@@ -332,7 +317,6 @@
     for (var i = 0; i < items.length; i++) {
       var it = items[i];
       var yearSuffix = it.year ? ' (' + esc(it.year) + ')' : '';
-      // 3rd line: track count (+ total duration) — instant promo-vs-full check.
       var trackLine = '';
       if (it.track_count) {
         trackLine = '<span class="us-row-sub d-block">' + it.track_count + ' track' + (it.track_count === 1 ? '' : 's') + (it.duration_total ? ' - ' + fmtDuration(it.duration_total) : '') + '</span>';
@@ -340,7 +324,6 @@
       if (it.local) {
         var yearPath = it.year ? '/' + it.year : '';
         var href = '/album/' + encodeURIComponent(it.artist) + '/' + encodeURIComponent(it.title) + yearPath;
-        // Local album art endpoint (same pattern as the album page hero).
         var localArt = '/api/album/' + encodeURIComponent(it.artist) + '/' + encodeURIComponent(it.title) + '/art';
         html += '<a class="us-row" href="' + href + '">' +
           thumbWithBadge(thumbHtml(localArt, 'rounded border border-secondary', it.title),
@@ -355,8 +338,6 @@
           '</span>' +
         '</a>';
       } else if (it.owned) {
-        // MusicBrainz release that is ALREADY in the collection: no queue
-        // button — selecting it goes to the album page in the library.
         var yearPath = it.year ? '/' + it.year : '';
         var ownedHref = '/album/' + encodeURIComponent(it.artist) + '/' + encodeURIComponent(it.title) + yearPath;
         var ownedArt = '/api/album/' + encodeURIComponent(it.artist) + '/' + encodeURIComponent(it.title) + '/art';
@@ -376,12 +357,8 @@
         var id = it.id || '';
         var queued = !!_queuedIds[id];
         _mbIndex[id] = it.release || null;
-        // Cover Art Archive thumbnail — the MB search payload already carries
-        // cover_art_url; fall back to building it from the release-group id.
         var rel = it.release || {};
         var cover = rel.cover_art_url || (id ? 'https://coverartarchive.org/release-group/' + id + '/front-250' : '');
-        // The row links to the MusicBrainz release page; the Queue button
-        // stops the navigation via the delegated handler's preventDefault.
         var mbUrl = id ? 'https://musicbrainz.org/release-group/' + encodeURIComponent(id) : '#';
         html += '<a class="us-row" href="' + mbUrl + '" target="_blank" rel="noopener">' +
           thumbWithBadge(thumbHtml(cover, 'rounded border border-secondary', it.title),
@@ -401,9 +378,6 @@
     return html;
   }
 
-  // Owned-key: normalized artist::album used to detect MB releases that are
-  // already in the collection (parenthetical noise stripped, case/space
-  // insensitive) — those get no queue button and link to the local album.
   function _ownedKey(artist, title) {
     function norm(s) {
       return String(s || '').toLowerCase().replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim();
@@ -433,8 +407,6 @@
         owned: !!owned[_ownedKey(artist, r.title)]
       });
     });
-    // Sort each bucket: Release Year (newest → oldest, unknown last) →
-    // ownership (local 🟢 before external 🟡) → Title (ASC).
     Object.keys(buckets).forEach(function (k) {
       buckets[k].sort(function (a, b) {
         var ay = (a.year === '?' || a.year === null || a.year === undefined) ? 0 : Number(a.year) || 0;
@@ -471,9 +443,6 @@
 
     html += renderReleaseSections(buildBuckets(local, mbReleases), opts.withQueue);
 
-    // MusicBrainz results are still loading — show a lightweight inline
-    // notice in place of the (missing) "All MusicBrainz results" button so
-    // the user knows more is coming instead of assuming the search is done.
     if (opts.allMbButton && opts.mbPending) {
       html += '<div class="text-center my-2 text-muted small">' +
         '<span class="spinner-border spinner-border-sm me-1" role="status"></span> Loading MusicBrainz results…</div>';
@@ -530,11 +499,6 @@
       year: adv.year
     };
 
-    // Advanced filters drive MusicBrainz discovery, but they must also feed
-    // the library search: when the main bar is empty, the first populated
-    // field (artist → album → track → year) becomes the local query so an
-    // artist-only filter still returns library artists (previously the
-    // library search never ran and showed 'No library matches for ""').
     var localQuery = query;
     if (localQuery.length < MIN_QUERY_LENGTH && hasAdvanced) {
       localQuery = adv.artist || adv.album || adv.track || adv.year || '';
@@ -547,8 +511,6 @@
     if (_scope === SCOPE_ALL) {
       mbPromise = fetchMb(query, MB_LIMIT_ALL_TAB, mbOpts);
     } else if (_scope === SCOPE_LIBRARY) {
-      // Badge-only MB count so the scope pills stay live without blocking
-      // the local render or the fast keystroke debounce.
       mbPromise = fetchMb(query, MB_LIMIT_MB_TAB, mbOpts)
         .then(function (r) {
           if (seq !== _runSeq) return [];
@@ -559,17 +521,9 @@
         })
         .catch(function () { return []; });
     } else {
-      // MusicBrainz scope — the tab IS the full MB result list, so the
-      // search must actually run here (previously it resolved to [] and the
-      // tab always showed "No MusicBrainz releases found").
       mbPromise = fetchMb(query, MB_LIMIT_MB_TAB, mbOpts);
     }
 
-    // Local results render FIRST (they come from the fast indexed DB query);
-    // MusicBrainz results merge in when they arrive.  Waiting for BOTH via
-    // Promise.all made every keystroke block on the slow MB call (the search
-    // modal showed a spinner until MusicBrainz finished), which is the
-    // "search is slow" symptom.
     var renderLocal = function (local) {
       if (seq !== _runSeq) return;
       if (getTypeFilter()) local = filterLocalByType(local, getTypeFilter());
@@ -577,8 +531,6 @@
       _counts.all = _counts.library + (_counts.mb || 0);
       updateScopeCounts();
 
-      // MusicBrainz scope: the tab is MB-only — the local data is just for
-      // the owned-badge in the MB tab, which renders when MB loads.
       if (_scope === SCOPE_MB) return;
 
       var displayQuery = localQuery || query;
@@ -604,8 +556,6 @@
       markRendered(query);
     };
 
-    // Kick off the MusicBrainz fetch (slow) and render its results as soon
-    // as they land, without blocking the local render above.
     _mbDone = false;
     _mbResults = [];
     mbPromise.then(function (mbReleases) {
@@ -623,10 +573,7 @@
         markRendered(query);
         return;
       }
-      // Library scope is local-only — the MB call there was just for the
-      // scope-pill count; don't re-render the local list.
       if (_scope === SCOPE_LIBRARY) return;
-      // Re-render with the merged MB results (local data is already cached).
       renderLocal(localResult);
     });
 
@@ -659,8 +606,6 @@
     if (!id || _queuedIds[id]) return;
     var artist = mbReleaseArtist(rel);
 
-    // Open the Release Picker flyout first — the user picks the exact
-    // version; the onQueued callback then marks this row as queued.
     if (typeof window.openReleasePicker === 'function') {
       window.openReleasePicker(id, rel.title || '', artist, function () {
         _queuedIds[id] = true;
@@ -672,7 +617,6 @@
     }
 
     _queuedIds[id] = true;
-
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span>';
 
@@ -695,9 +639,6 @@
         btn.innerHTML = '<i class="bi bi-check2"></i> Queued';
         btn.title = total ? ('Queued ' + total + ' track' + (total === 1 ? '' : 's') + ': ' + (rel.title || '')) : ('Queued: ' + (rel.title || ''));
         if (typeof window.showQueueToast === 'function') window.showQueueToast(rel.title || 'Release');
-        // The backend falls back to a single search-item when the MusicBrainz
-        // data can't be fetched — surface that so it's not mistaken for a
-        // full tracklist queue.
         var msg = String(out.data.message || '');
         if (!total && msg.indexOf('simple search') !== -1) notifyError(msg);
       })
@@ -711,10 +652,6 @@
 
   // ===== Modal lifecycle / public API =====
 
-  // Advanced-filters panel visibility (flyout always renders it; collapse/
-  // expand is driven by the open/Enter/toggle paths).  Defined at IIFE scope
-  // so ``window.openUnifiedSearch`` can call it — a nested declaration inside
-  // the DOMContentLoaded callback is not in its scope chain.
   function setAdvancedFiltersVisible(visible) {
     var panel = document.getElementById('unifiedAdvancedFilters');
     var toggle = document.getElementById('unifiedFiltersToggle');
@@ -736,30 +673,20 @@
       prefill = (navEl && navEl.value) || (dashEl && dashEl.value) || '';
     }
 
-    // Preserve the active scope across close/reopen (only full page loads
-    // reset search state — exactly as the "navigate away" rule intends).
     selectScope(scope || _scope);
     input.value = prefill;
-    // Advanced filters default to COLLAPSED so results own the panel on open
-    // (re-expand with the toggle — values are preserved).
     setAdvancedFiltersVisible(false);
     if (getErrorEl()) getErrorEl().classList.add('d-none');
 
-    // Anchor the flyout directly under the fixed navbar (measured so the
-    // two-row header never overlaps the panel).
     var nav = document.querySelector('nav.navbar.fixed-top') || document.querySelector('nav.navbar');
     if (nav && nav.offsetHeight > 0) modalEl.style.top = nav.offsetHeight + 'px';
     var backdrop = document.getElementById('searchBackdrop');
     modalEl.classList.remove('d-none');
     if (backdrop) backdrop.classList.remove('d-none');
 
-    // Focus the pill itself — it IS the search entry now; the flyout input
-    // mirrors it so existing key handlers (Enter, debounce) keep working.
     var navInput = document.getElementById('navSearchInput');
     if (navInput && navInput !== document.activeElement) navInput.focus();
 
-    // Instant return: the previous query + scope are still rendered in the
-    // DOM — skip the refetch (and its spinner) entirely.
     if (prefill === _lastQuery && _scope === _lastScope) return;
     clearTimeout(_debounceTimer);
     runSearch();
@@ -773,9 +700,6 @@
     if (backdrop) backdrop.classList.add('d-none');
   };
 
-  // The navbar/dashboard pill is the live search entry: mirror its value
-  // into the flyout input and run the debounced query (the flyout stays
-  // open underneath so results appear directly below the navbar).
   window.syncNavSearchQuery = function () {
     var navEl = document.getElementById('navSearchInput');
     var dashEl = document.getElementById('dashboardTopSearchInput');
@@ -788,6 +712,42 @@
     scheduleSearch();
   };
 
+  // Re-define _renderMbReleaseTrackTable here so it fixes the nested table header
+  window._renderMbReleaseTrackTable = function(tracks) {
+    if (!tracks || !tracks.length) {
+      return '<div class="text-muted small px-3 py-2">No tracklist available.</div>';
+    }
+    // FIXED: Added data-mobile-cards and class d-none d-md-table-row
+    var html = '<table class="table table-sm table-hover mb-0 small" data-mobile-cards>' +
+      '<thead><tr class="d-none d-md-table-row">' +
+      '<th style="width:44px;" class="text-center">#</th>' +
+      '<th>Title</th>' +
+      '<th style="width:90px;">Duration</th>' +
+      '</tr></thead><tbody>';
+    var hasDiscs = tracks.some(function(t) { return parseInt(t.disc_number || t.disc || 0, 10) > 1; });
+    tracks.forEach(function(t) {
+      var num = t.track_number != null ? t.track_number : (t.position != null ? t.position : '');
+      var disc = parseInt(t.disc_number || t.disc || 0, 10);
+      var numLabel = '';
+      if (num !== '') numLabel = hasDiscs ? (disc || 1) + '-' + num : String(num);
+      else if (disc > 1) numLabel = 'D' + disc;
+      var durRaw = parseInt(t.duration_ms || t.duration || t.length || 0, 10);
+      var dur = '';
+      if (durRaw > 0) {
+        var secs = durRaw >= 10000 ? Math.round(durRaw / 1000) : Math.round(durRaw);
+        dur = Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0');
+      }
+      // FIXED: Added data-label so mobile cards render nicely
+      html += '<tr>' +
+        '<td class="text-center text-muted" data-label="#">' + esc(String(numLabel)) + '</td>' +
+        '<td data-label="Title">' + esc(t.title || '?') + '</td>' +
+        '<td class="text-muted" data-label="Duration">' + esc(dur) + '</td>' +
+        '</tr>';
+    });
+    html += '</tbody></table>';
+    return html;
+  };
+
   // ===== Wiring =====
 
   document.addEventListener('DOMContentLoaded', function () {
@@ -796,7 +756,6 @@
     var resultsEl = getResultsEl();
     if (!modalEl || !input || !resultsEl) return;
 
-    // Escape closes the flyout (no Bootstrap modal to do it for us anymore).
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape' && !modalEl.classList.contains('d-none')) {
         closeUnifiedSearch();
@@ -804,9 +763,7 @@
       }
     });
 
-    // Debounced input (per-scope rate handled in scheduleSearch).
     input.addEventListener('input', function () {
-      // Keep the navbar pill in sync when typing inside the flyout.
       var navEl = document.getElementById('navSearchInput');
       if (navEl && navEl.value !== input.value) navEl.value = input.value;
       var dashEl = document.getElementById('dashboardTopSearchInput');
@@ -818,21 +775,14 @@
         e.preventDefault();
         clearTimeout(_debounceTimer);
         runSearch();
-        // Submit collapses the advanced filters so results own the panel.
         setAdvancedFiltersVisible(false);
       }
     });
 
-    // Auto-select existing text on focus so a fresh query is one Backspace
-    // away (Esc / backdrop / X close WITHOUT clearing — state is preserved).
     input.addEventListener('focus', function () { this.select(); });
 
-    // Advanced filter fields + type dropdown re-run the search (filters are
-    // always visible in the flyout — no collapse toggle).
     var filterInputs = document.querySelectorAll('#unifiedAdvancedFilters input, #unifiedSearchType');
     for (var i = 0; i < filterInputs.length; i++) {
-      // Auto-select text on focus — inputs only; the type <select> has no
-      // select() method (this.select would throw TypeError).
       filterInputs[i].addEventListener('focus', function () {
         if (typeof this.select === 'function') this.select();
       });
@@ -844,7 +794,6 @@
         clearTimeout(_debounceTimer);
         runSearch();
       });
-      // Enter in a filter field submits AND collapses the advanced panel.
       filterInputs[i].addEventListener('keydown', function (e) {
         if (e.key === 'Enter') {
           e.preventDefault();
@@ -855,7 +804,6 @@
       });
     }
 
-    // ── Advanced filters collapse / expand ──────────────────────────────
     var filtersToggle = document.getElementById('unifiedFiltersToggle');
     if (filtersToggle) {
       filtersToggle.addEventListener('click', function () {
@@ -864,7 +812,6 @@
       });
     }
 
-    // ── Release-type filter bottom sheet (replaces the old Type row) ────
     function updateFilterButtonState() {
       var select = document.getElementById('unifiedSearchType');
       var btn = document.getElementById('unifiedFilterBtn');
@@ -935,7 +882,6 @@
     if (filterBtn) filterBtn.addEventListener('click', openUnifiedFilterSheet);
     updateFilterButtonState();
 
-    // Scope tabs — switching re-runs immediately with the current query.
     var tabs = document.querySelectorAll('#unifiedScopeTabs .nav-link');
     for (var i = 0; i < tabs.length; i++) {
       tabs[i].addEventListener('click', function () {
@@ -945,7 +891,6 @@
       });
     }
 
-    // Queue buttons (delegated — rows are re-rendered on every search).
     resultsEl.addEventListener('click', function (e) {
       var btn = e.target.closest ? e.target.closest('.us-queue-btn') : null;
       if (!btn) return;

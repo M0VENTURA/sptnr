@@ -147,14 +147,6 @@
   // Row rendering
   // ------------------------------------------------------------------
 
-  /**
-   * Source badge for a release row.
-   *
-   * Wikipedia rows carry the exact scraper-rule key (e.g. ``2026_heavy_metal``)
-   * in ``release.source_key`` — render it as a monospace pill so a mis-parsed
-   * album instantly points at the rule that produced it.  Rows scraped before
-   * ``source_key`` existed (or MusicBrainz rows) fall back to the generic badge.
-   */
   function sourceBadge(release) {
     var sourceKey = String(release.source_key || '').trim();
     if (sourceKey) {
@@ -167,7 +159,6 @@
       : '<span class="badge bg-secondary"><i class="bi bi-wikipedia"></i> Wikipedia</span>';
   }
 
-  /** True when the album is out (release_date <= today) and thus queueable. */
   function isReleased(release) {
     var dateText = (release.release_date || '').trim();
     if (!/^\d{4}-\d{2}-\d{2}/.test(dateText)) return false;
@@ -193,7 +184,6 @@
 
     var isCandidate = release.mbid_match_status === 'candidate' && !!release.candidate_release_group_mbid;
     if (!release.release_group_mbid && isCandidate) {
-      // Pending candidate from the scoring pipeline — one click confirms.
       actions.push(
         '<button type="button" class="btn btn-sm btn-outline-warning" ' +
         'onclick="UpcomingReleasesService.confirmCandidateById(' + releaseId + ', \'' + release.candidate_release_group_mbid + '\', this)" ' +
@@ -210,9 +200,6 @@
     if (release.in_queue) {
       actions.push('<span class="badge bg-info text-dark align-middle">In Queue</span>');
     } else if (isReleased(release)) {
-      // Picker-aware queue: matched rows open the release-picker flyout so
-      // the user chooses the exact version (CD/deluxe/promo); unmatched rows
-      // fall back to the plain queue-by-id.
       actions.push(
         '<button type="button" class="btn btn-sm btn-success" ' +
         'onclick="UpcomingReleasesService.queueFromRow(' + releaseId + ', ' +
@@ -228,7 +215,6 @@
         '<i class="bi bi-hexagon-fill"></i></span>'
       : '';
 
-    // Release-type badge (Album / EP / Single / …) from the MB primary type.
     var typeBadge = '';
     var rawType = String(release.primary_type || '').trim();
     var pt = rawType.toLowerCase();
@@ -249,20 +235,17 @@
           ? '<span class="text-warning small">candidate · ' + escapeHtml(String(release.mbid_match_score || '')) + '</span>'
           : '<span class="text-muted small">unmatched</span>');
 
+    // FIXED: Added data-label so mobile cards know what to name the fields
     return '<tr>' +
-      '<td>' + escapeHtml(release.artist_name || '') + '</td>' +
-      '<td>' + escapeHtml(release.album_name || '') + typeBadge + linkedBadge + '</td>' +
-      '<td><small>' + escapeHtml(releaseDate) + ' ' + dateBadge + '</small></td>' +
-      '<td>' + sourceBadge(release) + '</td>' +
-      '<td>' + mbidCell + '</td>' +
-      '<td><div class="d-flex gap-1 flex-wrap">' + actions.join('') + '</div></td>' +
+      '<td data-label="Artist">' + escapeHtml(release.artist_name || '') + '</td>' +
+      '<td data-label="Album">' + escapeHtml(release.album_name || '') + typeBadge + linkedBadge + '</td>' +
+      '<td data-label="Date"><small>' + escapeHtml(releaseDate) + ' ' + dateBadge + '</small></td>' +
+      '<td data-label="Source">' + sourceBadge(release) + '</td>' +
+      '<td data-label="MBID">' + mbidCell + '</td>' +
+      '<td data-label="Action"><div class="d-flex gap-1 flex-wrap">' + actions.join('') + '</div></td>' +
       '</tr>';
   }
 
-  /**
-   * Render the month-grouped accordion table into a container element.
-   * Compatible with the legacy monitor.js markup (accordion ids, table rows).
-   */
   function renderTable(containerId, items, options) {
     var container = document.getElementById(containerId);
     if (!container) return;
@@ -284,9 +267,6 @@
     });
     var sortedMonths = Object.keys(grouped).sort();
 
-    // The current month (or the first group when today's month has no
-    // releases) opens by default; future months stay collapsed so the page
-    // remains compact while every month stays one click away.
     var todayMonth = new Date().toISOString().slice(0, 7);
     var defaultOpenMonth = sortedMonths.indexOf(todayMonth) >= 0 ? todayMonth : sortedMonths[0];
 
@@ -303,8 +283,9 @@
         '</button></h2>' +
         '<div id="ucm' + idx + '" class="accordion-collapse collapse' + (open ? ' show' : '') + '">' +
         '<div class="accordion-body p-0"><div class="table-responsive upcoming-table">' +
-        '<table class="table table-hover table-striped table-dark table-sm mb-0">' +
-        '<thead><tr>' +
+        // FIXED: Added data-mobile-cards and d-none d-md-table-row for responsive table stacking
+        '<table class="table table-hover table-striped table-sm mb-0" data-mobile-cards>' +
+        '<thead><tr class="d-none d-md-table-row">' +
         '<th class="col-artist">Artist</th>' +
         '<th class="col-album">Album</th>' +
         '<th class="col-date">Date</th>' +
@@ -322,10 +303,6 @@
     container.innerHTML = html;
   }
 
-  /**
-   * Badge HTML for the scrape/refresh status — e.g.
-   * `Refreshing... (142/500) · Mudvayne`. Empty when not running.
-   */
   function renderProgressBadge(statusData) {
     var s = statusData || {};
     if (s.status !== 'running') return '';
@@ -369,7 +346,6 @@
     if (onRefresh) onRefresh();
   }
 
-  /** Confirm a pipeline candidate (one click) — links the stored MBID. */
   async function confirmCandidateById(releaseId, mbid, buttonEl) {
     if (!releaseId || !mbid) return;
     if (buttonEl) {
@@ -423,13 +399,6 @@
     if (onRefresh) onRefresh();
   }
 
-  /**
-   * Queue an upcoming release, preferring the release-picker flyout when the
-   * row is matched to a MusicBrainz release-group (so the user picks the
-   * exact version — CD vs deluxe vs promo — instead of the server resolving
-   * it blindly).  Falls back to the plain row queue when unmatched or when
-   * the picker is unavailable.
-   */
   function queueFromRow(releaseId, rgMbid, artistEnc, albumEnc, buttonEl) {
     var picker = window.openReleasePicker;
     if (rgMbid && typeof picker === 'function') {
