@@ -6,7 +6,6 @@
 <style>
     .genre-badge-more { cursor: pointer; font-size: 0.75rem; }
     .min-w-0 { min-width: 0; }
-    [id$="-section"] { scroll-margin-top: 130px; }
 </style>
 
 <div class="container-fluid mt-4">
@@ -89,7 +88,7 @@
         </div>
     </div>
 
-    <!-- Bootstrap Nav Pills (Same as Artist Page) -->
+    <!-- Bootstrap Nav Pills -->
     <ul class="nav nav-pills nav-fill bg-secondary p-1 rounded mb-3 shadow-sm" role="tablist" id="albumPageTabs">
         <li class="nav-item" role="presentation">
             <button class="nav-link active fw-bold" id="tab-tracks-btn" data-bs-toggle="tab" data-bs-target="#tab-tracks" type="button" role="tab" aria-selected="true">
@@ -194,9 +193,6 @@
     </div>
 </div>
 
-<!-- ==========================================
-     INLINE MODALS
-     ========================================== -->
 <!-- Album Lookup Modal -->
 <div class="modal fade" id="albumLookupModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-lg">
