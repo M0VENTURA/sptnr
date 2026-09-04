@@ -166,7 +166,7 @@ class MusicBrainzHttpClient:
         _ISRC_LOOKUP_CACHE.clear()
         _RELEASE_DETAIL_CACHE.clear()
 
-    def get(self, endpoint: str, *, params: dict[str, Any] | None = None, timeout: float = 10.0) -> dict[str, Any]:
+    def get(self, endpoint: str, *, params: dict[str, Any] | None = None, timeout: float = 30.0) -> dict[str, Any]:
         if not self.enabled:
             return {}
 
@@ -255,7 +255,7 @@ class MusicBrainzHttpClient:
         except Exception:
             return ""
 
-    def get_release(self, release_mbid: str, inc: str = "", timeout: float = 10.0) -> dict[str, Any]:
+    def get_release(self, release_mbid: str, inc: str = "", timeout: float = 30.0) -> dict[str, Any]:
         if not _is_valid_mbid(release_mbid):
             if release_mbid:
                 logger.debug("Rejected malformed release MBID", release_mbid=release_mbid)
@@ -271,7 +271,7 @@ class MusicBrainzHttpClient:
             _RELEASE_DETAIL_CACHE.set(release_mbid, data)
         return data
 
-    def get_release_group(self, release_group_mbid: str, inc: str = "", timeout: float = 10.0) -> dict[str, Any]:
+    def get_release_group(self, release_group_mbid: str, inc: str = "", timeout: float = 30.0) -> dict[str, Any]:
         if not _is_valid_mbid(release_group_mbid):
             if release_group_mbid:
                 logger.debug("Rejected malformed release-group MBID", release_group_mbid=release_group_mbid)
@@ -281,7 +281,7 @@ class MusicBrainzHttpClient:
             params["inc"] = inc
         return self.get(f"release-group/{release_group_mbid}", params=params, timeout=timeout)
 
-    def get_recording(self, recording_mbid: str, inc: str = "", timeout: float = 10.0) -> dict[str, Any]:
+    def get_recording(self, recording_mbid: str, inc: str = "", timeout: float = 30.0) -> dict[str, Any]:
         if not _is_valid_mbid(recording_mbid):
             if recording_mbid:
                 logger.debug("Rejected malformed recording MBID", recording_mbid=recording_mbid)
@@ -297,7 +297,7 @@ class MusicBrainzHttpClient:
             _RECORDING_DETAIL_CACHE.set(recording_mbid, data)
         return data
 
-    def get_recordings_bulk(self, recording_mbids: list[str], inc: str = "", timeout: float = 10.0) -> dict[str, Any]:
+    def get_recordings_bulk(self, recording_mbids: list[str], inc: str = "", timeout: float = 30.0) -> dict[str, Any]:
         """Fetch multiple recordings in a single request."""
         valid_ids = [m for m in recording_mbids if _is_valid_mbid(m)]
         if not valid_ids:
@@ -335,7 +335,7 @@ class MusicBrainzHttpClient:
 
         return {"recordings": list(results.values())}
 
-    def get_artist(self, artist_mbid: str, inc: str = "", timeout: float = 10.0) -> dict[str, Any]:
+    def get_artist(self, artist_mbid: str, inc: str = "", timeout: float = 30.0) -> dict[str, Any]:
         if not _is_valid_mbid(artist_mbid):
             if artist_mbid:
                 logger.debug("Rejected malformed artist MBID", artist_mbid=artist_mbid)
@@ -345,7 +345,7 @@ class MusicBrainzHttpClient:
             params["inc"] = inc
         return self.get(f"artist/{artist_mbid}", params=params, timeout=timeout)
 
-    def get_artist_members(self, artist_mbid: str, timeout: float = 10.0) -> list[dict[str, Any]]:
+    def get_artist_members(self, artist_mbid: str, timeout: float = 30.0) -> list[dict[str, Any]]:
         if not self.enabled or not artist_mbid:
             return []
         try:
