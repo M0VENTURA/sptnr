@@ -2413,3 +2413,21 @@ document.addEventListener('DOMContentLoaded', function() {
     loadQueueEvents();
   }
 });
+/* Add to downloads.css */
+#folderGroupsSection, #unmatchedFoldersSection {
+    background-color: var(--secondary-bg, #1e1e1e) !important;
+    border: 1px solid var(--border-color, #282828);
+}
+#folderGroupsSection .card-header, #unmatchedFoldersSection .card-header {
+    background-color: var(--tertiary-bg, #282828) !important;
+    border-bottom: 1px solid var(--border-color, #333) !important;
+}
+.queue-item, .list-group-item {
+    background-color: var(--secondary-bg, #1e1e1e) !important;
+    color: var(--text-primary, #fff) !important;
+    border-color: var(--border-color, #282828) !important;
+}
+.queue-group-body {
+    background-color: rgba(0, 0, 0, 0.15);
+    border-left: 2px solid var(--spotify-green, #1db954) !important;
+}
