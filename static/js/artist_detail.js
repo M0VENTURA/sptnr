@@ -1,6 +1,6 @@
 // ===== Artist Detail Page JS =====
 
-// Fallback functions if genre-utils.js fails to load
+// Fallback utility initializations
 if (typeof toggleGenreCheckbox === 'undefined') {
     window.toggleGenreCheckbox = function(containerId, buttonId) {
         const button = document.getElementById(buttonId);
@@ -243,6 +243,7 @@ function toggleArtistBio() {
     : '<i class="bi bi-chevron-expand me-1"></i>Read More';
 }
 
+// Fixed Artist Filtering using Container Class Switching
 function setArtistFilter(filter) {
   const currentlyActive = document.querySelector('.artist-filter-btn.active')?.dataset?.filter;
   const effective = (filter === currentlyActive && filter !== 'all') ? 'all' : filter;
@@ -251,42 +252,35 @@ function setArtistFilter(filter) {
     btn.classList.toggle('active', btn.dataset.filter === effective);
   });
   
-  document.querySelectorAll('.album-row').forEach(row => {
-    const status = row.dataset.status || 'discovered';
-    const isMissing = status === 'missing';
-    
-    // Check if category has an active "Hide Missing" state enabled
-    const categorySection = row.closest('.category-section');
-    const hideMissingBtn = categorySection ? categorySection.querySelector('.toggle-missing-btn') : null;
-    const isCategoryHidingMissing = hideMissingBtn && hideMissingBtn.getAttribute('data-hidden') === 'true';
+  const mainContainer = document.getElementById('artistMainPageContainer');
+  if (!mainContainer) return;
 
-    if (effective === 'all') {
-      if (isMissing && isCategoryHidingMissing) {
-        row.style.setProperty('display', 'none', 'important');
-      } else {
-        row.style.display = '';
-      }
-    } else if (effective === 'library') {
-      if (isMissing) {
-          row.style.setProperty('display', 'none', 'important');
-      } else {
-          row.style.display = '';
-      }
-    } else if (effective === 'missing') {
-      if (!isMissing) {
-          row.style.setProperty('display', 'none', 'important');
-      } else {
-          row.style.display = '';
-      }
-    }
-  });
+  // Reset filtering classes
+  mainContainer.classList.remove('filter-hide-missing', 'filter-hide-library');
 
+  if (effective === 'library') {
+    mainContainer.classList.add('filter-hide-missing');
+  } else if (effective === 'missing') {
+    mainContainer.classList.add('filter-hide-library');
+  }
+
+  // Evaluate section visibility if all items inside are hidden
   document.querySelectorAll('.category-section').forEach(section => {
     const rows = Array.from(section.querySelectorAll('.album-row'));
-    const hasVisible = rows.some(row => row.style.display !== 'none');
-    section.style.display = rows.length && !hasVisible ? 'none' : '';
+    if (!rows.length) return;
+
+    let hasVisible = false;
+    rows.forEach(row => {
+      const isMissing = row.classList.contains('missing-album-item');
+      if (effective === 'all') hasVisible = true;
+      if (effective === 'library' && !isMissing) hasVisible = true;
+      if (effective === 'missing' && isMissing) hasVisible = true;
+    });
+
+    section.style.display = hasVisible ? '' : 'none';
   });
 }
+window.setArtistFilter = setArtistFilter;
 
 function playArtistTopTracks() {
   const tracks = window._artistPlaylist || [];
@@ -347,9 +341,88 @@ async function loadArtistCoveredBy(artistName) {
   }
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+// Country Edit Functions
+function editArtistCountry() {
   const artistName = window._pd ? window._pd.artistName : (window.artistName || '');
-  if (artistName && typeof loadArtistCoveredBy === 'function') {
-    loadArtistCoveredBy(artistName);
-  }
-});
+  const badgeEl = document.getElementById('artistCountryBadgeDisplay');
+  const currentCountry = badgeEl ? badgeEl.textContent.trim() : '';
+  
+  const modalHtml = `
+    <div class="modal fade" id="editCountryModal" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content bg-dark text-light border-secondary">
+          <div class="modal-header border-secondary">
+            <h5 class="modal-title"><i class="bi bi-pencil"></i> Edit Artist Country</h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div class="mb-3">
+              <label for="countryInput" class="form-label">Country/Origin</label>
+              <input type="text" class="form-control bg-dark text-light border-secondary" id="countryInput" value="${escapeHtml(currentCountry === 'Unknown Origin' ? '' : currentCountry)}">
+            </div>
+          </div>
+          <div class="modal-footer border-secondary">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-primary" onclick="saveArtistCountry()">Save</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  const existing = document.getElementById('editCountryModal');
+  if (existing) existing.remove();
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+  new bootstrap.Modal(document.getElementById('editCountryModal')).show();
+}
+
+function saveArtistCountry() {
+  const artistName = window._pd ? window._pd.artistName : (window.artistName || '');
+  const country = document.getElementById('countryInput').value.trim();
+  fetch('/api/artist/country/update', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ artist_name: artistName, country: country })
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.success) {
+      bootstrap.Modal.getInstance(document.getElementById('editCountryModal'))?.hide();
+      const badgeEl = document.getElementById('artistCountryBadgeDisplay');
+      if (badgeEl) badgeEl.textContent = country;
+      alert('✅ Country updated successfully!');
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed'));
+    }
+  })
+  .catch(err => alert('❌ Network error: ' + err.message));
+}
+
+function fetchArtistCountry() {
+  const artistName = window._pd ? window._pd.artistName : (window.artistName || '');
+  const btn = document.getElementById('fetchArtistCountryBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Fetching...';
+  
+  fetch('/api/artist/country', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ artist_name: artistName })
+  })
+  .then(r => r.json())
+  .then(data => {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-cloud-download"></i> Get from MusicBrainz';
+    if (data.success && data.country) {
+      const badgeEl = document.getElementById('artistCountryBadgeDisplay');
+      if (badgeEl) badgeEl.textContent = data.country;
+      alert('✅ ' + data.message);
+    } else {
+      alert('❌ ' + (data.error || 'No country found'));
+    }
+  })
+  .catch(err => {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-cloud-download"></i> Get from MusicBrainz';
+    alert('❌ Network error: ' + err.message);
+  });
+}
