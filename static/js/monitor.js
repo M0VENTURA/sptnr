@@ -1317,8 +1317,6 @@ async function queueMissingTracks(tracksJson, artist) {
 }
 
 // ===== Page-load init =====
-// Load the queue summary cards and the Download Queue section as soon as the
-// page is ready. downloads.js (loaded after this file) defines loadQueueStatus.
 document.addEventListener('DOMContentLoaded', function() {
   if (typeof window.loadQueueStatus === 'function') {
     window.loadQueueStatus();
@@ -1326,13 +1324,18 @@ document.addEventListener('DOMContentLoaded', function() {
   if (typeof window.loadFolderGroups === 'function') {
     window.loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true });
   }
+  if (typeof window.renderUnmatchedFolders === 'function') {
+    window.renderUnmatchedFolders({ forceRender: true });
+  }
   if (typeof window.loadQueueLog === 'function') {
     window.loadQueueLog();
   }
   if (typeof window.loadSearchLog === 'function') {
     window.loadSearchLog();
   }
-  // Upcoming releases: read straight from the database (no re-scrape on
-  // page load — the "Update from Wikipedia" button handles that manually).
-  refreshUpcomingReleasesMonitor();
+  
+  if (typeof refreshUpcomingReleasesMonitor === 'function') {
+    refreshUpcomingReleasesMonitor();
+  }
+});
 });
