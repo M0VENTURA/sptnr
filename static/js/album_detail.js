@@ -12,6 +12,18 @@ if (typeof addGenreModalInstance === 'undefined') {
 let currentAlbumGenres = new Set();
 
 // ─────────────────────────────────────────────────────────────
+// Admin & Scan Utilities
+// ─────────────────────────────────────────────────────────────
+
+function forceAlbumMetadataRefresh() {
+    const form = document.getElementById('albumScanForm');
+    if (!form) return;
+    const force = document.getElementById('albumForceScan');
+    if (force) force.checked = true;
+    form.submit();
+}
+
+// ─────────────────────────────────────────────────────────────
 // Player Helpers
 // ─────────────────────────────────────────────────────────────
 
