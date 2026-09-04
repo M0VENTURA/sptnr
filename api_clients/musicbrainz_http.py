@@ -3,7 +3,7 @@
 Strictly adheres to MusicBrainz API Rules:
 1. Hard 1 request/sec global limit via thread-locked turnstile.
 2. Compliant User-Agent with version and contact URL.
-3. Exponential backoff on 429/503 responses.
+3. Exponential backoff on 429/503 responses (handled by http_utils).
 4. Aggressive, thread-safe in-memory caching to minimize server load.
 """
 
@@ -19,13 +19,6 @@ from typing import Any
 
 import httpx
 import structlog
-from tenacity import (
-    retry,
-    retry_if_exception,
-    stop_after_attempt,
-    wait_exponential,
-    wait_random_exponential,
-)
 
 from api_clients import session
 from services.infrastructure.api_rate_limiter import get_rate_limiter
@@ -143,46 +136,6 @@ def _strict_throttle() -> None:
         _LAST_MB_REQUEST_TIME = time.monotonic()
 
 
-def _is_retryable_mb_error(exc: BaseException) -> bool:
-    """Retry on transient network drops or temporary rate-limiting (429/503/504)."""
-    from api_clients.http_utils import is_ssl_cert_error
-
-    if is_ssl_cert_error(exc):
-        # Certificate verification failure is a deterministic config error
-        # (missing CA bundle / expired cert) — retrying just burns ~40s per
-        # call with no chance of success, which makes scans look stalled.
-        return False
-    if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
-        return True
-    if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code in {429, 502, 503, 504}
-    return False
-
-
-def _is_valid_mbid(mbid: str) -> bool:
-    """Return True when *mbid* is a well-formed MusicBrainz UUID."""
-    return bool(mbid) and bool(MUSICBRAINZ_UUID_RE.match(str(mbid).strip()))
-
-
-def _wait_for_mb_retry_after(retry_state: Any) -> float:
-    """Honor a server-provided ``Retry-After`` header (429/503) when present.
-
-    MusicBrainz's rate limiting is enforced with bare 503s and no documented
-    guarantee of a Retry-After header, but respecting one when it *is* sent
-    is cheap, forward-compatible, and more considerate than a fixed backoff
-    curve.  Falls back to the jittered exponential backoff otherwise.
-    """
-    exc = retry_state.outcome.exception() if retry_state.outcome else None
-    if isinstance(exc, httpx.HTTPStatusError):
-        retry_after = exc.response.headers.get("Retry-After")
-        if retry_after:
-            try:
-                return max(0.0, float(retry_after))
-            except ValueError:
-                pass
-    return wait_random_exponential(multiplier=1.5, max=10.0)(retry_state)
-
-
 # =============================================================================
 # HTTP CLIENT
 # =============================================================================
@@ -216,19 +169,10 @@ class MusicBrainzHttpClient:
         url = f"{self.base_url}{endpoint.lstrip('/')}"
         query_params = params or {}
 
-        # If MB throws a 503 Rate Limit, back off automatically and retry.
-        # ``_wait_for_mb_retry_after`` honors a server ``Retry-After`` header
-        # when present and otherwise uses ``wait_random_exponential`` (jitter
-        # stops concurrent workers waking at the same instant and re-hitting a
-        # busy server — self-DOS).  The window stays capped at 10s.
-        @retry(
-            stop=stop_after_attempt(4),
-            wait=_wait_for_mb_retry_after,
-            retry=retry_if_exception(_is_retryable_mb_error),
-            reraise=True,
-        )
-        def _execute_request() -> dict[str, Any]:
+        try:
             _strict_throttle()
+            # The HTTPX session passed from http_utils already safely handles 
+            # exponential backoff, 429s, 503s, and network timeouts.
             response = self.session.get(
                 url,
                 params=query_params,
@@ -238,9 +182,6 @@ class MusicBrainzHttpClient:
             response.raise_for_status()
             payload = response.json()
             return payload if isinstance(payload, dict) else {}
-
-        try:
-            return _execute_request()
         except httpx.HTTPStatusError as exc:
             # 400/404 are deterministic "bad request / not found" responses
             # (deleted or merged MBIDs, stale cached GUIDs) — they are NOT
@@ -371,8 +312,8 @@ class MusicBrainzHttpClient:
         if not missing_ids:
             return {"recordings": list(results.values())}
 
-        # MusicBrainz allows multiple IDs separated by semicolons
-        mbid_string = ";".join(missing_ids)
+        # MusicBrainz Lucene query uses OR for multiple matches
+        mbid_string = " OR ".join(missing_ids)
         params = {"fmt": "json", "query": f"rid:({mbid_string})"}
         if inc:
             params["inc"] = inc
