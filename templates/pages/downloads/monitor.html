@@ -1,121 +1,69 @@
 {% extends "base.html" %}
 
-{% block title %}Download Monitor · Popularr{% endblock %}
+{% block title %}Downloads · Popularr{% endblock %}
 
 {% block content %}
 <div class="container-fluid mt-4">
-  <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
-    <h4 class="mb-0">
-      <i class="bi bi-download text-primary me-2"></i> Music Downloads
-      <a href="/help/FEATURES_DOWNLOADS" class="btn btn-sm btn-outline-success ms-2 py-0" title="Help for Downloads">
-        <i class="bi bi-question-circle"></i>
-      </a>
-    </h4>
-    <div class="dropdown">
-      <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="dropdown" aria-expanded="false" title="More actions">
-        <i class="bi bi-three-dots-vertical"></i> Actions
+  <div class="mb-4 d-flex align-items-center justify-content-between gap-2 flex-wrap">
+    {% include 'components/_downloads_header.html' %}
+    <div class="d-flex gap-2 flex-shrink-0 ms-auto">
+      <button type="button" class="btn btn-sm btn-outline-success flex-shrink-0" onclick="jumpToUpcomingReleases()" title="Jump to the upcoming releases list">
+        <i class="bi bi-arrow-down-circle"></i> <span class="d-none d-sm-inline">Upcoming Releases</span>
       </button>
-      <ul class="dropdown-menu dropdown-menu-end dropdown-menu-dark shadow">
-        <li><a class="dropdown-item" href="/downloads/banned-words"><i class="bi bi-slash-circle me-2"></i>Banned Words</a></li>
-        <li><hr class="dropdown-divider"></li>
-        <li><button class="dropdown-item" type="button" onclick="clearQueue()"><i class="bi bi-eraser me-2"></i>Clear Queue</button></li>
-        <li><button class="dropdown-item text-danger" type="button" onclick="purgeAllQueueAndDownloads()"><i class="bi bi-trash-fill me-2"></i>Purge All &amp; Downloads</button></li>
-      </ul>
+      <a href="/downloads/banned-words" class="btn btn-sm btn-outline-danger flex-shrink-0" title="Manage banned words">
+        <i class="bi bi-slash-circle"></i> <span class="d-none d-sm-inline">Banned Words</span>
+      </a>
     </div>
   </div>
 
-  <!-- Upgraded Metrics Grid -->
-  <div class="row g-2 text-center mb-4">
-    <div class="col-4 col-md-2">
-      <div class="card p-2 shadow-sm h-100" style="background: var(--tertiary-bg);">
-        <div class="extra-small text-muted text-uppercase fw-semibold mb-1"><i class="bi bi-activity"></i> Active</div>
-        <div class="h5 fw-bold mb-0 text-white" id="queueTotalCount">0</div>
-      </div>
-    </div>
-    <div class="col-4 col-md-2">
-      <div class="card p-2 shadow-sm h-100" style="background: var(--tertiary-bg);">
-        <div class="extra-small text-muted text-uppercase fw-semibold mb-1"><i class="bi bi-cloud-arrow-down text-info"></i> Down</div>
-        <div class="h5 fw-bold mb-0 text-info" id="queueActiveCount">0</div>
-      </div>
-    </div>
-    <div class="col-4 col-md-2">
-      <div class="card p-2 shadow-sm h-100" style="background: var(--tertiary-bg);">
-        <div class="extra-small text-muted text-uppercase fw-semibold mb-1"><i class="bi bi-hourglass-split text-warning"></i> Queued</div>
-        <div class="h5 fw-bold mb-0 text-warning" id="queueQueuedCount">0</div>
-      </div>
-    </div>
-    <div class="col-4 col-md-2">
-      <div class="card p-2 shadow-sm h-100" style="background: var(--tertiary-bg);">
-        <div class="extra-small text-muted text-uppercase fw-semibold mb-1"><i class="bi bi-x-circle text-danger"></i> Failed</div>
-        <div class="h5 fw-bold mb-0 text-danger" id="queueFailedCount">0</div>
-      </div>
-    </div>
-    <div class="col-4 col-md-2">
-      <div class="card p-2 shadow-sm h-100" style="background: var(--tertiary-bg);">
-        <div class="extra-small text-muted text-uppercase fw-semibold mb-1"><i class="bi bi-check-circle text-success"></i> Done</div>
-        <div class="h5 fw-bold mb-0 text-success" id="queueCompletedCount">0</div>
-      </div>
-    </div>
-    <div class="col-4 col-md-2">
-      <div class="card p-2 shadow-sm h-100" style="background: var(--tertiary-bg);">
-        <div class="extra-small text-muted text-uppercase fw-semibold mb-1"><i class="bi bi-arrow-left-right text-secondary"></i> Moving</div>
-        <div class="h5 fw-bold mb-0 text-white" id="queueMovingCount">0</div>
-      </div>
-    </div>
-  </div>
+  <!-- Segmented Pill Navigation -->
+  <ul class="nav nav-pills nav-fill bg-secondary p-1 rounded mb-4 shadow-sm" id="searchTabs" role="tablist">
+    <li class="nav-item" role="presentation">
+      <button class="nav-link active py-2" id="soulseek-tab" data-bs-toggle="tab" data-bs-target="#soulseek" type="button" role="tab" aria-selected="true">
+        <i class="bi bi-music-note-beamed me-1"></i> Soulseek
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link py-2" id="playlists-tab" data-bs-toggle="tab" data-bs-target="#playlists" type="button" role="tab" aria-selected="false">
+        <i class="bi bi-collection-play me-1"></i> Playlists
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link py-2" id="queue-tab" data-bs-toggle="tab" data-bs-target="#queueMonitor" type="button" role="tab" aria-selected="false">
+        <i class="bi bi-list-task me-1"></i> Active Queue
+      </button>
+    </li>
+  </ul>
 
-  {% include 'components/search/_monitor_queue_section.html' ignore missing %}
-
-  <!-- Downloads File Manager: Matched Folders + Upcoming Releases tabs -->
-  <div class="card mb-4 shadow-sm">
-    <div class="card-header p-2 border-bottom-0 bg-transparent">
-      <ul class="nav nav-pills nav-fill bg-secondary p-1 rounded" id="downloadManagerTabs" role="tablist">
-        <li class="nav-item" role="presentation">
-          <button class="nav-link active py-2" id="matched-tab" data-bs-toggle="tab" data-bs-target="#matched-pane" type="button" role="tab">
-            <i class="bi bi-folder me-1"></i> Matched Folders <span class="badge bg-dark border border-secondary ms-1" id="unmatchedFoldersBadge">0</span>
-          </button>
-        </li>
-        <li class="nav-item" role="presentation">
-          <button class="nav-link py-2" id="upcoming-tab" data-bs-toggle="tab" data-bs-target="#upcoming-pane" type="button" role="tab">
-            <i class="bi bi-calendar-event me-1"></i> Upcoming Releases
-          </button>
-        </li>
-      </ul>
+  <div class="tab-content" id="searchTabsContent">
+    <div class="tab-pane fade show active" id="soulseek" role="tabpanel" aria-labelledby="soulseek-tab">
+      {% include 'components/search/_soulseek.html' %}
     </div>
-    <div class="card-body p-0 border-top border-secondary">
-      <div class="tab-content">
-        <div class="tab-pane fade show active p-3" id="matched-pane" role="tabpanel">
-          <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
-            <button class="btn btn-sm btn-primary" onclick="processAlbums(event)"><i class="bi bi-collection"></i> Process Albums</button>
-            <button class="btn btn-sm btn-outline-secondary" onclick="refreshFolderMatches(this)" title="Re-sync folder matches"><i class="bi bi-arrow-repeat"></i> Refresh Matches</button>
-            <span id="discoveryMessage" class="text-muted small ms-auto"></span>
-          </div>
-          <div id="discoveryResults" class="alert alert-info py-2 small" style="display:none;"></div>
-          <div id="unmatchedFoldersSection" style="display:none;">
-            <div id="unmatchedFoldersList"></div>
-          </div>
-        </div>
-        <div class="tab-pane fade p-3" id="upcoming-pane" role="tabpanel">
-          {% include 'components/search/_monitor_upcoming.html' ignore missing %}
-        </div>
-      </div>
+    <div class="tab-pane fade" id="playlists" role="tabpanel" aria-labelledby="playlists-tab">
+      {% include 'components/search/_playlists.html' %}
+    </div>
+    <div class="tab-pane fade" id="queueMonitor" role="tabpanel" aria-labelledby="queue-tab">
+       {% include 'components/search/_queue_status.html' %}
     </div>
   </div>
 </div>
 
+{# Shared Modals #}
+{% include 'components/modals/_track_edit.html' ignore missing %}
+{% include 'components/modals/_organize_group.html' ignore missing %}
+{% include 'components/modals/_slskd_results.html' ignore missing %}
+{% include 'components/modals/_manual_match.html' ignore missing %}
 {% include 'components/modals/_soulseek_manual_search.html' ignore missing %}
 {% endblock %}
 
 {% block scripts %}
-<script id="page-data" type="application/json">
-  {{ {"queueStatusConfig": queue_status_config | default({})} | tojson | safe }}
-</script>
 <script>
-  const _pd = JSON.parse(document.getElementById('page-data').textContent);
-  window.queueStatusConfig = _pd.queueStatusConfig;
+  window.AppConfig = {
+    slskdEnabled: {{ slskd_config.enabled | default(false) | tojson }},
+    queueStatusConfig: {{ queue_status_config | default({}) | tojson }}
+  };
 </script>
 <link rel="stylesheet" href="{{ versioned_static('css/downloads.css') }}">
-<script src="{{ versioned_static('js/upcoming_releases.js') }}"></script>
-<script src="{{ versioned_static('js/monitor.js') }}"></script>
 <script src="{{ versioned_static('js/downloads.js') }}"></script>
+<script src="{{ versioned_static('js/genre-utils.js') }}"></script>
 {% endblock %}
