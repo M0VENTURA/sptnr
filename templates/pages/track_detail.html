@@ -4,7 +4,7 @@
 
 {% block content %}
 <style>
-    /* Unified 80px hero cover (matches album/artist hero design) */
+    /* Unified 80px hero cover */
     .hero-cover { width: 80px; height: 80px; }
 
     /* Track page: Mobile 4-tab grouping */
@@ -48,9 +48,9 @@
         </ol>
     </nav>
     
-    <!-- Unified hero: 80px art + title + metadata strip + action toolbar -->
+    <!-- Unified Hero: Art + Title + Metadata + Scan Toolbar + Play CTA -->
     <div class="card mb-4 position-relative shadow-sm" id="track-details-section">
-        <div class="card-body p-3">
+        <div class="card-body p-3 p-md-4">
             <!-- Borderless top-right favourite heart -->
             <button type="button" class="btn btn-link p-0 text-danger border-0 shadow-none position-absolute top-0 end-0 m-3"
                     id="trackFavouriteBtn"
@@ -113,30 +113,28 @@
                 </div>
             </div>
 
-            <!-- 3. Primary CTA: full-width play + Dropdown Actions -->
-            <div class="d-flex align-items-center gap-2 mt-3">
-                <button type="button" class="btn btn-success flex-grow-1 fw-bold d-flex align-items-center justify-content-center gap-2 py-2 shadow-sm"
-                        onclick="Player.playTrack('{{ track.id }}', '{{ track.title|escapejs }}', '{{ track.artist|escapejs }}', '{{ hero_art_url|escapejs }}')"
-                        title="Play in the built-in player">
-                    <i class="bi bi-play-circle-fill fs-5"></i> PLAY TRACK
-                </button>
-                <div class="dropdown flex-shrink-0">
-                    <button type="button" class="btn btn-outline-secondary py-2 px-3" data-bs-toggle="dropdown" aria-expanded="false" title="More actions">
+            <!-- Hidden forms for action triggers -->
+            <form method="POST" action="{{ url_for('scans.scan_track_rescan', artist=track.artist, album=track.album, track_id=track.id) }}" id="rescanTrackForm" class="d-none"></form>
+            <form method="POST" action="{{ url_for('scans.scan_essentia_mood') }}" id="essentiaScanForm" class="d-none">
+                <input type="hidden" name="track_id" value="{{ track.id }}">
+            </form>
+
+            <!-- 3. Streamlined Scan / Actions Toolbar (Placed above Play CTA for Uniformity) -->
+            <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 pt-1 mb-3 scan-toolbar">
+                <div class="d-flex align-items-center gap-2">
+                    <button type="submit" form="rescanTrackForm" class="btn btn-warning btn-sm fw-bold">
+                        <i class="bi bi-lightning-fill me-1"></i> Rescan
+                    </button>
+                    <button type="submit" form="essentiaScanForm" class="btn btn-outline-secondary btn-sm">
+                        <i class="bi bi-cpu me-1"></i> Essentia Scan
+                    </button>
+                </div>
+
+                <div class="dropdown ms-auto">
+                    <button type="button" class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="More actions">
                         <i class="bi bi-three-dots-vertical"></i> <span class="d-none d-sm-inline">Actions</span>
                     </button>
                     <ul class="dropdown-menu dropdown-menu-end shadow">
-                        <li>
-                            <form method="POST" action="{{ url_for('scans.scan_track_rescan', artist=track.artist, album=track.album, track_id=track.id) }}" class="m-0 p-0">
-                                <button type="submit" class="dropdown-item"><i class="bi bi-lightning-fill me-2 text-warning"></i>Rescan Track</button>
-                            </form>
-                        </li>
-                        <li>
-                            <form method="POST" action="{{ url_for('scans.scan_essentia_mood') }}" class="m-0 p-0">
-                                <input type="hidden" name="track_id" value="{{ track.id }}">
-                                <button type="submit" class="dropdown-item"><i class="bi bi-cpu me-2 text-info"></i>Essentia Mood Scan</button>
-                            </form>
-                        </li>
-                        <li><hr class="dropdown-divider"></li>
                         {% if slskd_config.enabled %}
                         <li><a class="dropdown-item" href="javascript:void(0)" onclick="openSlskdSearchTrack('{{ track.artist|escapejs }}', '{{ track.title|escapejs }}')"><i class="bi bi-music-note-beamed me-2"></i>Search Soulseek</a></li>
                         {% endif %}
@@ -145,6 +143,14 @@
                     </ul>
                 </div>
             </div>
+
+            <!-- 4. Primary CTA: Full-width play action bar -->
+            <button type="button" class="btn btn-success w-100 fw-bold d-flex align-items-center justify-content-center gap-2 py-2 shadow-sm"
+                    onclick="Player.playTrack('{{ track.id }}', '{{ track.title|escapejs }}', '{{ track.artist|escapejs }}', '{{ hero_art_url|escapejs }}')"
+                    title="Play in the built-in player">
+                <i class="bi bi-play-circle-fill fs-5"></i>
+                <span>PLAY TRACK{% if track.duration %} · {{ (track.duration|int // 60) }}:{{ '%02d' % (track.duration|int % 60) }}{% endif %}</span>
+            </button>
         </div>
     </div>
 
@@ -273,7 +279,7 @@
                         </div>
                     </div>
 
-                    <!-- Advanced Section (collapsed sort keys + web/legal details) -->
+                    <!-- Advanced Section -->
                     <div class="accordion-item mb-0 border">
                         <h2 class="accordion-header" id="track-sort-heading">
                             <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#track-sort-collapse" aria-expanded="false">
@@ -340,7 +346,6 @@
                                     </div>
                                 </div>
                                 <hr class="my-3">
-                                <!-- Read-only clickable pills -->
                                 {% set _rec = track.beets_mbid or track.mbid or track.musicbrainz_trackid %}
                                 {% set _rel = track.musicbrainz_album_mbid or track.musicbrainz_albumid %}
                                 {% set _art = track.musicbrainz_artist_id or track.musicbrainz_artistid or track.artist_mbid %}
@@ -380,7 +385,6 @@
                         {% endif %}
                     </div>
                     <div class="card-body p-3">
-                        <!-- Rating Basis -->
                         {% set rating_basis = [] %}
                         {% if track.single_confidence == 'user' %}{% set _ = rating_basis.append('Manual override') %}{% endif %}
                         {% if track.single_confidence == 'high' %}{% set _ = rating_basis.append('High-confidence single') %}{% endif %}
@@ -398,7 +402,6 @@
                         </div>
                         {% endif %}
 
-                        <!-- Source Metrics Grid -->
                         <h6 class="fw-bold text-muted small text-uppercase mb-2">Metrics Data</h6>
                         <div class="row g-2 mb-3">
                             <div class="col-6">
@@ -417,7 +420,6 @@
                             </div>
                         </div>
 
-                        <!-- Manual Star Rating Override -->
                         <hr class="my-3 border-secondary">
                         <label for="stars" class="form-label small fw-semibold text-muted text-uppercase mb-1">Manual Star Rating Override</label>
                         <select class="form-select form-select-sm" id="stars" name="stars" style="max-width: 260px;">
@@ -467,7 +469,6 @@
                             </div>
                         </div>
 
-                        <!-- Source Detection Badges -->
                         <hr class="my-3 border-secondary">
                         <h6 class="fw-semibold text-muted extra-small text-uppercase mb-2">Detected By (For Singles)</h6>
                         <div class="d-flex flex-wrap gap-1">
@@ -524,7 +525,6 @@
                             </div>
                         </div>
 
-                        <!-- Moods & Genres -->
                         <h6 class="fw-semibold text-muted extra-small text-uppercase mb-2">Detected Moods</h6>
                         <div class="d-flex flex-wrap gap-1 mb-3">
                             {% if track.mood_list %}
@@ -550,7 +550,7 @@
                     </div>
                 </div>
 
-                <!-- Lyrics Tab (Mobile Only mapping, rendered as full card on desktop) -->
+                <!-- Lyrics Tab -->
                 <div class="card shadow-sm track-mobile-group" id="track-lyrics-section" data-mobile-tab="lyrics">
                     <div class="card-header border-secondary bg-transparent d-flex justify-content-between align-items-center py-2">
                         <h6 class="card-title mb-0 fw-bold"><i class="bi bi-chat-quote-fill text-primary me-1"></i> Lyrics</h6>
@@ -622,17 +622,6 @@
 <script>
     var _pd = JSON.parse(document.getElementById('page-data').textContent);
     const CURRENT_TRACK_ID = _pd.trackId;
-
-    function setButtonLoading(button, text) {
-        if (!button) return null;
-        const original = button.innerHTML;
-        button.disabled = true;
-        button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" style="width:0.8rem;height:0.8rem;"></span> ' + text;
-        return () => {
-            button.disabled = false;
-            button.innerHTML = original;
-        };
-    }
 
     function renameTrackFile(trackId) {
         fetch('/api/track/' + trackId + '/rename-file', { method: 'POST' })
@@ -764,7 +753,6 @@
         window.location.href = `/downloads/search?q=${encodeURIComponent(query)}`;
     }
 
-    // Similar Artists Auto-Load
     document.addEventListener('DOMContentLoaded', function() {
         const artist = '{{ track.artist|escapejs }}'.trim();
         if (artist) {
@@ -800,7 +788,6 @@
     }
 </script>
 
-<!-- Modals -->
 <div class="modal fade" id="coverSearchModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
