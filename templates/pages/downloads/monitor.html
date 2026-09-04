@@ -49,6 +49,28 @@
     <!-- Tab 3: Active Queue & Stats -->
     <div class="tab-pane fade" id="queueMonitor" role="tabpanel" aria-labelledby="queue-tab">
        {% include 'components/search/_queue_status.html' %}
+
+       <!-- Download Queue Groups Container -->
+       <div class="card shadow-sm mt-4" id="folderGroupsSection" style="display: none;">
+         <div class="card-header bg-dark border-secondary d-flex align-items-center justify-content-between py-3">
+           <h5 class="card-title mb-0 fw-bold"><i class="bi bi-folder-check text-success me-2"></i>Download Queue Groups</h5>
+           <span class="badge bg-primary" id="folderGroupsBadge">0 items</span>
+         </div>
+         <div class="card-body p-0">
+           <div id="folderGroupsList"></div>
+         </div>
+       </div>
+
+       <!-- Unmatched Folders Section -->
+       <div class="card shadow-sm mt-4" id="unmatchedFoldersSection" style="display: none;">
+         <div class="card-header bg-dark border-secondary d-flex align-items-center justify-content-between py-3">
+           <h5 class="card-title mb-0 fw-bold"><i class="bi bi-folder-exclamation text-warning me-2"></i>Matched &amp; Unmatched Folders</h5>
+           <span class="badge bg-warning text-dark" id="unmatchedFoldersBadge">0 items</span>
+         </div>
+         <div class="card-body p-0">
+           <div id="unmatchedFoldersList"></div>
+         </div>
+       </div>
     </div>
   </div>
 
@@ -59,7 +81,7 @@
       <a href="/downloads/discover/upcoming" class="btn btn-sm btn-outline-secondary">View All</a>
     </div>
     <div class="card-body">
-      <div id="upcomingReleases">
+      <div id="upcomingReleasesMonitor">
         <div class="text-center py-4 text-muted">
           <span class="spinner-border spinner-border-sm me-2"></span>Loading upcoming releases...
         </div>
@@ -68,7 +90,7 @@
   </div>
 </div>
 
-{# Shared Modals Required for Manual Searches and Group Organizing #}
+{# Shared Modals #}
 {% include 'components/modals/_track_edit.html' ignore missing %}
 {% include 'components/modals/_organize_group.html' ignore missing %}
 {% include 'components/modals/_slskd_results.html' ignore missing %}
@@ -95,5 +117,6 @@
 </script>
 <link rel="stylesheet" href="{{ versioned_static('css/downloads.css') }}">
 <script src="{{ versioned_static('js/downloads.js') }}"></script>
+<script src="{{ versioned_static('js/monitor.js') }}"></script>
 <script src="{{ versioned_static('js/genre-utils.js') }}"></script>
 {% endblock %}
