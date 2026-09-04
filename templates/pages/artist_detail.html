@@ -12,7 +12,7 @@
     {% set in_library_count = items|selectattr('is_missing', 'equalto', False)|list|length %}
     {% set missing_count = items|selectattr('is_missing', 'equalto', True)|list|length %}
 
-    <div class="card mb-3 category-section shadow-sm" id="{{ cat_id }}-section">
+    <div class="card mb-3 category-section shadow-sm" id="{{ cat_id }}-section" data-category-key="{{ cat_id }}">
       <div class="card-header p-0" style="background-color: var(--tertiary-bg, #282828);">
         <div class="d-flex align-items-center justify-content-between p-3 text-white">
           <button class="btn btn-link text-start d-flex align-items-center gap-2 p-0 text-decoration-none text-white flex-grow-1 shadow-none"
@@ -63,7 +63,7 @@
             {% set release_id = album.get('release_id') or album.get('id') or '' %}
             {% set cover_url = album.get('cover_art_url') or ('/api/album/' ~ (artist_name|path_segment) ~ '/' ~ (album_title|path_segment) ~ '/art?s=100') %}
 
-            <div class="album-row mb-1 border-0 rounded p-2 d-flex align-items-center justify-content-between gap-2 {% if is_missing %}opacity-75 missing-album-item{% endif %}"
+            <div class="album-row mb-1 border-0 rounded p-2 d-flex align-items-center justify-content-between gap-2 {% if is_missing %}opacity-75 missing-album-item{% else %}library-album-item{% endif %}"
                  style="background-color: var(--secondary-bg, #1e1e1e); border: 1px solid var(--border-color);"
                  data-status="{{ 'missing' if is_missing else 'library' }}"
                  data-album="{{ album_title|e }}"
@@ -125,7 +125,7 @@
   {% endif %}
 {% endmacro %}
 
-<div class="container-fluid mt-3 artist-page">
+<div class="container-fluid mt-3 artist-page" id="artistMainPageContainer">
 
   <nav aria-label="breadcrumb">
     <ol class="breadcrumb mb-3">
@@ -304,12 +304,14 @@
         </button>
       </div>
 
-      {{ render_release_category('studio-albums', 'Studio Albums', 'bi-vinyl-fill', albums_by_category.album, artist_name) }}
-      {{ render_release_category('compilations', 'Compilations & Featured', 'bi-collection', albums_by_category.compilation, artist_name) }}
-      {{ render_release_category('live-albums', 'Live Albums', 'bi-broadcast', albums_by_category.live_album, artist_name) }}
-      {{ render_release_category('remix-albums', 'Remix Albums', 'bi-soundwave', albums_by_category.remix_album, artist_name) }}
-      {{ render_release_category('eps', 'EPs', 'bi-disc', albums_by_category.ep, artist_name) }}
-      {{ render_release_category('singles', 'Singles', 'bi-music-note-beamed', albums_by_category.single, artist_name) }}
+      <div id="artistDiscographyWrapper">
+        {{ render_release_category('studio-albums', 'Studio Albums', 'bi-vinyl-fill', albums_by_category.album, artist_name) }}
+        {{ render_release_category('compilations', 'Compilations & Featured', 'bi-collection', albums_by_category.compilation, artist_name) }}
+        {{ render_release_category('live-albums', 'Live Albums', 'bi-broadcast', albums_by_category.live_album, artist_name) }}
+        {{ render_release_category('remix-albums', 'Remix Albums', 'bi-soundwave', albums_by_category.remix_album, artist_name) }}
+        {{ render_release_category('eps', 'EPs', 'bi-disc', albums_by_category.ep, artist_name) }}
+        {{ render_release_category('singles', 'Singles', 'bi-music-note-beamed', albums_by_category.single, artist_name) }}
+      </div>
 
       <!-- Covers Section -->
       <div class="card mb-3 category-section shadow-sm" id="covers-section">
@@ -406,7 +408,7 @@
         <div class="card-body p-3">
           <h6 class="fw-bold mb-2"><i class="bi bi-globe me-2 text-success"></i>Country &amp; Band Members</h6>
           <div class="mb-3 d-flex align-items-center gap-2">
-            <span class="badge bg-info text-dark">{{ artist_country or 'Unknown Origin' }}</span>
+            <span class="badge bg-info text-dark" id="artistCountryBadgeDisplay">{{ artist_country or 'Unknown Origin' }}</span>
             <button class="btn btn-xs btn-outline-secondary py-0" onclick="editArtistCountry()"><i class="bi bi-pencil"></i> Edit</button>
             <button class="btn btn-xs btn-outline-primary py-0" onclick="fetchArtistCountry()" id="fetchArtistCountryBtn">
               <i class="bi bi-cloud-download"></i> Get from MusicBrainz
@@ -467,6 +469,16 @@
   </div>
 </div>
 
+<style>
+  /* Dynamic CSS Rules for Filtering Classes */
+  #artistMainPageContainer.filter-hide-missing .missing-album-item {
+    display: none !important;
+  }
+  #artistMainPageContainer.filter-hide-library .library-album-item {
+    display: none !important;
+  }
+</style>
+
 {# Modals Required for Actions #}
 {% include 'components/modals/_track_edit.html' ignore missing %}
 {% include 'components/modals/_organize_group.html' ignore missing %}
@@ -483,6 +495,7 @@
 </script>
 <script>
   const _pd = JSON.parse(document.getElementById('page-data').textContent);
+  window._pd = _pd;
   window.artistName = _pd.artistName;
 </script>
 
