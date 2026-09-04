@@ -22,10 +22,12 @@ import httpx
 # ---------------------------------------------------------------------------
 # Global Rate Limiting (Cross-Thread)
 # ---------------------------------------------------------------------------
-# Shared lock to force all external API calls into a strict single-file queue.
-_GLOBAL_API_LOCK = threading.Lock()
-_LAST_API_CALL_TIME = 0.0
-_MIN_DELAY_SECONDS = 1.05  # Ensures strictly < 1 req/sec for external APIs
+# Domain-specific locks to force external API calls into strict single-file 
+# queues. This prevents overlapping requests to strict APIs like MusicBrainz.
+_GLOBAL_LOCK = threading.Lock()
+_DOMAIN_LOCKS: dict[str, threading.Lock] = {}
+_DOMAIN_LAST_CALL: dict[str, float] = {}
+_MIN_DELAY_SECONDS = 1.05  # Ensures strictly < 1 req/sec per domain
 
 # ---------------------------------------------------------------------------
 # Connection-pool limits (shared session)
@@ -211,21 +213,29 @@ class _RetryTransport(httpx.BaseTransport):
             logger.debug(f"[HTTP-TRACE] [{thread_name}] Preparing request to {request.url}")
 
             if not is_internal:
-                global _LAST_API_CALL_TIME
-                logger.debug(f"[HTTP-TRACE] [{thread_name}] Waiting for rate-limit lock for {request.url}")
-                with _GLOBAL_API_LOCK:
-                    elapsed = time.monotonic() - _LAST_API_CALL_TIME
+                with _GLOBAL_LOCK:
+                    if host not in _DOMAIN_LOCKS:
+                        _DOMAIN_LOCKS[host] = threading.Lock()
+                        _DOMAIN_LAST_CALL[host] = 0.0
+                domain_lock = _DOMAIN_LOCKS[host]
+
+                logger.debug(f"[HTTP-TRACE] [{thread_name}] Waiting for rate-limit lock for {host}")
+                with domain_lock:
+                    elapsed = time.monotonic() - _DOMAIN_LAST_CALL[host]
                     if elapsed < _MIN_DELAY_SECONDS:
                         time.sleep(_MIN_DELAY_SECONDS - elapsed)
-                    _LAST_API_CALL_TIME = time.monotonic()
-                
-                logger.debug(f"[HTTP-TRACE] [{thread_name}] Lock released, starting network I/O to {request.url}")
-                try:
-                    response = self._transport.handle_request(request)
-                    logger.debug(f"[HTTP-TRACE] [{thread_name}] Network I/O complete for {request.url} ({response.status_code})")
-                except Exception as e:
-                    logger.error(f"[HTTP-TRACE] [{thread_name}] Network I/O FAILED for {request.url} - {repr(e)}")
-                    raise
+                    
+                    logger.debug(f"[HTTP-TRACE] [{thread_name}] Lock acquired, starting network I/O to {request.url}")
+                    try:
+                        # Holding the lock DURING the request prevents concurrent overlapping connections 
+                        # to the same host, which is the primary cause of MusicBrainz dropping connections.
+                        response = self._transport.handle_request(request)
+                        logger.debug(f"[HTTP-TRACE] [{thread_name}] Network I/O complete for {request.url} ({response.status_code})")
+                    except Exception as e:
+                        logger.error(f"[HTTP-TRACE] [{thread_name}] Network I/O FAILED for {request.url} - {repr(e)}")
+                        raise
+                    finally:
+                        _DOMAIN_LAST_CALL[host] = time.monotonic()
             else:
                 try:
                     response = self._transport.handle_request(request)
