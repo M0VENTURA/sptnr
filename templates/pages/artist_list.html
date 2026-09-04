@@ -6,42 +6,56 @@
 <style>
     /* Letter sections: keep jump targets clear of the fixed navbar */
     [id^="section-"] {
-        scroll-margin-top: 0.5rem;
+        scroll-margin-top: 1.5rem;
     }
 
-    /* Metro section headers stick to the top of main's scrollport (main
-       already starts below the fixed navbar — flex app shell). */
+    /* Metro section headers stick to the top of main's scrollport */
     .metro-section-header {
         position: sticky;
         top: 0;
         z-index: 10;
-        background: var(--secondary-bg, #1e1e1e);
+        background: var(--tertiary-bg, #282828);
+    }
+    
+    .artist-row-avatar {
+        width: 48px; 
+        height: 48px;
+        background: rgba(255, 255, 255, 0.05);
+        color: var(--text-secondary);
+        transition: color 0.2s ease, background 0.2s ease;
+    }
+    
+    .list-group-item:hover .artist-row-avatar {
+        background: rgba(29, 185, 84, 0.15);
+        color: var(--spotify-green);
+        border-color: rgba(29, 185, 84, 0.3) !important;
     }
 </style>
-<div class="container-fluid mt-3">
+
+<div class="container-fluid mt-4">
     {% if total_stats %}
-        <!-- Consolidated Total Library Items Card (includes artist count) -->
-        <div class="card mb-3 shadow-sm">
-            <div class="card-header bg-transparent py-2 px-3 fw-bold text-light extra-small d-flex align-items-center gap-2">
-                <i class="bi bi-collection-play-fill text-success"></i> Total Library Items
+        <!-- Unified Library Overview Stats Grid -->
+        <div class="card mb-4 shadow-sm" id="libraryStatsCard">
+            <div class="card-header bg-transparent py-2 d-flex justify-content-between align-items-center border-secondary">
+                <h6 class="mb-0 fw-bold"><i class="bi bi-collection-fill text-info me-2"></i> Library Overview</h6>
             </div>
-            <div class="card-body p-2">
-                <div class="row g-2 text-center">
-                    <div class="col-3 border-end border-secondary">
-                        <div class="fw-bold text-success fs-5">{{ total_artists or artists|length }}</div>
-                        <div class="extra-small text-muted text-uppercase">Artists</div>
+            <div class="card-body p-2 p-md-3">
+                <div class="row g-2 text-center rounded py-2 border border-secondary" style="background: var(--tertiary-bg, #282828);">
+                    <div class="col-6 col-md-3 border-md-end border-secondary pb-2 pb-md-0 mb-2 mb-md-0">
+                        <div class="extra-small text-muted text-uppercase fw-semibold mb-1">Artists</div>
+                        <div class="h4 fw-bold mb-0 text-success">{{ total_artists or artists|length }}</div>
                     </div>
-                    <div class="col-3 border-end border-secondary">
-                        <div class="fw-bold text-info fs-5">{{ total_stats.album_count or 0 }}</div>
-                        <div class="extra-small text-muted text-uppercase">Albums</div>
+                    <div class="col-6 col-md-3 border-md-end border-secondary pb-2 pb-md-0 mb-2 mb-md-0">
+                        <div class="extra-small text-muted text-uppercase fw-semibold mb-1">Albums</div>
+                        <div class="h4 fw-bold mb-0 text-info">{{ total_stats.album_count or 0 }}</div>
                     </div>
-                    <div class="col-3 border-end border-secondary">
-                        <div class="fw-bold text-light fs-5">{{ total_stats.track_count or 0 }}</div>
-                        <div class="extra-small text-muted text-uppercase">Tracks</div>
+                    <div class="col-6 col-md-3 border-md-end border-secondary">
+                        <div class="extra-small text-muted text-uppercase fw-semibold mb-1">Tracks</div>
+                        <div class="h4 fw-bold mb-0 text-light">{{ total_stats.track_count or 0 }}</div>
                     </div>
-                    <div class="col-3">
-                        <div class="fw-bold text-warning fs-5">{{ total_stats.five_star_count or 0 }}</div>
-                        <div class="extra-small text-muted text-uppercase">5★ Songs</div>
+                    <div class="col-6 col-md-3">
+                        <div class="extra-small text-muted text-uppercase fw-semibold mb-1">5★ Songs</div>
+                        <div class="h4 fw-bold mb-0 text-warning">{{ total_stats.five_star_count or 0 }}</div>
                     </div>
                 </div>
             </div>
@@ -49,15 +63,16 @@
     {% endif %}
 
     {% if artists|length == 0 %}
-        <div class="alert alert-secondary">
-            <i class="bi bi-info-circle"></i> No artists found. Run a scan to populate the database.
+        <div class="alert alert-secondary shadow-sm">
+            <i class="bi bi-info-circle me-1"></i> No artists found. Run a scan to populate the database.
         </div>
     {% else %}
-        <!-- Letter-grouped artist sections with Metro jump trigger tiles -->
+        <!-- Letter-grouped artist sections -->
         {% for group in artist_groups %}
-        <div id="section-{{ 'num' if group.letter == '#' else group.letter }}" class="artist-letter-section">
-            <!-- Sticky section header: Metro jump tile + Scan Group -->
-            <div class="metro-section-header d-flex align-items-center justify-content-between py-2 px-1 border-bottom border-secondary mb-2">
+        <div id="section-{{ 'num' if group.letter == '#' else group.letter }}" class="artist-letter-section mb-4">
+            
+            <!-- Sticky Section Header -->
+            <div class="metro-section-header d-flex align-items-center justify-content-between py-2 px-3 border border-secondary rounded shadow-sm mb-2">
                 <button type="button"
                         class="btn btn-success fw-bold metro-jump-trigger d-flex align-items-center justify-content-center shadow-sm"
                         onclick="openJumpPicker()"
@@ -65,47 +80,55 @@
                     {{ group.letter }}
                 </button>
                 <div class="dropdown">
-                    <button class="btn btn-sm btn-outline-success dropdown-toggle d-flex align-items-center gap-1" data-bs-toggle="dropdown" aria-expanded="false" title="Scan options for letter {{ group.letter }}">
-                        <i class="bi bi-lightning-charge-fill"></i> Scan Group
+                    <button class="btn btn-sm btn-outline-success dropdown-toggle d-flex align-items-center gap-1 fw-bold" data-bs-toggle="dropdown" aria-expanded="false" title="Scan options for letter {{ group.letter }}">
+                        <i class="bi bi-lightning-charge-fill"></i> <span class="d-none d-sm-inline">Scan Group</span>
                     </button>
                     <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end shadow">
                         <li>
                             <button class="dropdown-item" type="button" onclick="scanLetterArtists('{{ group.letter }}', 'changes')">
-                                <i class="bi bi-arrow-repeat me-1"></i> Scan (Changes Only)
+                                <i class="bi bi-arrow-repeat me-2 text-info"></i> Scan (Changes Only)
                             </button>
                         </li>
                         <li>
                             <button class="dropdown-item" type="button" onclick="scanLetterArtists('{{ group.letter }}', 'forced')">
-                                <i class="bi bi-lightning-charge-fill me-1"></i> Force Re-scan
+                                <i class="bi bi-lightning-charge-fill me-2 text-warning"></i> Force Re-scan
                             </button>
                         </li>
                     </ul>
                 </div>
             </div>
 
-            <div class="list-group list-group-flush mb-4">
+            <!-- Artist List -->
+            <div class="list-group list-group-flush border border-secondary rounded shadow-sm">
                 {% for artist in group.artists %}
-                <div class="list-group-item bg-transparent border-secondary p-2 d-flex align-items-center justify-content-between gap-2 hover-bg-dark rounded">
-                    <div class="overflow-hidden min-w-0">
-                        <a href="{{ url_for('ui.artist_detail', name=artist.link_artist) }}" class="fw-bold text-success text-decoration-none fs-6 d-block text-truncate">
-                            {{ artist.display_name }}
-                        </a>
-                        <div class="extra-small text-muted d-flex align-items-center gap-2 mt-1 flex-wrap">
-                            <span>{{ artist.album_count or 0 }} albums</span>
-                            <span>•</span>
-                            <span>{{ artist.track_count or 0 }} tracks</span>
-                            {% if artist.five_star_count and artist.five_star_count > 0 %}
-                            <span>•</span>
-                            <span class="badge bg-warning-subtle text-warning border border-warning-subtle extra-small">★ {{ artist.five_star_count }}</span>
-                            {% endif %}
+                <div class="list-group-item bg-transparent border-secondary p-3 d-flex align-items-center justify-content-between gap-3 hover-bg-dark">
+                    
+                    <div class="d-flex align-items-center gap-3 min-w-0">
+                        <!-- New Avatar Placeholder -->
+                        <div class="artist-row-avatar rounded-circle border border-secondary d-flex align-items-center justify-content-center flex-shrink-0">
+                            <i class="bi bi-person-fill fs-4"></i>
+                        </div>
+                        
+                        <div class="overflow-hidden min-w-0">
+                            <a href="{{ url_for('ui.artist_detail', name=artist.link_artist) }}" class="fw-bold text-light text-decoration-none fs-6 d-block text-truncate mb-1">
+                                {{ artist.display_name }}
+                            </a>
+                            <div class="extra-small text-muted d-flex align-items-center gap-2 flex-wrap">
+                                <span class="badge bg-dark border border-secondary fw-normal">{{ artist.album_count or 0 }} album{{ 's' if artist.album_count != 1 else '' }}</span>
+                                <span class="badge bg-dark border border-secondary fw-normal">{{ artist.track_count or 0 }} track{{ 's' if artist.track_count != 1 else '' }}</span>
+                                {% if artist.five_star_count and artist.five_star_count > 0 %}
+                                <span class="badge bg-warning-subtle text-warning border border-warning-subtle fw-bold">★ {{ artist.five_star_count }}</span>
+                                {% endif %}
+                            </div>
                         </div>
                     </div>
-                    <div class="d-flex align-items-center gap-2 flex-shrink-0">
-                        <a href="{{ url_for('ui.artist_corrections', name=artist.link_artist) }}" class="btn btn-sm btn-link text-muted p-1" title="Corrections &amp; Edit IDs">
+                    
+                    <div class="d-flex align-items-center gap-1 flex-shrink-0">
+                        <a href="{{ url_for('ui.artist_corrections', name=artist.link_artist) }}" class="btn btn-sm btn-outline-secondary py-1 px-2 border-0" title="Corrections &amp; Edit IDs">
                             <i class="bi bi-tools"></i>
                         </a>
-                        <a href="{{ url_for('ui.artist_detail', name=artist.link_artist) }}" class="btn btn-sm btn-link text-muted p-1" title="View Artist">
-                            <i class="bi bi-archive"></i>
+                        <a href="{{ url_for('ui.artist_detail', name=artist.link_artist) }}" class="btn btn-sm btn-outline-success py-1 px-2 fw-bold" title="View Artist">
+                            View <i class="bi bi-arrow-right ms-1"></i>
                         </a>
                     </div>
                 </div>
