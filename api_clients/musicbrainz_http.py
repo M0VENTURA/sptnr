@@ -44,6 +44,10 @@ MUSICBRAINZ_UUID_RE = re.compile(
     re.IGNORECASE,
 )
 
+def _is_valid_mbid(mbid: str) -> bool:
+    """Return True when *mbid* is a well-formed MusicBrainz UUID."""
+    return bool(mbid) and bool(MUSICBRAINZ_UUID_RE.match(str(mbid).strip()))
+
 try:
     _rate_limiter = get_rate_limiter()
 except Exception:
