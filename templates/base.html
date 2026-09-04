@@ -15,13 +15,26 @@
   {% endif %}
   
   <link rel="stylesheet" href="{{ versioned_static('css/popularr.css') }}">
+  
+  <style>
+    /* Bulletproof Responsive Navbar Layout */
+    .nav-brand-row { flex: 1 1 100%; order: 1; }
+    .nav-search-wrapper { flex: 1 1 100%; order: 3; margin-top: 0.5rem; }
+    .nav-links-wrapper { order: 4; width: 100%; }
+    
+    @media (min-width: 992px) {
+      .nav-brand-row { flex: 0 0 auto !important; width: auto; }
+      .nav-search-wrapper { flex: 1 1 auto; max-width: 600px; margin-top: 0; margin-left: 1.5rem; margin-right: 1.5rem; order: 2; }
+      .nav-links-wrapper { flex: 0 0 auto; width: auto; order: 3; }
+    }
+  </style>
 </head>
 <body>
   <nav class="navbar navbar-expand-lg navbar-dark fixed-top shadow-sm" style="background-color: var(--primary-bg);">
-    <div class="container-fluid flex-wrap flex-lg-nowrap gap-2 gap-lg-4">
+    <div class="container-fluid flex-wrap flex-lg-nowrap align-items-center">
       
       <!-- Brand & Mobile Toggles (Top Row on Mobile, Left on Desktop) -->
-      <div class="d-flex align-items-center justify-content-between w-100 w-lg-auto flex-shrink-0">
+      <div class="nav-brand-row d-flex align-items-center justify-content-between">
         <a class="navbar-brand fw-bold d-flex align-items-center gap-2" href="{{ url_for('ui.dashboard') }}">
           <i class="bi bi-music-note-beamed text-success"></i> Popularr
         </a>
@@ -36,7 +49,7 @@
       </div>
 
       <!-- Persistent Global Search Bar (2nd Row on Mobile, Center on Desktop) -->
-      <div class="order-3 order-lg-2 flex-grow-1 w-100" id="navSearchForm" title="Search library or MusicBrainz" style="max-width: 600px;">
+      <div class="nav-search-wrapper" id="navSearchForm" title="Search library or MusicBrainz">
         <div class="input-group input-group-sm">
           <span class="input-group-text bg-dark border-secondary text-muted"><i class="bi bi-search"></i></span>
           <input type="text" id="navSearchInput" class="form-control bg-dark text-light border-secondary shadow-none" 
@@ -51,7 +64,7 @@
       </div>
 
       <!-- Navigation Links (Collapsible, Right on Desktop) -->
-      <div class="collapse navbar-collapse order-4 order-lg-3 flex-shrink-0" id="navbarNav">
+      <div class="collapse navbar-collapse nav-links-wrapper" id="navbarNav">
         <ul class="navbar-nav ms-auto mb-2 mb-lg-0 gap-lg-2">
           <li class="nav-item">
             <a class="nav-link" href="{{ url_for('ui.dashboard') }}">
@@ -231,7 +244,6 @@
           </div>
         </div>
         
-        <!-- Modified body: Allows <pre> to flex full height -->
         <div class="modal-body p-0 d-flex flex-column" style="background: #111;">
           <div class="d-flex align-items-center justify-content-between p-2" style="background: #1a1a1a; border-bottom: 1px solid #333;">
             <small class="text-muted fw-bold text-uppercase"><i class="bi bi-broadcast me-1"></i>Live stream</small>
