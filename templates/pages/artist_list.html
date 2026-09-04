@@ -30,6 +30,60 @@
         color: var(--spotify-green);
         border-color: rgba(29, 185, 84, 0.3) !important;
     }
+
+    /* Windows Phone style Metro jump grid overlay styling */
+    .metro-jump-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        background: rgba(0, 0, 0, 0.8);
+        z-index: 2000;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 1rem;
+    }
+    .metro-jump-overlay.d-none {
+        display: none !important;
+    }
+    .metro-jump-content {
+        background: var(--secondary-bg, #1e1e1e);
+        border: 1px solid var(--border-color, #333);
+        border-radius: 0.5rem;
+        width: 100%;
+        max-width: 400px;
+        padding: 1.25rem;
+    }
+    .metro-grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 0.5rem;
+    }
+    .metro-tile {
+        background: var(--tertiary-bg, #282828);
+        color: var(--text-primary, #fff);
+        border: 1px solid var(--border-color, #444);
+        border-radius: 0.25rem;
+        font-weight: bold;
+        font-size: 1.15rem;
+        aspect-ratio: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-transform: uppercase;
+        transition: background 0.2s, border-color 0.2s;
+    }
+    .metro-tile:hover:not(.disabled) {
+        background: var(--spotify-green, #1db954);
+        color: #fff;
+        border-color: var(--spotify-green, #1db954);
+    }
+    .metro-tile.disabled {
+        opacity: 0.35;
+        cursor: not-allowed;
+    }
 </style>
 
 <div class="container-fluid mt-4">
@@ -104,7 +158,7 @@
                 <div class="list-group-item bg-transparent border-secondary p-3 d-flex align-items-center justify-content-between gap-3 hover-bg-dark">
                     
                     <div class="d-flex align-items-center gap-3 min-w-0">
-                        <!-- New Avatar Placeholder -->
+                        <!-- Avatar Placeholder -->
                         <div class="artist-row-avatar rounded-circle border border-secondary overflow-hidden d-flex align-items-center justify-content-center flex-shrink-0" style="width: 48px; height: 48px;">
                             <img src="{{ url_for('artist.api_artist_image', name=artist.display_name) }}"
                                  alt="{{ artist.display_name }}"
@@ -169,7 +223,4 @@
 </div>
 
 <script src="{{ versioned_static('js/artist_list.js') }}"></script>
-
-{# The shared MusicBrainz search modal is included globally by base.html — do not include it again here. #}
-
 {% endblock %}
