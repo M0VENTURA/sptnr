@@ -323,14 +323,24 @@ def _assign_stars(
         track["_force_floor"] = _force_stars
         return _force_stars
 
-    # Bypass the restrictive Album Z-Curve and Top-N Slot Caps for Compilation Albums
+# Bypass the restrictive Album Z-Curve and Top-N Slot Caps for Compilation Albums
     if is_compilation:
-        comp_stars = calculate_artist_percentile_star_rating(score, artist_scores)
+        if artist_z >= th["star5_artist_z"] - _star_epsilon_z(artist_spread, th["epsilon"]):
+            comp_stars = 5
+        elif artist_z >= th["star4_artist_z"] - _star_epsilon_z(artist_spread, th["epsilon"]):
+            comp_stars = 4
+        elif artist_z >= (th["star4_artist_z"] + th["star3_album_z"]) / 2: # Midpoint fallback for 3 stars
+            comp_stars = 3
+        elif artist_z >= th["star2_album_z"]: 
+            comp_stars = 2
+        else:
+            comp_stars = 1
+
         if is_live:
             comp_stars = max(1, comp_stars - 1)  # Apply a minor penalty to live tracks on compilations
         if comp_stars == 5:
             track["_era_5star"] = True
-        return comp_stars
+        return max(comp_stars, 2) if organic else comp_stars # Give an organic floor for compilation hits
 
     if not is_live and (
         popularity_marked
