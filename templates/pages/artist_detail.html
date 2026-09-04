@@ -218,12 +218,12 @@
         </div>
       </div>
 
-      <!-- Streamlined Admin Controls Row (Cleanly Grouped & Wrapped) -->
-      <form id="artistScanForm" action="{{ url_for('scans.scan_artist_custom') }}" method="post" class="d-flex align-items-center justify-content-between gap-2 mb-3 flex-wrap scan-toolbar">
+      <!-- Streamlined Admin Controls Row -->
+      <form id="artistScanForm" action="{{ url_for('scans.scan_artist_custom') }}" method="post" class="d-flex align-items-center gap-2 mb-3 flex-wrap scan-toolbar">
         <input type="hidden" name="artist" value="{{ artist_name }}">
 
         <div class="d-flex align-items-center gap-2 flex-wrap">
-          <div style="width: 140px;">
+          <div style="min-width: 130px;">
             {% include 'components/_scan_selector.html' ignore missing %}
           </div>
           <button type="submit" class="btn btn-warning fw-bold px-3 py-1 text-nowrap" title="Run Scan">
@@ -235,7 +235,7 @@
           </div>
         </div>
 
-        <div>
+        <div class="ms-auto">
           <div class="dropdown">
             <button class="btn btn-outline-secondary btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" title="More actions">
               <i class="bi bi-three-dots-vertical"></i> Actions
