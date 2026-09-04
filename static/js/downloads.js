@@ -1222,7 +1222,6 @@ async function pollSlskdSearchResults() {
     }
     _slskdCompleteGraceCount = 0;
 
-    // Filter out results with 0 free upload slots
     const validResults = results.filter(r => {
       const slots = r.freeUploadSlots !== undefined ? r.freeUploadSlots : 1;
       return slots > 0;
@@ -1538,7 +1537,6 @@ function renderSoulseekManualSearchResults(results) {
   const container = document.getElementById('soulseekManualResults');
   if (!container) return;
 
-  // Filter out zero-slot users
   const validResults = (results || []).filter(row => {
     const slots = row.freeUploadSlots !== undefined ? row.freeUploadSlots : 1;
     return slots > 0;
@@ -2070,11 +2068,11 @@ function renderQueueList(kind, items) {
   attachQueueGroupToggles(listEl);
   restoreQueueGroupExpansion(listEl);
 }
+
 function buildQueueGroups(items) {
   var groups = [];
   var map = {};
-  items.forEach(function(item) {
-    // Correctly group by the actual folder path or fallback metadata
+  (items || []).forEach(function(item) {
     var album = (item.album || item.queue_folder || '').trim();
     var artist = (item.album_artist || item.artist || '').trim();
     var title = (item.title || '').trim();
@@ -2229,6 +2227,10 @@ function renderQueueGroupRow(group, kind, index) {
   if (kind === 'failed') {
     actions += '<button class="row-icon-btn text-warning" title="Retry all failed tracks" onclick="retryGroup(' + index + ')"><i class="bi bi-arrow-clockwise"></i></button>';
   }
+  // Add Organize Album action button for completed/active album groups
+  if (group.key.startsWith('alb_') || group.key.startsWith('grp_')) {
+      actions += '<button class="row-icon-btn text-success" title="Organize and move album group" onclick="openOrganizeGroupModal(\'' + escapeHtml(group.key) + '\', \'' + escapeHtml(group.label) + '\', ' + total + ')"><i class="bi bi-folder-check"></i></button>';
+  }
   actions += '<button class="row-icon-btn text-danger" title="Remove all tracks in this album" onclick="deleteGroup(' + index + ')"><i class="bi bi-trash"></i></button>';
 
   const children = items.map(function(item) {
@@ -2368,3 +2370,282 @@ async function deleteGroup(index) {
     await loadQueueStatus();
   } catch (e) { alert('❌ Network error: ' + e.message); }
 }
+
+// ============================================================================
+// ORGANIZE GROUP MODAL CONTROLLERS
+// ============================================================================
+let currentOrganizeGroupKey = null;
+
+function openOrganizeGroupModal(groupKey, label, count) {
+    currentOrganizeGroupKey = groupKey;
+    
+    const infoText = document.getElementById('groupInfoText');
+    const itemCount = document.getElementById('groupItemCount');
+    if (infoText) infoText.textContent = label || 'Album Group';
+    if (itemCount) itemCount.textContent = count || '0';
+
+    const orgAlbum = document.getElementById('orgAlbum');
+    if (orgAlbum && label) orgAlbum.value = label;
+
+    updateFolderPreview();
+
+    const modalEl = document.getElementById('organizeGroupModal');
+    if (modalEl && window.bootstrap) {
+        const modal = new bootstrap.Modal(modalEl);
+        modal.show();
+    }
+}
+
+function updateFolderPreview() {
+    const artist = document.getElementById('orgArtist')?.value.trim() || 'Artist Name';
+    const albumArtist = document.getElementById('orgAlbumArtist')?.value.trim() || artist;
+    const album = document.getElementById('orgAlbum')?.value.trim() || 'Album Name';
+    const year = document.getElementById('orgYear')?.value.trim() || '2026';
+    
+    let format = document.getElementById('orgFolderFormat')?.value || '{album_artist}/{year} - {album}';
+    if (format === 'custom') {
+        format = document.getElementById('orgCustomFormat')?.value.trim() || '{album_artist}/{year} - {album}';
+    }
+
+    const previewPath = format
+        .replace(/{album_artist}/g, albumArtist)
+        .replace(/{artist}/g, artist)
+        .replace(/{album}/g, album)
+        .replace(/{year}/g, year);
+
+    const previewEl = document.getElementById('folderPreview');
+    if (previewEl) {
+        previewEl.textContent = `Music / ${previewPath} / 01. Track Title.mp3`;
+    }
+}
+
+document.addEventListener('input', function(e) {
+    if (['orgArtist', 'orgAlbumArtist', 'orgAlbum', 'orgYear', 'orgCustomFormat', 'orgFolderFormat'].includes(e.target.id)) {
+        if (e.target.id === 'orgFolderFormat') {
+            const customDiv = document.getElementById('customFormatDiv');
+            if (customDiv) {
+                customDiv.style.display = e.target.value === 'custom' ? 'block' : 'none';
+            }
+        }
+        updateFolderPreview();
+    }
+});
+
+async function searchMBForOrganize() {
+    const artist = document.getElementById('orgArtist')?.value.trim() || '';
+    const album = document.getElementById('orgAlbum')?.value.trim() || '';
+    const resultsDiv = document.getElementById('mbSearchResults');
+    const loadingDiv = document.getElementById('mbSearchLoading');
+
+    if (!artist && !album) {
+        alert('Please enter at least an artist or album name.');
+        return;
+    }
+
+    if (resultsDiv) resultsDiv.innerHTML = '';
+    if (loadingDiv) loadingDiv.style.display = 'flex';
+
+    try {
+        const data = await fetchJsonOrThrow('/api/musicbrainz/search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ artist, album })
+        });
+
+        if (loadingDiv) loadingDiv.style.display = 'none';
+        const releases = data.releases || [];
+
+        if (releases.length === 0) {
+            if (resultsDiv) resultsDiv.innerHTML = '<div class="alert alert-warning py-1 extra-small">No matches found on MusicBrainz.</div>';
+            return;
+        }
+
+        let html = '<div class="list-group list-group-flush" style="max-height: 200px; overflow-y: auto;">';
+        releases.slice(0, 10).forEach(r => {
+            const safeTitle = escapeHtml(r.title);
+            const safeArtist = escapeHtml(r.artist || artist);
+            const safeYear = escapeHtml((r.first_release_date || '').substring(0, 4));
+            
+            html += `
+                <button type="button" class="list-group-item list-group-item-action bg-dark text-light border-secondary py-1 px-2 extra-small"
+                    onclick="applyMBMatchForOrganize('${escapeJsString(r.artist || artist)}', '${escapeJsString(r.title)}', '${safeYear}')">
+                    <strong>${safeTitle}</strong> — <span class="text-muted">${safeArtist} (${safeYear || 'TBA'})</span>
+                </button>`;
+        });
+        html += '</div>';
+        if (resultsDiv) resultsDiv.innerHTML = html;
+    } catch (err) {
+        if (loadingDiv) loadingDiv.style.display = 'none';
+        if (resultsDiv) resultsDiv.innerHTML = `<div class="alert alert-danger py-1 extra-small">Error: ${escapeHtml(err.message)}</div>`;
+    }
+}
+
+async function searchDiscogsForOrganize() {
+    const artist = document.getElementById('orgArtist')?.value.trim() || '';
+    const album = document.getElementById('orgAlbum')?.value.trim() || '';
+    const resultsDiv = document.getElementById('mbSearchResults');
+    const loadingDiv = document.getElementById('mbSearchLoading');
+
+    if (!artist && !album) {
+        alert('Please enter at least an artist or album name.');
+        return;
+    }
+
+    if (resultsDiv) resultsDiv.innerHTML = '';
+    if (loadingDiv) loadingDiv.style.display = 'flex';
+
+    try {
+        const data = await fetchJsonOrThrow('/api/album/discogs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ artist, album })
+        });
+
+        if (loadingDiv) loadingDiv.style.display = 'none';
+        const results = data.results || [];
+
+        if (results.length === 0) {
+            if (resultsDiv) resultsDiv.innerHTML = '<div class="alert alert-warning py-1 extra-small">No matches found on Discogs.</div>';
+            return;
+        }
+
+        let html = '<div class="list-group list-group-flush" style="max-height: 200px; overflow-y: auto;">';
+        results.slice(0, 10).forEach(r => {
+            const safeTitle = escapeHtml(r.title);
+            const safeYear = escapeHtml(r.year || '');
+            
+            html += `
+                <button type="button" class="list-group-item list-group-item-action bg-dark text-light border-secondary py-1 px-2 extra-small"
+                    onclick="applyMBMatchForOrganize('${escapeJsString(artist)}', '${escapeJsString(r.title)}', '${safeYear}')">
+                    <strong>${safeTitle}</strong> — <span class="text-muted">${safeYear || 'TBA'}</span>
+                </button>`;
+        });
+        html += '</div>';
+        if (resultsDiv) resultsDiv.innerHTML = html;
+    } catch (err) {
+        if (loadingDiv) loadingDiv.style.display = 'none';
+        if (resultsDiv) resultsDiv.innerHTML = `<div class="alert alert-danger py-1 extra-small">Error: ${escapeHtml(err.message)}</div>`;
+    }
+}
+
+function applyMBMatchForOrganize(artist, album, year) {
+    const orgArtist = document.getElementById('orgArtist');
+    const orgAlbum = document.getElementById('orgAlbum');
+    const orgYear = document.getElementById('orgYear');
+
+    if (orgArtist) orgArtist.value = artist;
+    if (orgAlbum) orgAlbum.value = album;
+    if (orgYear && year && year !== 'TBA') orgYear.value = year;
+
+    updateFolderPreview();
+
+    const matchInfo = document.getElementById('mbSelectedInfo');
+    const matchAlert = document.getElementById('mbSelectedMatch');
+    if (matchInfo) matchInfo.textContent = `${artist} - ${album} (${year || 'N/A'})`;
+    if (matchAlert) matchAlert.classList.remove('d-none');
+
+    const metadataTabBtn = document.getElementById('metadataTab');
+    if (metadataTabBtn && window.bootstrap) {
+        const tab = new bootstrap.Tab(metadataTabBtn);
+        tab.show();
+    }
+}
+
+function clearMBSelection() {
+    const matchAlert = document.getElementById('mbSelectedMatch');
+    if (matchAlert) matchAlert.classList.add('d-none');
+}
+
+async function confirmOrganizeGroup() {
+    if (!currentOrganizeGroupKey) {
+        alert('No active album group selected.');
+        return;
+    }
+
+    const artist = document.getElementById('orgArtist')?.value.trim();
+    const album = document.getElementById('orgAlbum')?.value.trim();
+    
+    if (!artist || !album) {
+        alert('Artist and Album fields are required.');
+        return;
+    }
+
+    const payload = {
+        group_id: currentOrganizeGroupKey,
+        artist: artist,
+        album_artist: document.getElementById('orgAlbumArtist')?.value.trim() || null,
+        album: album,
+        year: document.getElementById('orgYear')?.value.trim() || null,
+        directory_format: document.getElementById('orgFolderFormat')?.value || null,
+        custom_format: document.getElementById('orgCustomFormat')?.value.trim() || null
+    };
+
+    try {
+        const modalEl = document.getElementById('organizeGroupModal');
+        const modal = modalEl && window.bootstrap ? bootstrap.Modal.getInstance(modalEl) : null;
+        if (modal) modal.hide();
+
+        const data = await fetchJsonOrThrow('/api/queue/organize-group', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        }, 120000);
+
+        if (data.success) {
+            showToastMsg(`Successfully organized and moved ${data.moved_count || 'album'} tracks into library.`, false);
+            if (typeof window.loadFolderGroups === 'function') {
+                window.loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true });
+            }
+            if (typeof window.loadQueueStatus === 'function') {
+                window.loadQueueStatus();
+            }
+        } else {
+            showToastMsg(data.error || 'Failed to organize group.', true);
+        }
+    } catch (err) {
+        showToastMsg('Network error during organization: ' + err.message, true);
+    }
+}
+
+// ============================================================================
+// INITIALIZATION
+// ============================================================================
+document.addEventListener('DOMContentLoaded', function() {
+  if (document.getElementById('upcomingReleases')) {
+    refreshUpcomingReleases();
+  }
+
+  if (document.getElementById('mbSearchInput')) {
+    document.getElementById('mbSearchInput').addEventListener('keypress', function(e) {
+      if (e.key === 'Enter') {
+          if (typeof performMbSearch === 'function') performMbSearch();
+      }
+    });
+    loadMbSessionSelector();
+    refreshMbDownloads();
+  }
+
+  var mbTabEl = document.getElementById('mbTab');
+  if (mbTabEl) {
+    mbTabEl.addEventListener('click', function () {
+      setTimeout(loadMbSessionSelector, 200);
+    });
+  }
+
+  if (document.getElementById('folderGroupsSection') || document.getElementById('statQueuedNum')) {
+    loadQueueStatus();
+    let _queuePollInFlight = false;
+    setInterval(async () => {
+      if (_queuePollInFlight) return;
+      _queuePollInFlight = true;
+      try { await loadQueueStatus(); } finally { _queuePollInFlight = false; }
+    }, 10000);
+  }
+  
+  if (document.getElementById('upcomingReleases')) {
+    refreshUpcomingReleases();
+  }
+  if (document.getElementById('queueEventsBody')) {
+    loadQueueEvents();
+  }
+});
