@@ -5,6 +5,7 @@
 {% block content %}
 {# ========================================================================= #}
 {# REUSABLE RELEASE CATEGORY ACCORDION MACRO                                 #}
+{# Adds a clean toggle to hide/show missing releases per category            #}
 {# ========================================================================= #}
 {% macro render_release_category(cat_id, cat_title, cat_icon, items, artist_name) %}
   {% set total_catalogue = items|length %}
@@ -14,13 +15,14 @@
 
     <div class="card mb-3 category-section shadow-sm" id="{{ cat_id }}-section">
       <div class="card-header p-0" style="background-color: var(--tertiary-bg, #282828);">
-        <button class="btn btn-link w-100 text-start d-flex align-items-center justify-content-between p-3 text-decoration-none text-white accordion-header-btn"
-                type="button"
-                data-bs-toggle="collapse"
-                data-bs-target="#collapse-{{ cat_id }}"
-                aria-expanded="true"
-                aria-controls="collapse-{{ cat_id }}">
-          <div class="d-flex align-items-center gap-2 flex-wrap">
+        <div class="d-flex align-items-center justify-content-between p-3 text-white">
+          <!-- Accordion Toggle Button (Left side) -->
+          <button class="btn btn-link text-start d-flex align-items-center gap-2 p-0 text-decoration-none text-white flex-grow-1 shadow-none"
+                  type="button"
+                  data-bs-toggle="collapse"
+                  data-bs-target="#collapse-{{ cat_id }}"
+                  aria-expanded="true"
+                  aria-controls="collapse-{{ cat_id }}">
             <i class="bi {{ cat_icon }} text-success fs-5"></i>
             <h5 class="h6 fw-bold mb-0 me-2">{{ cat_title }}</h5>
 
@@ -33,11 +35,28 @@
                 🟡 {{ missing_count }} Missing
               </span>
             {% endif %}
+          </button>
+
+          <!-- Section Action Controls (Right side: Hide Missing Toggle + Chevron) -->
+          <div class="d-flex align-items-center gap-3 flex-shrink-0">
+            {% if missing_count > 0 %}
+              <button type="button" 
+                      class="btn btn-xs btn-outline-secondary py-0 px-2 toggle-missing-btn extra-small" 
+                      data-target-category="{{ cat_id }}" 
+                      onclick="toggleMissingReleasesForCategory(this, '{{ cat_id }}')" 
+                      title="Toggle visibility of missing items in this section">
+                <i class="bi bi-eye-slash me-1"></i><span>Hide Missing</span>
+              </button>
+            {% endif %}
+            <i class="bi bi-chevron-down text-muted accordion-chevron cursor-pointer"
+               data-bs-toggle="collapse"
+               data-bs-target="#collapse-{{ cat_id }}"
+               aria-expanded="true"></i>
           </div>
-          <i class="bi bi-chevron-down text-muted accordion-chevron"></i>
-        </button>
+        </div>
       </div>
 
+      <!-- Collapsible Container -->
       <div id="collapse-{{ cat_id }}" class="collapse show card-body p-2">
         <div class="accordion accordion-flush" id="accordion-{{ cat_id }}">
           {% for album in items %}
@@ -47,7 +66,7 @@
             {% set release_id = album.get('release_id') or album.get('id') or '' %}
             {% set cover_url = album.get('cover_art_url') or ('/api/album/' ~ (artist_name|path_segment) ~ '/' ~ (album_title|path_segment) ~ '/art?s=100') %}
 
-            <div class="album-row mb-1 border-0 rounded p-2 d-flex align-items-center justify-content-between gap-2 {% if is_missing %}opacity-75{% endif %}"
+            <div class="album-row mb-1 border-0 rounded p-2 d-flex align-items-center justify-content-between gap-2 {% if is_missing %}opacity-75 missing-album-item{% endif %}"
                  style="background-color: var(--secondary-bg, #1e1e1e); border: 1px solid var(--border-color);"
                  data-status="{{ 'missing' if is_missing else 'library' }}"
                  data-album="{{ album_title|e }}"
@@ -476,6 +495,26 @@
 <script>
   const _pd = JSON.parse(document.getElementById('page-data').textContent);
   window.artistName = _pd.artistName;
+
+  // Toggle hiding/showing missing releases for an individual category section
+  function toggleMissingReleasesForCategory(btn, catId) {
+    const section = document.getElementById(catId + '-section');
+    if (!section) return;
+    const missingRows = section.querySelectorAll('.missing-album-item');
+    const isHidden = btn.getAttribute('data-hidden') === 'true';
+
+    missingRows.forEach(row => {
+      row.style.display = isHidden ? '' : 'none';
+    });
+
+    if (isHidden) {
+      btn.setAttribute('data-hidden', 'false');
+      btn.innerHTML = '<i class="bi bi-eye-slash me-1"></i><span>Hide Missing</span>';
+    } else {
+      btn.setAttribute('data-hidden', 'true');
+      btn.innerHTML = '<i class="bi bi-eye me-1"></i><span>Show Missing</span>';
+    }
+  }
 </script>
 
 <script src="{{ versioned_static('js/genre-utils.js') }}"></script>
