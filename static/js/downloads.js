@@ -4,7 +4,6 @@
 // ============================================================================
 // UTILITY FUNCTIONS
 // ============================================================================
-// Ensure doLookup exists globally immediately to prevent ReferenceErrors
 window.doLookup = window.doLookup || function(artist, album, track, year, callback) {
     if (typeof window.openGlobalMbSearch === 'function') {
         window.openGlobalMbSearch(artist, album, callback || function(selected) {
@@ -22,10 +21,6 @@ async function fetchJsonOrThrow(url, options = {}, timeoutMs = 30000) {
   const externalSignal = options?.signal || null;
   const mergedOptions = { ...options };
 
-  // The internal controller enforces the timeout. A caller-supplied signal
-  // (e.g. a page-level AbortController) is forwarded onto it so the timeout
-  // still applies when one is passed — previously it silently disabled
-  // itself, leaving callers stuck on a spinner forever for a hung request.
   const onExternalAbort = () => controller.abort();
   if (externalSignal && typeof AbortSignal.any === 'function') {
     mergedOptions.signal = AbortSignal.any([controller.signal, externalSignal]);
@@ -84,20 +79,12 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
-// Derives the display category for a MusicBrainz release-group the same way
-// the backend does (secondary types take precedence over primary), so the
-// type dropdown filters correctly even when the server-side category is
-// missing or stale. Defined here as well as in the shared modal component —
-// the last-loaded copy wins and both are identical.
 window.mbDerivedCategory = function(release) {
   const secondary = (release.secondary_types || []).map(s => String(s).toLowerCase());
   const secondaryFirst = ['compilation', 'live', 'remix', 'soundtrack', 'dj-mix', 'mixtape', 'demo', 'spokenword', 'interview', 'audiobook'];
   for (let i = 0; i < secondaryFirst.length; i++) {
     if (secondary.indexOf(secondaryFirst[i]) !== -1) return secondaryFirst[i];
   }
-  // Prefer the server-derived category — primary_type is often stale (e.g.
-  // remixes persisted with a default "Album"), and category already encodes
-  // primary + secondary types.
   const pt = String(release.category || release.primary_type || '').toLowerCase();
   return pt || 'other';
 };
@@ -155,8 +142,6 @@ function decodeInlineArg(value, fallback = null) {
 }
 
 function normalizeSoulseekQuery(value) {
-  // Ampersands are treated as query operators by slskd — replace them (and
-  // their HTML/JSON encodings) with spaces, then collapse whitespace.
   return String(value || '')
     .replace(/\\u0026/gi, ' ')
     .replace(/&amp;/gi, ' ')
@@ -166,25 +151,9 @@ function normalizeSoulseekQuery(value) {
 }
 
 // ============================================================================
-// GLOBAL SEARCH INTEGRATION
+// LOOKUP FORM HELPERS
 // ============================================================================
-
-/**
- * The global MusicBrainz modal opener lives in main.js (canonical, loaded on
- * every page). It fills the 4-field form, wires window._mbSearchCallback, and
- * auto-runs performMbSearch. Nothing page-specific is needed here.
- */
-
-// ============================================================================
-// LOOKUP FORM HELPERS (shared across dashboard + downloads)
-// ============================================================================
-
-/**
- * Gather fields from the lookup card and open the MusicBrainz search modal.
- * Called by the lookup form on dashboard.html and monitor.html.
- */
 window.doLookup = function(artist, album, track, year, callback) {
-    // If called without arguments, read from standard form inputs or modal inputs
     if (!artist && !album && !track && !year) {
         artist = document.getElementById('lookupArtist')?.value?.trim() || document.getElementById('mbSearchArtist')?.value?.trim() || '';
         album  = document.getElementById('lookupAlbum')?.value?.trim() || document.getElementById('mbSearchAlbum')?.value?.trim() || '';
@@ -209,9 +178,6 @@ window.doLookup = function(artist, album, track, year, callback) {
     }
 };
 
-/**
- * Clear all lookup form fields.
- */
 window.clearLookup = function() {
     ['lookupArtist','lookupAlbum','lookupTrack','lookupYear','mbSearchArtist','mbSearchAlbum','mbSearchTrack','mbSearchYear'].forEach(function(id) {
         var el = document.getElementById(id);
@@ -219,13 +185,10 @@ window.clearLookup = function() {
     });
 };
 
-
 // ============================================================================
 // MUSICBRAINZ SEARCH & RESULTS CORE
 // ============================================================================
-
 window.performMbSearch = async function() {
-  // 1. Gather advanced fields if they exist
   let artist = document.getElementById('mbSearchArtist')?.value.trim() || '';
   const album = document.getElementById('mbSearchAlbum')?.value.trim() || '';
   const track = document.getElementById('mbSearchTrack')?.value.trim() || '';
@@ -233,7 +196,6 @@ window.performMbSearch = async function() {
   
   let query = '';
 
-  // 2. Combine them into a search string, or fallback to the single input
   if (artist || album || track || year) {
       query = [artist, album, track, year].filter(Boolean).join(' ');
   } else {
@@ -243,8 +205,6 @@ window.performMbSearch = async function() {
 
   if (!query) return;
 
-  // 3. When only the artist field is populated, search by artist name
-  //    (release-groups BY the artist) instead of a free-text title search.
   let artistOnly = false;
   if (window._mbArtistOnlySearch === true) {
     artistOnly = true;
@@ -266,24 +226,17 @@ window.performMbSearch = async function() {
   }
 
   try {
-    // Send structured fields so each form entry maps to its MusicBrainz
-    // Lucene index (artist / releasegroup / recording / date) on the backend.
     const payload = { artist, album, track, year };
     if (!artist && !album && !track && !year) {
-      payload.query = query; // legacy single free-text input
+      payload.query = query;
     }
     if (artistOnly) payload.artist_only = true;
     const releaseTypeServer = document.getElementById('mbReleaseType')?.value || '';
-    if (releaseTypeServer) payload.type = releaseTypeServer; // server-side primarytype/secondarytype filter
-    // Folder-match / re-match flows want owned releases included so the user
-    // can associate a downloaded folder with a release already in the library.
+    if (releaseTypeServer) payload.type = releaseTypeServer;
     if (window._mbSearchIncludeOwned === true) {
       payload.include_owned = true;
       window._mbSearchIncludeOwned = false;
     }
-    // Album-page lookup / folder-match flows need each group's CONCRETE
-    // releases for the release picker (expensive browse per group); generic
-    // discovery search (universal search modal) skips it for speed.
     if (window._mbSearchWithReleases === true) {
       payload.with_releases = true;
       window._mbSearchWithReleases = false;
@@ -301,19 +254,12 @@ window.performMbSearch = async function() {
     }
 
     let releases = data.releases || [];
-
-    // Apply the release-type dropdown filter (modal field), if present.
-    // Derive the category client-side (secondary types take precedence) so
-    // "Album" never admits remix/live/compilation release-groups and stale
-    // primary_type/category values can't leak other types in.
     const releaseType = document.getElementById('mbReleaseType')?.value || '';
     if (releaseType) {
       const want = releaseType.toLowerCase();
       releases = releases.filter(r => window.mbDerivedCategory(r) === want);
     }
 
-    // Honour the results-limit dropdown (12/25/50) — it was read by the
-    // shared modal but never applied here, so changing it had no effect.
     const limitEl = document.getElementById('mbResultLimit');
     const max = parseInt(limitEl ? limitEl.value : '25', 10) || 25;
     if (releases.length > max) releases = releases.slice(0, max);
@@ -366,15 +312,13 @@ window.performMbSearch = async function() {
   }
 };
 
-// Handles routing the selected release back to the component that asked for it
 window.handleGlobalMbSelect = function(releaseEnc) {
     const release = decodeInlineArg(releaseEnc);
     if (window._mbSearchCallback && release) {
         window._mbSearchCallback(release);
-        window._mbSearchCallback = null; // Clear the callback so it doesn't fire twice
+        window._mbSearchCallback = null;
     }
     
-    // Close the modal
     const modalEl = document.getElementById('musicBrainzModal');
     if (modalEl) {
         const modal = bootstrap.Modal.getInstance(modalEl);
@@ -382,14 +326,11 @@ window.handleGlobalMbSelect = function(releaseEnc) {
     }
 };
 
-// Also map performMbDownloadSearch to performMbSearch in case any old HTML buttons rely on it
 window.performMbDownloadSearch = window.performMbSearch;
-
 
 // ============================================================================
 // UPCOMING RELEASES
 // ============================================================================
-
 async function clearUpcomingReleases() {
   if (!confirm('Are you sure you want to clear all upcoming releases from the database? This cannot be undone.')) return;
   const statusEl = document.getElementById('upcomingStatus');
@@ -434,10 +375,6 @@ async function scrapeUpcomingReleases() {
 }
 
 async function checkForUpdates() {
-  // "Check for Updates" reads the database and reflects any changes already
-  // scraped into it — it must NOT trigger a full Wikipedia re-scrape on
-  // every page load.  Use the explicit "Update from Wikipedia" button
-  // (scrapeUpcomingReleases) to re-scrape the configured sources.
   localStorage.setItem('upcomingReleasesLastChecked', Date.now().toString());
   await refreshUpcomingReleases();
 }
@@ -522,10 +459,6 @@ async function refreshUpcomingReleases() {
   }
 }
 
-// Rich MusicBrainz search for Wikipedia/upcoming releases, with Discogs
-// fallback, per-track selection and "Use MBID" matching. Restored from the
-// original old_system implementation so the queue page's "Choose" flow keeps
-// its intended accordion UX while rendering into the shared modal.
 async function searchMusicBrainzRelease(event, artist, album, upcomingReleaseId = null) {
   if (event) { event.preventDefault(); event.stopPropagation(); }
 
@@ -542,15 +475,11 @@ async function searchMusicBrainzRelease(event, artist, album, upcomingReleaseId 
     resultsEl.innerHTML = '<div class="text-center py-4"><div class="spinner-border text-primary"></div><p class="mt-2 text-muted">Searching MusicBrainz...</p></div>';
   }
 
-  // Populate the shared modal's 4-field form so the Release Type / Result
-  // Limit dropdowns re-search with the current query instead of no-oping
-  // (performMbSearch builds its query from these fields).
   const artistField = document.getElementById('mbSearchArtist');
   const albumField = document.getElementById('mbSearchAlbum');
   if (artistField && artist) artistField.value = artist;
   if (albumField && album) albumField.value = album;
 
-  // Show the shared modal (included globally by base.html)
   const hasBootstrapModal = !!(window.bootstrap && window.bootstrap.Modal);
   if (hasBootstrapModal) {
     const modal = bootstrap.Modal.getInstance(modalEl) || new bootstrap.Modal(modalEl);
@@ -633,10 +562,6 @@ async function searchMusicBrainzRelease(event, artist, album, upcomingReleaseId 
   }
 }
 
-// Route the shared modal's card selection back into the queue-page download
-// flow when the modal was opened via the upcoming-releases "Search / Download"
-// button. That flow doesn't set window._mbSearchCallback, so the component's
-// selectMbRelease falls back to this CustomEvent.
 document.addEventListener('mbReleaseSelected', function(evt) {
   var detail = evt.detail || {};
   var release = detail.release || window._selectedMusicBrainzRelease;
@@ -652,7 +577,6 @@ document.addEventListener('mbReleaseSelected', function(evt) {
   }
 });
 
-// Rich accordion renderer used by searchMusicBrainzRelease (original intent).
 function displayMusicBrainzResults(results) {
   const container = document.getElementById('mbSearchResults');
   if (!container) return;
@@ -1044,15 +968,11 @@ async function downloadMusicBrainzRelease(artist, album, tracks, year, release_i
   }
 }
 
-// Canonical alias so inline page overrides (e.g. queue.html) can delegate to
-// this implementation instead of re-implementing the shared-modal flow.
 window.searchMusicBrainzReleaseCanonical = searchMusicBrainzRelease;
-
 
 // ============================================================================
 // MANAGED DOWNLOADS (MusicBrainz/Queuing)
 // ============================================================================
-
 const MB_DEFAULT_MAX_RETRIES = 3;
 
 function getMbStatusBadge(status) {
@@ -1114,8 +1034,6 @@ async function _addMbDownloadToSession(releaseId, releaseTitle, artist, method, 
     if (data.session_id) msg += `\n✓ Added to session ID: ${data.session_id}`;
     alert(msg);
     setTimeout(refreshMbDownloads, 1000);
-    // Refresh the Download Queue section too so the added item appears
-    // immediately (refreshMbDownloads only updates the MB downloads list).
     if (typeof window.loadFolderGroups === 'function') {
       setTimeout(function () { window.loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true }); }, 1500);
     }
@@ -1227,24 +1145,12 @@ async function removeMbDownload(downloadId) {
   } catch (e) { alert('Error removing download: ' + e.message); }
 }
 
-
 // ============================================================================
 // SOULSEEK SEARCH FUNCTIONS
 // ============================================================================
-
 let currentSlskdSearchId = null;
 let slskdPollInterval = null;
-// Grace-attempt counter for the Soulseek-tab polling (searchSoulseek →
-// pollSlskdSearchResults): how many complete-with-0-files polls we've
-// tolerated while waiting for late-arriving results.
 let _slskdCompleteGraceCount = 0;
-
-// Manual-search grace polling: slskd flips a search to a terminal state
-// ("Completed, TimedOut") while responses are STILL streaming in.  When the
-// first poll after completion returns 0 files, keep polling for this many
-// more attempts (1.5s each ≈ 12s) so late-arriving results surface instead
-// of the modal declaring "No files found" (the reported manual searches that
-// showed 0 results yet had real files the user could download).
 const _SLSKD_COMPLETE_GRACE_POLLS = 8;
 
 async function searchSoulseek(event) {
@@ -1303,19 +1209,11 @@ async function pollSlskdSearchResults() {
     const isComplete = data.isComplete || false;
     const state = data.state || 'Searching';
 
-    // ── Grace polling for late-arriving results ─────────────────────────
-    // slskd flips a search to "Completed, TimedOut" while responses are
-    // STILL streaming in.  Stopping at the first isComplete + 0-files poll
-    // made the Soulseek tab / queue-item manual search say "No results
-    // found" even though real files landed moments later (the reported
-    // manual searches that showed 0 results yet had downloadable files).
-    // Keep polling for a few more attempts before declaring empty.  This
-    // mirrors the modal flow's `_SLSKD_COMPLETE_GRACE_POLLS` behaviour.
     _slskdCompleteGraceCount = _slskdCompleteGraceCount || 0;
     if (isComplete && results.length === 0) {
       if (_slskdCompleteGraceCount < _SLSKD_COMPLETE_GRACE_POLLS) {
         _slskdCompleteGraceCount++;
-        return; // interval keeps firing; grace attempts are consumed
+        return;
       }
       resultsEl.innerHTML = `<div class="alert alert-info"><i class="bi bi-info-circle"></i> Search complete (${state}). No results found.</div>`;
       if (slskdPollInterval) { clearInterval(slskdPollInterval); slskdPollInterval = null; }
@@ -1324,8 +1222,14 @@ async function pollSlskdSearchResults() {
     }
     _slskdCompleteGraceCount = 0;
 
+    // Filter out results with 0 free upload slots
+    const validResults = results.filter(r => {
+      const slots = r.freeUploadSlots !== undefined ? r.freeUploadSlots : 1;
+      return slots > 0;
+    });
+
     let html = '<div class="table-responsive"><table class="table table-hover"><thead><tr><th>File</th><th class="text-center">User</th><th class="text-center">Size</th><th class="text-center">Bitrate</th><th class="text-center">Action</th></tr></thead><tbody>';
-    results.forEach(r => {
+    validResults.forEach(r => {
       const sizeMB = r.size_mb || (r.size ? (r.size / (1024 * 1024)).toFixed(2) : 'N/A');
       html += `<tr>
         <td><div class="small" style="max-width:500px;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(r.filename || 'Unknown')}</div></td>
@@ -1335,7 +1239,7 @@ async function pollSlskdSearchResults() {
         <td class="text-center"><button class="btn btn-sm btn-success" onclick="downloadSlskdFile('${escapeHtml(r.username)}', '${escapeHtml(r.filename)}', ${parseInt(r.size) || 0})"><i class="bi bi-download"></i> Download</button></td>
       </tr>`;
     });
-    html += `</tbody></table></div><div class="text-muted small mt-2">Found ${results.length} result(s) — State: ${escapeHtml(state)}${isComplete ? ' (complete)' : ''}</div>`;
+    html += `</tbody></table></div><div class="text-muted small mt-2">Found ${validResults.length} available result(s) (filtered zero slots) — State: ${escapeHtml(state)}${isComplete ? ' (complete)' : ''}</div>`;
     resultsEl.innerHTML = html;
 
     if (isComplete && slskdPollInterval) {
@@ -1350,14 +1254,8 @@ async function pollSlskdSearchResults() {
 }
 
 // ============================================================================
-// MANUAL SOULSEEK SEARCH MODAL (queue-item manual search)
+// MANUAL SOULSEEK SEARCH MODAL
 // ============================================================================
-// Ported from the old system's downloads_monitor.html: a queue item's search
-// button opens a modal that runs a custom Soulseek search and lets the user
-// pick a result.  The "Select" action links the download to the queue row
-// via /api/slskd/queue-download when opened from a queue item, so the file
-// is moved into the organised album folder automatically.
-
 window.soulseekManualSearchState = window.soulseekManualSearchState || {
   activeSearchId: null,
   pollTimer: null,
@@ -1367,18 +1265,11 @@ window.soulseekManualSearchState = window.soulseekManualSearchState || {
 };
 
 function searchOtherSources(artist, titleOrAlbum, isQueueItem = false, queueId = null) {
-  // Queue search uses "artist - title" format (matches queue processor);
-  // album/other searches use "artist album" format.
   const query = normalizeSoulseekQuery(isQueueItem ? `${artist} - ${titleOrAlbum}` : `${artist} ${titleOrAlbum}`);
-
-  // Queue-item manual search opens the in-page Soulseek modal.
   if (isQueueItem) {
     openSoulseekManualSearchModal(query, queueId);
     return;
   }
-
-  // Non-queue fallback: navigate to the MusicBrainz search page with the
-  // query prefilled (legacy parity).
   window.open(`/downloads/search/musicbrainz?q=${encodeURIComponent(query)}`, '_blank');
 }
 
@@ -1393,7 +1284,6 @@ function ensureSoulseekManualSearchModal() {
   const existing = document.getElementById('soulseekManualSearchModal');
   if (existing) return existing;
 
-  // Safety fallback — the component is normally included by the template.
   const modalHtml = `
     <div class="modal fade" id="soulseekManualSearchModal" tabindex="-1" aria-hidden="true">
       <div class="modal-dialog modal-xl">
@@ -1446,8 +1336,6 @@ function openSoulseekManualSearchModal(defaultQuery = '', queueId = null) {
   if (resultsEl) resultsEl.innerHTML = '';
 
   window.soulseekManualSearchState = window.soulseekManualSearchState || {};
-  // Store which queue item this search is for so "Select" can call the
-  // queue-aware download endpoint.
   window.soulseekManualSearchState.queueId = queueId ? parseInt(queueId, 10) || null : null;
   window.soulseekManualSearchState.pollingStopped = false;
 
@@ -1468,7 +1356,6 @@ async function runSoulseekManualSearch() {
   }
   if (queryInput) queryInput.value = query;
 
-  // Cancel any in-flight slot-wait or result-poll before starting fresh.
   if (window.soulseekManualSearchState.pollTimer) {
     clearTimeout(window.soulseekManualSearchState.pollTimer);
     window.soulseekManualSearchState.pollTimer = null;
@@ -1492,11 +1379,10 @@ async function runSoulseekManualSearch() {
       body: JSON.stringify({ query }),
     }, 60000);
 
-    // Slot busy: another search is already running — wait for it to finish.
     if (startData.slotBusy) {
       _showSlotBusyBanner(query, startData);
       _pollForSlotFree(query);
-      return; // keep the search button disabled; the banner has its own Cancel
+      return;
     }
 
     const searchId = startData.searchId;
@@ -1557,7 +1443,6 @@ async function _pollForSlotFree(pendingQuery) {
       return;
     }
 
-    // Still busy — update the banner with the latest active search and poll again.
     const banner = document.getElementById('slskdSlotBusyBanner');
     if (banner && data.activeSearchQuery) {
       const activeQuery = `<em>${escapeHtml(data.activeSearchQuery)}</em>`;
@@ -1571,7 +1456,6 @@ async function _pollForSlotFree(pendingQuery) {
     }
   } catch (err) {
     console.warn('_pollForSlotFree error:', err);
-    // On error, continue polling — a transient glitch shouldn't abort the wait.
   }
 
   state.pollTimer = setTimeout(() => _pollForSlotFree(pendingQuery), POLL_INTERVAL_MS);
@@ -1615,15 +1499,6 @@ async function pollSoulseekManualSearchResults(searchId, attempt, transientError
     }
     renderSoulseekManualSearchResults(results);
 
-    // Grace polling after slskd reports the search "complete" with zero
-    // files.  slskd flips a search to "Completed, TimedOut" while responses
-    // are STILL streaming in (peers answer after the timeout fired) — the
-    // reported manual searches that showed "0 results" even though the
-    // search had real results (the user could select and download them).
-    // Stopping at the first isComplete=0 poll made the modal say "No files
-    // found" (and the search log record "0 results") even though files were
-    // on their way.  Keep polling for a short grace window so late-arriving
-    // responses surface; only give up once the grace is exhausted.
     const _graceExhausted = isComplete && results.length === 0 && attempt >= _SLSKD_COMPLETE_GRACE_POLLS;
     if ((!isComplete || (isComplete && results.length === 0 && !_graceExhausted)) && attempt < 60) {
       state.pollTimer = setTimeout(() => {
@@ -1663,12 +1538,18 @@ function renderSoulseekManualSearchResults(results) {
   const container = document.getElementById('soulseekManualResults');
   if (!container) return;
 
-  if (!results || results.length === 0) {
-    container.innerHTML = '<div class="text-muted small">No results yet.</div>';
+  // Filter out zero-slot users
+  const validResults = (results || []).filter(row => {
+    const slots = row.freeUploadSlots !== undefined ? row.freeUploadSlots : 1;
+    return slots > 0;
+  });
+
+  if (!validResults || validResults.length === 0) {
+    container.innerHTML = '<div class="text-muted small">No available results with free upload slots yet.</div>';
     return;
   }
 
-  const rows = results.map((row) => {
+  const rows = validResults.map((row) => {
     const username = row.username || '';
     const filename = row.filename || '';
     const sizeMb = row.size_mb || '-';
@@ -1681,11 +1562,11 @@ function renderSoulseekManualSearchResults(results) {
       <tr>
         <td>${escapeHtml(username)}</td>
         <td style="word-break: break-word;">${escapeHtml(filename)}</td>
-        <td>${escapeHtml(String(sizeMb))}</td>
+        <td>${escapeHtml(String(sizeMb))} MB</td>
         <td>${escapeHtml(String(bitrate))}</td>
         <td>${escapeHtml(String(duration))}</td>
         <td class="text-center">
-          <button class="btn btn-sm btn-success" onclick="downloadSoulseekManualResult('${encodeInlineArg(username)}', '${encodeInlineArg(filename)}', ${size}, ${length}, this)">
+          <button class="btn btn-sm btn-success fw-bold px-3" onclick="downloadSoulseekManualResult('${encodeInlineArg(username)}', '${encodeInlineArg(filename)}', ${size}, ${length}, this)">
             Select
           </button>
         </td>
@@ -1703,7 +1584,7 @@ function renderSoulseekManualSearchResults(results) {
             <th>Size MB</th>
             <th>Bitrate</th>
             <th>Duration</th>
-            <th style="width: 90px;" class="text-center">Action</th>
+            <th style="width: 100px;" class="text-center">Action</th>
           </tr>
         </thead>
         <tbody>${rows}</tbody>
@@ -1728,8 +1609,6 @@ async function downloadSoulseekManualResult(usernameEnc, filenameEnc, size, leng
     btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
   }
 
-  // Opened for a queue item → link the download to the queue row so the file
-  // is moved into the organised album folder automatically.
   const queueId = window.soulseekManualSearchState?.queueId || null;
   const endpoint = queueId ? '/api/slskd/queue-download' : '/api/slskd/download';
   const body = queueId
@@ -1748,7 +1627,6 @@ async function downloadSoulseekManualResult(usernameEnc, filenameEnc, size, leng
     if (statusEl) statusEl.innerHTML = `<span class="text-success">Queued: ${escapeHtml(filename)}</span>`;
     alert('✅ Soulseek download queued');
 
-    // Refresh queue UI so the status change to "downloading" is visible immediately.
     if (typeof loadQueueStatus === 'function') await loadQueueStatus();
     if (typeof window.loadFolderGroups === 'function') {
       await window.loadFolderGroups({ forceRender: true, keepVisibleOnEmpty: true });
@@ -1765,8 +1643,6 @@ async function downloadSoulseekManualResult(usernameEnc, filenameEnc, size, leng
   }
 }
 
-// Auto-open the modal from a ?search= query param (legacy parity: the old
-// downloads monitor opened the modal when the page URL carried a search term).
 document.addEventListener('DOMContentLoaded', function () {
   try {
     const params = new URLSearchParams(window.location.search);
@@ -1778,7 +1654,6 @@ document.addEventListener('DOMContentLoaded', function () {
 // ============================================================================
 // QUEUE MANAGEMENT FUNCTIONS
 // ============================================================================
-
 let queuePageOffset = 0;
 const QUEUE_PAGE_LIMIT = 500;
 
@@ -1888,8 +1763,6 @@ async function loadQueueStatus() {
     setNum('queueMovingCount', countFor('moving','importing'));
     setNum('queueFailedCount', countFor('failed'));
 
-    // Hide stat pills whose count is 0 so the header stays focused on
-    // actionable items (the row scrolls horizontally when it overflows).
     document.querySelectorAll('.stat-pill[data-pill-for]').forEach(pill => {
       const el = document.getElementById(pill.dataset.pillFor);
       const count = Number(el ? el.textContent : 0) || 0;
@@ -1898,7 +1771,6 @@ async function loadQueueStatus() {
   } catch (error) {
     console.error('Error loading queue status:', error);
   }
-  // Refresh the queue item lists and logs on whichever page is active.
   await renderQueueSection();
   await renderQueueLog();
   await renderSearchLog();
@@ -1914,7 +1786,6 @@ async function clearEntireQueue() {
   } catch (e) { alert('❌ Network error: ' + e.message); }
 }
 
-// Alias used by the monitor page's "Clear Queue" button.
 async function clearQueue() {
   return clearEntireQueue();
 }
@@ -2054,13 +1925,8 @@ async function organizeSelected() { alert('organizeSelected not yet implemented'
 async function batchOrganizeSelected() { alert('batchOrganizeSelected not yet implemented'); }
 
 // ============================================================================
-// QUEUE RENDERING (element-guarded — safe on any page that loads downloads.js)
+// QUEUE RENDERING
 // ============================================================================
-
-// Renders the monitor page's Download Queue card: the real download_queue
-// rows grouped by album (Queue Groups).  The legacy MusicBrainz folder
-// groups were removed — queue groups match the folders and support
-// expanding, stopping and deleting, so the old read-only section is gone.
 async function renderQueueSection() {
   const section = document.getElementById('folderGroupsSection');
   const list = document.getElementById('folderGroupsList');
@@ -2103,7 +1969,6 @@ async function renderQueueSection() {
   if (typeof updateQueuePageControls === 'function') updateQueuePageControls(total, total);
 }
 
-// Loads the monitor page's Queue Activity Log.
 async function renderQueueLog() {
   const logEl = document.getElementById('queueActivityLog');
   if (!logEl) return;
@@ -2122,7 +1987,6 @@ async function renderQueueLog() {
   }
 }
 
-// Loads the monitor page's Soulseek Search Log.
 async function renderSearchLog() {
   const logEl = document.getElementById('soulseekSearchLog');
   if (!logEl) return;
@@ -2144,7 +2008,6 @@ async function renderSearchLog() {
   }
 }
 
-// Renders the /downloads Active Queue tab (stats bar + lists).
 async function renderQueuePage() {
   const activeList = document.getElementById('activeQueueList');
   if (!activeList) return;
@@ -2194,10 +2057,6 @@ function renderQueueList(kind, items) {
   listEl.style.display = 'block';
   if (badgeEl) { badgeEl.textContent = items.length + ' item' + (items.length !== 1 ? 's' : ''); badgeEl.style.display = 'inline-block'; }
 
-  // Group tracks into album folders (legacy parity): tracks added together
-  // from a MusicBrainz release share an ``import_group`` (mbid_<release_id>),
-  // so they render as an expandable album with each song a queue item below.
-  // Fall back to artist+album grouping for other batch-added tracks.
   const groups = buildQueueGroups(items);
   window.__queueGroupsArr = groups;
 
@@ -2212,7 +2071,6 @@ function renderQueueList(kind, items) {
   restoreQueueGroupExpansion(listEl);
 }
 
-// Build album groups from a flat list of queue items.
 function buildQueueGroups(items) {
   const groups = [];
   const map = {};
@@ -2247,13 +2105,6 @@ function buildQueueGroups(items) {
   return groups;
 }
 
-// Render a single (ungrouped) queue item row.
-// Manual Soulseek search for a queue item: open the manual Soulseek search
-// modal pre-filled with the item's artist/title/album so the user can pick
-// a result by hand instead of relying on the automated queue search.  The
-// query travels URL-encoded so quotes and special characters survive the
-// inline onclick attribute.  Falls back to the in-page Soulseek tab when the
-// modal is unavailable (legacy parity: the old system opened a modal).
 function manualQueueSlskdSearch(encodedQuery, queueIdRaw) {
   const query = decodeURIComponent(encodedQuery || '');
   if (!query) return;
@@ -2278,8 +2129,6 @@ function manualQueueSlskdSearch(encodedQuery, queueIdRaw) {
 function renderQueueItemRow(item, kind) {
   const st = item.status || 'queued';
 
-  // Status pill sits on the LEFT, inline with the meta chips — the right
-  // edge stays free for the borderless action icons.
   const pillCls = st === 'failed' ? 'failed'
     : (st === 'downloading' || st === 'searching' || st === 'processing') ? 'downloading'
     : (st === 'completed' || st === 'moving' || st === 'imported' || st === 'in_collection') ? 'complete'
@@ -2291,7 +2140,6 @@ function renderQueueItemRow(item, kind) {
   }
   const statusPill = '<span class="badge status-pill status-' + pillCls + '">' + escapeHtml(pillLabel) + '</span>';
 
-  // Per-item detail chips: album, MusicBrainz ID, and track length.
   const chips = [];
   if (item.album && item.album !== item.title) {
     chips.push('<span class="meta-pill"><i class="bi bi-disc"></i>' + escapeHtml(item.album) + '</span>');
@@ -2309,7 +2157,6 @@ function renderQueueItemRow(item, kind) {
   }
   const metaLine = '<div class="d-flex align-items-center gap-1 flex-wrap mt-1">' + statusPill + chips.join('') + '</div>';
 
-  // Progress bar for in-flight downloads when progress data is available.
   let progressHtml = '';
   if (st === 'downloading' && item.progress != null && Number(item.progress) > 0) {
     const pct = Math.min(100, Math.max(0, Number(item.progress)));
@@ -2318,11 +2165,8 @@ function renderQueueItemRow(item, kind) {
       '</div>';
   }
 
-  // Borderless icon actions (row-icon-btn) keep the right edge light.
   let actions = '';
   if (kind !== 'completed') {
-    // Manual Soulseek search for this item (artist + title [+ album]) —
-    // the user picks a result by hand instead of the automated search.
     const searchQuery = [item.artist, item.title, (item.album && item.album !== item.title) ? item.album : '']
       .filter(Boolean).join(' ');
     if (searchQuery) {
@@ -2354,13 +2198,11 @@ function renderQueueItemRow(item, kind) {
     '</div></div>';
 }
 
-// Render an album folder header with its tracks as child queue items.
 function renderQueueGroupRow(group, kind, index) {
   const bodyId = 'queueGroupBody_' + kind + '_' + sanitizeQueueGroupKey(group.key);
   const items = group.items;
   const total = items.length;
 
-  // Status summary for the folder header (e.g. "5 queued · 3 downloading").
   const counts = {};
   items.forEach(function(item) {
     const st = item.status || 'queued';
@@ -2410,9 +2252,6 @@ function renderQueueGroupRow(group, kind, index) {
     '</div>';
 }
 
-// ===== Queue group expansion state (shared with monitor.js) =====
-// The auto-refresh poll re-renders the queue list; without persisted
-// expansion state every re-render collapses any opened folder.
 window.__expandedQueueGroups = window.__expandedQueueGroups || new Set();
 
 function sanitizeQueueGroupKey(key) {
@@ -2433,7 +2272,6 @@ function restoreQueueGroupExpansion(listEl) {
     const chevron = btn && btn.querySelector('.queue-group-chevron');
     if (chevron) chevron.classList.add('rotated');
   });
-  // Drop ids that no longer exist so the set never grows unbounded.
   expanded.forEach(function(id) { if (!found.has(id)) expanded.delete(id); });
 }
 window.__restoreQueueGroupExpansion = window.__restoreQueueGroupExpansion || restoreQueueGroupExpansion;
@@ -2473,8 +2311,6 @@ async function organizeGroup(index) {
   try {
     const ig = group.items.find(function(i) { return i.import_group; });
     if (ig) {
-      // MusicBrainz-backed groups use the group endpoint so the MusicBrainz
-      // release metadata is applied while organising.
       await fetchJsonOrThrow('/api/queue/organize-group', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2538,7 +2374,6 @@ async function deleteGroup(index) {
 // ============================================================================
 // INITIALIZATION
 // ============================================================================
-
 document.addEventListener('DOMContentLoaded', function() {
   if (document.getElementById('upcomingReleases')) {
     refreshUpcomingReleases();
@@ -2554,8 +2389,6 @@ document.addEventListener('DOMContentLoaded', function() {
     refreshMbDownloads();
   }
 
-  // Populate the session selector when the organize modal's MusicBrainz
-  // tab is opened (legacy inline binding preserved from the template).
   var mbTabEl = document.getElementById('mbTab');
   if (mbTabEl) {
     mbTabEl.addEventListener('click', function () {
@@ -2563,13 +2396,8 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   }
 
-  // Populate the monitor page's queue section + logs and the /downloads
-  // Active Queue tab on load (loadQueueStatus refreshes counts AND these).
   if (document.getElementById('folderGroupsSection') || document.getElementById('statQueuedNum')) {
     loadQueueStatus();
-    // Self-healing refresh: re-renders the queue section every 10s so it
-    // stays visible and fresh even if something else on the page tries to
-    // hide or overwrite it (legacy renderers, stale polls).
     let _queuePollInFlight = false;
     setInterval(async () => {
       if (_queuePollInFlight) return;
@@ -2577,8 +2405,7 @@ document.addEventListener('DOMContentLoaded', function() {
       try { await loadQueueStatus(); } finally { _queuePollInFlight = false; }
     }, 10000);
   }
-  // Upcoming releases: read from the database on load instead of waiting
-  // for a manual refresh / re-scrape.
+  
   if (document.getElementById('upcomingReleases')) {
     refreshUpcomingReleases();
   }
