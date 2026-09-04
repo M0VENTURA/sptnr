@@ -352,7 +352,7 @@
                             </div>
                             <div class="col-12 col-md-6">
                                 <label for="album_release_group_mbid" class="form-label">MusicBrainz Album ID</label>
-                                <input type="text" class="form-control" id="album_release_group_mbid" name="album_release_group_mbid" value="{{ album_data.musicbrainz_releasegroupid or '' }}" placeholder="MusicBrainz album (release-group) MBID">
+                                <input type="text" class="form-control" id="album_release_group_mbid" name="album_release_group_mbid" value="{{ album_data.musicbrainz_releasegroupid or album_data.release_group_mbid or '' }}" placeholder="MusicBrainz album (release-group) MBID">
                             </div>
                         </div>
                         <div class="row g-2 mb-3">
@@ -397,14 +397,16 @@
                         </button>
                         <div class="collapse" id="albumFormExtended">
                         <h6 class="text-muted mb-3">Release Information <small class="text-muted">(applied to all tracks on save)</small></h6>
+                        
+                        <!-- Fixed Extended Metadata Form Values (Snake Case) -->
                         <div class="row g-2">
                             <div class="col-12 col-md-6">
                                 <label for="album_recordlabel" class="form-label">Record Label</label>
-                                <input type="text" class="form-control" id="album_recordlabel" name="album_recordlabel" value="{{ album_data.recordlabel or album_data.record_label or '' }}" placeholder="e.g., Columbia Records">
+                                <input type="text" class="form-control" id="album_recordlabel" name="album_recordlabel" value="{{ album_data.record_label or album_data.recordlabel or album_data.label or album_data.publisher or '' }}" placeholder="e.g., Columbia Records">
                             </div>
                             <div class="col-12 col-md-6">
                                 <label for="album_catalognumber" class="form-label">Catalog Number</label>
-                                <input type="text" class="form-control" id="album_catalognumber" name="album_catalognumber" value="{{ album_data.catalognumber or album_data.catalog_number or '' }}" placeholder="Catalog number">
+                                <input type="text" class="form-control" id="album_catalognumber" name="album_catalognumber" value="{{ album_data.catalog_number or album_data.catalognumber or album_data.catno or '' }}" placeholder="Catalog number">
                             </div>
                             <div class="col-12 col-md-6">
                                 <label for="album_barcode" class="form-label">Barcode</label>
@@ -416,23 +418,23 @@
                             </div>
                             <div class="col-12 col-md-6">
                                 <label for="album_releasedate" class="form-label">Release Date</label>
-                                <input type="text" class="form-control" id="album_releasedate" name="album_releasedate" value="{{ album_data.releasedate or album_data.spotify_release_date or '' }}" placeholder="e.g., 2023-06-15">
+                                <input type="text" class="form-control" id="album_releasedate" name="album_releasedate" value="{{ album_data.release_date or album_data.spotify_release_date or album_data.date or '' }}" placeholder="e.g., 2023-06-15">
                             </div>
                             <div class="col-12 col-md-6">
                                 <label for="album_media" class="form-label">Media Format</label>
-                                <input type="text" class="form-control" id="album_media" name="album_media" value="{{ album_data.media or '' }}" placeholder="e.g., CD, Digital Media">
+                                <input type="text" class="form-control" id="album_media" name="album_media" value="{{ album_data.media or album_data.format or '' }}" placeholder="e.g., CD, Digital Media">
                             </div>
                             <div class="col-12 col-md-4">
                                 <label for="album_releasetype" class="form-label">Release Type</label>
-                                <input type="text" class="form-control" id="album_releasetype" name="album_releasetype" value="{{ album_data.releasetype or '' }}" placeholder="e.g., album, single, EP">
+                                <input type="text" class="form-control" id="album_releasetype" name="album_releasetype" value="{{ album_data.release_type or album_data.album_type or '' }}" placeholder="e.g., album, single, EP">
                             </div>
                             <div class="col-12 col-md-4">
                                 <label for="album_releasestatus" class="form-label">Release Status</label>
-                                <input type="text" class="form-control" id="album_releasestatus" name="album_releasestatus" value="{{ album_data.releasestatus or '' }}" placeholder="e.g., official">
+                                <input type="text" class="form-control" id="album_releasestatus" name="album_releasestatus" value="{{ album_data.release_status or album_data.status or '' }}" placeholder="e.g., official">
                             </div>
                             <div class="col-12 col-md-4">
                                 <label for="album_releasecountry" class="form-label">Release Country</label>
-                                <input type="text" class="form-control" id="album_releasecountry" name="album_releasecountry" value="{{ album_data.releasecountry or '' }}" placeholder="e.g., US">
+                                <input type="text" class="form-control" id="album_releasecountry" name="album_releasecountry" value="{{ album_data.release_country or album_data.country or '' }}" placeholder="e.g., US">
                             </div>
                             <div class="col-12 col-md-6">
                                 <label for="album_copyright" class="form-label">Copyright</label>
@@ -444,19 +446,19 @@
                             </div>
                             <div class="col-12 col-md-6">
                                 <label for="album_originalyear" class="form-label">Original Year</label>
-                                <input type="text" class="form-control" id="album_originalyear" name="album_originalyear" value="{{ album_data.originalyear or '' }}" placeholder="e.g., 1971">
+                                <input type="text" class="form-control" id="album_originalyear" name="album_originalyear" value="{{ album_data.original_year or album_data.originalyear or '' }}" placeholder="e.g., 1971">
                             </div>
                             <div class="col-12 col-md-6">
                                 <label for="album_originaldate" class="form-label">Original Date</label>
-                                <input type="text" class="form-control" id="album_originaldate" name="album_originaldate" value="{{ album_data.originaldate or '' }}" placeholder="e.g., 1971-10-11">
+                                <input type="text" class="form-control" id="album_originaldate" name="album_originaldate" value="{{ album_data.original_date or album_data.originaldate or '' }}" placeholder="e.g., 1971-10-11">
                             </div>
                             <div class="col-12 col-md-6">
                                 <label for="album_tracktotal" class="form-label">Track Total</label>
-                                <input type="text" class="form-control" id="album_tracktotal" name="album_tracktotal" value="{{ album_data.tracktotal or '' }}" placeholder="Total tracks on release">
+                                <input type="text" class="form-control" id="album_tracktotal" name="album_tracktotal" value="{{ album_data.track_count or album_data.track_total or album_data.tracktotal or '' }}" placeholder="Total tracks on release">
                             </div>
                             <div class="col-12 col-md-6">
                                 <label for="album_disctotal" class="form-label">Disc Total</label>
-                                <input type="text" class="form-control" id="album_disctotal" name="album_disctotal" value="{{ album_data.disctotal or '' }}" placeholder="Total discs in release">
+                                <input type="text" class="form-control" id="album_disctotal" name="album_disctotal" value="{{ album_data.total_discs or album_data.disc_total or album_data.disctotal or '' }}" placeholder="Total discs in release">
                             </div>
                         </div>
                         </div><!-- /albumFormExtended -->
@@ -818,7 +820,7 @@
         </div>
     </div>
 
-    <div class="card mb-4 mobile-tab-group mobile-tab-active" data-mobile-group="disco" id="artist-appears-on-section">
+    <div class="card mb-4 album-mobile-group" id="artist-appears-on-section">
       <div class="card-header d-flex justify-content-between align-items-center">
         <h5 class="card-title mb-0">
           <i class="bi bi-people"></i> Appears On
