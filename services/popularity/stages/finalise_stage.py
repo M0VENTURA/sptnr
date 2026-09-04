@@ -923,9 +923,10 @@ def _sync_essential_playlist(artist: str, featured_rows: list[dict[str, Any]] | 
     def _track_year(row: dict[str, Any]) -> int:
         raw = row.get("release_year") or row.get("year") or 0
         try:
-            return int(float(raw)) if str(raw).strip() else 0
+            val = int(float(raw)) if str(raw).strip() else 0
+            return val if val > 0 else 9999
         except (TypeError, ValueError):
-            return 0
+            return 9999
 
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
@@ -1951,7 +1952,7 @@ def post_album_star_ratings(
             log_unified(f"{'RATING':<7} {'TRACK TITLE':<34} {'Z-SCORE':>7} {'SCORE':>6} {'LF LISTENS':>10}  SINGLE CONF")
             log_unified("-" * 80)
             for r in rows:
-                star_str = "★" * r r["stars"] + "☆" * (5 - r["stars"])
+                star_str = "★" * r["stars"] + "☆" * (5 - r["stars"])
                 log_unified(f"{star_str:<7} {r['title']:<34} {r['z']:>+7.2f} {r['score']:>6.1f} {r['lf']:>10}  {r['conf']}{r['note']}")
             log_unified("-" * 80)
             log_unified(f"⭐ Distribution: 5★: {star_counts[5]} | 4★: {star_counts[4]} | 3★: {star_counts[3]} | 2★: {star_counts[2]} | 1★: {star_counts[1]}")
