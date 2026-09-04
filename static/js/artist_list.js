@@ -1,18 +1,19 @@
-// Artist List Page JS
-// Extracted from templates/pages/artist_list.html
+// ===== ARTIST LIST PAGE JAVASCRIPT =====
 
-// ===== Windows Phone Metro Jump Picker =====
-
+// Open the Windows Phone style Metro jump grid overlay
 function openJumpPicker() {
     const overlay = document.getElementById('metroJumpOverlay');
     if (overlay) overlay.classList.remove('d-none');
 }
 
+// Close the jump grid overlay only when clicking the backdrop background
 function closeJumpPicker(event) {
+    if (event && event.target !== event.currentTarget) return;
     const overlay = document.getElementById('metroJumpOverlay');
     if (overlay) overlay.classList.add('d-none');
 }
 
+// Jump smoothly to the selected letter section
 function jumpToLetter(letter) {
     closeJumpPicker();
     const sectionId = letter === '#' ? 'section-num' : 'section-' + letter;
@@ -54,3 +55,13 @@ async function scanLetterArtists(letter, scanMode) {
         alert('Error starting scan: ' + error.message);
     }
 }
+
+// Bind Escape key to close the jump overlay
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        const overlay = document.getElementById('metroJumpOverlay');
+        if (overlay && !overlay.classList.contains('d-none')) {
+            overlay.classList.add('d-none');
+        }
+    }
+});
