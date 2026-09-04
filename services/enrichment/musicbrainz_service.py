@@ -961,7 +961,7 @@ class MusicBrainzService:
         album: str = "",
         original_release_year: int | None = None,
     ) -> dict[str, dict[str, Any]]:
-        """Look up an album's recordings using one album name and one year."""
+        """Look up an album's recordings with strict track-count alignment penalties."""
         if not self.enabled:
             logger.info(
                 "[MB] album recording batch skipped",
@@ -991,11 +991,16 @@ class MusicBrainzService:
         if effective_year is None and album and album_artist:
             effective_year = self.lookup_original_album_year(album_artist, album)
 
+        # Count how many tracks the local album has so we can penalize MB matches
+        # that belong to 88-track Box Sets or 1-track Singles instead of the canonical album.
+        local_track_count = len(unique)
+
         logger.info(
             "[MB] album metadata authority selected",
             authoritative_album_name=album,
             album_artist=album_artist,
             original_release_year=effective_year,
+            local_track_count=local_track_count,
             year_source=(
                 "caller"
                 if original_release_year is not None
@@ -1044,38 +1049,67 @@ class MusicBrainzService:
             batch: list[tuple[str, str, float]] = []
             for title, artist in chunk:
                 normalized = normalize_title_for_mbid_match(title)
-                best: dict[str, Any] | None = None
-                best_score = 0.0
-                best_anchor = False
+                
+                candidates_ranked = []
                 for recording in recordings:
                     if not isinstance(recording, dict):
                         continue
                     candidate_title = str(recording.get("title") or "")
                     if not edition_annotations_compatible(title, candidate_title):
                         continue
-                    score = _mbid_similarity(
+                    
+                    # 1. Base Text Similarity
+                    base_score = _mbid_similarity(
                         normalized,
                         normalize_title_for_mbid_match(candidate_title),
                     )
+                    
+                    if base_score < _MB_BATCH_SIMILARITY_FLOOR:
+                        continue
+                        
                     anchor = _recording_matches_album(recording, album)
-                    if score > best_score or (
-                        score == best_score and anchor and not best_anchor
-                    ):
-                        best, best_score, best_anchor = recording, score, anchor
+                    
+                    # 2. Track Count Penalty (Defends against 88-track Box Sets)
+                    penalty = 0.0
+                    if local_track_count > 0:
+                        best_diff = 999
+                        for rel in recording.get("releases") or []:
+                            if not isinstance(rel, dict):
+                                continue
+                            rel_track_count = int(rel.get("track-count") or sum(int(m.get("track-count") or 0) for m in rel.get("media") or []))
+                            if rel_track_count > 0:
+                                diff = abs(local_track_count - rel_track_count)
+                                if diff < best_diff:
+                                    best_diff = diff
+                                    
+                        if best_diff != 999:
+                            # 5% penalty per missing/extra track on the release
+                            # E.g. An 8-track album matching an 88-track Box Set = 4.0 penalty (instantly rejected)
+                            penalty = best_diff * 0.05
+                            
+                    final_score = base_score - penalty
+                    candidates_ranked.append((final_score, base_score, anchor, recording))
 
-                mbid = str((best or {}).get("id") or "").strip()
-                if not mbid or best_score < _MB_BATCH_SIMILARITY_FLOOR:
+                if not candidates_ranked:
                     logger.debug(
-                        "[MB] album recording match rejected",
+                        "[MB] album recording match rejected (no valid candidates)",
                         title=title,
                         artist=artist,
-                        match_score=round(best_score, 3),
                         **chunk_context,
                     )
                     continue
+                    
+                # Rank: Highest penalized score -> Is Album Anchor -> Highest raw text similarity
+                candidates_ranked.sort(key=lambda x: (x[0], x[2], x[1]), reverse=True)
+                
+                best_final_score, best_base_score, best_anchor, best_recording = candidates_ranked[0]
+                mbid = str(best_recording.get("id") or "").strip()
+
+                if not mbid:
+                    continue
 
                 key = self._cache_key(title, artist)
-                confidence = round(best_score, 3)
+                confidence = round(best_base_score, 3)
                 batch.append((key, mbid, confidence))
                 with self._mem_lock:
                     self._mbid_cache[key] = (mbid, confidence, time.time())
@@ -1890,8 +1924,15 @@ def resolve_release_id(release_id: str) -> str:
         candidates = [
             release for release in (official or releases) if track_count(release) > 0
         ] or official or releases
+        
         if candidates:
-            best = max(candidates, key=track_count)
+            def _sort_by_date(rel: dict[str, Any]) -> tuple[int, str]:
+                date_str = str(rel.get("date") or "9999")
+                if not date_str:
+                    date_str = "9999"
+                return (1 if date_str == "9999" else 0, date_str)
+            
+            best = sorted(candidates, key=_sort_by_date)[0]
             resolved = str(best.get("id") or release_id)
             logger.info(
                 "[MB] release group resolved to release",
@@ -1901,6 +1942,7 @@ def resolve_release_id(release_id: str) -> str:
                 **context,
             )
             return resolved
+            
         logger.info("[MB] release-group resolution found no candidates", **context)
     except Exception as exc:
         logger.exception(
@@ -2148,28 +2190,37 @@ def _enrich_releases_with_track_counts(
         )
 
 
-def _get_local_track_count(artist: str, album: str) -> int:
+def _get_local_track_stats(artist: str, album: str) -> tuple[int, int]:
+    """Returns (file_count, highest_track_number)."""
     try:
         from db.engine import db_session
         from sqlalchemy import text
         with db_session() as session:
-            row = session.execute(
+            rows = session.execute(
                 text(
-                    "SELECT COUNT(*) FROM tracks "
+                    "SELECT track_number FROM tracks "
                     "WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist) "
                     "AND LOWER(COALESCE(album, '')) = LOWER(:album)"
                 ),
                 {"artist": artist, "album": album},
-            ).first()
-            return int(row[0]) if row else 0
+            ).fetchall()
+            
+            count = len(rows)
+            max_track = 0
+            for row in rows:
+                tn_raw = str(row[0] or "").split('/')[0].strip()
+                if tn_raw.isdigit():
+                    max_track = max(max_track, int(tn_raw))
+                    
+            return count, max_track
     except Exception as exc:
         logger.exception(
-            "[MB] local track count failed",
+            "[MB] local track stats failed",
             artist=artist,
             album=album,
             error=_error(exc),
         )
-        return 0
+        return 0, 0
 
 
 def get_musicbrainz_best_release(
@@ -2221,6 +2272,10 @@ def get_musicbrainz_best_release(
                     "cover_art_url": _cover_art_url(release_id=release_id),
                 }
             )
+            
+        if releases and any(r["track_count"] == 0 for r in releases):
+            _enrich_releases_with_track_counts(releases, release_group_mbid)
+
         releases.sort(key=lambda item: (not bool(item.get("date")), item.get("date") or ""))
 
         if not releases:
@@ -2233,12 +2288,13 @@ def get_musicbrainz_best_release(
                 "local_track_count": None,
             }
 
-        local_count = _get_local_track_count(artist, album) or None
+        local_count, max_track = _get_local_track_stats(artist, album)
+        expected_count = max(local_count, max_track) if local_count > 0 else None
 
         def score(item: dict[str, Any]) -> float:
             value = 0.0
-            if local_count is not None:
-                value -= abs(local_count - int(item.get("track_count") or 0)) * 100.0
+            if expected_count is not None:
+                value -= abs(expected_count - int(item.get("track_count") or 0)) * 100.0
             if str(item.get("status") or "").casefold() == "official":
                 value += 50.0
             date = str(item.get("date") or "")
@@ -2249,10 +2305,10 @@ def get_musicbrainz_best_release(
             return value
 
         best = max(releases, key=score)
-        if local_count is None:
+        if expected_count is None:
             confidence = 0.5
         else:
-            difference = abs(local_count - int(best.get("track_count") or 0))
+            difference = abs(expected_count - int(best.get("track_count") or 0))
             confidence = 1.0 if difference == 0 else max(0.0, 1.0 - difference * 0.2)
 
         logger.info(
@@ -2261,7 +2317,7 @@ def get_musicbrainz_best_release(
             best_release_title=best.get("title"),
             best_release_date=best.get("date"),
             track_count=best.get("track_count"),
-            local_track_count=local_count,
+            expected_local_count=expected_count,
             confidence=round(confidence, 2),
             **context,
         )
@@ -2270,7 +2326,7 @@ def get_musicbrainz_best_release(
             "releases": releases,
             "best_release": best,
             "confidence": round(confidence, 2),
-            "local_track_count": local_count,
+            "local_track_count": expected_count,
         }
     except Exception as exc:
         logger.exception(
@@ -2544,7 +2600,6 @@ def compare_musicbrainz_release(
 
         result = {
             "success": True,
-            # Release-group title, so the album is not renamed to an edition.
             "mb_title": str(mb_release.get("release_title") or ""),
             "mb_specific_release_title": str(
                 mb_release.get("specific_release_title") or ""
