@@ -4,7 +4,7 @@
 
 {% block content %}
 <style>
-    /* Album page: mobile 4-tab grouping */
+    /* Album page: mobile 4-tab grouping setup */
     @media (max-width: 991.98px) {
         .album-mobile-group { display: none; }
         .album-mobile-group.mobile-tab-active { display: block; }
@@ -14,27 +14,6 @@
     }
     .genre-badge-more { cursor: pointer; font-size: 0.75rem; }
     .min-w-0 { min-width: 0; }
-    @media (max-width: 575.98px) {
-        #album-details-section .album-art-container {
-            width: 64px !important; height: 64px !important; border-radius: 0.4rem;
-        }
-        #album-details-section .album-art-change-btn { display: none !important; }
-        #album-details-section .album-hero-title { font-size: 1.15rem; }
-        #album-details-section .album-hero-sub { font-size: 0.85rem; }
-    }
-    @media (max-width: 991.98px) {
-        .album-track-mobile-row td { padding: 0.45rem 0.75rem; }
-        .album-track-mobile-row .btn { min-height: 0; padding: 0.15rem 0.4rem; }
-        #bulkActionsToolbar {
-            position: fixed; bottom: 0; left: 0; right: 0; z-index: 2000;
-            background: rgba(20, 30, 24, 0.97); border-top: 1px solid var(--border-color);
-            padding: 0.5rem 0.75rem; justify-content: center; box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.5);
-        }
-        #bulkActionsToolbar .btn { min-height: 40px; }
-    }
-    body.bulk-actions-visible main.container-fluid { padding-bottom: 120px; }
-    .album-form-toggle[aria-expanded="true"] .bi-chevron-down { transform: rotate(180deg); }
-    .album-form-toggle .bi-chevron-down { transition: transform 0.2s ease; }
     [id$="-section"] { scroll-margin-top: 130px; }
 </style>
 
@@ -75,73 +54,7 @@
                     </h1>
                     <div class="small text-muted mb-1 album-hero-sub">
                         by <a href="{{ url_for('ui.artist_detail', name=artist_name) }}" class="text-success text-decoration-none fw-semibold">{{ artist_name }}</a>
-                        {% if album_data and album_data.avg_stars is not none and album_data.avg_stars != '' %}
-                            <span class="badge bg-success-subtle text-success border border-success-subtle ms-1">{{ (album_data.avg_stars if album_data.avg_stars is not none else 0.0)|round(2) }}★</span>
-                        {% endif %}
                     </div>
-                    {% if album_data and album_data.spotify_album_type %}
-                    <span class="badge bg-secondary" style="font-size:0.7rem;">{{ album_data.spotify_album_type|title }}</span>
-                    {% endif %}
-                </div>
-            </div>
-
-            <!-- Metadata Strip -->
-            <div class="row g-2 text-center py-2 my-2 border-top border-bottom border-secondary rounded" style="background: var(--tertiary-bg, #282828);">
-                <div class="col-6 col-md-3 border-md-end border-secondary">
-                    <div class="small text-muted text-uppercase" style="font-size:0.65rem;">Year</div>
-                    <div class="fw-bold small">{{ album_data.album_year or album_data.year or '—' }}</div>
-                </div>
-                <div class="col-6 col-md-3 border-md-end border-secondary">
-                    <div class="small text-muted text-uppercase" style="font-size:0.65rem;">Rating</div>
-                    <div class="fw-bold small text-success">{{ (album_data.avg_stars|float)|round(2) if album_data and album_data.avg_stars else '—' }}★</div>
-                </div>
-                <div class="col-6 col-md-3 border-md-end border-secondary">
-                    <div class="small text-muted text-uppercase" style="font-size:0.65rem;">Tracks</div>
-                    <div class="fw-bold small">{{ album_data.track_count or 0 }}</div>
-                </div>
-                <div class="col-6 col-md-3">
-                    <div class="small text-muted text-uppercase" style="font-size:0.65rem;">Duration</div>
-                    <div class="fw-bold small">
-                        {% if album_data.total_duration %}
-                            {% set hours = (album_data.total_duration / 3600)|int %}
-                            {% set minutes = ((album_data.total_duration % 3600) / 60)|int %}
-                            {% if hours > 0 %}{{ hours }}h {{ minutes }}m{% else %}{{ minutes }}m{% endif %}
-                        {% else %}—{% endif %}
-                    </div>
-                </div>
-            </div>
-
-            <!-- Streamlined Scan Toolbar -->
-            <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 pt-1 mb-3 scan-toolbar">
-                <form method="POST" action="{{ url_for('scans.scan_album_custom') }}" class="d-flex align-items-center gap-2 flex-wrap">
-                    <input type="hidden" name="artist" value="{{ artist_name }}">
-                    <input type="hidden" name="album" value="{{ album_name }}">
-                    
-                    <div class="input-group input-group-sm" style="width: auto; max-width: 220px;">
-                        {% include 'components/_scan_selector.html' %}
-                        <button class="btn btn-warning fw-bold px-3" type="submit" title="Run Scan">
-                            <i class="bi bi-lightning-fill"></i> Run
-                        </button>
-                    </div>
-
-                    <div class="d-flex align-items-center px-3 py-1 bg-dark rounded border border-secondary">
-                        <div class="form-check form-check-inline m-0">
-                            <input class="form-check-input" type="checkbox" id="albumForceScan" name="force" value="1">
-                            <label class="form-check-label small text-muted" for="albumForceScan">Force</label>
-                        </div>
-                    </div>
-                </form>
-
-                <div class="dropdown ms-auto">
-                    <button type="button" class="btn btn-outline-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
-                        <i class="bi bi-three-dots-vertical"></i> Actions
-                    </button>
-                    <ul class="dropdown-menu dropdown-menu-end shadow">
-                        <li><a class="dropdown-item" href="javascript:void(0)" onclick="openAlbumLookupModal()"><i class="bi bi-search me-2"></i>Lookup on MusicBrainz</a></li>
-                        <li><a class="dropdown-item" href="javascript:void(0)" onclick="downloadMissingTracks()"><i class="bi bi-download me-2"></i>Download Missing Tracks</a></li>
-                        <li><a class="dropdown-item" href="javascript:void(0)" onclick="renameAlbumFiles('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')"><i class="bi bi-files me-2"></i>Rename Files</a></li>
-                        <li><a class="dropdown-item" href="javascript:void(0)" onclick="autoLinkAllMbids()"><i class="bi bi-link-45deg me-2"></i>Auto-Link MBIDs</a></li>
-                    </ul>
                 </div>
             </div>
 
@@ -166,22 +79,20 @@
         </div>
     </div>
 
-    <!-- TAB 1: TRACKS (Active by default) -->
+    <!-- TAB 1: TRACKS -->
     <div class="album-mobile-group mobile-tab-active" data-album-group="tracks">
         <div class="card mb-4 shadow-sm" id="album-tracks-section">
-            <!-- Track listing table remains here -->
-            <div class="card-header border-secondary d-flex justify-content-between align-items-center flex-wrap gap-2">
-                <h5 class="card-title mb-0 fw-bold"><i class="bi bi-music-note-list text-success"></i> Tracks (<span id="albumTrackCount">{{ tracks|length }}</span>)</h5>
+            <div class="card-header border-secondary d-flex justify-content-between align-items-center flex-wrap gap-2 bg-dark">
+                <h5 class="card-title mb-0 fw-bold text-light"><i class="bi bi-music-note-list text-success"></i> Tracks (<span id="albumTrackCount">{{ tracks|length }}</span>)</h5>
             </div>
             <div class="table-responsive">
-                <table class="table table-hover mb-0">
-                    <!-- Standard Track Rows Table -->
+                <table class="table table-hover table-dark align-middle mb-0">
                     <tbody id="albumTracksTbody">
                         {% for track in tracks %}
                         <tr data-track-id="{{ track.id }}">
-                            <td>{{ loop.index }}</td>
+                            <td class="text-center text-muted" style="width: 50px;">{{ loop.index }}</td>
                             <td>{{ track.title }}</td>
-                            <td class="text-center">{% if track.stars %}{% for i in range(track.stars) %}★{% endfor %}{% else %}—{% endif %}</td>
+                            <td class="text-center" style="width: 120px;">{% if track.stars %}{% for i in range(track.stars) %}★{% endfor %}{% else %}—{% endif %}</td>
                         </tr>
                         {% endfor %}
                     </tbody>
@@ -192,21 +103,25 @@
 
     <!-- TAB 2: EDIT METADATA -->
     <div class="album-mobile-group" data-album-group="details">
-        <form method="POST" action="/album/{{ artist_name|path_segment }}/{{ album_name|path_segment }}" id="albumMetadataForm" data-sticky-save>
-            <div class="card mb-4 shadow-sm" id="album-information-section">
-                <div class="card-header d-flex justify-content-between align-items-center">
+        <form method="POST" action="/album/{{ artist_name|path_segment }}/{{ album_name|path_segment }}" id="albumMetadataForm">
+            <div class="card mb-4 shadow-sm bg-dark text-light border-secondary" id="album-information-section">
+                <div class="card-header border-secondary d-flex justify-content-between align-items-center">
                     <h5 class="card-title mb-0"><i class="bi bi-pencil-square text-primary"></i> Edit Album Metadata</h5>
                     <button type="submit" class="btn btn-sm btn-success"><i class="bi bi-check-circle"></i> Save</button>
                 </div>
                 <div class="card-body">
                     <div class="mb-3">
                         <label for="album_title" class="form-label">Album Title</label>
-                        <input type="text" class="form-control" id="album_title" name="album_title" value="{{ album_name }}" required>
+                        <input type="text" class="form-control bg-dark text-light border-secondary" id="album_title" name="album_title" value="{{ album_name }}" required>
                     </div>
                     <div class="mb-3">
                         <label for="album_artist" class="form-label">Album Artist</label>
-                        <input type="text" class="form-control" id="album_artist" name="album_artist" value="{{ artist_name }}" required>
+                        <input type="text" class="form-control bg-dark text-light border-secondary" id="album_artist" name="album_artist" value="{{ artist_name }}" required>
                     </div>
+                    <input type="hidden" id="album_mbid" name="album_mbid" value="{{ album_data.mbid if album_data else '' }}">
+                    <input type="hidden" id="release_year" name="release_year" value="{{ album_data.album_year if album_data else '' }}">
+                    <input type="hidden" id="cover_art_url" name="cover_art_url" value="">
+                    <input type="hidden" id="album_genres" name="album_genres" value="">
                 </div>
             </div>
         </form>
@@ -214,19 +129,19 @@
 
     <!-- TAB 3: GENRES -->
     <div class="album-mobile-group" data-album-group="genres">
-        <div class="card mb-4 shadow-sm" id="album-genres-section">
+        <div class="card mb-4 shadow-sm bg-dark text-light border-secondary" id="album-genres-section">
             <div class="card-header border-secondary">
                 <h5 class="card-title mb-0 fw-bold"><i class="bi bi-tags-fill text-warning"></i> Genres and Moods</h5>
             </div>
             <div class="card-body">
-                <!-- Genre controls -->
+                <div id="albumGenresContainer"><span class="text-muted small">No genres set</span></div>
             </div>
         </div>
     </div>
 
     <!-- TAB 4: SIMILAR -->
     <div class="album-mobile-group" data-album-group="similar">
-        <div class="card mb-4 shadow-sm" id="album-similar-section">
+        <div class="card mb-4 shadow-sm bg-dark text-light border-secondary" id="album-similar-section">
             <div class="card-header border-secondary">
                 <h5 class="card-title mb-0 fw-bold"><i class="bi bi-person-heart text-danger"></i> Similar Artists</h5>
             </div>
