@@ -72,7 +72,6 @@
         <pre id="logOutput" class="card-body bg-dark text-light p-3 mb-0 flex-grow-1" style="overflow-y: auto; font-family: 'Consolas', 'Courier New', monospace; font-size: 13px; line-height: 1.5; white-space: pre; word-wrap: normal; scrollbar-width: thin;"></pre>
     </div>
 </div>
-
 <script>
 (function () {
     var logOutput = document.getElementById('logOutput');
@@ -92,11 +91,11 @@
     var streamSource = null;    // active EventSource
     var loadingAll = false;     // true once the full file is loaded
 
-    // ── Tail loading: never dump a 24MB file into the DOM at once ──
+    // ── Tail loading: never dump a massive file into the DOM at once ──
     function linesFor(name, opts) {
         opts = opts || {};
         if (opts.all || loadingAll) return 'all';
-        return name === 'unified_scan.log' ? '500' : '500';
+        return '500';
     }
 
     // ── Log level + stage-tag parsing ──
@@ -176,17 +175,27 @@
         var name = selected.value;
         tailBannerText.classList.add('d-none');
         logOutput.innerHTML = '<div class="text-info small p-2"><span class="spinner-border spinner-border-sm me-2"></span> Loading log file...</div>';
+        
         fetch('/api/log-file?name=' + encodeURIComponent(name) + '&lines=' + linesFor(name, opts))
             .then(function (r) {
-                if (!r.ok) throw new Error('Server returned HTTP ' + r.status);
-                var ct = (r.headers.get('content-type') || '').toLowerCase();
-                if (ct.indexOf('application/json') === -1) {
-                    throw new Error('Server returned ' + (ct || 'non-JSON') + ' — API route may be unavailable');
-                }
-                return r.json();
+                return r.text().then(text => {
+                    let data;
+                    try {
+                        data = text ? JSON.parse(text) : {};
+                    } catch (e) {
+                        throw new Error('Server response was not valid JSON (HTTP ' + r.status + ').');
+                    }
+                    if (!r.ok) {
+                        throw new Error(data.error || 'Server returned HTTP ' + r.status);
+                    }
+                    return data;
+                });
             })
             .then(function (data) {
-                if (data && data.error) { logOutput.innerHTML = '<div class="text-danger small p-2"><i class="bi bi-exclamation-triangle me-1"></i> Error: ' + esc(data.error) + '</div>'; return; }
+                if (data && data.error) { 
+                    logOutput.innerHTML = '<div class="text-danger small p-2"><i class="bi bi-exclamation-triangle me-1"></i> Error: ' + esc(data.error) + '</div>'; 
+                    return; 
+                }
                 rawLines = (data && data.lines) || [];
                 loadingAll = opts.all || data.truncated === false;
                 var truncated = data.truncated && !opts.all;
@@ -202,7 +211,9 @@
                 render();
                 scrollToBottom();
             })
-            .catch(function (err) { logOutput.innerHTML = '<div class="text-danger small p-2"><i class="bi bi-x-circle me-1"></i> Error loading log: ' + esc(err.message) + '</div>'; });
+            .catch(function (err) { 
+                logOutput.innerHTML = '<div class="text-danger small p-2"><i class="bi bi-x-circle me-1"></i> Error loading log: ' + esc(err.message) + '</div>'; 
+            });
     }
 
     // ── Live stream (SSE) ──
@@ -211,6 +222,9 @@
         if (!selected) return;
         var name = selected.value;
         if (typeof EventSource === 'undefined') { alert('Live streaming is not supported by this browser.'); return; }
+        
+        if (streamSource) { streamSource.close(); }
+        
         streamSource = new EventSource('/api/logs/stream?name=' + encodeURIComponent(name));
         streamSource.addEventListener('message', function (e) {
             if (!e.data) return;
@@ -225,6 +239,10 @@
                 if (follow) scrollToBottom();
             } catch (_) { /* ignore malformed frame */ }
         });
+        streamSource.onerror = function() {
+            // Automatically attempt reconnect or safely handle dropped SSE channels
+            console.warn("SSE stream connection lost or reset.");
+        };
         streamBtn.classList.replace('btn-success', 'btn-danger');
         document.getElementById('streamLogLabel').innerHTML = 'Stop Stream';
         refreshBtn.disabled = true;
@@ -298,6 +316,7 @@
 
     logSelector.addEventListener('change', function () {
         stopStream();
+        loadingAll = false; // Reset full-load state when switching active files (e.g. unified_scan.log)
         loadLog({});
     });
 
