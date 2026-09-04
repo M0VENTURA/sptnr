@@ -683,6 +683,36 @@ def is_interlude_lb_outlier(
     album_median_ratio = median(ratios)
     if album_median_ratio <= 0:
         return False
+
+def calculate_artist_percentile_star_rating(track_score: float, artist_scores: list[float]) -> int:
+    """Calculate a 1-5 star rating based on artist catalog percentiles for compilation albums.
+
+    Brackets:
+      - Top 10% (percentile >= 0.90): 5★
+      - Top 20% (percentile >= 0.80): 4★
+      - Top 30% (percentile >= 0.70): 3★
+      - Top 50% (percentile >= 0.50): 2★
+      - Rest (< 0.50): 1★
+    """
+    valid = [float(s) for s in (artist_scores or []) if float(s or 0) > 0]
+    if not valid or track_score is None or float(track_score) <= 0:
+        return 1
+
+    val = float(track_score)
+    # Calculate what fraction of the artist's catalog scores are at or below this track's score
+    below_or_equal = sum(1 for s in valid if s <= val)
+    percentile = below_or_equal / len(valid)
+
+    if percentile >= 0.90:
+        return 5
+    elif percentile >= 0.80:
+        return 4
+    elif percentile >= 0.70:
+        return 3
+    elif percentile >= 0.50:
+        return 2
+    else:
+        return 1
         
     track_ratio = lb / lf
     return track_ratio > album_median_ratio * float(ratio_factor)
