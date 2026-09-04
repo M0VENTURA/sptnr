@@ -28,6 +28,7 @@ from services.popularity.popularity_math import (
     calculate_robust_zscore,
     effective_album_ratio,
     fmt_count as _fmt_count,
+    calculate_artist_percentile_star_rating,
 )
 from services.popularity.popularity_zscore import composite_listener_z
 from services.catalog.album_classification_service import (
@@ -229,6 +230,157 @@ def _album_z_band_star(
     return 1
 
 
+def _assign_stars(
+    track: dict[str, Any],
+    album_scores: list[float],
+    artist_scores: list[float],
+    album_lf_listeners: list[float] | None = None,
+    album_lb_listens: list[float] | None = None,
+    popularity_only: bool = False,
+    album_model: dict[str, Any] | None = None,
+    is_compilation: bool = False,
+    artist_listen_distribution: list[float] | None = None,
+) -> int:
+    """Assign 1–5 star rating to a single track."""
+    score = float(track.get("popularity_score") or track.get("final_score") or 0)
+    single_confidence = str(track.get("single_confidence") or "low")
+    is_live = (
+        bool(track.get("is_live"))
+        or bool(track.get("album_context_live"))
+        or is_live_or_alternate_track_title(track.get("title"))
+    )
+
+    if single_confidence == "user":
+        return 5
+
+    th = _live_star_thresholds()
+
+    try:
+        from services.popularity.popularity_config import get_single_organic_floor
+        _org_score, _org_listeners = get_single_organic_floor()
+    except Exception:
+        _org_score, _org_listeners = 45.0, 1000.0
+        
+    organic = score >= _org_score or int(track.get("lastfm_listeners") or 0) >= _org_listeners
+    ref_scores = artist_scores if is_compilation else album_scores
+
+    album_z, album_spread = _compute_album_z(score, ref_scores)
+    artist_z, artist_spread = _compute_artist_z(score, artist_scores)
+    popularity_marked = bool(track.get("popularity_marked"))
+    
+    if is_instrumental_track_title(str(track.get("title") or "")):
+        popularity_marked = False
+
+    if track.get("_global_5star_locked") and not popularity_only:
+        if not is_live and organic:
+            track["_global_5star_locked"] = True
+            return 5
+
+    z_standout_source = _has_z_standout_source(track)
+    if z_standout_source:
+        _verify_z = 0.0
+        if album_lf_listeners is not None and album_lb_listens is not None:
+            _verify_z = composite_listener_z(
+                float(track.get("lastfm_listeners") or 0),
+                float(track.get("listenbrainz_listens") or 0),
+                artist=track.get("artist"),
+                album=track.get("album"),
+                album_lf_listeners=album_lf_listeners,
+                album_lb_listens=album_lb_listens,
+            )
+        if _verify_z and _verify_z < th["listener_5star_z"]:
+            z_standout_source = False
+            
+    is_standout = (
+        album_z >= th["star5_album_z"] - _star_epsilon_z(album_spread, th["epsilon"])
+        and artist_z >= th["star5_artist_z"] - _star_epsilon_z(artist_spread, th["epsilon"])
+        and (popularity_marked or z_standout_source)
+    )
+
+    _force_stars: int | None = None
+    if (
+        not is_live
+        and not is_instrumental_track_title(str(track.get("title") or ""))
+        and artist_listen_distribution
+        and not popularity_only
+    ):
+        try:
+            from services.popularity.popularity_config import get_artist_force_star_percentiles
+            _force5_pct, _force4_pct = get_artist_force_star_percentiles()
+            _track_listens = float(track.get("lastfm_listeners") or 0)
+            if _track_listens > 0 and (_force5_pct > 0 or _force4_pct > 0):
+                _valid = [float(v) for v in artist_listen_distribution if float(v or 0) > 0]
+                if len(_valid) >= 5:
+                    _valid.sort(reverse=True)
+                    _rank = sum(1 for v in _valid if v > _track_listens) + 1
+                    _pct = _rank / len(_valid)
+                    if _force5_pct > 0 and _pct <= _force5_pct:
+                        _force_stars = 5
+                    elif _force4_pct > 0 and _pct <= _force4_pct:
+                        _force_stars = 4
+        except Exception:
+            _force_stars = None
+            
+    if _force_stars is not None and not is_live:
+        track["_force_floor"] = _force_stars
+        return _force_stars
+
+    # Bypass the restrictive Album Z-Curve and Top-N Slot Caps for Compilation Albums
+    if is_compilation:
+        comp_stars = calculate_artist_percentile_star_rating(score, artist_scores)
+        if is_live:
+            comp_stars = max(1, comp_stars - 1)  # Apply a minor penalty to live tracks on compilations
+        if comp_stars == 5:
+            track["_era_5star"] = True
+        return comp_stars
+
+    if not is_live and (
+        popularity_marked
+        or (not popularity_only and single_confidence == "high" and organic)
+        or is_standout
+    ):
+        if is_standout:
+            track["_era_5star"] = True
+        return 5
+
+        if album_model and album_model.get("has_benchmark") and score > 0:
+            era = str(album_model.get("era") or "")
+            _rules, _, _ = _live_album_scaling()
+            rules = _rules.get(era)
+            catalog_cutoff = album_model.get("catalog_cutoff")
+            qualifies_catalog = catalog_cutoff is not None and score >= float(catalog_cutoff)
+            
+            _rank_ref = ref_scores if is_compilation else album_scores
+            qualifies_album = (
+                not popularity_only
+                and organic
+                and rules is not None
+                and _album_rank(score, _rank_ref) <= int(rules["album_top_n"])
+            )
+            if qualifies_catalog or qualifies_album:
+                track["_era_5star"] = True
+                return 5
+                
+            if not popularity_only and single_confidence == "high":
+                band = _album_z_band_star(
+                    score, ref_scores, artist_scores=artist_scores,
+                    is_live=is_live, single_confidence=single_confidence,
+                )
+                return max(band, 4) if organic else min(band, 3)
+                
+            return _album_z_band_star(
+                score, ref_scores, artist_scores=artist_scores,
+                is_live=is_live, single_confidence=single_confidence,
+            )
+
+        return 5
+
+    return _album_z_band_star(
+        score, ref_scores, artist_scores=artist_scores,
+        is_live=is_live, single_confidence=single_confidence,
+    )
+
+
 # ---------------------------------------------------------------------------
 # 3-step scaling model helpers
 # ---------------------------------------------------------------------------
@@ -381,148 +533,6 @@ def _build_album_model(
     except Exception as exc:
         logger.debug("Album benchmark failed", artist=artist, error=str(exc))
         return {}
-
-
-def _assign_stars(
-    track: dict[str, Any],
-    album_scores: list[float],
-    artist_scores: list[float],
-    album_lf_listeners: list[float] | None = None,
-    album_lb_listens: list[float] | None = None,
-    popularity_only: bool = False,
-    album_model: dict[str, Any] | None = None,
-    is_compilation: bool = False,
-    artist_listen_distribution: list[float] | None = None,
-) -> int:
-    """Assign 1–5 star rating to a single track."""
-    score = float(track.get("popularity_score") or track.get("final_score") or 0)
-    single_confidence = str(track.get("single_confidence") or "low")
-    is_live = (
-        bool(track.get("is_live"))
-        or bool(track.get("album_context_live"))
-        or is_live_or_alternate_track_title(track.get("title"))
-    )
-
-    if single_confidence == "user":
-        return 5
-
-    th = _live_star_thresholds()
-
-    try:
-        from services.popularity.popularity_config import get_single_organic_floor
-        _org_score, _org_listeners = get_single_organic_floor()
-    except Exception:
-        _org_score, _org_listeners = 45.0, 1000.0
-        
-    organic = score >= _org_score or int(track.get("lastfm_listeners") or 0) >= _org_listeners
-    ref_scores = artist_scores if is_compilation else album_scores
-
-    album_z, album_spread = _compute_album_z(score, ref_scores)
-    artist_z, artist_spread = _compute_artist_z(score, artist_scores)
-    popularity_marked = bool(track.get("popularity_marked"))
-    
-    if is_instrumental_track_title(str(track.get("title") or "")):
-        popularity_marked = False
-
-    if track.get("_global_5star_locked") and not popularity_only:
-        if not is_live and organic:
-            track["_global_5star_locked"] = True
-            return 5
-
-    z_standout_source = _has_z_standout_source(track)
-    if z_standout_source:
-        _verify_z = 0.0
-        if album_lf_listeners is not None and album_lb_listens is not None:
-            _verify_z = composite_listener_z(
-                float(track.get("lastfm_listeners") or 0),
-                float(track.get("listenbrainz_listens") or 0),
-                artist=track.get("artist"),
-                album=track.get("album"),
-                album_lf_listeners=album_lf_listeners,
-                album_lb_listens=album_lb_listens,
-            )
-        if _verify_z and _verify_z < th["listener_5star_z"]:
-            z_standout_source = False
-            
-    is_standout = (
-        album_z >= th["star5_album_z"] - _star_epsilon_z(album_spread, th["epsilon"])
-        and artist_z >= th["star5_artist_z"] - _star_epsilon_z(artist_spread, th["epsilon"])
-        and (popularity_marked or z_standout_source)
-    )
-
-    _force_stars: int | None = None
-    if (
-        not is_live
-        and not is_instrumental_track_title(str(track.get("title") or ""))
-        and artist_listen_distribution
-        and not popularity_only
-    ):
-        try:
-            from services.popularity.popularity_config import get_artist_force_star_percentiles
-            _force5_pct, _force4_pct = get_artist_force_star_percentiles()
-            _track_listens = float(track.get("lastfm_listeners") or 0)
-            if _track_listens > 0 and (_force5_pct > 0 or _force4_pct > 0):
-                _valid = [float(v) for v in artist_listen_distribution if float(v or 0) > 0]
-                if len(_valid) >= 5:
-                    _valid.sort(reverse=True)
-                    _rank = sum(1 for v in _valid if v > _track_listens) + 1
-                    _pct = _rank / len(_valid)
-                    if _force5_pct > 0 and _pct <= _force5_pct:
-                        _force_stars = 5
-                    elif _force4_pct > 0 and _pct <= _force4_pct:
-                        _force_stars = 4
-        except Exception:
-            _force_stars = None
-            
-    if _force_stars is not None and not is_live:
-        track["_force_floor"] = _force_stars
-        return _force_stars
-
-    if not is_live and (
-        popularity_marked
-        or (not popularity_only and single_confidence == "high" and organic)
-        or is_standout
-    ):
-        if is_standout:
-            track["_era_5star"] = True
-            return 5
-
-        if album_model and album_model.get("has_benchmark") and score > 0:
-            era = str(album_model.get("era") or "")
-            _rules, _, _ = _live_album_scaling()
-            rules = _rules.get(era)
-            catalog_cutoff = album_model.get("catalog_cutoff")
-            qualifies_catalog = catalog_cutoff is not None and score >= float(catalog_cutoff)
-            
-            _rank_ref = ref_scores if is_compilation else album_scores
-            qualifies_album = (
-                not popularity_only
-                and organic
-                and rules is not None
-                and _album_rank(score, _rank_ref) <= int(rules["album_top_n"])
-            )
-            if qualifies_catalog or qualifies_album:
-                track["_era_5star"] = True
-                return 5
-                
-            if not popularity_only and single_confidence == "high":
-                band = _album_z_band_star(
-                    score, ref_scores, artist_scores=artist_scores,
-                    is_live=is_live, single_confidence=single_confidence,
-                )
-                return max(band, 4) if organic else min(band, 3)
-                
-            return _album_z_band_star(
-                score, ref_scores, artist_scores=artist_scores,
-                is_live=is_live, single_confidence=single_confidence,
-            )
-
-        return 5
-
-    return _album_z_band_star(
-        score, ref_scores, artist_scores=artist_scores,
-        is_live=is_live, single_confidence=single_confidence,
-    )
 
 
 # ---------------------------------------------------------------------------
