@@ -261,26 +261,29 @@ function setArtistFilter(filter) {
   document.querySelectorAll('.artist-filter-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.filter === effective);
   });
+  
   document.querySelectorAll('.album-row').forEach(row => {
     const status = row.dataset.status || 'discovered';
+    const isMissing = status === 'missing';
+    
+    // Check if category has an active "Hide Missing" state enabled
+    const categorySection = row.closest('.category-section');
+    const hideMissingBtn = categorySection ? categorySection.querySelector('.toggle-missing-btn') : null;
+    const isCategoryHidingMissing = hideMissingBtn && hideMissingBtn.getAttribute('data-hidden') === 'true';
+
     if (effective === 'all') {
-      row.style.display = '';
-      return;
-    }
-    if (effective === 'library') {
-      row.style.display = status === 'missing' ? 'none' : '';
-      return;
-    }
-    if (effective === 'missing') {
-      row.style.display = status === 'missing' ? '' : 'none';
+      // If user is filtering 'all', respect individual category 'Hide Missing' states
+      if (isMissing && isCategoryHidingMissing) {
+        row.style.display = 'none';
+      } else {
+        row.style.display = '';
+      }
+    } else if (effective === 'library') {
+      row.style.display = isMissing ? 'none' : '';
+    } else if (effective === 'missing') {
+      row.style.display = isMissing ? '' : 'none';
     }
   });
-  
-  if (typeof window.bootstrap !== 'undefined') {
-    document.querySelectorAll('.album-row .accordion-collapse.show').forEach(el => {
-      bootstrap.Collapse.getInstance(el)?.hide();
-    });
-  }
 
   document.querySelectorAll('.category-section').forEach(section => {
     const rows = Array.from(section.querySelectorAll('.album-row'));
@@ -332,7 +335,7 @@ async function loadArtistCoveredBy(artistName) {
     if (countEl) countEl.textContent = `${covers.length} cover(s) found`;
     let html = '<div class="table-responsive"><table class="table table-hover mb-0"><thead><tr><th>Covering Artist</th><th>Song Title</th><th>Album</th><th class="text-center">Year</th></tr></thead><tbody>';
     
-    covers.forEach(cover => {
+    codes.forEach(cover => {
       html += `<tr>
         <td>${escapeHtml(cover.artist)}</td>
         <td>${escapeHtml(cover.title)}</td>
