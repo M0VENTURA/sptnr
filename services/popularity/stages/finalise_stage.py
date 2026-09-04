@@ -1076,6 +1076,9 @@ def _sweep_orphaned_genre_playlists_from_navidrome(keep_playlist_names: set[str]
     except Exception as exc:
         logger.warning("Genre playlist Navidrome sweep failed", error=str(exc))
 
+def _create_essential_m3u(*args, **kwargs):
+    return _sync_essential_playlist(*args, **kwargs)
+
 
 def _sync_playlist_to_navidrome(
     playlist_name: str,
