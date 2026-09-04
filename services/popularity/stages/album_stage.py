@@ -195,6 +195,26 @@ def _detect_album_type(
     return "album"
 
 
+def _persist_artist_external_ids(artist: str, mbid: str | None = None, discogs_id: str | None = None) -> None:
+    """Ensure artist profile row exists and update its external IDs."""
+    if not artist:
+        return
+    try:
+        with db_session() as session:
+            session.execute(
+                text("""
+                    INSERT INTO artists (name, musicbrainz_artistid, discogs_artist_id)
+                    VALUES (:name, :mbid, :did)
+                    ON CONFLICT (name) DO UPDATE SET
+                        musicbrainz_artistid = COALESCE(NULLIF(EXCLUDED.musicbrainz_artistid, ''), artists.musicbrainz_artistid),
+                        discogs_artist_id = COALESCE(NULLIF(EXCLUDED.discogs_artist_id, ''), artists.discogs_artist_id)
+                """),
+                {"name": artist, "mbid": mbid or "", "did": discogs_id or ""}
+            )
+    except Exception as exc:
+        logger.debug("Artist external IDs persistence failed", artist=artist, error=str(exc))
+
+
 def _http_get_bytes(url: str, *, section: str, context: dict[str, Any]) -> bytes | None:
     response = _call_with_heartbeat(
         section,
@@ -689,6 +709,8 @@ def _fetch_discogs_artist_id(artist: str, conn: Any, options: dict[str, Any]) ->
                     {"did": discogs_artist_id, "artist": artist},
                 )
                 rowcount = result.rowcount
+
+        _persist_artist_external_ids(artist, discogs_id=discogs_artist_id)
         logger.info("[ENRICH] Discogs artist ID persisted", discogs_id=discogs_artist_id, rows_updated=rowcount, **context)
     except Exception as exc:
         logger.exception("[ENRICH] Discogs artist ID lookup failed", error=_safe_error(exc), **context)
@@ -716,6 +738,7 @@ def _fetch_musicbrainz_artist_id(artist: str, conn: Any, options: dict[str, Any]
         existing_mbid = row_get(row, "mbid") if row else None
         if existing_mbid:
             logger.info("[ENRICH] MusicBrainz artist ID already present", mbid=existing_mbid, **context)
+            _persist_artist_external_ids(artist, mbid=str(existing_mbid))
             return
 
         from services.enrichment.musicbrainz_persistence_service import lookup_and_save_artist_mbid
@@ -723,8 +746,12 @@ def _fetch_musicbrainz_artist_id(artist: str, conn: Any, options: dict[str, Any]
             "artist_id.musicbrainz.lookup_and_persist",
             lookup_and_save_artist_mbid,
             artist,
+            None,
             log_context=context,
         )
+        if mbid:
+            _persist_artist_external_ids(artist, mbid=str(mbid))
+
         logger.info("[ENRICH] MusicBrainz artist ID lookup result", found=bool(mbid), mbid=mbid, **context)
     except Exception as exc:
         logger.exception("[ENRICH] MusicBrainz artist ID lookup failed", error=_safe_error(exc), **context)
