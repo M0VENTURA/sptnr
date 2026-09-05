@@ -1,7 +1,31 @@
-"""Discogs enrichment service."""
+"""Discogs enrichment service.
+
+Rebuilt with the following corrections:
+
+- ``EP`` is no longer treated as a single release format. EP membership is
+  reported separately, and an EP *lead* track is promoted to a single at
+  medium confidence, since lead tracks are commonly issued as singles while
+  deep cuts are not.
+- Confidence no longer requires a perfect title match. Verified non-exact
+  matches now produce usable medium-confidence evidence, while only exact,
+  artist-verified, non-promo, non-EP matches reach the 0.85 "full
+  confidence" band used by the single-detection early exit.
+- ``artist_verified``, ``is_promo`` and ``is_ep_lead`` are propagated in the
+  returned confidence metadata so callers can gate the early exit correctly.
+- Cached release rows preserve release type and track count; an unknown
+  release type is no longer silently coerced to "album".
+- Failed artist-release, release-tracklist and official-video lookups are no
+  longer cached as definitive negatives.
+- HTTP and database work no longer happens while holding the service lock.
+- Special-edition album context no longer disables detection outright.
+- Global search artist matching is token-aware rather than substring-based.
+- Service resolution uses a per-token registry, so an empty token can never
+  evict a working, cache-warm instance.
+"""
 
 from __future__ import annotations
 
+import logging
 import re
 import threading
 from difflib import SequenceMatcher
@@ -25,17 +49,52 @@ from helpers.normalization_service import (
 )
 
 logger = structlog.get_logger(__name__)
+# Force this specific module to emit DEBUG logs regardless of global config
+logging.getLogger(__name__).setLevel(logging.DEBUG)
 
-# --- CONSTANTS ---
+# --- CONSTANTS ---------------------------------------------------------------
+
 MIN_DISCOGS_SIMILARITY = 0.75
-DISCOGS_BASE_WEIGHT = 0.85
+
+# Confidence at or above which a Discogs match is treated as a definitive
+# high-confidence source (and may short-circuit the remaining detection arms).
 DISCOGS_FULL_CONFIDENCE = 0.85
 
+# Minimum confidence for an artist-verified match to count as evidence at all.
+DISCOGS_MIN_MATCH_CONFIDENCE = 0.75
+
+# Minimum confidence for an unverified (global search) match to count.
+DISCOGS_MIN_UNVERIFIED_CONFIDENCE = 0.50
+
+# Weight applied to unverified global-search matches. Deliberately below
+# DISCOGS_FULL_CONFIDENCE so these can never trigger the early exit.
+DISCOGS_UNVERIFIED_WEIGHT = 0.60
+
+# Promo-only matches are capped below the full-confidence band.
+DISCOGS_PROMO_CONFIDENCE_CAP = 0.74
+
+# EP lead tracks are frequently issued as singles, so they count as evidence,
+# but capped below the full-confidence band: an EP lead track is supporting
+# evidence requiring corroboration, never a definitive single on its own.
+DISCOGS_EP_LEAD_CONFIDENCE_CAP = 0.74
+
+# Maximum tracks on a release still considered EP-sized for lead-track logic.
+MAX_EP_TRACKS = 6
+
 ALBUM_FORMAT_TOKENS = frozenset({"album", "lp", "compilation", "mixtape"})
-SINGLE_FORMAT_TOKENS = frozenset({"single", "ep", "maxi", "maxi-single"})
+
+# NOTE: "ep" is intentionally excluded here. A track appearing on an EP is not
+# by itself evidence that the track was released as a single; only an EP lead
+# track is promoted, and then only at medium confidence.
+SINGLE_FORMAT_TOKENS = frozenset({"single", "maxi", "maxi-single"})
+SUPPORTING_RELEASE_FORMAT_TOKENS = frozenset({"ep"})
+
 MAX_SINGLE_TRACKS = 6
+
 # Cap master-format resolutions per artist fetch (see resolve_master_formats).
 _MAX_MASTER_FORMAT_RESOLUTIONS = 15
+
+INVERTED_RETRY_MIN_SIMILARITY = 0.50
 
 
 def _sanitize_release_name(album_name: str) -> str:
@@ -43,40 +102,102 @@ def _sanitize_release_name(album_name: str) -> str:
     if not album_name:
         return ""
     cleaned = re.sub(
-        r'\s*[\(\[].*?(edition|deluxe|remaster|version|bonus|expanded|explicit|clean).*?[\)\]]', 
-        '', 
-        album_name, 
-        flags=re.IGNORECASE
+        r"\s*[\(\[].*?(edition|deluxe|remaster|version|bonus|expanded|explicit|clean).*?[\)\]]",
+        "",
+        album_name,
+        flags=re.IGNORECASE,
     ).strip()
     return cleaned if cleaned else album_name
 
 
+def _normalise_discogs_artist(value: str) -> str:
+    """Normalise a Discogs artist string, stripping numeric disambiguators."""
+    value = strip_featured_artist(value or "")
+    value = re.sub(r"\s+\(\d+\)\s*$", "", value)
+    value = re.sub(r"[\(\[][^\)\]]*[\)\]]", " ", value)
+    value = normalize_title_for_lookup(value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _artist_cache_key(artist: str) -> str:
+    return _normalise_discogs_artist(artist) or str(artist or "").strip().lower()
+
+
+# --- CONFIDENCE --------------------------------------------------------------
+
 def calculate_discogs_confidence(
-    title: str, 
+    title: str,
     similarity_ratio: float,
-    artist_verified: bool
+    artist_verified: bool,
+    is_promo: bool = False,
+    is_ep_lead: bool = False,
 ) -> dict[str, Any]:
-    """Dynamic Discogs match confidence."""
-    sim = float(similarity_ratio or 0.0)
-    if sim < MIN_DISCOGS_SIMILARITY:
-        return {"matched": False, "confidence": 0.0,
-                "metadata": {"similarity_ratio": round(sim, 2)}}
+    """Calculate Discogs match confidence.
 
-    confidence = DISCOGS_BASE_WEIGHT * sim
+    Match eligibility and full confidence are separate concepts:
 
-    if not artist_verified:
-        confidence *= 0.50
+    - ``matched`` indicates the result is usable evidence.
+    - ``confidence >= DISCOGS_FULL_CONFIDENCE`` indicates an exact,
+      artist-verified, non-promo, non-EP match that may be treated as
+      definitive.
 
-    if len(str(title or "").split()) <= 2 and sim < 0.95:
-        confidence *= 0.60
+    ``is_ep_lead`` marks a lead/opening track on an EP-sized release. These
+    are commonly issued as singles and count as evidence, but are capped in
+    the medium band so they always require corroboration.
+    """
+    sim = max(0.0, min(1.0, float(similarity_ratio or 0.0)))
 
-    final = round(max(0.0, min(1.0, confidence)), 2)
-    return {
-        "matched": final >= DISCOGS_FULL_CONFIDENCE,
-        "confidence": final,
-        "metadata": {"similarity_ratio": round(sim, 2)},
+    metadata: dict[str, Any] = {
+        "similarity_ratio": round(sim, 2),
+        "artist_verified": bool(artist_verified),
+        "is_promo": bool(is_promo),
+        "is_ep_lead": bool(is_ep_lead),
     }
 
+    if sim < MIN_DISCOGS_SIMILARITY:
+        return {"matched": False, "confidence": 0.0, "metadata": metadata}
+
+    if artist_verified:
+        confidence = DISCOGS_FULL_CONFIDENCE * sim
+    else:
+        confidence = DISCOGS_UNVERIFIED_WEIGHT * sim
+
+    # Very short titles are prone to collision unless the match is near exact.
+    if len(str(title or "").split()) <= 2 and sim < 0.95:
+        confidence *= 0.75
+
+    if is_promo:
+        confidence = min(confidence, DISCOGS_PROMO_CONFIDENCE_CAP)
+
+    if is_ep_lead:
+        confidence = min(confidence, DISCOGS_EP_LEAD_CONFIDENCE_CAP)
+
+    final = round(max(0.0, min(1.0, confidence)), 2)
+
+    minimum_required = (
+        DISCOGS_MIN_MATCH_CONFIDENCE
+        if artist_verified
+        else DISCOGS_MIN_UNVERIFIED_CONFIDENCE
+    )
+
+    logger.debug(
+        "Discogs confidence calculated", 
+        title=title, 
+        similarity=round(sim, 3), 
+        artist_verified=artist_verified, 
+        is_promo=is_promo, 
+        is_ep_lead=is_ep_lead, 
+        final_confidence=final
+    )
+
+    return {
+        "matched": final >= minimum_required,
+        "confidence": final,
+        "metadata": metadata,
+    }
+
+
+# --- TITLE MATCHING ----------------------------------------------------------
 
 DISCOGS_NOISE_SUFFIX_RE = re.compile(
     r"\s*[-–—]\s*(?:the\s+)?"
@@ -94,9 +215,6 @@ def _clean_title_for_comparison(title: str) -> str:
     return normalize_title_for_lookup(value)
 
 
-INVERTED_RETRY_MIN_SIMILARITY = 0.50
-
-
 def release_format_key(formats: Any) -> str:
     """Normalize a Discogs ``format`` value (str or list) to a token string."""
     if not formats:
@@ -111,6 +229,14 @@ def release_format_key(formats: Any) -> str:
 
 
 _release_format_key = release_format_key
+
+
+def release_format_tokens(formats: Any) -> set[str]:
+    """Return a normalised token set for a Discogs ``format`` value."""
+    key = release_format_key(formats)
+    if not key:
+        return set()
+    return set(re.findall(r"[a-z0-9]+(?:-[a-z0-9]+)?", key))
 
 
 def _discogs_title_similarity(local_title: str, candidate_title: str) -> float:
@@ -146,12 +272,17 @@ def _discogs_title_similarity(local_title: str, candidate_title: str) -> float:
     def _sorted(value: str) -> str:
         return " ".join(sorted(value.split()))
 
-    sim = max(
-        _rapidfuzz_fuzz.token_set_ratio(local_key, candidate_key),
-        _rapidfuzz_fuzz.partial_ratio(local_key, candidate_key),
-    ) / 100.0 if _rapidfuzz_fuzz is not None else max(
-        SequenceMatcher(None, local_key, candidate_key).ratio(),
-        SequenceMatcher(None, _sorted(local_key), _sorted(candidate_key)).ratio(),
+    sim = (
+        max(
+            _rapidfuzz_fuzz.token_set_ratio(local_key, candidate_key),
+            _rapidfuzz_fuzz.partial_ratio(local_key, candidate_key),
+        )
+        / 100.0
+        if _rapidfuzz_fuzz is not None
+        else max(
+            SequenceMatcher(None, local_key, candidate_key).ratio(),
+            SequenceMatcher(None, _sorted(local_key), _sorted(candidate_key)).ratio(),
+        )
     )
 
     local_words = re.findall(r"[a-z0-9]+", local_key)
@@ -165,14 +296,30 @@ def _discogs_title_similarity(local_title: str, candidate_title: str) -> float:
 
 
 def _release_artist_matches(result_artist: str, query_artist: str) -> bool:
-    def _norm(value: str) -> str:
-        value = strip_featured_artist(value or "")
-        value = re.sub(r"[\(\[][^\)\]]*[\)\]]", " ", value)
-        return re.sub(r"\s+", " ", value).strip().lower()
+    """Token-aware artist comparison for global Discogs search results."""
+    query_key = _normalise_discogs_artist(query_artist)
+    result_key = _normalise_discogs_artist(result_artist)
 
-    q, r = _norm(query_artist), _norm(result_artist)
-    return bool(q and r and (q == r or q in r or r in q))
+    if not query_key or not result_key:
+        return False
 
+    if query_key == result_key:
+        return True
+
+    query_tokens = set(query_key.split())
+    result_tokens = set(result_key.split())
+
+    # Single-token artist names are too collision-prone for partial matching.
+    if len(query_tokens) < 2 or len(result_tokens) < 2:
+        return False
+
+    overlap = len(query_tokens & result_tokens)
+    denominator = max(len(query_tokens), len(result_tokens))
+
+    return denominator > 0 and (overlap / denominator) >= 0.80
+
+
+# --- TYPES -------------------------------------------------------------------
 
 class DiscogsTrack(TypedDict):
     number: str
@@ -190,13 +337,13 @@ class DiscogsArtistProfile(TypedDict):
 
 
 def _parse_discogs_duration(duration_str: str) -> int | None:
-    if not duration_str: 
+    if not duration_str:
         return None
     try:
         parts = duration_str.split(":")
         if len(parts) == 2:
             return int(parts[0]) * 60 + int(parts[1])
-    except Exception: 
+    except Exception:
         pass
     return None
 
@@ -216,93 +363,180 @@ def resolve_master_formats(releases: list[dict[str, Any]], http: DiscogsHttpClie
                 continue
             resolved += 1
             try:
-                # FIXED: Removed timeout kwargs that crash custom clients
                 main = http.get_release(rel["main_release"])
                 rel["format"] = [
                     " ".join(
-                        part for part in (
+                        part
+                        for part in (
                             str(f.get("name") or ""),
                             " ".join(str(d) for d in (f.get("descriptions") or [])),
-                        ) if part
+                        )
+                        if part
                     )
                     for f in (main.get("formats") or [])
                 ]
                 rel["track_count"] = len(main.get("tracklist") or []) or None
             except Exception as exc:
-                logger.debug("Master format lookup failed", title=rel.get("title"), error=str(exc))
+                logger.debug(
+                    "Master format lookup failed",
+                    title=rel.get("title"),
+                    error=str(exc),
+                )
 
+
+# --- SERVICE -----------------------------------------------------------------
 
 class DiscogsService:
-    def __init__(self, token: str, http_client: DiscogsHttpClient | None = None, enabled: bool = True):
+    def __init__(
+        self,
+        token: str,
+        http_client: DiscogsHttpClient | None = None,
+        enabled: bool = True,
+    ):
         self.token = token or ""
         self.enabled = enabled
         self.http = http_client or DiscogsHttpClient(token=token)
         self._single_cache: dict[tuple[str, str], dict[str, Any]] = {}
         self._video_cache: dict[tuple[str, str], bool] = {}
         self._artist_releases_cache: dict[str, list[dict[str, Any]]] = {}
+        self._release_tracks_cache: dict[str, list[DiscogsTrack]] = {}
         self._lock = threading.Lock()
+
+    # -- helpers ----------------------------------------------------------
 
     def _normalize_title(self, title: str) -> str:
         base = strip_parentheses(strip_featured_guest_suffix(title) or title)
         return normalize_title_for_lookup(base or title)
 
+    def _usable(self) -> bool:
+        return bool(
+            self.enabled
+            and self.token
+            and self.token.strip().lower()
+            not in ("your_discogs_token", "your_token", "placeholder")
+        )
+
+    # -- artist releases --------------------------------------------------
+
     def _get_artist_releases(self, artist: str) -> list[dict[str, Any]]:
-        key = artist.lower()
+        """Return cached artist releases, fetching outside the service lock.
+
+        Only a completed lookup is cached. A failed or unresolved lookup
+        returns an empty list without poisoning the cache for the rest of
+        the process.
+        """
+        key = _artist_cache_key(artist)
+
         with self._lock:
-            if key in self._artist_releases_cache:
-                return self._artist_releases_cache[key]
+            cached = self._artist_releases_cache.get(key)
+        if cached is not None:
+            logger.debug("Discogs artist releases cache hit", artist=artist)
+            return cached
 
-            releases: list[dict[str, Any]] = []
-            rows = None
-            try:
-                from services.popularity.release_cache_service import get_cached_artist_release_rows
-                rows = get_cached_artist_release_rows(artist, source="discogs")
-            except Exception as exc:
-                logger.debug("Release-cache read failed", artist=artist, error=str(exc))
+        releases: list[dict[str, Any]] = []
+        lookup_succeeded = False
 
-            if rows is not None:
-                releases = [
+        rows = None
+        try:
+            from services.popularity.release_cache_service import (
+                get_cached_artist_release_rows,
+            )
+
+            rows = get_cached_artist_release_rows(artist, source="discogs")
+        except Exception as exc:
+            logger.debug("Release-cache read failed", artist=artist, error=str(exc))
+
+        if rows is not None:
+            lookup_succeeded = True
+            releases = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                release_type = str(row.get("release_type") or "").strip().lower()
+                formats = [release_type] if release_type else []
+                if row.get("is_promo"):
+                    formats.append("promo")
+                releases.append(
                     {
-                        "title": str(r.get("title") or ""),
+                        "title": str(row.get("title") or ""),
                         "role": "Main",
-                        "id": str(r.get("release_id") or ""),
-                        "year": r.get("year"),
-                        "format": [str(r.get("release_type") or "album").lower()]
-                        + (["promo"] if r.get("is_promo") else []),
-                        "track_count": None,
+                        "id": str(row.get("release_id") or ""),
+                        "year": row.get("year"),
+                        "format": formats,
+                        "track_count": row.get("track_count"),
                     }
-                    for r in rows
-                ]
-            else:
-                artist_id = self.get_artist_id(artist)
-                if artist_id:
-                    releases = self.http.get_artist_releases_all(artist_id, max_pages=10) or []
+                )
+        else:
+            artist_id = self.get_artist_id(artist)
+            if artist_id:
+                try:
+                    releases = (
+                        self.http.get_artist_releases_all(artist_id, max_pages=10) or []
+                    )
+                    lookup_succeeded = True
                     resolve_master_formats(releases, self.http)
                     try:
-                        from services.popularity.release_cache_service import upsert_artist_release_rows
+                        from services.popularity.release_cache_service import (
+                            upsert_artist_release_rows,
+                        )
+
                         upsert_artist_release_rows(artist, releases)
                     except Exception as exc:
-                        logger.debug("Release-cache write-back failed", artist=artist, error=str(exc))
+                        logger.debug(
+                            "Release-cache write-back failed",
+                            artist=artist,
+                            error=str(exc),
+                        )
+                except Exception as exc:
+                    logger.debug(
+                        "Artist release lookup failed",
+                        artist=artist,
+                        artist_id=artist_id,
+                        error=str(exc),
+                    )
 
-            self._artist_releases_cache[key] = releases
-            return releases
+        if lookup_succeeded:
+            with self._lock:
+                existing = self._artist_releases_cache.get(key)
+                if existing is not None:
+                    return existing
+                self._artist_releases_cache[key] = releases
+
+        return releases
 
     @staticmethod
     def _release_is_promo(rel: dict[str, Any]) -> bool:
-        return "promo" in _release_format_key(rel.get("format")).split()
+        return "promo" in release_format_tokens(rel.get("format"))
 
-    def _scan_releases(self, title: str, title_key: str, releases: list[dict[str, Any]],
-                       artist_verified: bool = True) -> dict[str, Any] | None:
+    # -- release scanning -------------------------------------------------
+
+    def _scan_releases(
+        self,
+        title: str,
+        releases: list[dict[str, Any]],
+        artist_verified: bool = True,
+    ) -> dict[str, Any] | None:
         best_commercial: dict[str, Any] | None = None
         best_promo: dict[str, Any] | None = None
+        best_ep: dict[str, Any] | None = None
         best_commercial_score = 0.0
         best_promo_score = 0.0
+        best_ep_score = 0.0
 
         title = strip_featured_guest_suffix(title) or title
 
-        def _status(rel: dict[str, Any], formats: str, is_promo: bool, sim: float) -> dict[str, Any]:
+        def _status(
+            rel: dict[str, Any],
+            formats: str,
+            is_promo: bool,
+            is_single_format: bool,
+            is_ep_format: bool,
+            sim: float,
+        ) -> dict[str, Any]:
             return {
-                "is_single": True,
+                "is_single": bool(is_single_format),
+                "appears_on_ep": bool(is_ep_format),
+                "is_ep_lead": False,
                 "is_promo": is_promo,
                 "release_year": rel.get("year") if isinstance(rel.get("year"), int) else None,
                 "release_id": str(rel.get("id") or "") or None,
@@ -312,103 +546,317 @@ class DiscogsService:
             }
 
         for rel in releases:
+            if not isinstance(rel, dict):
+                continue
             if str(rel.get("role") or "Main").strip().lower() != "main":
                 continue
-            formats = _release_format_key(rel.get("format"))
-            if not formats:
+
+            formats = release_format_key(rel.get("format"))
+            tokens = release_format_tokens(rel.get("format"))
+            if not tokens:
                 continue
-            if ALBUM_FORMAT_TOKENS.intersection(formats.split()):
+            if ALBUM_FORMAT_TOKENS & tokens:
                 continue
-            if not SINGLE_FORMAT_TOKENS.intersection(formats.split()):
+
+            is_single_format = bool(SINGLE_FORMAT_TOKENS & tokens)
+            is_ep_format = bool(SUPPORTING_RELEASE_FORMAT_TOKENS & tokens)
+            if not is_single_format and not is_ep_format:
                 continue
+
             track_count = rel.get("track_count")
-            if track_count and int(track_count) > MAX_SINGLE_TRACKS:
+            try:
+                if track_count and int(track_count) > MAX_SINGLE_TRACKS:
+                    continue
+            except (TypeError, ValueError):
+                pass
+
+            rel_title = str(rel.get("title") or "")
+            if not edition_annotations_compatible(title, rel_title):
                 continue
-            if not edition_annotations_compatible(title, str(rel.get("title") or "")):
+            if not self._normalize_title(rel_title):
                 continue
-            rel_title = self._normalize_title(str(rel.get("title") or ""))
-            if not rel_title:
-                continue
-            sim = _discogs_title_similarity(title, str(rel.get("title") or ""))
+
+            sim = _discogs_title_similarity(title, rel_title)
             if sim < MIN_DISCOGS_SIMILARITY:
                 continue
-            is_promo = "promo" in formats
-            status = _status(rel, formats, is_promo, sim)
-            if not is_promo:
+
+            is_promo = "promo" in tokens
+            status = _status(rel, formats, is_promo, is_single_format, is_ep_format, sim)
+
+            if is_single_format and not is_promo:
                 if sim > best_commercial_score:
                     best_commercial_score = sim
                     best_commercial = status
-            elif sim > best_promo_score:
-                best_promo_score = sim
-                best_promo = status
-        return best_commercial or best_promo
+                    logger.debug("New best commercial single candidate found", title=title, rel_title=rel_title, sim=round(sim, 3))
+            elif is_single_format and is_promo:
+                if sim > best_promo_score:
+                    best_promo_score = sim
+                    best_promo = status
+                    logger.debug("New best promo single candidate found", title=title, rel_title=rel_title, sim=round(sim, 3))
+            elif is_ep_format:
+                if sim > best_ep_score:
+                    best_ep_score = sim
+                    best_ep = status
+                    logger.debug("New best EP candidate found", title=title, rel_title=rel_title, sim=round(sim, 3))
 
-    def get_single_status(self, title: str, artist: str,
-                          album_context: dict[str, Any] | None = None) -> dict[str, Any]:
-        if not self.enabled or not self.token or not title or not artist:
-            return {"is_single": False, "is_promo": False, "release_year": None, "release_id": None, "format": ""}
-        if album_context and album_context.get("is_special_edition"):
-            return {"is_single": False, "is_promo": False, "release_year": None, "release_id": None, "format": ""}
+        return best_commercial or best_promo or best_ep
+
+    # -- EP lead track ----------------------------------------------------
+
+    @staticmethod
+    def _is_lead_position(position: Any) -> bool:
+        """True when a Discogs tracklist position denotes the opening track.
+
+        Handles plain numbering ("1", "01"), vinyl sides ("A1", "A"), and
+        disc-qualified numbering ("1-1", "1.1").
+        """
+        value = str(position or "").strip().upper()
+        if not value:
+            return False
+
+        # Disc-qualified numbering: only disc one's first track leads.
+        match = re.fullmatch(r"(\d+)\s*[-.]\s*(\d+)", value)
+        if match:
+            return int(match.group(1)) == 1 and int(match.group(2)) == 1
+
+        if value.isdigit():
+            return int(value) == 1
+
+        # Vinyl: side A position 1, or a side-A-only marker.
+        match = re.fullmatch(r"A(\d*)", value)
+        if match:
+            return match.group(1) in ("", "1")
+
+        return False
+
+    def _get_release_tracks_cached(self, release_id: str) -> list[DiscogsTrack]:
+        if not release_id:
+            return []
+
+        with self._lock:
+            cached = self._release_tracks_cache.get(release_id)
+        if cached is not None:
+            logger.debug("Discogs release tracks cache hit", release_id=release_id)
+            return cached
+
+        tracks = self.get_release_tracks(release_id)
+
+        # Only cache a non-empty result so a transient failure is retried.
+        if tracks:
+            with self._lock:
+                self._release_tracks_cache[release_id] = tracks
+
+        return tracks
+
+    def _is_ep_lead_track(self, release_id: str, title: str) -> bool:
+        """True when ``title`` is the opening track of an EP-sized release.
+
+        EP lead tracks are frequently issued as singles, so they are treated
+        as medium-confidence evidence. Deep cuts on the same EP are not.
+        """
+        tracks = self._get_release_tracks_cached(release_id)
+        if not tracks or len(tracks) > MAX_EP_TRACKS:
+            logger.debug("Rejected EP lead track: track count missing or exceeds max", track=title, release_id=release_id, track_count=len(tracks))
+            return False
+
+        lead: DiscogsTrack | None = None
+        for track in tracks:
+            if self._is_lead_position(track.get("number")):
+                lead = track
+                break
+        if lead is None:
+            lead = tracks[0]
+
+        lead_title = str(lead.get("title") or "")
+        if not lead_title:
+            return False
+
+        sim = _discogs_title_similarity(title, lead_title)
+        is_lead = sim >= MIN_DISCOGS_SIMILARITY
+        
+        logger.debug(
+            "EP lead track evaluation", 
+            query_title=title, 
+            lead_title=lead_title, 
+            similarity=round(sim, 3), 
+            accepted=is_lead
+        )
+        
+        return is_lead
+
+    # -- single status ----------------------------------------------------
+
+    def get_single_status(
+        self,
+        title: str,
+        artist: str,
+        album_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        empty = {
+            "is_single": False,
+            "appears_on_ep": False,
+            "is_ep_lead": False,
+            "is_promo": False,
+            "release_year": None,
+            "release_id": None,
+            "format": "",
+            "similarity": 0.0,
+            "artist_verified": False,
+        }
+
+        if not self._usable() or not title or not artist:
+            return dict(empty)
+
+        # NOTE: A special-edition local album does not mean the track was never
+        # released as a single. Detection continues; the caller may still use
+        # edition context for stricter compatibility checks.
+        del album_context
 
         title_key = self._normalize_title(title)
-        cache_key = (artist.lower(), title_key)
-        
+        cache_key = (_artist_cache_key(artist), title_key)
+
         with self._lock:
-            if cache_key in self._single_cache:
-                return self._single_cache[cache_key]
+            cached = self._single_cache.get(cache_key)
+        if cached is not None:
+            logger.debug("Discogs single status cache hit", artist=artist, track=title)
+            return cached
 
         artist_releases = self._get_artist_releases(artist) or []
-        status = self._scan_releases(title, title_key, artist_releases, artist_verified=True)
+        status = self._scan_releases(title, artist_releases, artist_verified=True)
 
         if status is None:
-            logger.debug("No single/EP match on artist releases", artist=artist, track=title, release_count=len(artist_releases))
+            logger.debug(
+                "No single match on artist releases, trying global search",
+                artist=artist,
+                track=title,
+                release_count=len(artist_releases),
+            )
 
-        if status is None:
-            # FIXED: Removed timeout
-            results = self.http.search_database({"q": f"{strip_featured_artist(artist)} {title_key}", "type": "release", "per_page": 25})
+            try:
+                results = (
+                    self.http.search_database(
+                        {
+                            "q": f"{strip_featured_artist(artist)} {title_key}",
+                            "type": "release",
+                            "per_page": 25,
+                        }
+                    )
+                    or []
+                )
+            except Exception as exc:
+                logger.debug(
+                    "Discogs global release search failed",
+                    artist=artist,
+                    track=title,
+                    error=str(exc),
+                )
+                results = []
+
             results = [
-                r for r in (results or [])
-                if _release_artist_matches(str(r.get("artist") or ""), artist)
+                r
+                for r in results
+                if isinstance(r, dict)
+                and _release_artist_matches(str(r.get("artist") or ""), artist)
             ]
-            status = self._scan_releases(title, title_key, results, artist_verified=False)
+            status = self._scan_releases(title, results, artist_verified=False)
+            
+            if status:
+                logger.debug("Global search found match", track=title, artist=artist, release_id=status.get("release_id"), similarity=status.get("similarity"))
 
         _inv_used = False
-        if (status is None or float(status.get("similarity") or 0.0) < INVERTED_RETRY_MIN_SIMILARITY):
-            from services.popularity.popularity_sources import invert_featured_artist
-            inverted = invert_featured_artist(artist)
-            if inverted != artist:
+        if status is None or float(status.get("similarity") or 0.0) < INVERTED_RETRY_MIN_SIMILARITY:
+            try:
+                from services.popularity.popularity_sources import invert_featured_artist
+
+                inverted = invert_featured_artist(artist)
+            except Exception:
+                inverted = artist
+
+            if inverted and inverted != artist:
+                logger.debug("Trying inverted artist search", original=artist, inverted=inverted)
                 _std_sim = float(status.get("similarity") or 0.0) if status else 0.0
                 inv_status = self._scan_releases(
-                    title, title_key, self._get_artist_releases(inverted) or [],
+                    title,
+                    self._get_artist_releases(inverted) or [],
                     artist_verified=True,
                 )
                 if inv_status is None:
-                    # FIXED: Removed timeout
-                    inv_results = self.http.search_database(
-                        {"q": f"{inverted} {title_key}", "type": "release", "per_page": 25}
+                    try:
+                        inv_results = (
+                            self.http.search_database(
+                                {
+                                    "q": f"{inverted} {title_key}",
+                                    "type": "release",
+                                    "per_page": 25,
+                                }
+                            )
+                            or []
+                        )
+                    except Exception as exc:
+                        logger.debug(
+                            "Discogs inverted search failed",
+                            artist=inverted,
+                            track=title,
+                            error=str(exc),
+                        )
+                        inv_results = []
+                    inv_status = self._scan_releases(
+                        title, inv_results, artist_verified=False
                     )
-                    inv_status = self._scan_releases(title, title_key, inv_results or [], artist_verified=False)
                 if inv_status and float(inv_status.get("similarity") or 0.0) > _std_sim:
                     inv_status["inverted_match_used"] = True
                     status = inv_status
                     _inv_used = True
-                    _sim = inv_status.get("similarity", 0.0)
                     logger.info(
                         "Inverted artist match retry succeeded",
-                        standard_sim=_std_sim, inverted=inverted, sim=_sim,
+                        standard_sim=_std_sim,
+                        inverted=inverted,
+                        sim=inv_status.get("similarity", 0.0),
                     )
 
         if status is None:
-            status = {"is_single": False, "is_promo": False, "release_year": None,
-                      "release_id": None, "format": "", "similarity": 0.0,
-                      "artist_verified": False}
+            status = dict(empty)
+
+        # An EP-only match is promoted to a single when the track opens the
+        # EP, since lead tracks are commonly issued as singles. Confidence is
+        # capped in the medium band by calculate_discogs_confidence().
+        if (
+            status.get("appears_on_ep")
+            and not status.get("is_single")
+            and status.get("release_id")
+        ):
+            if self._is_ep_lead_track(str(status["release_id"]), title):
+                status["is_single"] = True
+                status["is_ep_lead"] = True
+                logger.debug(
+                    "EP lead track accepted as single",
+                    artist=artist,
+                    track=title,
+                    release_id=status.get("release_id"),
+                    similarity=status.get("similarity"),
+                )
+
         if _inv_used:
             status["inverted_match_used"] = True
 
         with self._lock:
             self._single_cache[cache_key] = status
-            
+
         return status
+
+    def is_single(
+        self,
+        title: str,
+        artist: str,
+        album_context: dict[str, Any] | None = None,
+    ) -> bool:
+        return bool(
+            self.get_single_status(title, artist, album_context=album_context).get(
+                "is_single"
+            )
+        )
+
+    # -- official video ---------------------------------------------------
 
     @staticmethod
     def _is_official_video_for_track(video: dict[str, Any], track_title_lower: str) -> bool:
@@ -421,13 +869,13 @@ class DiscogsService:
         )
 
         def _canonical(value: str) -> str:
-            return normalize_title_for_lookup(
-                value.replace("'", "").replace("’", "")
-            )
+            return normalize_title_for_lookup(value.replace("'", "").replace("’", ""))
 
         video_title_cleaned = re.sub(
             r"\s*[\(\[]?(official|music|promo)?\s*(video|music video|mv|hd|4k|lyric video)[\)\]]?\s*$",
-            "", video_title, flags=re.IGNORECASE,
+            "",
+            video_title,
+            flags=re.IGNORECASE,
         ).strip()
         if " - " in video_title_cleaned:
             parts = video_title_cleaned.split(" - ", 1)
@@ -439,7 +887,9 @@ class DiscogsService:
         if not matches_title and video_desc:
             desc_cleaned = re.sub(
                 r"\s*[\(\[]?(official|music|promo)?\s*(video|music video|mv|hd|4k|lyric video)[\)\]]?\s*",
-                "", video_desc, flags=re.IGNORECASE,
+                "",
+                video_desc,
+                flags=re.IGNORECASE,
             ).strip()
             if " - " in desc_cleaned:
                 parts = desc_cleaned.split(" - ", 1)
@@ -450,52 +900,67 @@ class DiscogsService:
         return is_official_or_promo and matches_title
 
     def has_official_video(self, title: str, artist: str) -> bool:
-        if not self.enabled or not self.token or not title or not artist:
+        if not self._usable() or not title or not artist:
             return False
-            
-        cache_key = (artist.lower(), self._normalize_title(title))
-        
+
+        cache_key = (_artist_cache_key(artist), self._normalize_title(title))
+
         with self._lock:
-            if cache_key in self._video_cache:
-                return self._video_cache[cache_key]
-                
+            cached = self._video_cache.get(cache_key)
+        if cached is not None:
+            logger.debug("Discogs video cache hit", artist=artist, track=title)
+            return cached
+
         matched = False
+        lookup_succeeded = False
         try:
-            # FIXED: Removed timeouts
-            results = self.http.search_database(
-                {"q": f"{artist} {title}", "type": "master", "per_page": 10}
-            ) or []
+            results = (
+                self.http.search_database(
+                    {"q": f"{artist} {title}", "type": "master", "per_page": 10}
+                )
+                or []
+            )
             for rel in results[:5]:
+                if not isinstance(rel, dict):
+                    continue
                 master_id = rel.get("id")
                 if not master_id:
                     continue
                 master = self.http.get_master(master_id)
                 if not master:
                     continue
-                for video in (master.get("videos") or []):
-                    if self._is_official_video_for_track(video, title.lower()):
+                for video in master.get("videos") or []:
+                    if isinstance(video, dict) and self._is_official_video_for_track(
+                        video, title.lower()
+                    ):
                         matched = True
                         break
                 if matched:
                     break
+            lookup_succeeded = True
         except Exception as exc:
-            logger.debug("Official video check failed", artist=artist, track=title, error=str(exc))
-            
-        with self._lock:
-            self._video_cache[cache_key] = matched
-            
+            logger.debug(
+                "Official video check failed",
+                artist=artist,
+                track=title,
+                error=str(exc),
+            )
+
+        # A failed lookup must not become a permanent negative result.
+        if lookup_succeeded:
+            with self._lock:
+                self._video_cache[cache_key] = matched
+
         return matched
 
-    def is_single(self, title: str, artist: str, album_context: dict[str, Any] | None = None) -> bool:
-        return bool(self.get_single_status(title, artist, album_context=album_context).get("is_single"))
+    # -- misc lookups -----------------------------------------------------
 
     def get_artist_id(self, artist: str) -> str | None:
-        if not self.enabled or not self.token or not artist:
+        if not self._usable() or not artist:
             return None
         try:
-            # FIXED: Removed timeouts
             results = self.http.search_database(
-                {"q": artist, "type": "artist", "per_page": 5},
+                {"q": artist, "type": "artist", "per_page": 5}
             )
             if results and isinstance(results, list):
                 first = results[0]
@@ -505,91 +970,212 @@ class DiscogsService:
             logger.debug("Artist ID lookup failed", artist=artist, error=str(exc))
         return None
 
-    def get_genres(self, title: str, artist: str) -> list[str]:
-        if not self.enabled or not self.token: 
+    def get_genres(self, title: str = "", artist: str = "") -> list[str]:
+        """Return Discogs genres and styles.
+
+        Either or both of ``title`` and ``artist`` may be supplied. Passing
+        only ``artist`` performs an artist-level genre lookup.
+        """
+        if not self._usable():
             return []
-            
-        # FIXED: Removed timeouts
-        results = self.http.search_database({"q": f"{artist} {title}", "type": "release", "per_page": 5})
-        
-        genres = []
+
+        query = " ".join(part for part in (str(artist or ""), str(title or "")) if part).strip()
+        if not query:
+            return []
+
+        try:
+            results = (
+                self.http.search_database(
+                    {"q": query, "type": "release", "per_page": 5}
+                )
+                or []
+            )
+        except Exception as exc:
+            logger.debug(
+                "Discogs genre lookup failed",
+                artist=artist,
+                title=title,
+                error=str(exc),
+            )
+            return []
+
+        genres: list[str] = []
         for r in results:
-            genres.extend(r.get("genre", []))
-            genres.extend(r.get("style", []))
+            if not isinstance(r, dict):
+                continue
+            for value in list(r.get("genre") or []) + list(r.get("style") or []):
+                value = str(value or "").strip()
+                if value and value not in genres:
+                    genres.append(value)
         return genres
 
     def get_artist_biography(self, artist: str) -> DiscogsArtistProfile:
-        # FIXED: Removed timeouts
-        results = self.http.search_database({"q": artist, "type": "artist", "per_page": 1})
-        if not results:
-            return {"profile": "", "real_name": None, "urls": [], "images": []}
-        
-        artist_id = results[0].get("id")
-        data = self.http.get_artist(artist_id) if artist_id else {}
+        empty: DiscogsArtistProfile = {
+            "profile": "",
+            "real_name": None,
+            "urls": [],
+            "images": [],
+        }
+        if not self._usable() or not artist:
+            return empty
+
+        try:
+            results = self.http.search_database(
+                {"q": artist, "type": "artist", "per_page": 1}
+            )
+            if not results:
+                return empty
+            artist_id = results[0].get("id") if isinstance(results[0], dict) else None
+            data = self.http.get_artist(artist_id) if artist_id else {}
+        except Exception as exc:
+            logger.debug("Discogs biography lookup failed", artist=artist, error=str(exc))
+            return empty
+
+        if not isinstance(data, dict):
+            return empty
+
         return {
             "profile": clean_discogs_biography(data.get("profile", "")),
             "real_name": data.get("realname"),
-            "urls": data.get("urls", []),
-            "images": data.get("images", []),
+            "urls": data.get("urls", []) or [],
+            "images": data.get("images", []) or [],
         }
 
     def get_release_tracks(self, release_id: str) -> list[DiscogsTrack]:
-        if not self.enabled or not self.token or not release_id: 
+        if not self._usable() or not release_id:
             return []
-        # FIXED: Removed timeouts
-        release = self.http.get_release(release_id)
-        if not isinstance(release, dict): 
+        try:
+            release = self.http.get_release(release_id)
+        except Exception as exc:
+            logger.debug(
+                "Discogs release tracklist lookup failed",
+                release_id=release_id,
+                error=str(exc),
+            )
             return []
-        
-        tracks = []
-        for track in release.get("tracklist", []):
-            tracks.append({
-                "number": track.get("position", ""),
-                "title": track.get("title", ""),
-                "artist": track.get("artist", track.get("artists", [{}])[0].get("name", "")),
-                "duration": _parse_discogs_duration(track.get("duration", "")),
-                "isrc": ""
-            })
+
+        if not isinstance(release, dict):
+            return []
+
+        tracks: list[DiscogsTrack] = []
+        for track in release.get("tracklist", []) or []:
+            if not isinstance(track, dict):
+                continue
+            track_artist = str(track.get("artist") or "")
+            if not track_artist:
+                artists = track.get("artists") or []
+                if isinstance(artists, list) and artists and isinstance(artists[0], dict):
+                    track_artist = str(artists[0].get("name") or "")
+            tracks.append(
+                {
+                    "number": track.get("position", ""),
+                    "title": track.get("title", ""),
+                    "artist": track_artist,
+                    "duration": _parse_discogs_duration(track.get("duration", "")),
+                    "isrc": "",
+                }
+            )
         return tracks
 
 
-# --- BRIDGE FUNCTIONS ---
-_DEFAULT_SERVICE: DiscogsService | None = None
-_INIT_LOCK = threading.Lock()
+# --- BRIDGE FUNCTIONS --------------------------------------------------------
+
+_SERVICE_REGISTRY: dict[str, DiscogsService] = {}
+_LAST_GOOD_TOKEN: str | None = None
+_INIT_LOCK = threading.RLock()
+
 
 def _get_service(token: str) -> DiscogsService:
-    global _DEFAULT_SERVICE
-    if _DEFAULT_SERVICE is None or getattr(_DEFAULT_SERVICE, "token", None) != token:
+    """Return a per-token Discogs service.
+
+    A per-token registry prevents an empty or placeholder token from evicting
+    a working, cache-warm instance.
+    """
+    global _LAST_GOOD_TOKEN
+
+    token = str(token or "")
+    placeholder = token.strip().lower() in (
+        "",
+        "your_discogs_token",
+        "your_token",
+        "placeholder",
+    )
+
+    if placeholder:
         with _INIT_LOCK:
-            if _DEFAULT_SERVICE is None or getattr(_DEFAULT_SERVICE, "token", None) != token:
-                _DEFAULT_SERVICE = DiscogsService(token=token)
-    return _DEFAULT_SERVICE
+            if _LAST_GOOD_TOKEN and _LAST_GOOD_TOKEN in _SERVICE_REGISTRY:
+                return _SERVICE_REGISTRY[_LAST_GOOD_TOKEN]
 
-def is_discogs_single(title: str, artist: str, token: str = "", album_context: dict[str, Any] | None = None) -> bool:
-    return _get_service(token).is_single(title, artist, album_context=album_context)
+    with _INIT_LOCK:
+        service = _SERVICE_REGISTRY.get(token)
+        if service is None:
+            service = DiscogsService(token=token)
+            _SERVICE_REGISTRY[token] = service
+        if not placeholder:
+            _LAST_GOOD_TOKEN = token
+        return service
 
-def get_discogs_genres(title: str, artist: str, token: str = "") -> list[str]:
-    return _get_service(token).get_genres(title, artist)
+
+def _config_token() -> str:
+    try:
+        from helpers.config_helpers import get_config
+
+        cfg = get_config() or {}
+        return str(
+            (cfg.get("api_integrations", {}).get("discogs", {}) or {}).get("token", "")
+            or ""
+        )
+    except Exception:
+        return ""
+
+
+def is_discogs_single(
+    title: str,
+    artist: str,
+    token: str = "",
+    album_context: dict[str, Any] | None = None,
+) -> bool:
+    return _get_service(token or _config_token()).is_single(
+        title, artist, album_context=album_context
+    )
+
+
+def get_discogs_genres(title: str = "", artist: str = "", token: str = "") -> list[str]:
+    """Fetch Discogs genres/styles.
+
+    Callers performing an artist-level lookup should pass ``artist=`` by
+    keyword rather than relying on positional order.
+    """
+    return _get_service(token or _config_token()).get_genres(title=title, artist=artist)
+
+
+def get_discogs_artist_genres(artist: str, token: str = "") -> list[str]:
+    """Convenience wrapper for artist-level genre lookups."""
+    return _get_service(token or _config_token()).get_genres(title="", artist=artist)
+
 
 def get_discogs_artist_biography(artist: str, token: str = "") -> DiscogsArtistProfile:
-    return _get_service(token).get_artist_biography(artist)
+    return _get_service(token or _config_token()).get_artist_biography(artist)
+
 
 def has_discogs_video(title: str, artist: str, token: str = "") -> bool:
-    return _get_service(token).has_official_video(title, artist)
+    return _get_service(token or _config_token()).has_official_video(title, artist)
 
 
 def lookup_discogs_album(artist: str, album: str) -> dict[str, Any]:
-    from api_clients.discogs_http import DiscogsHttpClient
-    from helpers.config_helpers import get_config
-    cfg = get_config() or {}
-    token = cfg.get("api_integrations", {}).get("discogs", {}).get("token", "") or ""
-    if not token:
+    token = _config_token()
+    if not token or token.strip().lower() in (
+        "your_discogs_token",
+        "your_token",
+        "placeholder",
+    ):
         return {"success": False, "error": "Discogs token not configured"}
     try:
         clean_album = _sanitize_release_name(album)
-        http = DiscogsHttpClient(token=token)
-        # FIXED: Removed timeouts and sanitize album title
-        results = http.search_database({"q": f"{artist} {clean_album}", "type": "release", "per_page": 5})
-        return {"success": True, "results": results}
+        service = _get_service(token)
+        results = service.http.search_database(
+            {"q": f"{artist} {clean_album}", "type": "release", "per_page": 5}
+        )
+        return {"success": True, "results": results or []}
     except Exception as exc:
         return {"success": False, "error": str(exc)}
