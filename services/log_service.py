@@ -266,7 +266,8 @@ def _scan_activity_filter() -> re.Pattern:
         r'Full library scan|Boot scan|Scan complete|Scan failed|'
         r'Scan stopped|single detection|Singles Detection|SCAN RESULTS|'
         r'SINGLE CONF|Distribution:|Navidrome: synced|star ratings|★|'
-        r'Processing:',
+        r'Processing:|\[MB\]|\[COVER_DETECT\]|\[ALBUM_NAME\]|\[ALBUM_TAG_SYNC\]|'
+        r'\[services\.|\[helpers\.|\[api_clients\.',
         re.I,
     )
 
@@ -368,10 +369,11 @@ def get_log_file_content(name: str, lines: int | str = 500):
         else:
             # For unified_scan.log, read a LARGER window than requested so the
             # scan-activity filter (which drops queue/scheduler noise) still
-            # has scan lines to show.  Reading exactly ``lines`` and then
+            # has scan lines to show. Reading exactly ``lines`` and then
             # filtering can yield nothing when the tail is dominated by
             # watcher/queue churn even though a scan just ran.
-            read_window = lines * 6 if name == "unified_scan.log" else lines
+            # Increased read_window multiplier to 15 to punch through heavy DEBUG spam
+            read_window = lines * 15 if name == "unified_scan.log" else lines
             log_lines = _read_last_lines(log_path, read_window)
         if name == "unified_scan.log":
             noise_pattern = _scheduler_noise_filter()
