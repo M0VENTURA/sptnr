@@ -18,6 +18,7 @@ which genres survive the cut.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections import defaultdict
 from typing import Any
@@ -29,6 +30,8 @@ from db.engine import db_session
 from helpers.config_helpers import get_genre_weights, get_genre_synonyms
 
 logger = structlog.get_logger(__name__)
+# Force this specific module to emit DEBUG logs regardless of global config
+logging.getLogger(__name__).setLevel(logging.DEBUG)
 
 # Load configuration at module initialization
 GENRE_WEIGHTS = get_genre_weights()
@@ -217,6 +220,12 @@ def _suppress_generic_parents(genres: list[str]) -> list[str]:
             for g in lowered
         )
         if has_specific_subgenre:
+            logger.debug(
+                "Suppressing generic parent genres",
+                trigger_root=root,
+                dropped=list(generic_labels),
+                original_list=genres,
+            )
             to_drop.update(generic_labels)
 
     if not to_drop:
@@ -251,9 +260,11 @@ def clean_conflicting_genres(genres: list[Any]) -> list[str]:
         removed = False
         for specific, generics in _SPECIFIC_TO_GENERIC.items():
             if genre in generics and specific in lowered_set:
+                logger.debug("Genre conflict resolved", dropped=genre, kept_specific=specific)
                 removed = True
                 break
         if genre == "electronic" and ("punk" in lowered_set or "metal" in lowered_set):
+            logger.debug("Genre conflict resolved", dropped=genre, kept_specific="punk/metal")
             continue
         if not removed:
             cleaned.append(genre)
@@ -350,7 +361,15 @@ def _rank_genres(
     qualified.sort(key=votes.get, reverse=True)
     display_names = [_resolve_display_name(k, spellings) for k in qualified]
     cleaned = clean_conflicting_genres(display_names)
-    return cleaned[:max_genres]
+    final_list = cleaned[:max_genres]
+    
+    logger.debug(
+        "Genre ranking complete",
+        final_genres=final_list,
+        all_votes={k: round(v, 2) for k, v in votes.items()}
+    )
+    
+    return final_list
 
 
 def aggregate_genres(
@@ -521,10 +540,15 @@ def enrich_genres_aggressively(artist_name: str, conn: Any = None, verbose: bool
     def _add_clean(raw_genres: list[str] | None, source: str) -> None:
         if not raw_genres:
             return
-        kept = [
-            g.lower() for g in raw_genres
-            if g and not is_junk_genre(g) and not is_admin_genre(g)
-        ]
+        kept = []
+        for g in raw_genres:
+            if not g:
+                continue
+            if is_junk_genre(g) or is_admin_genre(g):
+                logger.debug("Filtered out junk/admin genre tag", source=source, genre=g)
+                continue
+            kept.append(g.lower())
+            
         if kept:
             genres_collected.update(kept)
             if verbose:
