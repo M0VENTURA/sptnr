@@ -406,18 +406,27 @@ def _setup_standard_logging(service_name: str, log_dir: str, use_structlog: bool
                 "level": "INFO",
                 "propagate": False,
             },
+            
+            # ── MusicBrainz Enrichment ─────────────────────────────────────
+            # Forces detailed logging for MusicBrainz lookups, matching scores, 
+            # and API responses to always appear in debug.log, regardless of 
+            # the global application log level.
+            # * NOTE: If your MusicBrainz file path differs from `services.musicbrainz`,
+            #   update the dictionary key below to match its import path.
+            "services.musicbrainz": {
+                "level": "DEBUG",
+                "propagate": True,
+            },
+            "helpers.musicbrainz": {
+                "level": "DEBUG",
+                "propagate": True,
+            },
+            "api_clients.musicbrainz_http": {
+                "level": "DEBUG",
+                "propagate": True,
+            },
+            
             # ── Download-queue related loggers ─────────────────────────────
-            # All download/queue activity belongs in queue.log (with errors in
-            # error.log), NOT info.log.  The web UI has dedicated Queue and
-            # Logs pages that read these files, so the info.log stays focused
-            # on scan / library / server activity.
-            #
-            # ``services.queue`` routes every ``services.queue.*`` module.
-            # ``services.downloads`` routes every ``services.downloads.*``
-            # module (download scan, watcher, match engine, organisers,
-            # slskd, verification, retry, scheduler…).
-            # ``db.repositories.queue*`` is the queue repository layer (its
-            # "Duplicate skipped" messages flooded info.log on every cycle).
             "services.queue": {
                 "handlers": ["queue_file", "error_file"],
                 "level": "INFO",
