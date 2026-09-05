@@ -11,10 +11,24 @@ Key Functions:
       during popularity scan).
     - detect_cover_song(): Quick single-track check used during popularity
       scanning.
+
+Rebuilt with the following corrections:
+
+- The row mapping in ``detect_covers_for_artist`` read ``composer`` (index 4)
+  into the ``writer`` field and never read the real ``writer`` column
+  (index 5), so writer-based attribution ran on the wrong data.
+- ``detect_cover_song`` returned ``False`` for tracks it was only meant to
+  skip, so a caller writing the verdict back cleared the flag on confirmed
+  and manually-overridden covers. Skips now return the existing verdict.
+- The second tuple element mixed normalised titles with reason strings. It is
+  now always a reason; the normalised title is available separately.
+- A songwriter differing from the performer no longer independently returns
+  ``True``, since external songwriters are normal for commercial releases.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import structlog
@@ -26,9 +40,33 @@ from helpers.normalization_service import detect_cover_and_normalize_title
 from services.enrichment.cover_detector_impl import CoverDetector
 
 logger = structlog.get_logger(__name__)
+logging.getLogger(__name__).setLevel(logging.DEBUG)
+
+_ARTIST_TRACK_COLUMNS = (
+    "id",                       # 0
+    "title",                    # 1
+    "artist",                   # 2
+    "album",                    # 3
+    "composer",                 # 4
+    "writer",                   # 5
+    "isrc",                     # 6
+    "mbid",                     # 7
+    "musicbrainz_album_mbid",   # 8
+    "file_path",                # 9
+    "is_cover",                 # 10
+    "genres",                   # 11
+    "musicbrainz_genres",       # 12
+    "original_cover_artist",    # 13
+    "cover_manual_override",    # 14
+    "cover_last_checked",       # 15
+)
 
 
-def detect_covers_for_artist(artist_name: str, conn: Any = None, force: bool = False) -> int:
+def detect_covers_for_artist(
+    artist_name: str,
+    conn: Any = None,
+    force: bool = False,
+) -> int:
     """Scan all tracks for *artist_name* and mark covers in the database.
 
     Uses the full ``CoverDetector`` pipeline (ISRC, MB relations, writer
@@ -37,35 +75,43 @@ def detect_covers_for_artist(artist_name: str, conn: Any = None, force: bool = F
     access runs on SQLAlchemy sessions.
     """
     try:
-        detector = CoverDetector(db_connection=None)
+        detector = CoverDetector(db_connection=conn)
     except Exception as exc:
         logger.warning("CoverDetector unavailable", error=str(exc))
         return 0
 
+    columns = ", ".join(_ARTIST_TRACK_COLUMNS)
     try:
         with db_session() as session:
             result = session.execute(
-                text("SELECT id, title, artist, album, composer, writer, isrc, mbid, "
-                     "musicbrainz_album_mbid, file_path, is_cover, genres, musicbrainz_genres, "
-                     "original_cover_artist, cover_manual_override, cover_last_checked "
-                     "FROM tracks WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)"),
+                text(
+                    f"SELECT {columns} FROM tracks "
+                    "WHERE LOWER(COALESCE(NULLIF(album_artist, ''), artist)) = LOWER(:artist)"
+                ),
                 {"artist": artist_name},
             )
             rows = result.fetchall() or []
     except Exception as exc:
-        logger.error("Failed to query tracks for artist cover scan", artist=artist_name, error=str(exc))
+        logger.error(
+            "Failed to query tracks for artist cover scan",
+            artist=artist_name,
+            error=str(exc),
+        )
         return 0
 
     # Build a pseudo-album context so per-album caching works.
     albums: dict[str, list[dict[str, Any]]] = {}
     updated = 0
     for row in rows:
+        # Indices must track _ARTIST_TRACK_COLUMNS exactly. Previously
+        # composer (4) was read into writer, and writer (5) was never read.
         track = {
             "id": str(row_get(row, "id", 0, "")),
             "title": str(row_get(row, "title", 1, "")),
             "artist": str(row_get(row, "artist", 2, "")),
             "album": str(row_get(row, "album", 3, "")),
-            "writer": row_get(row, "writer", 4),
+            "composer": row_get(row, "composer", 4),
+            "writer": row_get(row, "writer", 5),
             "isrc": row_get(row, "isrc", 6),
             "mbid": row_get(row, "mbid", 7),
             "musicbrainz_album_mbid": row_get(row, "musicbrainz_album_mbid", 8),
@@ -81,13 +127,29 @@ def detect_covers_for_artist(artist_name: str, conn: Any = None, force: bool = F
         albums.setdefault(album_key, []).append(track)
 
     for album_name, tracks in albums.items():
-        artist = tracks[0].get("artist") or album_name
-        results = detector.detect_covers_for_album(
-            album=album_name, artist=artist, tracks=tracks, force=force,
-        )
+        # Prefer the album artist the scan was requested for; the first
+        # track's artist can be a featured or per-track credit.
+        artist = artist_name or (tracks[0].get("artist") or album_name)
+        try:
+            results = detector.detect_covers_for_album(
+                album=album_name, artist=artist, tracks=tracks, force=force,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Cover detection failed for album",
+                artist=artist_name,
+                album=album_name,
+                error=str(exc),
+            )
+            continue
         updated += len(results)
 
-    logger.info("Cover detection complete for artist", artist=artist_name, updated_count=updated, album_count=len(albums))
+    logger.info(
+        "Cover detection complete for artist",
+        artist=artist_name,
+        updated_count=updated,
+        album_count=len(albums),
+    )
     return updated
 
 
@@ -116,7 +178,12 @@ def detect_covers_for_album(
             album=album, artist=artist, tracks=tracks, force=force,
         )
     except Exception as exc:
-        logger.warning("Cover detection failed for album", album=album, artist=artist, error=str(exc))
+        logger.warning(
+            "Cover detection failed for album",
+            album=album,
+            artist=artist,
+            error=str(exc),
+        )
         return []
 
 
@@ -130,32 +197,49 @@ def detect_cover_song(
 ) -> tuple[bool, str]:
     """Quick single-track cover check used during popularity scanning.
 
-    Returns ``(is_cover, reason)``.  Runs the cheap title-string check
-    first and only falls through to writer/composer comparison when needed.
+    Returns ``(is_cover, reason)``. The second element is always a reason
+    code, never a normalised title.
 
     Caching behaviour (avoids re-detecting on every scan):
-    - If ``track_data`` contains ``cover_manual_override=True`` → skip entirely.
-    - If ``track_data`` has ``is_cover`` truthy AND ``original_cover_artist``
-      is populated → skip unless ``force=True``.
+    - ``cover_manual_override=True`` → keep the stored verdict.
+    - ``is_cover`` truthy AND ``original_cover_artist`` populated → keep the
+      stored verdict unless ``force=True``.
     - Otherwise run the standard detection pipeline.
+
+    Skips return the *existing* verdict rather than ``False``, so a caller
+    writing the result back cannot clear a confirmed cover flag.
     """
     if not force and track_data:
-        manual = track_data.get("cover_manual_override")
-        if manual:
-            return False, "manual_override"
+        existing_cover = bool(track_data.get("is_cover"))
 
-        existing_cover = track_data.get("is_cover")
+        if track_data.get("cover_manual_override"):
+            logger.debug("Cover check skipped: manual override", track=title)
+            return existing_cover, "manual_override"
+
         existing_orig = str(track_data.get("original_cover_artist") or "").strip()
         if existing_cover and existing_orig:
-            return False, "already_confirmed"
+            logger.debug("Cover check skipped: already confirmed", track=title)
+            return True, "already_confirmed"
 
-    is_cover, normalized = detect_cover_and_normalize_title(title)
+    is_cover, _normalized = detect_cover_and_normalize_title(title)
     if is_cover:
-        return is_cover, normalized
+        logger.debug("Cover detected via title annotation", track=title)
+        return True, "title_annotation"
 
+    # NOTE: a songwriter differing from the performer is normal for most
+    # commercially released music (staff writers, producers, session
+    # composers) and is not on its own sufficient to call a track a cover.
+    # It is reported as weak corroboration for the caller to combine with
+    # other signals, not as a positive verdict.
     if composer or writer:
-        from helpers.normalization_service import names_match
-        for c in [composer, writer]:
-            if c and not names_match(c, artist):
-                return True, normalized
-    return False, normalized
+        for credit in (composer, writer):
+            if not credit:
+                continue
+            from helpers.normalization_service import names_match
+
+            if not names_match(credit, artist):
+                logger.debug("Cover check: External writer only, insufficient evidence", track=title, credit=credit)
+                return False, "external_writer_only"
+
+    logger.debug("Cover check: No match", track=title)
+    return False, "no_match"
