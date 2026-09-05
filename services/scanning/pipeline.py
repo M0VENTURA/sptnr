@@ -97,7 +97,10 @@ def _run_artist_scan_pipeline_inner(
         stop_progress_file = None
 
     log_unified(f"[SCAN_PIPELINE] Starting artist pipeline: {artist_name} (force={force})")
-    record_scan("artist", "started", message=f"Artist scan: {artist_name}", artist=artist_name)
+    try:
+        record_scan("artist", "started", message=f"Artist scan: {artist_name}", artist=artist_name)
+    except Exception as e:
+        logger.debug("Failed to record scan start (DB may be offline)", error=str(e))
     
     try:
         try:
@@ -166,11 +169,21 @@ def _run_artist_scan_pipeline_inner(
 
         save_artist_scan_checkpoint(artist_name)
         log_unified(f"Artist scan complete: {artist_name}")
-        record_scan("artist", "completed", message=f"Artist scan complete: {artist_name}", artist=artist_name)
+        try:
+            record_scan("artist", "completed", message=f"Artist scan complete: {artist_name}", artist=artist_name)
+        except Exception:
+            pass
 
     except Exception as exc:
         log_unified(f"Artist scan failed: {exc}")
-        record_scan("artist", "failed", message=f"Artist scan failed: {exc}", artist=artist_name)
+        try:
+            record_scan("artist", "failed", message=f"Artist scan failed: {exc}", artist=artist_name)
+        except Exception as db_exc:
+            logger.error("Could not record failure to DB (DB likely down)", error=str(db_exc))
+            # If the database is offline, re-raise the exception so the caller (full library scan)
+            # knows it was a fatal infrastructure error, not just a bad track/API timeout.
+            if "OperationalError" in str(exc) or "connection" in str(exc).lower():
+                raise
 
 
 def start_library_scan(
@@ -233,7 +246,11 @@ def run_full_library_scan(force: bool = False, restart: bool = False):
     except Exception as exc:
         logger.debug("[SCAN_PIPELINE] Stop-flag clear failed", error=str(exc))
 
-    record_scan("full", "started", message="Full library scan")
+    try:
+        record_scan("full", "started", message="Full library scan")
+    except Exception:
+        pass
+
     try:
         write_progress_with_current_artist(progress, "library_scan", True)
         
@@ -252,7 +269,10 @@ def run_full_library_scan(force: bool = False, restart: bool = False):
 
             if is_stop_requested(progress):
                 log_unified("Scan stopped by user")
-                record_scan("full", "failed", message="Scan stopped by user")
+                try:
+                    record_scan("full", "failed", message="Scan stopped by user")
+                except Exception:
+                    pass
                 break
 
             write_progress_with_current_artist(progress, "library_scan", True, current_artist=name)
@@ -260,6 +280,13 @@ def run_full_library_scan(force: bool = False, restart: bool = False):
             try:
                 run_artist_scan_pipeline(name, force=force)
             except Exception as exc:
+                # 🚨 CRITICAL: Catch fatal database disconnections and abort immediately
+                # to prevent ruining the scan progress checkpoint file.
+                if "OperationalError" in str(exc) or "connection" in str(exc).lower():
+                    log_unified("🛑 CRITICAL: Database connection lost. Aborting full library scan to protect checkpoint data.")
+                    logger.exception("Database offline. Aborting full scan.")
+                    break
+                
                 logger.exception("[SCAN_PIPELINE] Artist scan crashed (continuing)", artist=name, error=str(exc))
                 log_unified(f"Artist scan failed for '{name}': {exc} — continuing")
 
@@ -271,12 +298,18 @@ def run_full_library_scan(force: bool = False, restart: bool = False):
         clear_scan_checkpoint(checkpoint_path)
         write_progress_with_current_artist(progress, "library_scan", False)
         log_unified("Full library scan complete")
-        record_scan("full", "completed", message="Full library scan complete")
+        try:
+            record_scan("full", "completed", message="Full library scan complete")
+        except Exception:
+            pass
 
     except Exception as exc:
         log_unified(f"Full scan failed: {exc}")
         write_progress_with_current_artist(progress, "library_scan", False)
-        record_scan("full", "failed", message=f"Full scan failed: {exc}")
+        try:
+            record_scan("full", "failed", message=f"Full scan failed: {exc}")
+        except Exception:
+            pass
 
 
 def start_boot_navidrome_import():
@@ -306,8 +339,15 @@ def start_boot_navidrome_import():
                 if not artist_id:
                     continue
 
-                # Enabled diff_mode here to make startup imports significantly faster
-                scan_artist_to_db(name, artist_id, diff_mode=True)
+                try:
+                    # Enabled diff_mode here to make startup imports significantly faster
+                    scan_artist_to_db(name, artist_id, diff_mode=True)
+                except Exception as exc:
+                    if "OperationalError" in str(exc) or "connection" in str(exc).lower():
+                        log_unified("🛑 CRITICAL: Database connection lost during boot import. Aborting.")
+                        break
+                    logger.debug("Boot artist import failed", artist=name, error=str(exc))
+
                 save_artist_scan_checkpoint(name, checkpoint_path)
 
             clear_scan_checkpoint(checkpoint_path)
