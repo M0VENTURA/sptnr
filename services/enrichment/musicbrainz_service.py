@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import logging
 import os
 import re
 import threading
@@ -62,6 +63,9 @@ from helpers.normalization_service import (
 )
 
 logger = structlog.get_logger(__name__)
+# Force this specific module to emit DEBUG logs regardless of global config
+logging.getLogger(__name__).setLevel(logging.DEBUG)
+
 T = TypeVar("T")
 
 __all__ = [
