@@ -2,6 +2,19 @@
 
 This manages thread-safe API request throttling and state tracking
 across external providers (MusicBrainz, ListenBrainz, Last.fm, Spotify).
+
+FIX (see notes below `_save_state`): state persistence is now performed
+OUTSIDE each provider lock. Previously `_save_state()` (a synchronous
+`json.dump()` to disk) ran INSIDE `self._mb_lock` / `self._lastfm_lock` /
+`self._listenbrainz_lock`. Since every thread doing MusicBrainz/Last.fm/
+ListenBrainz work funnels through the same provider-wide lock, a single
+slow disk write (contended disk, degraded/network-mounted state file
+path, etc.) would stall EVERY concurrent caller of that provider for the
+duration of the write - not just the caller that happened to trigger the
+write. This is consistent with reports of multiple, seemingly unrelated
+"budget exceeded" scan-stage timeouts (e.g. album enrichment AND a
+separate ListenBrainz album-tracklist lookup, both of which resolve
+MusicBrainz release/artist data under the hood) surfacing together.
 """
 
 from __future__ import annotations
@@ -36,6 +49,11 @@ class APIRateLimiter:
         self.state_file = state_file
         self.state = self._load_state()
         self._last_save_time = 0.0
+        # Guards `_last_save_time` and the (rare) concurrent-write race on
+        # `state_file` itself. Deliberately SEPARATE from the per-provider
+        # throttle locks below, so a slow disk write can never block a
+        # provider's request pacing.
+        self._save_lock = threading.Lock()
         self._mb_lock = threading.Lock()
         self._lastfm_lock = threading.Lock()
         self._listenbrainz_lock = threading.Lock()
@@ -70,16 +88,28 @@ class APIRateLimiter:
         }
 
     def _save_state(self, force: bool = False) -> None:
-        now = time.time()
-        if not force and now - self._last_save_time < self._STATE_SAVE_INTERVAL_SECONDS:
-            return
-        try:
-            os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
-            with open(self.state_file, "w", encoding="utf-8") as handle:
-                json.dump(self.state, handle, indent=2)
-            self._last_save_time = now
-        except Exception as exc:
-            logger.debug("Could not save API rate limiter state", error=str(exc))
+        """Persist rate-limiter state to disk.
+
+        IMPORTANT: this method performs synchronous file I/O and must
+        NEVER be called while holding a per-provider throttle lock
+        (`_mb_lock` / `_lastfm_lock` / `_listenbrainz_lock`). Doing so
+        would let a single slow write stall every other thread waiting
+        on that provider's lock, regardless of which thread's request
+        actually triggered the write. It uses its own dedicated
+        `_save_lock` (held only for the throttle-check + write, not for
+        any provider-specific pacing).
+        """
+        with self._save_lock:
+            now = time.time()
+            if not force and now - self._last_save_time < self._STATE_SAVE_INTERVAL_SECONDS:
+                return
+            try:
+                os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
+                with open(self.state_file, "w", encoding="utf-8") as handle:
+                    json.dump(self.state, handle, indent=2)
+                self._last_save_time = now
+            except Exception as exc:
+                logger.debug("Could not save API rate limiter state", error=str(exc))
 
     def throttle_musicbrainz(self) -> None:
         # Compute the wait UNDER the lock (atomic claim of the next slot),
@@ -94,7 +124,8 @@ class APIRateLimiter:
             wait_time = MUSICBRAINZ_MIN_INTERVAL - (now - last_request)
             self.state["musicbrainz_last_request"] = time.time()
             self.state["musicbrainz_daily_count"] = self.state.get("musicbrainz_daily_count", 0) + 1
-            self._save_state()
+        # Persisted outside _mb_lock - see _save_state docstring.
+        self._save_state()
         if wait_time > 0:
             time.sleep(wait_time)
 
@@ -106,7 +137,8 @@ class APIRateLimiter:
             wait_time = LASTFM_RATE_LIMIT_PER_SECOND - (now - last_request)
             self.state["lastfm_last_request"] = time.time()
             self.state["lastfm_daily_count"] = self.state.get("lastfm_daily_count", 0) + 1
-            self._save_state()
+        # Persisted outside _lastfm_lock - see _save_state docstring.
+        self._save_state()
         if wait_time > 0:
             time.sleep(wait_time)
 
@@ -118,7 +150,8 @@ class APIRateLimiter:
             wait_time = LISTENBRAINZ_MIN_INTERVAL - (now - last_request)
             self.state["listenbrainz_last_request"] = time.time()
             self.state["listenbrainz_daily_count"] = self.state.get("listenbrainz_daily_count", 0) + 1
-            self._save_state()
+        # Persisted outside _listenbrainz_lock - see _save_state docstring.
+        self._save_state()
         if wait_time > 0:
             time.sleep(wait_time)
 
