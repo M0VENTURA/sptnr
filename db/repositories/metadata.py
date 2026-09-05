@@ -225,6 +225,80 @@ def ignore_missing_track_db(
 
 
 # -----------------------------------------------------------------------------
+# Provider-specific album genres
+# -----------------------------------------------------------------------------
+
+def get_album_provider_genres(conn: Any = None, artist: str = "", album: str = "") -> dict[str, list[str]]:
+    """Retrieve distinct provider genres for an album from musicbrainz_releases."""
+    result = {"lastfm": [], "discogs": [], "musicbrainz": []}
+    try:
+        with db_session() as session:
+            row = session.execute(
+                text("""
+                    SELECT lastfm_genres, discogs_genres, musicbrainz_genres 
+                    FROM musicbrainz_releases
+                    WHERE LOWER(artist) = LOWER(:artist)
+                      AND LOWER(release_title) = LOWER(:album)
+                    LIMIT 1
+                """),
+                {"artist": artist, "album": album},
+            ).first()
+            if row:
+                if row[0]:
+                    result["lastfm"] = [g.strip() for g in str(row[0]).split(",") if g.strip()]
+                if row[1]:
+                    result["discogs"] = [g.strip() for g in str(row[1]).split(",") if g.strip()]
+                if row[2]:
+                    result["musicbrainz"] = [g.strip() for g in str(row[2]).split(",") if g.strip()]
+    except Exception as exc:
+        logger.error("Failed to fetch provider genres for album %s - %s: %s", artist, album, exc)
+    return result
+
+
+def update_album_provider_genres(
+    conn: Any = None,
+    artist: str = "",
+    album: str = "",
+    lastfm_genres: list[str] | None = None,
+    discogs_genres: list[str] | None = None,
+    mb_genres: list[str] | None = None,
+) -> bool:
+    """Update individual provider genre columns for an album in musicbrainz_releases."""
+    updates = []
+    params: dict[str, Any] = {"artist": artist, "album": album}
+    
+    if lastfm_genres is not None:
+        updates.append("lastfm_genres = :lf")
+        params["lf"] = ", ".join(str(g).strip() for g in lastfm_genres if g)
+    if discogs_genres is not None:
+        updates.append("discogs_genres = :disc")
+        params["disc"] = ", ".join(str(g).strip() for g in discogs_genres if g)
+    if mb_genres is not None:
+        updates.append("musicbrainz_genres = :mb")
+        params["mb"] = ", ".join(str(g).strip() for g in mb_genres if g)
+        
+    if not updates:
+        return False
+        
+    try:
+        with db_session() as session:
+            set_clause = ", ".join(updates)
+            session.execute(
+                text(f"""
+                    UPDATE musicbrainz_releases
+                    SET {set_clause}, updated_at = CURRENT_TIMESTAMP
+                    WHERE LOWER(artist) = LOWER(:artist)
+                      AND LOWER(release_title) = LOWER(:album)
+                """),
+                params,
+            )
+            return True
+    except Exception as exc:
+        logger.error("Failed to update provider genres for album %s - %s: %s", artist, album, exc)
+        return False
+
+
+# -----------------------------------------------------------------------------
 # Artist corrections / metadata
 # -----------------------------------------------------------------------------
 
@@ -266,12 +340,7 @@ def merge_album_names(conn: Any = None, artist: str = "", source_albums: list[st
     if not source_albums:
         return 0
 
-    # ── File-tag sync ────────────────────────────────────────────────────
-    # Navidrome keys albums on the FILE tags, so merging album names must
-    # rewrite the ``album`` tag on every affected audio file — a DB-only
-    # update leaves Navidrome showing the OLD album names (the reported
-    # "artist/album save only updates the database, not the files" gap).
-    _file_rows: list[tuple[str, str, str]] = []  # (old_file_path, artist, title)
+    _file_rows: list[tuple[str, str, str]] = []
     try:
         from services.metadata.tag_file_service import (
             resolve_music_file_path,
@@ -306,8 +375,6 @@ def merge_album_names(conn: Any = None, artist: str = "", source_albums: list[st
         """), params)
         rows_updated = result.rowcount or 0
 
-    # Rewrite the file album tags (best-effort; a missing/unresolvable file
-    # is not fatal).
     for fp, title, album_name in _file_rows:
         try:
             resolved = resolve_music_file_path(fp) or fp
@@ -317,7 +384,6 @@ def merge_album_names(conn: Any = None, artist: str = "", source_albums: list[st
             logger.debug("Merge-album file tag write failed", file=fp, error=str(exc))
 
     return rows_updated
-
 
 
 def count_album_disc_numbers(conn: Any = None, artist: str = "", album: str = "") -> int:
@@ -332,9 +398,6 @@ def count_album_disc_numbers(conn: Any = None, artist: str = "", album: str = ""
 
 
 def clear_album_disc_numbers(conn: Any = None, artist: str = "", album: str = "") -> int:
-    # ── File-tag sync ────────────────────────────────────────────────────
-    # Clearing disc_number in the DB must also clear the file tag frame so
-    # Navidrome (which reads file tags) stops showing a spurious disc.
     _file_rows: list[str] = []
     try:
         from services.metadata.tag_file_service import (
@@ -390,7 +453,6 @@ def fetch_cached_missing_releases(conn: Any = None, artist: str = ""):
             {"artist": artist},
         )
         return result.fetchall() or []
-
 
 
 # -----------------------------------------------------------------------------
