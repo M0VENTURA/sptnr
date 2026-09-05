@@ -8,6 +8,24 @@ This module owns Last.fm application behaviour:
 - album/title-track/single interpretation
 
 Raw HTTP is handled by ``api_clients.lastfm_http``.
+
+Rebuilt with the following corrections:
+
+- Separate re-entrant locks for the client and service singletons. The
+  previous single non-reentrant lock deadlocked when
+  ``get_lastfm_track_info()`` constructed a service that then requested the
+  shared client on the same thread.
+- An empty or missing API key can no longer evict a working singleton.
+- ``album.getInfo`` payloads are cached per instance, removing the two to
+  three duplicate requests previously issued per single check.
+- The ``track.search`` fallback now preserves tags, keeps playcount and
+  listener counts distinct, and no longer sums listeners across every
+  matching result.
+- ``check_track_as_single()`` no longer accepts EP-sized releases as singles.
+- Configuration is read lazily so config-editor changes apply without a
+  restart, via ``reset_lastfm_config_cache()``.
+- ``RecommendationCache`` is a process-wide singleton to prevent concurrent
+  instances clobbering each other's writes.
 """
 
 from __future__ import annotations
@@ -21,7 +39,7 @@ from typing import Any
 
 import structlog
 
-from api_clients.lastfm_http import LastFmHttpClient, retry_with_backoff
+from api_clients.lastfm_http import LastFmHttpClient
 from helpers.config_helpers import get_lastfm_config
 from helpers.normalization_service import (
     FEAT_SUFFIX_RE,
@@ -31,25 +49,90 @@ from helpers.normalization_service import (
 
 logger = structlog.get_logger(__name__)
 
-# Load Last.fm configuration from centralized config
-LASTFM_CONFIG = get_lastfm_config()
+# =============================================================================
+# CONFIGURATION (lazily read so config edits apply without a restart)
+# =============================================================================
+
+_CONFIG_LOCK = threading.Lock()
+_LASTFM_CONFIG_CACHE: dict[str, Any] | None = None
+
+_CONFIG_DEFAULTS: dict[str, Any] = {
+    "CACHE_TTL_HOURS": 24,
+}
+
+
+def get_config_value(key: str, default: Any = None) -> Any:
+    """Return a Last.fm config value, loading configuration on first use."""
+    global _LASTFM_CONFIG_CACHE
+
+    with _CONFIG_LOCK:
+        if _LASTFM_CONFIG_CACHE is None:
+            try:
+                _LASTFM_CONFIG_CACHE = dict(get_lastfm_config() or {})
+            except Exception as exc:
+                logger.debug("Last.fm config load failed", error=str(exc))
+                _LASTFM_CONFIG_CACHE = {}
+        config = _LASTFM_CONFIG_CACHE
+
+    if key in config:
+        return config[key]
+    if default is not None:
+        return default
+    return _CONFIG_DEFAULTS.get(key)
+
+
+def reset_lastfm_config_cache() -> None:
+    """Clear the cached configuration. Call after saving configuration."""
+    global _LASTFM_CONFIG_CACHE
+    with _CONFIG_LOCK:
+        _LASTFM_CONFIG_CACHE = None
+
 
 # =============================================================================
-# THREAD-SAFE CLIENT SINGLETON
+# THREAD-SAFE SINGLETONS
 # =============================================================================
+
+# Two distinct re-entrant locks. The client lock must be re-entrant because
+# LastFmService.__init__ requests the shared client while the service lock is
+# already held by the calling thread.
+_CLIENT_INIT_LOCK = threading.RLock()
+_SERVICE_INIT_LOCK = threading.RLock()
 
 _SHARED_LF_CLIENT: LastFmHttpClient | None = None
-_INIT_LOCK = threading.Lock()
+_lastfm_service: "LastFmService | None" = None
+
+
+def _is_placeholder_key(api_key: str | None) -> bool:
+    return str(api_key or "").strip().lower() in (
+        "",
+        "your_lastfm_api_key",
+        "your_api_key",
+        "<your_api_key>",
+        "placeholder",
+    )
 
 
 def get_shared_lastfm_client(api_key: str) -> LastFmHttpClient:
-    """Return the process-wide shared LastFmHttpClient singleton."""
+    """Return the process-wide shared LastFmHttpClient singleton.
+
+    An empty or placeholder key never replaces an existing working client.
+    """
     global _SHARED_LF_CLIENT
-    if _SHARED_LF_CLIENT is None or getattr(_SHARED_LF_CLIENT, "api_key", None) != api_key:
-        with _INIT_LOCK:
-            if _SHARED_LF_CLIENT is None or getattr(_SHARED_LF_CLIENT, "api_key", None) != api_key:
-                _SHARED_LF_CLIENT = LastFmHttpClient(api_key=api_key)
-    return _SHARED_LF_CLIENT
+
+    if _is_placeholder_key(api_key) and _SHARED_LF_CLIENT is not None:
+        return _SHARED_LF_CLIENT
+
+    client = _SHARED_LF_CLIENT
+    if client is not None and getattr(client, "api_key", None) == api_key:
+        return client
+
+    with _CLIENT_INIT_LOCK:
+        client = _SHARED_LF_CLIENT
+        if client is None or getattr(client, "api_key", None) != api_key:
+            if _is_placeholder_key(api_key) and client is not None:
+                return client
+            _SHARED_LF_CLIENT = LastFmHttpClient(api_key=api_key)
+        return _SHARED_LF_CLIENT
 
 
 def _sanitize_release_name(album_name: str) -> str:
@@ -57,19 +140,25 @@ def _sanitize_release_name(album_name: str) -> str:
     if not album_name:
         return ""
     cleaned = re.sub(
-        r'\s*[\(\[].*?(edition|deluxe|remaster|version|bonus|expanded|explicit|clean).*?[\)\]]', 
-        '', 
-        album_name, 
-        flags=re.IGNORECASE
+        r"\s*[\(\[].*?(edition|deluxe|remaster|version|bonus|expanded|explicit|clean).*?[\)\]]",
+        "",
+        album_name,
+        flags=re.IGNORECASE,
     ).strip()
     return cleaned if cleaned else album_name
 
+
+# =============================================================================
+# RECOMMENDATION CACHE
+# =============================================================================
 
 class RecommendationCache:
     """Simple JSON cache for Last.fm recommendation payloads."""
 
     def __init__(self, cache_dir: str | None = None):
-        self.cache_dir = Path(cache_dir) if cache_dir else Path.home() / ".cache" / "popularr"
+        self.cache_dir = (
+            Path(cache_dir) if cache_dir else Path.home() / ".cache" / "popularr"
+        )
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.cache_file = self.cache_dir / "lastfm_recommendations.json"
         self._lock = threading.Lock()
@@ -83,8 +172,9 @@ class RecommendationCache:
                 entry = cache.get(key)
                 if not entry:
                     return None
-                age_hours = (time.time() - entry["timestamp"]) / 3600
-                if age_hours > LASTFM_CONFIG["CACHE_TTL_HOURS"]:
+                ttl_hours = float(get_config_value("CACHE_TTL_HOURS", 24) or 24)
+                age_hours = (time.time() - float(entry.get("timestamp") or 0)) / 3600
+                if age_hours > ttl_hours:
                     cache.pop(key, None)
                     self._save_unsafe(cache)
                     return None
@@ -96,7 +186,11 @@ class RecommendationCache:
     def set(self, key: str, value: dict[str, Any]) -> None:
         with self._lock:
             try:
-                cache = json.loads(self.cache_file.read_text(encoding="utf-8")) if self.cache_file.exists() else {}
+                cache = (
+                    json.loads(self.cache_file.read_text(encoding="utf-8"))
+                    if self.cache_file.exists()
+                    else {}
+                )
                 cache[key] = {"data": value, "timestamp": time.time()}
                 self._save_unsafe(cache)
             except Exception as exc:
@@ -108,34 +202,49 @@ class RecommendationCache:
         tmp.replace(self.cache_file)
 
 
+_RECOMMENDATION_CACHE: RecommendationCache | None = None
+_RECOMMENDATION_CACHE_LOCK = threading.RLock()
+
+
+def get_recommendation_cache() -> RecommendationCache:
+    """Return the shared recommendation cache.
+
+    A single instance avoids concurrent whole-file rewrites clobbering
+    each other.
+    """
+    global _RECOMMENDATION_CACHE
+    if _RECOMMENDATION_CACHE is not None:
+        return _RECOMMENDATION_CACHE
+    with _RECOMMENDATION_CACHE_LOCK:
+        if _RECOMMENDATION_CACHE is None:
+            _RECOMMENDATION_CACHE = RecommendationCache()
+        return _RECOMMENDATION_CACHE
+
+
+# =============================================================================
+# SERVICE
+# =============================================================================
+
 class LastFmService:
     """Application-level Last.fm behaviour."""
 
-    def __init__(self, api_key: str, username: str | None = None, http_client: LastFmHttpClient | None = None, db_connection: Any = None):
+    def __init__(
+        self,
+        api_key: str,
+        username: str | None = None,
+        http_client: LastFmHttpClient | None = None,
+        db_connection: Any = None,
+    ):
         self.api_key = api_key or ""
         self.username = username
         self.http = http_client or get_shared_lastfm_client(self.api_key)
-        self.cache = RecommendationCache()
+        self.cache = get_recommendation_cache()
         self.db_connection = db_connection
         self.mb_client = None
+        self._album_info_cache: dict[tuple[str, str], dict[str, Any]] = {}
+        self._album_cache_lock = threading.Lock()
 
-    def get_artist_top_tracks(self, artist: str, limit: int = 100) -> list[dict[str, Any]]:
-        if not self.api_key or not artist:
-            return []
-        try:
-            # FIXED: Removed explicit timeout
-            data = self.http.get_json(
-                "artist.getTopTracks",
-                artist=artist,
-                limit=max(1, min(int(limit), 200)),
-            )
-            tracks = (data.get("toptracks") or {}).get("track") or []
-            if isinstance(tracks, dict):
-                tracks = [tracks]
-            return [t for t in tracks if isinstance(t, dict)]
-        except Exception as exc:
-            logger.debug("Artist top tracks failed", artist=artist, error=str(exc))
-            return []
+    # -- text helpers -----------------------------------------------------
 
     @staticmethod
     def clean_spaces(text: str) -> str:
@@ -168,7 +277,12 @@ class LastFmService:
             return ""
         value = cls.clean_spaces(artist).lower()
         value = FEAT_SUFFIX_RE.split(value, maxsplit=1)[0]
-        value = re.sub(r"\s*(?:\+|&|/|×|\bx\b|\bvs\b|\bwith\b)\s*", " & ", value, flags=re.IGNORECASE)
+        value = re.sub(
+            r"\s*(?:\+|&|/|×|\bx\b|\bvs\b|\bwith\b)\s*",
+            " & ",
+            value,
+            flags=re.IGNORECASE,
+        )
         return cls.clean_spaces(value)
 
     @classmethod
@@ -191,7 +305,14 @@ class LastFmService:
         primary = cls.strip_featured_artist(artist)
         add(original)
         add(primary)
-        add(re.sub(r"\s*(?:\+|&|/|×|\bx\b|\bvs\b|\bwith\b)\s*", " & ", primary, flags=re.IGNORECASE))
+        add(
+            re.sub(
+                r"\s*(?:\+|&|/|×|\bx\b|\bvs\b|\bwith\b)\s*",
+                " & ",
+                primary,
+                flags=re.IGNORECASE,
+            )
+        )
 
         no_brackets = cls._strip_bracketed_content(artist)
         if no_brackets:
@@ -210,7 +331,7 @@ class LastFmService:
         r_norm = cls.normalize_artist_for_compare(returned_artist)
         q_primary = cls.strip_featured_artist(query_artist).lower()
         r_primary = cls.strip_featured_artist(returned_artist).lower()
-        
+
         if q_raw and r_raw and q_raw == r_raw:
             return 100
         if q_norm and r_norm and q_norm == r_norm:
@@ -223,7 +344,33 @@ class LastFmService:
             return 60
         return 0
 
-    def _get_track_info_once(self, artist: str, title: str, track_mbid: str | None = None) -> dict[str, Any]:
+    # -- artist top tracks ------------------------------------------------
+
+    def get_artist_top_tracks(self, artist: str, limit: int = 100) -> list[dict[str, Any]]:
+        if not self.api_key or not artist:
+            return []
+        try:
+            data = self.http.get_json(
+                "artist.getTopTracks",
+                artist=artist,
+                limit=max(1, min(int(limit), 200)),
+            )
+            tracks = (data.get("toptracks") or {}).get("track") or []
+            if isinstance(tracks, dict):
+                tracks = [tracks]
+            return [t for t in tracks if isinstance(t, dict)]
+        except Exception as exc:
+            logger.debug("Artist top tracks failed", artist=artist, error=str(exc))
+            return []
+
+    # -- track info -------------------------------------------------------
+
+    def _get_track_info_once(
+        self,
+        artist: str,
+        title: str,
+        track_mbid: str | None = None,
+    ) -> dict[str, Any]:
         params: dict[str, Any] = {"autocorrect": 1}
         if track_mbid:
             params["mbid"] = track_mbid
@@ -232,12 +379,14 @@ class LastFmService:
             params["track"] = title
 
         try:
-            # FIXED: Removed explicit timeout
             data = self.http.get_json("track.getInfo", **params)
-            if "error" in data:
+            if not isinstance(data, dict) or "error" in data:
                 return self._empty_track_info(artist, title)
 
-            track = data.get("track", {}) if isinstance(data, dict) else {}
+            track = data.get("track", {}) or {}
+            if not isinstance(track, dict):
+                return self._empty_track_info(artist, title)
+
             returned_artist = self.extract_artist_name(track.get("artist"))
             album_title = ""
             if isinstance(track.get("album"), dict):
@@ -254,25 +403,34 @@ class LastFmService:
                 "album": album_title,
             }
         except Exception as exc:
-            logger.debug("track.getInfo failed", artist=artist, track=title, error=str(exc))
+            logger.debug(
+                "track.getInfo failed", artist=artist, track=title, error=str(exc)
+            )
             return self._empty_track_info(artist, title)
 
     @staticmethod
     def _empty_track_info(artist: str, title: str) -> dict[str, Any]:
         return {
-            "track_play": 0, 
-            "listeners": 0, 
-            "toptags": {}, 
-            "lookup_artist": artist, 
-            "returned_artist": "", 
-            "track_name": title, 
-            "url": "", 
-            "album": ""
+            "track_play": 0,
+            "listeners": 0,
+            "toptags": {},
+            "lookup_artist": artist,
+            "returned_artist": "",
+            "track_name": title,
+            "url": "",
+            "album": "",
         }
 
-    def get_track_info(self, artist: str, title: str, track_mbid: str | None = None) -> dict[str, Any]:
+    def get_track_info(
+        self,
+        artist: str,
+        title: str,
+        track_mbid: str | None = None,
+    ) -> dict[str, Any]:
         if not self.api_key:
-            return self._empty_track_info(artist, title)
+            return self._normalise_track_result(
+                self._empty_track_info(artist, title), artist
+            )
 
         title = strip_cover_attribution(title) or title
 
@@ -283,133 +441,212 @@ class LastFmService:
             mbid_result = self._get_track_info_once(artist, title, track_mbid=track_mbid)
             best_result = mbid_result
             best_tuple = (
-                self.artist_match_score(artist, mbid_result.get("returned_artist", "")), 
-                int(mbid_result.get("listeners", 0) or 0), 
-                int(mbid_result.get("track_play", 0) or 0)
+                self.artist_match_score(artist, mbid_result.get("returned_artist", "")),
+                int(mbid_result.get("listeners", 0) or 0),
+                int(mbid_result.get("track_play", 0) or 0),
             )
             if best_tuple[0] >= 90 and (best_tuple[1] > 0 or best_tuple[2] > 0):
                 return self._normalise_track_result(best_result, artist)
 
         for candidate_artist in self.build_artist_lookup_candidates(artist):
             candidate = self._get_track_info_once(candidate_artist, title)
-            artist_score = self.artist_match_score(artist, candidate.get("returned_artist", ""))
-            
+            artist_score = self.artist_match_score(
+                artist, candidate.get("returned_artist", "")
+            )
+
             if artist_score < 60:
                 continue
-                
+
             candidate_tuple = (
-                artist_score, 
-                int(candidate.get("listeners", 0) or 0), 
-                int(candidate.get("track_play", 0) or 0)
+                artist_score,
+                int(candidate.get("listeners", 0) or 0),
+                int(candidate.get("track_play", 0) or 0),
             )
-            
+
             if candidate_tuple > best_tuple:
                 best_tuple = candidate_tuple
                 best_result = candidate
 
-        if best_result is None or (best_result.get("listeners", 0) == 0 and best_result.get("track_play", 0) == 0):
-            search_results = self.search_track(artist, title, limit=20)
-            if search_results:
-                try:
-                    from services.popularity.popularity_matching import normalize_for_aggregation as _nfa
-                    _target = _nfa(title)
-                except Exception:
-                    _target = None
-                    
-                total_listeners = 0
-                total_play = 0
-                best_name = title
-                best_url = ""
-                best_artist = ""
-                _seen_urls: set[str] = set()
-                
-                for track in search_results:
-                    track_name = track.get("name", "")
-                    if _target and _nfa(track_name) != _target:
-                        continue
-                        
-                    _url = str(track.get("url") or "").strip()
-                    _dedupe_key = _url or f"{track_name.lower()}|{track.get('artist', '')}".strip().lower()
-                    if _dedupe_key in _seen_urls:
-                        continue
-                    _seen_urls.add(_dedupe_key)
-                    
-                    track_listeners = int(track.get("listeners", 0) or 0)
-                    track_play = int(track.get("playcount", 0) or 0)
-                    total_listeners += track_listeners
-                    total_play += track_play
-                    
-                    if track_listeners > 0:
-                        best_name = track_name
-                        best_url = _url
-                        best_artist = track.get("artist", "")
-                        
-                if total_listeners > 0:
-                    best_result = {
-                        "track_play": total_listeners,
-                        "listeners": total_listeners,
-                        "toptags": {},
-                        "lookup_artist": artist,
-                        "returned_artist": best_artist,
-                        "track_name": best_name,
-                        "url": best_url,
-                        "album": "",
-                    }
+        if best_result is None or (
+            int(best_result.get("listeners", 0) or 0) == 0
+            and int(best_result.get("track_play", 0) or 0) == 0
+        ):
+            fallback = self._track_info_from_search(artist, title)
+            if fallback is not None:
+                best_result = fallback
 
-        return self._normalise_track_result(best_result or self._empty_track_info(artist, title), artist)
+        return self._normalise_track_result(
+            best_result or self._empty_track_info(artist, title), artist
+        )
+
+    def _track_info_from_search(self, artist: str, title: str) -> dict[str, Any] | None:
+        """Best-effort recovery via ``track.search``.
+
+        Selects the single strongest matching result rather than summing
+        listener counts across every match, which previously inflated the
+        figure well above what ``track.getInfo`` reports for the same track.
+        Tags are recovered with a follow-up ``track.getInfo`` on the winner.
+        """
+        search_results = self.search_track(artist, title, limit=20)
+        if not search_results:
+            return None
+
+        try:
+            from services.popularity.popularity_matching import (
+                normalize_for_aggregation as _nfa,
+            )
+
+            target = _nfa(title)
+        except Exception:
+            _nfa = None  # type: ignore[assignment]
+            target = None
+
+        best: dict[str, Any] | None = None
+        best_listeners = 0
+        seen: set[str] = set()
+
+        for track in search_results:
+            track_name = str(track.get("name") or "")
+            if target is not None and _nfa is not None and _nfa(track_name) != target:
+                continue
+
+            url = str(track.get("url") or "").strip()
+            dedupe_key = (
+                url or f"{track_name.lower()}|{track.get('artist', '')}".strip().lower()
+            )
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+
+            listeners = int(track.get("listeners", 0) or 0)
+            if listeners > best_listeners:
+                best_listeners = listeners
+                best = track
+
+        if best is None or best_listeners <= 0:
+            return None
+
+        best_artist = str(best.get("artist") or "")
+        best_name = str(best.get("name") or title)
+
+        # Recover tags and a genuine playcount for the chosen match.
+        detail = self._get_track_info_once(best_artist or artist, best_name)
+        toptags = detail.get("toptags") or {}
+        playcount = int(detail.get("track_play", 0) or 0)
+        listeners = int(detail.get("listeners", 0) or 0) or best_listeners
+
+        return {
+            "track_play": playcount,
+            "listeners": listeners,
+            "toptags": toptags,
+            "lookup_artist": artist,
+            "returned_artist": best_artist,
+            "track_name": best_name,
+            "url": str(best.get("url") or ""),
+            "album": detail.get("album", ""),
+        }
 
     @staticmethod
-    def _normalise_track_result(result: dict[str, Any], fallback_artist: str) -> dict[str, Any]:
+    def _normalise_track_result(
+        result: dict[str, Any], fallback_artist: str
+    ) -> dict[str, Any]:
         return {
             "track_play": int(result.get("track_play", 0) or 0),
             "listeners": int(result.get("listeners", 0) or 0),
             "toptags": result.get("toptags", {}) or {},
             "lookup_artist": result.get("lookup_artist", fallback_artist),
             "returned_artist": result.get("returned_artist", ""),
+            "track_name": result.get("track_name", ""),
             "url": result.get("url", ""),
             "album": result.get("album", ""),
         }
+
+    def get_track_tags(
+        self,
+        artist: str,
+        title: str,
+        track_mbid: str | None = None,
+        limit: int = 15,
+    ) -> list[str]:
+        """Return Last.fm track-level tag names for genre aggregation."""
+        info = self.get_track_info(artist, title, track_mbid=track_mbid)
+        toptags = info.get("toptags") or {}
+        tags = toptags.get("tag") if isinstance(toptags, dict) else toptags
+        if isinstance(tags, dict):
+            tags = [tags]
+        if not isinstance(tags, list):
+            return []
+
+        names: list[str] = []
+        for tag in tags:
+            if isinstance(tag, dict):
+                name = str(tag.get("name") or "").strip()
+            else:
+                name = str(tag or "").strip()
+            if name and name not in names:
+                names.append(name)
+            if len(names) >= max(1, int(limit)):
+                break
+        return names
+
+    # -- searches ---------------------------------------------------------
 
     def search_track(self, artist: str, title: str, limit: int = 10) -> list[dict[str, Any]]:
         if not self.api_key:
             return []
         try:
-            # FIXED: Removed explicit timeout
-            data = self.http.get_json("track.search", artist=artist, track=title, limit=limit)
-            tracks = data.get("results", {}).get("trackmatches", {}).get("track", [])
+            data = self.http.get_json(
+                "track.search", artist=artist, track=title, limit=limit
+            )
+            tracks = (
+                data.get("results", {}).get("trackmatches", {}).get("track", [])
+                if isinstance(data, dict)
+                else []
+            )
             if isinstance(tracks, dict):
                 tracks = [tracks]
             output = []
-            for track in tracks:
+            for track in tracks or []:
+                if not isinstance(track, dict):
+                    continue
                 track_artist = self.extract_artist_name(track.get("artist"))
                 score = self.artist_match_score(artist, track_artist)
                 if score >= 60:
-                    output.append({
-                        "name": track.get("name", ""), 
-                        "artist": track_artist, 
-                        "listeners": int(track.get("listeners", 0) or 0), 
-                        "url": track.get("url", ""), 
-                        "_score": score
-                    })
-                    
+                    output.append(
+                        {
+                            "name": track.get("name", ""),
+                            "artist": track_artist,
+                            "listeners": int(track.get("listeners", 0) or 0),
+                            "url": track.get("url", ""),
+                            "_score": score,
+                        }
+                    )
+
             output.sort(key=lambda item: (item["_score"], item["listeners"]), reverse=True)
             for item in output:
                 item.pop("_score", None)
             return output
         except Exception as exc:
-            logger.debug("track.search failed", artist=artist, track=title, error=str(exc))
+            logger.debug(
+                "track.search failed", artist=artist, track=title, error=str(exc)
+            )
             return []
 
-    def search_album(self, album: str, artist: str = "", limit: int = 10) -> list[dict[str, Any]]:
+    def search_album(
+        self, album: str, artist: str = "", limit: int = 10
+    ) -> list[dict[str, Any]]:
         if not self.api_key:
             return []
         try:
             clean_album = _sanitize_release_name(album)
-            # FIXED: Removed explicit timeout
             data = self.http.get_json(
                 "album.search", album=clean_album, limit=max(1, min(limit, 100))
             )
-            albums = data.get("results", {}).get("albummatches", {}).get("album", [])
+            albums = (
+                data.get("results", {}).get("albummatches", {}).get("album", [])
+                if isinstance(data, dict)
+                else []
+            )
             if isinstance(albums, dict):
                 albums = [albums]
             output = []
@@ -425,57 +662,82 @@ class LastFmService:
             logger.debug("album.search failed", album=album, error=str(exc))
             return []
 
+    # -- album info (cached) ----------------------------------------------
+
     def _album_get_info(self, artist: str, album: str) -> dict[str, Any]:
-        if not self.api_key:
+        """Fetch ``album.getInfo``, caching the payload per instance.
+
+        The single-detection path previously issued this request two to three
+        times per track with identical arguments, each looping over every
+        artist lookup candidate.
+        """
+        if not self.api_key or not album:
             return {}
+
+        cache_key = (
+            self.clean_spaces(artist).lower(),
+            self.clean_spaces(album).lower(),
+        )
+        with self._album_cache_lock:
+            cached = self._album_info_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         clean_album = _sanitize_release_name(album)
+        payload_out: dict[str, Any] = {}
+        lookup_succeeded = False
+
         for lookup_artist in self.build_artist_lookup_candidates(artist):
             try:
-                # FIXED: Removed explicit timeout
-                payload = self.http.get_json("album.getInfo", artist=lookup_artist, album=clean_album)
-                album_payload = payload.get("album")
+                payload = self.http.get_json(
+                    "album.getInfo", artist=lookup_artist, album=clean_album
+                )
+                lookup_succeeded = True
+                album_payload = payload.get("album") if isinstance(payload, dict) else None
                 if isinstance(album_payload, dict):
                     album_payload["_lookup_artist"] = lookup_artist
-                    return album_payload
+                    payload_out = album_payload
+                    break
             except Exception as exc:
-                logger.debug("album.getInfo failed", lookup_artist=lookup_artist, album=album, error=str(exc))
-        return {}
+                logger.debug(
+                    "album.getInfo failed",
+                    lookup_artist=lookup_artist,
+                    album=album,
+                    error=str(exc),
+                )
 
-    def get_album_track_count(self, artist: str, album: str) -> int:
-        album_data = self._album_get_info(artist, album)
+        # Only cache a completed lookup, so transient failures do not become
+        # permanent negatives for the rest of the process.
+        if lookup_succeeded:
+            with self._album_cache_lock:
+                self._album_info_cache[cache_key] = payload_out
+
+        return payload_out
+
+    @staticmethod
+    def _album_track_list(album_data: dict[str, Any]) -> list[dict[str, Any]]:
         tracks = album_data.get("tracks", {}) if isinstance(album_data, dict) else {}
         if isinstance(tracks, dict):
-            track_list = tracks.get("track", [])
-            if isinstance(track_list, dict):
-                return 1
-            if isinstance(track_list, list):
-                return len(track_list)
+            track_data = tracks.get("track", [])
+            if isinstance(track_data, dict):
+                return [track_data]
+            if isinstance(track_data, list):
+                return [t for t in track_data if isinstance(t, dict)]
         if isinstance(tracks, list):
-            return len(tracks)
-        return 0
+            return [t for t in tracks if isinstance(t, dict)]
+        return []
+
+    def get_album_track_count(self, artist: str, album: str) -> int:
+        return len(self._album_track_list(self._album_get_info(artist, album)))
 
     def has_title_track(self, artist: str, album: str) -> bool:
         album_data = self._album_get_info(artist, album)
         if not album_data:
             return False
-        album_name = (album_data.get("name") or album).lower().strip()
-        tracks = album_data.get("tracks", {})
-        track_list: list[Any] = []
-        
-        if isinstance(tracks, dict):
-            track_data = tracks.get("track", [])
-            if isinstance(track_data, dict):
-                track_list = [track_data]
-            elif isinstance(track_data, list):
-                track_list = track_data
-        elif isinstance(tracks, list):
-            track_list = tracks
-            
-        for track in track_list:
-            if isinstance(track, dict):
-                track_name = (track.get("name") or "").lower().strip()
-                if track_name == album_name:
-                    return True
+        album_name = str(album_data.get("name") or album).lower().strip()
+        for track in self._album_track_list(album_data):
+            if str(track.get("name") or "").lower().strip() == album_name:
+                return True
         return False
 
     @staticmethod
@@ -490,29 +752,58 @@ class LastFmService:
             return True
         return False
 
+    # Releases at or above this track count are treated as EPs, not singles.
+    MAX_SINGLE_TRACK_COUNT = 3
+
+    _ALBUM_SINGLE_MARKER_RE = re.compile(
+        r"\b(?:single|radio\s+edit|single\s+version)\b", re.IGNORECASE
+    )
+
     def check_track_as_single(self, artist: str, track_title: str) -> bool:
-        # NOTE: Do NOT sanitize track_title here because we are intentionally
-        # using the track name to check for a matching single release.
+        """Return True when Last.fm holds a standalone single for this track.
+
+        NOTE: ``track_title`` is deliberately not sanitized, because the track
+        name is being used to look up a matching single release.
+
+        A release must be attributable to the artist, be a genuine release,
+        share the track's title, and be single-sized. EP-sized releases
+        (four to six tracks) are no longer accepted, since an EP title track
+        is not evidence of a standalone single.
+        """
         album_data = self._album_get_info(artist, track_title)
         if not album_data:
             return False
-            
-        album_name = (album_data.get("name") or "").lower().strip()
-        track_name = track_title.lower().strip()
-        
+
+        album_name = str(album_data.get("name") or "").lower().strip()
+        track_name = str(track_title or "").lower().strip()
+
         if strip_featured_guest_suffix(album_name) != strip_featured_guest_suffix(track_name):
             return False
-            
+
         returned_artist = self.extract_artist_name(album_data.get("artist"))
         if not returned_artist or self.artist_match_score(artist, returned_artist) < 90:
             return False
-            
+
         if not self._is_genuine_release(album_data):
             return False
-            
-        return 0 < self.get_album_track_count(artist, track_title) < 6
 
-    def get_track_temporal_data(self, artist: str, title: str, track_mbid: str | None = None) -> dict[str, Any]:
+        count = self.get_album_track_count(artist, track_title)
+        if count <= 0:
+            return False
+        if count <= self.MAX_SINGLE_TRACK_COUNT:
+            return True
+
+        # Above single size, only accept an explicit single marker.
+        return bool(self._ALBUM_SINGLE_MARKER_RE.search(str(album_data.get("name") or "")))
+
+    # -- temporal / artist ------------------------------------------------
+
+    def get_track_temporal_data(
+        self,
+        artist: str,
+        title: str,
+        track_mbid: str | None = None,
+    ) -> dict[str, Any]:
         info = self.get_track_info(artist, title, track_mbid=track_mbid)
         return {
             "all_time_listeners": int(info.get("listeners", 0) or 0),
@@ -527,68 +818,87 @@ class LastFmService:
     def get_artist_info(self, artist: str) -> dict[str, Any]:
         if not self.api_key:
             return {"bio": "", "bio_text": "", "image": "", "similar": []}
-            
+
         for lookup_artist in self.build_artist_lookup_candidates(artist):
             try:
-                # FIXED: Removed explicit timeout
-                data = self.http.get_json("artist.getInfo", artist=lookup_artist).get("artist", {})
+                payload = self.http.get_json("artist.getInfo", artist=lookup_artist)
+                data = payload.get("artist", {}) if isinstance(payload, dict) else {}
                 if not data:
                     continue
-                    
+
                 image_url = ""
                 if isinstance(data.get("image"), list):
                     for image in reversed(data["image"]):
-                        if image.get("#text"):
+                        if isinstance(image, dict) and image.get("#text"):
                             image_url = image.get("#text", "")
                             break
-                            
+
                 bio = data.get("bio", {}) if isinstance(data.get("bio"), dict) else {}
                 return {
-                    "bio": bio.get("content", ""), 
-                    "bio_text": bio.get("summary", "") or bio.get("content", ""), 
-                    "image": image_url, 
-                    "similar": []
+                    "bio": bio.get("content", ""),
+                    "bio_text": bio.get("summary", "") or bio.get("content", ""),
+                    "image": image_url,
+                    "similar": [],
                 }
             except Exception as exc:
-                logger.debug("artist.getInfo failed", lookup_artist=lookup_artist, error=str(exc))
-                
+                logger.debug(
+                    "artist.getInfo failed", lookup_artist=lookup_artist, error=str(exc)
+                )
+
         return {"bio": "", "bio_text": "", "image": "", "similar": []}
 
     def get_artist_top_tags(self, artist: str, limit: int = 10) -> list[dict[str, Any]]:
+        if not self.api_key or not artist:
+            return []
         for lookup_artist in self.build_artist_lookup_candidates(artist):
             try:
-                # FIXED: Removed explicit timeout
-                data = self.http.get_json("artist.getTopTags", artist=lookup_artist, limit=max(1, min(100, limit)))
-                tags = data.get("toptags", {}).get("tag", [])
+                data = self.http.get_json(
+                    "artist.getTopTags",
+                    artist=lookup_artist,
+                    limit=max(1, min(100, limit)),
+                )
+                tags = (
+                    data.get("toptags", {}).get("tag", []) if isinstance(data, dict) else []
+                )
                 if isinstance(tags, dict):
                     tags = [tags]
-                    
-                result = [{"name": tag.get("name", ""), "count": int(tag.get("count", 0) or 0)} for tag in tags if isinstance(tag, dict)]
+
+                result = [
+                    {
+                        "name": tag.get("name", ""),
+                        "count": int(tag.get("count", 0) or 0),
+                    }
+                    for tag in tags or []
+                    if isinstance(tag, dict) and tag.get("name")
+                ]
                 if result:
                     return result
-            except Exception:
-                continue
+            except Exception as exc:
+                logger.debug(
+                    "artist.getTopTags failed",
+                    lookup_artist=lookup_artist,
+                    error=str(exc),
+                )
         return []
 
     def get_similar_artists(self, artist: str, limit: int = 10) -> list[dict[str, Any]]:
         if not self.api_key or not artist:
             return []
-            
+
         for lookup_artist in self.build_artist_lookup_candidates(artist):
             try:
-                # FIXED: Removed explicit timeout
                 data = self.http.get_json(
                     "artist.getSimilar",
                     artist=lookup_artist,
                     limit=max(1, min(int(limit), 100)),
                 )
-                if "error" in data:
+                if not isinstance(data, dict) or "error" in data:
                     continue
-                    
+
                 similar_artists = (data.get("similarartists") or {}).get("artist", [])
                 if isinstance(similar_artists, dict):
                     similar_artists = [similar_artists]
-                    
+
                 result: list[dict[str, Any]] = []
                 for artist_obj in similar_artists or []:
                     if not isinstance(artist_obj, dict):
@@ -601,109 +911,187 @@ class LastFmService:
                     except Exception:
                         match = 0.0
                     result.append({"name": name, "match": match})
-                    
+
                 if result:
                     return result
             except Exception as exc:
-                logger.debug("similar artists failed", lookup_artist=lookup_artist, error=str(exc))
+                logger.debug(
+                    "similar artists failed", lookup_artist=lookup_artist, error=str(exc)
+                )
         return []
+
+    # -- recommendations --------------------------------------------------
 
     def get_recommendations(self) -> dict[str, list[dict[str, Any]]]:
         if not self.api_key:
             return {"artists": [], "albums": [], "tracks": []}
-            
-        cache_key = f"recommendations_{self.username or 'global'}" if not self.db_connection else None
-        
+
+        cache_key = (
+            f"recommendations_{self.username or 'global'}"
+            if not self.db_connection
+            else None
+        )
+
         if cache_key:
             cached = self.cache.get(cache_key)
             if cached:
                 return cached
-                
+
         result = {
-            "artists": self._get_recommended_artists(), 
-            "albums": self._get_recommended_albums(), 
-            "tracks": self._get_recommended_tracks()
+            "artists": self._get_recommended_artists(),
+            "albums": self._get_recommended_albums(),
+            "tracks": self._get_recommended_tracks(),
         }
-        
+
         if cache_key:
             self.cache.set(cache_key, result)
         return result
 
     def _get_recommended_artists(self) -> list[dict[str, Any]]:
         method = "user.getTopArtists" if self.username else "chart.getTopArtists"
-        kwargs = {"user": self.username, "limit": 20, "period": "6month"} if self.username else {"limit": 20}
+        kwargs = (
+            {"user": self.username, "limit": 20, "period": "6month"}
+            if self.username
+            else {"limit": 20}
+        )
         try:
-            # FIXED: Removed explicit timeout
             response = self.http.request(method, **kwargs)
             response.raise_for_status()
             data = response.json()
-            artists = data.get("topartists", {}).get("artist", []) if self.username else data.get("artists", {}).get("artist", [])
+            artists = (
+                data.get("topartists", {}).get("artist", [])
+                if self.username
+                else data.get("artists", {}).get("artist", [])
+            )
             return [
                 {
-                    "name": item.get("name", ""), 
-                    "listeners": item.get("listeners", 0), 
-                    "match": 1.0, 
-                    "playcount": item.get("playcount", 0), 
-                    "url": item.get("url", "")
-                } 
-                for item in artists if isinstance(item, dict)
+                    "name": item.get("name", ""),
+                    "listeners": item.get("listeners", 0),
+                    "match": 1.0,
+                    "playcount": item.get("playcount", 0),
+                    "url": item.get("url", ""),
+                }
+                for item in artists or []
+                if isinstance(item, dict)
             ][:20]
-        except Exception:
+        except Exception as exc:
+            logger.debug("Recommended artists failed", error=str(exc))
             return []
 
     def _get_recommended_albums(self) -> list[dict[str, Any]]:
         if not self.username:
             return []
         try:
-            # FIXED: Removed explicit timeout
-            response = self.http.request("user.getTopAlbums", user=self.username, limit=12, period="6month")
+            response = self.http.request(
+                "user.getTopAlbums", user=self.username, limit=12, period="6month"
+            )
             response.raise_for_status()
             albums = response.json().get("topalbums", {}).get("album", [])
             return [
                 {
-                    "name": item.get("name", ""), 
-                    "artist": self.extract_artist_name(item.get("artist")), 
-                    "playcount": item.get("playcount", 0), 
-                    "url": item.get("url", ""), 
-                    "similarity": 1.0
-                } 
-                for item in albums if isinstance(item, dict)
+                    "name": item.get("name", ""),
+                    "artist": self.extract_artist_name(item.get("artist")),
+                    "playcount": item.get("playcount", 0),
+                    "url": item.get("url", ""),
+                    "similarity": 1.0,
+                }
+                for item in albums or []
+                if isinstance(item, dict)
             ][:12]
-        except Exception:
+        except Exception as exc:
+            logger.debug("Recommended albums failed", error=str(exc))
             return []
 
     def _get_recommended_tracks(self) -> list[dict[str, Any]]:
         method = "user.getTopTracks" if self.username else "chart.getTopTracks"
-        kwargs = {"user": self.username, "limit": 20, "period": "6month"} if self.username else {"limit": 20}
+        kwargs = (
+            {"user": self.username, "limit": 20, "period": "6month"}
+            if self.username
+            else {"limit": 20}
+        )
         try:
-            # FIXED: Removed explicit timeout
             response = self.http.request(method, **kwargs)
             response.raise_for_status()
             tracks = response.json().get("toptracks", {}).get("track", [])
             return [
                 {
-                    "name": item.get("name", ""), 
-                    "artist": self.extract_artist_name(item.get("artist")), 
-                    "playcount": item.get("playcount", 0), 
-                    "url": item.get("url", ""), 
-                    "similarity": 1.0
-                } 
-                for item in tracks if isinstance(item, dict)
+                    "name": item.get("name", ""),
+                    "artist": self.extract_artist_name(item.get("artist")),
+                    "playcount": item.get("playcount", 0),
+                    "url": item.get("url", ""),
+                    "similarity": 1.0,
+                }
+                for item in tracks or []
+                if isinstance(item, dict)
             ][:20]
-        except Exception:
+        except Exception as exc:
+            logger.debug("Recommended tracks failed", error=str(exc))
             return []
 
 
-_lastfm_service: LastFmService | None = None
+# =============================================================================
+# BRIDGE FUNCTIONS
+# =============================================================================
+
+def _config_api_key() -> str:
+    try:
+        from helpers.config_helpers import get_config
+
+        cfg = get_config() or {}
+        return str(
+            (cfg.get("api_integrations", {}).get("lastfm", {}) or {}).get("api_key", "")
+            or ""
+        )
+    except Exception:
+        return ""
+
+
+def get_shared_lastfm_service(api_key: str = "") -> LastFmService:
+    """Return the process-wide shared Last.fm service.
+
+    An empty or placeholder key never replaces an existing working service.
+    """
+    global _lastfm_service
+
+    api_key = api_key or _config_api_key()
+
+    service = _lastfm_service
+    if service is not None and (
+        _is_placeholder_key(api_key) or getattr(service, "api_key", None) == api_key
+    ):
+        return service
+
+    with _SERVICE_INIT_LOCK:
+        service = _lastfm_service
+        if service is not None and (
+            _is_placeholder_key(api_key) or getattr(service, "api_key", None) == api_key
+        ):
+            return service
+        # LastFmService.__init__ calls get_shared_lastfm_client(), which takes
+        # a different lock, so this cannot re-enter _SERVICE_INIT_LOCK.
+        _lastfm_service = LastFmService(api_key)
+        return _lastfm_service
+
 
 def get_lastfm_track_info(artist: str, title: str, api_key: str = "") -> dict[str, Any]:
-    global _lastfm_service
-    if _lastfm_service is None or getattr(_lastfm_service, "api_key", None) != api_key:
-        with _INIT_LOCK:
-            if _lastfm_service is None or getattr(_lastfm_service, "api_key", None) != api_key:
-                _lastfm_service = LastFmService(api_key)
-    return _lastfm_service.get_track_info(artist, title)
+    return get_shared_lastfm_service(api_key).get_track_info(artist, title)
 
 
-def get_lastfm_recommendations(api_key: str, username: str | None = None, db_connection: Any = None) -> dict[str, Any]:
-    return LastFmService(api_key, username=username, db_connection=db_connection).get_recommendations()
+def get_lastfm_track_tags(
+    artist: str,
+    title: str,
+    api_key: str = "",
+    limit: int = 15,
+) -> list[str]:
+    """Return Last.fm track-level tags for genre aggregation."""
+    return get_shared_lastfm_service(api_key).get_track_tags(artist, title, limit=limit)
+
+
+def get_lastfm_recommendations(
+    api_key: str,
+    username: str | None = None,
+    db_connection: Any = None,
+) -> dict[str, Any]:
+    return LastFmService(
+        api_key, username=username, db_connection=db_connection
+    ).get_recommendations()
