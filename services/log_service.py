@@ -5,6 +5,9 @@ WebUI dashboard. Supports:
 - Reading last N lines from log files.
 - Format detection for line-based vs. stream output.
 - Security-constrained path resolution.
+- Rotation-tolerant tailing: when a file was just rotated (RotatingFileHandler
+  truncates it to empty), the tail read falls back to the .1/.2/... backups
+  so the dashboard doesn't show a near-empty panel right after a rotation.
 """
 
 from __future__ import annotations
@@ -35,6 +38,46 @@ def _read_last_lines(path, max_lines, chunk_size=65536, max_bytes=4 * 1024 * 102
             fh.seek(cursor)
             data = fh.read(read_size) + data
     return data.decode("utf-8", errors="ignore").splitlines()[-max_lines:]
+
+
+def _rotation_index(path: str) -> int:
+    """Sort key for rotated backups: ``foo.log.1`` before ``foo.log.2`` etc.
+
+    Non-numeric suffixes (or the live file itself) sort last so they're never
+    mistaken for a "more recent" backup.
+    """
+    suffix = path.rsplit(".", 1)[-1]
+    return int(suffix) if suffix.isdigit() else 10**9
+
+
+def _read_last_lines_with_rotation(base_path, max_lines, chunk_size=65536, max_bytes=4 * 1024 * 1024):
+    """Tail ``base_path``, topping up from rotated backups if it's short.
+
+    ``RotatingFileHandler`` truncates the live file to empty the moment it
+    rotates, moving the previous content to ``base_path + ".1"``. A dashboard
+    read immediately after that rotation would otherwise see only the
+    handful of lines written since — this stitches in older lines from the
+    numbered backups (oldest contributes last) until ``max_lines`` is met or
+    backups run out.
+    """
+    lines = _read_last_lines(base_path, max_lines, chunk_size, max_bytes) if os.path.exists(base_path) else []
+    remaining = max_lines - len(lines)
+    if remaining <= 0:
+        return lines
+
+    backups = sorted(glob.glob(base_path + ".*"), key=_rotation_index)
+    older_lines: list[str] = []
+    for backup in backups:
+        if remaining <= 0:
+            break
+        try:
+            extra = _read_last_lines(backup, remaining, chunk_size, max_bytes)
+        except OSError:
+            continue
+        older_lines = extra + older_lines
+        remaining = max_lines - (len(older_lines) + len(lines))
+
+    return (older_lines + lines)[-max_lines:]
 
 
 def _read_all_lines(path):
@@ -282,7 +325,10 @@ def get_unified_log(lines: int, verbose: bool, path_candidates: list[str] | None
         return {"lines": [], "message": "unified_scan.log not found yet — it appears after the first log write."}
 
     try:
-        log_lines = _read_last_lines(log_path, lines)
+        # Rotation-tolerant: if unified_scan.log just rotated (RotatingFileHandler
+        # truncates it to empty), top up from the .1/.2 backups so a fresh
+        # rotation doesn't make the panel look empty right after a real scan ran.
+        log_lines = _read_last_lines_with_rotation(log_path, lines)
         if not verbose:
             # Dashboard mode: only popularity/singles scanning activity.
             # Queue/download/retry/slskd lines are visible in the Queue
@@ -302,7 +348,7 @@ def get_unified_log(lines: int, verbose: bool, path_candidates: list[str] | None
             # panel only ever shows scan activity.
             info_path = _resolve_log_path("info")
             if info_path and os.path.exists(info_path):
-                info_lines = _read_last_lines(info_path, lines)
+                info_lines = _read_last_lines_with_rotation(info_path, lines)
                 if not verbose:
                     info_lines = [
                         l for l in info_lines
@@ -350,6 +396,10 @@ def get_log_file_content(name: str, lines: int | str = 500):
     ``lines`` accepts a count (1-2000) or ``"all"`` / ``0`` / ``-1`` to return
     the file's FULL history (no tail truncation).
 
+    Rotation-tolerant: reads top up from ``name + ".1"``, ``".2"``, etc. when
+    the live file was recently rotated and doesn't have enough lines on its
+    own, so a rotation right after a scan doesn't make the log appear empty.
+
     Returns ``{"lines": [...]}`` or an error tuple.
     """
     all_lines = str(lines).strip().lower() in ("all", "0", "-1")
@@ -374,7 +424,7 @@ def get_log_file_content(name: str, lines: int | str = 500):
             # watcher/queue churn even though a scan just ran.
             # Increased read_window multiplier to 15 to punch through heavy DEBUG spam
             read_window = lines * 15 if name == "unified_scan.log" else lines
-            log_lines = _read_last_lines(log_path, read_window)
+            log_lines = _read_last_lines_with_rotation(log_path, read_window)
         if name == "unified_scan.log":
             noise_pattern = _scheduler_noise_filter()
             scan_pattern = _scan_activity_filter()
@@ -383,6 +433,8 @@ def get_log_file_content(name: str, lines: int | str = 500):
                 if not noise_pattern.search(l) and scan_pattern.search(l)
             ]
         # Truncation metadata for the "showing last N of M lines" banner.
+        # Counts the live file only, so this is a lower bound on true total
+        # when rotation backups were also read above.
         total_lines = _count_lines(log_path)
         visible = log_lines if all_lines else log_lines[-lines:]
         return {
