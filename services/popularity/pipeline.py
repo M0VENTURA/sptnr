@@ -44,6 +44,16 @@ def _load_scanner_module():
     try:
         return importlib.import_module(module_name)
     except Exception as exc:
+        import traceback
+        try:
+            from helpers.logging_config import log_unified
+            err_str = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            for line in err_str.splitlines():
+                if line.strip():
+                    log_unified(f"[POPULARITY] FATAL IMPORT ERROR: {line}")
+        except Exception:
+            pass
+            
         raise PopularityPipelineError(
             f"Could not import scanner module '{module_name}'"
         ) from exc
