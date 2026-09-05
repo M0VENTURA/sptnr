@@ -130,7 +130,8 @@ TABLES_TO_ENSURE: dict[str, str] = {
             total_tracks INTEGER, monitoring_folder_path TEXT, final_folder_path TEXT, 
             status TEXT DEFAULT 'active', method TEXT, discovered_count INTEGER DEFAULT 0, 
             organized_count INTEGER DEFAULT 0, finalized_count INTEGER DEFAULT 0, 
-            album_artist TEXT, genres TEXT, cover_art_url TEXT, release_source TEXT, 
+            album_artist TEXT, genres TEXT, lastfm_genres TEXT, discogs_genres TEXT, 
+            musicbrainz_genres TEXT, cover_art_url TEXT, release_source TEXT, 
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, 
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, finalized_at TIMESTAMP
         )
@@ -350,6 +351,7 @@ COLUMN_REGISTRY: dict[str, dict[str, str]] = {
     },
     "musicbrainz_releases": {
         "album_artist": "TEXT", "genres": "TEXT", 
+        "lastfm_genres": "TEXT", "discogs_genres": "TEXT", "musicbrainz_genres": "TEXT",
         "cover_art_url": "TEXT", "release_source": "TEXT"
     },
     "musicbrainz_release_tracks": {
