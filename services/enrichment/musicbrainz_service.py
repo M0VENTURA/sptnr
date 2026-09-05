@@ -1368,6 +1368,10 @@ class MusicBrainzService:
             )
             return []
 
+        # 1. Determine local track count for penalty calculation
+        local_count, max_track = _get_local_track_stats(artist_name, album_name)
+        expected_count = max(local_count, max_track) if local_count > 0 else None
+
         clean_album = strip_search_keywords(album_name)
         escaped_artist = escape_lucene_special_chars(artist_name)
         exact_query = (
@@ -1407,6 +1411,8 @@ class MusicBrainzService:
                 )
 
         matches: list[dict[str, Any]] = []
+        
+        # Pass 1: Base Text and Type Scoring
         with _logged_section(
             "release_group.scoring", candidate_count=len(groups), **context
         ):
@@ -1414,20 +1420,29 @@ class MusicBrainzService:
                 if not isinstance(group, dict):
                     continue
                 try:
+                    secondary_types = _parse_secondary_types(group.get("secondary-types"))
                     score = calculate_match_score(
                         str(group.get("title") or ""),
                         group.get("artist-credit") or [],
                         album_name,
                         artist_name,
                     )
+
+                    # Apply structural penalties
+                    sec_lower = {t.casefold() for t in secondary_types}
+                    if "live" in sec_lower and "live" not in album_name.casefold():
+                        score *= 0.7
+                    if "compilation" in sec_lower and "compilation" not in album_name.casefold():
+                        score *= 0.8
+                    if not secondary_types and str(group.get("primary-type") or "").casefold() == "album":
+                        score *= 1.15
+
                     match = {
                         "id": group.get("id"),
                         "title": group.get("title"),
                         "primary_type": group.get("primary-type"),
-                        "match_score": round(score, 3),
-                        "secondary_types": _parse_secondary_types(
-                            group.get("secondary-types")
-                        ),
+                        "match_score": score,
+                        "secondary_types": secondary_types,
                         "first_release_date": group.get("first-release-date") or "",
                     }
                     matches.append(match)
@@ -1436,7 +1451,7 @@ class MusicBrainzService:
                         candidate_index=index,
                         candidate_id=match["id"],
                         candidate_title=match["title"],
-                        match_score=match["match_score"],
+                        match_score=round(match["match_score"], 3),
                         **context,
                     )
                 except Exception as exc:
@@ -1447,7 +1462,30 @@ class MusicBrainzService:
                         **context,
                     )
 
+        # Sort to surface the best text/type matches before hitting the API for track counts
         matches.sort(key=lambda item: item.get("match_score", 0.0), reverse=True)
+
+        # Pass 2: Track Count Penalty for the top 3 candidates
+        if expected_count and matches:
+            for match in matches[:3]:
+                best_release_data = get_musicbrainz_best_release(
+                    artist_name, 
+                    album_name, 
+                    match["id"]
+                )
+                
+                best_rel = best_release_data.get("best_release")
+                if best_rel and best_rel.get("track_count"):
+                    diff = abs(expected_count - int(best_rel["track_count"]))
+                    penalty = diff * 0.05
+                    match["match_score"] -= penalty
+
+        # Round and final sort
+        for match in matches:
+            match["match_score"] = round(match["match_score"], 3)
+            
+        matches.sort(key=lambda item: item.get("match_score", 0.0), reverse=True)
+
         best = matches[0] if matches else {}
         logger.info(
             "[MB] release-group matching completed",
