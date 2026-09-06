@@ -65,13 +65,17 @@ def escape_lucene_special_chars(text: str) -> str:
 
 
 # =============================================================================
-# STRICT RATE LIMITING & THREAD-SAFE LRU CACHES
+# STRICT RATE LIMITING, CIRCUIT BREAKER & THREAD-SAFE LRU CACHES
 # =============================================================================
 
 _THROTTLE_LOCK = threading.Lock()
 _LAST_MB_REQUEST_TIME = 0.0
 
-_RECORDING_INC_SUPERSET = "artist-credits+releases+work-rels+recording-rels+artist-rels+genres+tags"
+_CIRCUIT_LOCK = threading.Lock()
+_CIRCUIT_OPEN_UNTIL = 0.0
+
+# Added 'release-groups' to recording superset to fix the single detection bypass bug.
+_RECORDING_INC_SUPERSET = "artist-credits+releases+release-groups+work-rels+recording-rels+artist-rels+genres+tags"
 _ISRC_INC_SUPERSET = "artist-credits+releases+work-rels"
 _RELEASE_INC_SUPERSET = "recordings+artist-credits+media+release-groups+labels+work-rels+recording-rels+genres"
 
@@ -166,9 +170,23 @@ class MusicBrainzHttpClient:
         _ISRC_LOOKUP_CACHE.clear()
         _RELEASE_DETAIL_CACHE.clear()
 
+    def is_available(self) -> bool:
+        """Return False if the circuit breaker is currently open."""
+        return time.monotonic() >= _CIRCUIT_OPEN_UNTIL
+
     def get(self, endpoint: str, *, params: dict[str, Any] | None = None, timeout: float = 30.0) -> dict[str, Any]:
+        global _CIRCUIT_OPEN_UNTIL
+
         if not self.enabled:
             return {}
+            
+        with _CIRCUIT_LOCK:
+            if time.monotonic() < _CIRCUIT_OPEN_UNTIL:
+                logger.warning(
+                    "Circuit breaker open: dropping request to MusicBrainz", 
+                    endpoint=endpoint
+                )
+                return {}
 
         url = f"{self.base_url}{endpoint.lstrip('/')}"
         query_params = params or {}
@@ -186,7 +204,19 @@ class MusicBrainzHttpClient:
             response.raise_for_status()
             payload = response.json()
             return payload if isinstance(payload, dict) else {}
+            
         except httpx.HTTPStatusError as exc:
+            # If the server is actively shedding load despite backoff, open the breaker
+            if exc.response.status_code in (502, 503, 504):
+                with _CIRCUIT_LOCK:
+                    _CIRCUIT_OPEN_UNTIL = time.monotonic() + 60.0
+                logger.warning(
+                    "MusicBrainz overloaded (5xx). Circuit breaker open for 60s.",
+                    endpoint=endpoint,
+                    status_code=exc.response.status_code,
+                )
+                return {}
+                
             # 400/404 are deterministic "bad request / not found" responses
             # (deleted or merged MBIDs, stale cached GUIDs) — they are NOT
             # transient and retrying never helps.  Log them at DEBUG so dead
@@ -255,20 +285,26 @@ class MusicBrainzHttpClient:
         except Exception:
             return ""
 
-    def get_release(self, release_mbid: str, inc: str = "", timeout: float = 30.0) -> dict[str, Any]:
+    def get_release(self, release_mbid: str, inc: str | None = None, timeout: float = 30.0) -> dict[str, Any]:
         if not _is_valid_mbid(release_mbid):
             if release_mbid:
                 logger.debug("Rejected malformed release MBID", release_mbid=release_mbid)
             return {}
 
-        cached = _RELEASE_DETAIL_CACHE.get(release_mbid)
+        actual_inc = _RELEASE_INC_SUPERSET if inc is None else inc
+        cache_key = f"{release_mbid}::{actual_inc}"
+
+        cached = _RELEASE_DETAIL_CACHE.get(cache_key)
         if cached is not None:
             return cached
 
-        params = {"fmt": "json", "inc": _RELEASE_INC_SUPERSET}
+        params = {"fmt": "json"}
+        if actual_inc:
+            params["inc"] = actual_inc
+            
         data = self.get(f"release/{release_mbid}", params=params, timeout=timeout)
         if data:
-            _RELEASE_DETAIL_CACHE.set(release_mbid, data)
+            _RELEASE_DETAIL_CACHE.set(cache_key, data)
         return data
 
     def get_release_group(self, release_group_mbid: str, inc: str = "", timeout: float = 30.0) -> dict[str, Any]:
@@ -281,20 +317,26 @@ class MusicBrainzHttpClient:
             params["inc"] = inc
         return self.get(f"release-group/{release_group_mbid}", params=params, timeout=timeout)
 
-    def get_recording(self, recording_mbid: str, inc: str = "", timeout: float = 30.0) -> dict[str, Any]:
+    def get_recording(self, recording_mbid: str, inc: str | None = None, timeout: float = 30.0) -> dict[str, Any]:
         if not _is_valid_mbid(recording_mbid):
             if recording_mbid:
                 logger.debug("Rejected malformed recording MBID", recording_mbid=recording_mbid)
             return {}
 
-        cached = _RECORDING_DETAIL_CACHE.get(recording_mbid)
+        actual_inc = _RECORDING_INC_SUPERSET if inc is None else inc
+        cache_key = f"{recording_mbid}::{actual_inc}"
+
+        cached = _RECORDING_DETAIL_CACHE.get(cache_key)
         if cached is not None:
             return cached
 
-        params = {"fmt": "json", "inc": _RECORDING_INC_SUPERSET}
+        params = {"fmt": "json"}
+        if actual_inc:
+            params["inc"] = actual_inc
+            
         data = self.get(f"recording/{recording_mbid}", params=params, timeout=timeout)
         if data:
-            _RECORDING_DETAIL_CACHE.set(recording_mbid, data)
+            _RECORDING_DETAIL_CACHE.set(cache_key, data)
         return data
 
     def get_recordings_bulk(self, recording_mbids: list[str], inc: str = "", timeout: float = 30.0) -> dict[str, Any]:
@@ -303,37 +345,24 @@ class MusicBrainzHttpClient:
         if not valid_ids:
             return {}
 
-        # Check the cache first to avoid unnecessary requests
-        results = {}
-        missing_ids = []
-        for mbid in valid_ids:
-            cached = _RECORDING_DETAIL_CACHE.get(mbid)
-            if cached is not None:
-                results[mbid] = cached
-            else:
-                missing_ids.append(mbid)
-
-        if not missing_ids:
-            return {"recordings": list(results.values())}
-
         # MusicBrainz Lucene query uses OR for multiple matches
-        mbid_string = " OR ".join(missing_ids)
-        params = {"fmt": "json", "query": f"rid:({mbid_string})"}
+        mbid_string = " OR ".join(valid_ids)
+        params = {
+            "fmt": "json", 
+            "query": f"rid:({mbid_string})", 
+            "limit": min(100, len(valid_ids))
+        }
+        
+        # Note: The MB API ignores `inc` entirely on search queries. Bulk results 
+        # will inherently be missing detail sub-documents (e.g. relations).
         if inc:
             params["inc"] = inc
 
-        # Make one request for all missing IDs
         data = self.get("recording/", params=params, timeout=timeout)
         
-        # Cache the new results
-        if data and isinstance(data.get("recordings"), list):
-            for rec in data["recordings"]:
-                mbid = rec.get("id")
-                if mbid:
-                    _RECORDING_DETAIL_CACHE.set(mbid, rec)
-                    results[mbid] = rec
-
-        return {"recordings": list(results.values())}
+        # Explicitly skipped writing these into _RECORDING_DETAIL_CACHE to prevent 
+        # shallow search hits from poisoning the cache against future detailed lookups.
+        return {"recordings": data.get("recordings", []) if data else []}
 
     def get_artist(self, artist_mbid: str, inc: str = "", timeout: float = 30.0) -> dict[str, Any]:
         if not _is_valid_mbid(artist_mbid):
