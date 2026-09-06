@@ -55,16 +55,9 @@ window.openEditTrackFromAlbum = function(trackId) {
 
 window.deleteTrack = function(trackId) {
     if (!confirm('Are you sure you want to delete this track?')) return;
-    fetch(`/api/tracks/${trackId}`, { method: 'DELETE' })
-        .then(r => r.json())
-        .then(data => {
-            if (data.success) {
-                location.reload();
-            } else {
-                alert('Failed to delete track: ' + (data.error || 'Unknown error'));
-            }
-        })
-        .catch(err => alert('Network error: ' + err.message));
+    
+    // Fallback directly to the server's delete route view
+    window.location.href = `/track/${trackId}/delete`;
 };
 
 window.populateMajorityArtist = function() {
@@ -192,24 +185,24 @@ window.openAlbumLookupModal = function() {
     const artistName = window._pageData ? window._pageData.artistName : '';
     const albumName = window._pageData ? window._pageData.albumName : '';
     
-    const modalEl = document.getElementById('musicBrainzModal');
+    const modalEl = document.getElementById('albumLookupModal');
     if (!modalEl) {
-        alert('MusicBrainz search modal not found. Please ensure components/_musicbrainz_search_modal.html is included in your HTML.');
+        alert('MusicBrainz search modal not found. Please ensure components/modals/_album_lookup.html is included in your HTML.');
         return;
     }
     
-    const searchArtist = document.getElementById('mbSearchArtist');
-    const searchAlbum = document.getElementById('mbSearchAlbum');
+    const searchArtist = document.getElementById('albumLookupArtist');
+    const searchAlbum = document.getElementById('albumLookupAlbum');
     if (searchArtist) searchArtist.value = artistName;
     if (searchAlbum) searchAlbum.value = albumName;
     
     const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
     modal.show();
     
-    if (typeof performMbSearch === 'function') {
-        performMbSearch();
+    if (typeof runAlbumLookup === 'function') {
+        runAlbumLookup();
     } else {
-        console.warn("performMbSearch is not defined. Ensure _musicbrainz_search_functions.html is included.");
+        console.warn("runAlbumLookup is not defined. Ensure _musicbrainz_search_functions.html is included.");
     }
 };
 
@@ -230,7 +223,7 @@ window.confirmReleaseSelection = function() {
         setTimeout(() => formMbid.style.backgroundColor = '', 500);
     }
     
-    const modalEl = document.getElementById('musicBrainzModal');
+    const modalEl = document.getElementById('albumLookupModal');
     if (modalEl) {
         bootstrap.Modal.getInstance(modalEl).hide();
     }
