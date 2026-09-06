@@ -40,13 +40,16 @@ GENRE_SYNONYMS = get_genre_synonyms()
 # Hardcoded fallback synonyms to natively handle common variations 
 # before config-driven synonyms are evaluated.
 _BUILTIN_SYNONYMS: dict[str, str] = {
-    "gothic rock": "goth rock",
+    "goth rock": "gothic rock",
     "goth metal": "gothic metal",
     "prog rock": "progressive rock",
     "prog metal": "progressive metal",
     "alt rock": "alternative rock",
     "alt metal": "alternative metal",
     "hip hop": "hip-hop",
+    "folk": "folk rock",
+    "traditional folk": "folk rock",
+    "folk music": "folk rock",
 }
 
 _CHRISTMAS_KEYWORDS = [
@@ -74,8 +77,7 @@ _SPECIFIC_TO_GENERIC: dict[str, list[str]] = {
 
 # Generic "root" labels that should be dropped whenever a more specific
 # subgenre of the same family is present (e.g. "Thrash Metal" makes the
-# bare "Metal" label redundant). Matching is done on a word-boundary 
-# basis so "Folk Metal" will suppress "Folk".
+# bare "Metal" label redundant). Matching is done on a word-boundary basis.
 _GENERIC_ROOTS: dict[str, frozenset[str]] = {
     "metal": frozenset({"metal", "heavy metal"}),
     "folk": frozenset({"folk", "traditional folk", "folk music"}),
@@ -83,6 +85,7 @@ _GENERIC_ROOTS: dict[str, frozenset[str]] = {
     "punk": frozenset({"punk", "punk rock"}),
     "goth": frozenset({"goth"}),
     "gothic": frozenset({"gothic"}),
+    "industrial": frozenset({"industrial", "industrial music"}),
 }
 _GENERIC_ROOT_PATTERNS: dict[str, re.Pattern[str]] = {
     root: re.compile(rf"\b{re.escape(root)}\b") for root in _GENERIC_ROOTS
@@ -438,19 +441,34 @@ def get_track_recommendations(artist: str, album: str) -> dict[str, Any]:
 
 def adjust_genres(genres: list[str], artist_is_metal: bool = False) -> list[str]:
     """Remap certain genre labels to their metal-adjacent equivalents when
-    the artist is known to be a metal act, then apply the shared
-    generic-parent suppression.
+    the artist is known to be a metal act, enforce standard spellings for 
+    common divergent genres, and apply generic-parent suppression.
     """
     adjusted = []
     for g in genres:
         g_lower = g.lower()
+        
+        # 1. Display name standardization for common fragmented genres
+        if g_lower == "goth rock":
+            g = "Gothic rock"
+            g_lower = "gothic rock"
+        elif g_lower in ("folk", "traditional folk", "folk music"):
+            g = "Folk rock"
+            g_lower = "folk rock"
+        elif g_lower == "hip hop":
+            g = "Hip-hop"
+            g_lower = "hip-hop"
+            
+        # 2. Metal-specific genre upgrades
         if artist_is_metal:
             if g_lower in ("prog rock", "progressive rock", "prog"):
                 adjusted.append("Progressive metal")
-            elif g_lower in ("folk rock", "folk"):
+            elif g_lower == "folk rock":
                 adjusted.append("Folk metal")
-            elif g_lower in ("goth rock", "gothic rock", "goth", "gothic"):
+            elif g_lower in ("gothic rock", "goth", "gothic"):
                 adjusted.append("Gothic metal")
+            elif g_lower in ("industrial", "industrial rock"):
+                adjusted.append("Industrial metal")
             else:
                 adjusted.append(g)
         else:
