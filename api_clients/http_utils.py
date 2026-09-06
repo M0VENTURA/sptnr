@@ -22,11 +22,10 @@ import httpx
 # ---------------------------------------------------------------------------
 # Global Rate Limiting (Cross-Thread)
 # ---------------------------------------------------------------------------
-# Domain-specific locks to force external API calls into strict single-file 
-# queues. This prevents overlapping requests to strict APIs like MusicBrainz.
 _GLOBAL_LOCK = threading.Lock()
 _DOMAIN_LOCKS: dict[str, threading.Lock] = {}
-_DOMAIN_LAST_CALL: dict[str, float] = {}
+# Tracks the NEXT allowed execution time, not the last call time.
+_DOMAIN_NEXT_ALLOWED: dict[str, float] = {}
 _MIN_DELAY_SECONDS = 1.05  # Ensures strictly < 1 req/sec per domain
 
 # ---------------------------------------------------------------------------
@@ -151,21 +150,30 @@ class _RetryTransport(httpx.BaseTransport):
                 with _GLOBAL_LOCK:
                     if host not in _DOMAIN_LOCKS:
                         _DOMAIN_LOCKS[host] = threading.Lock()
-                        _DOMAIN_LAST_CALL[host] = 0.0
+                        _DOMAIN_NEXT_ALLOWED[host] = 0.0
                 domain_lock = _DOMAIN_LOCKS[host]
 
+                sleep_time = 0.0
+                # Calculate required sleep AND update the next allowed slot INSIDE the lock.
                 with domain_lock:
-                    elapsed = time.monotonic() - _DOMAIN_LAST_CALL[host]
-                    if elapsed < _MIN_DELAY_SECONDS:
-                        time.sleep(_MIN_DELAY_SECONDS - elapsed)
-                    
-                    try:
-                        response = self._transport.handle_request(request)
-                    except Exception as e:
-                        logger.error(f"[HTTP-TRACE] [{thread_name}] Network I/O FAILED for {request.url} - {repr(e)}")
-                        raise
-                    finally:
-                        _DOMAIN_LAST_CALL[host] = time.monotonic()
+                    now = time.monotonic()
+                    next_allowed = _DOMAIN_NEXT_ALLOWED[host]
+                    if now < next_allowed:
+                        sleep_time = next_allowed - now
+                        _DOMAIN_NEXT_ALLOWED[host] = next_allowed + _MIN_DELAY_SECONDS
+                    else:
+                        _DOMAIN_NEXT_ALLOWED[host] = now + _MIN_DELAY_SECONDS
+
+                # Sleep OUTSIDE the lock.
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                
+                # Execute the network request OUTSIDE the lock.
+                try:
+                    response = self._transport.handle_request(request)
+                except Exception as e:
+                    logger.error(f"[HTTP-TRACE] [{thread_name}] Network I/O FAILED for {request.url} - {repr(e)}")
+                    raise
             else:
                 try:
                     response = self._transport.handle_request(request)
