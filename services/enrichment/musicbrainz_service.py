@@ -21,13 +21,21 @@ Operational behaviour:
   rather than on every match.
 - Plain Cover Art Archive URLs.
 
-Request-volume controls (added):
+Request-volume controls:
 - Per-artist release-group results are memoised, so the artist-wide single
   detection fallback fires once per artist instead of once per track.
 - Best-release browses are memoised per release group, so release-group
   scoring does not re-browse the same group for each candidate.
 - Availability of the HTTP client is checked before firing broad fallback
   queries, so a MusicBrainz outage does not amplify into heavier requests.
+
+Web-service correctness notes:
+- ``recording-level-rels`` is a RELEASE-level subquery ("include relationships
+  for the recordings on this release"). It is not a valid ``inc`` value on the
+  recording resource and makes MusicBrainz answer 400, so recording
+  relationship lookups must not request it.
+- An artist's ``begin-area`` is frequently a city, so it cannot be used as a
+  country without checking the area type.
 
 Public exports required by other modules:
     get_shared_mb_client, get_shared_mb_service, lookup_recording_metadata,
@@ -59,7 +67,6 @@ except ImportError:
     _HAVE_RAPIDFUZZ = False
 
 from api_clients.musicbrainz_http import (
-    MUSICBRAINZ_UUID_RE,
     MusicBrainzHttpClient,
     escape_lucene_special_chars,
 )
@@ -137,6 +144,10 @@ _RELEASE_GROUP_MATCH_FLOOR = 0.6
 
 # How many release-group candidates get the (expensive) track-count refinement.
 _TRACK_COUNT_REFINE_LIMIT = 3
+
+# Valid `inc` values for a RECORDING lookup. `recording-level-rels` is a
+# release-level subquery and makes MusicBrainz reject the request with 400.
+_RECORDING_RELATIONSHIP_INC = "artist-rels+work-rels+work-level-rels"
 
 _COMPARE_LIBRARY_TRACKS_SQL = """
     SELECT id, title, track_number, disc_number, artist, year,
@@ -394,6 +405,39 @@ def _release_group_primary_type(group: Any) -> str:
     ).casefold()
 
 
+def _country_area_name(area: Any) -> str:
+    """Return an area's name only when that area really is a country.
+
+    MusicBrainz areas are hierarchical: an artist's ``area`` is usually the
+    country, but ``begin-area`` is very often a city or a subdivision. Reading
+    either one blindly stored values like "Paris" in the artist country field.
+
+    An untyped area is accepted for backwards compatibility, because search
+    results do not always include the ``type`` attribute and ``area`` is the
+    country in the overwhelming majority of those responses.
+    """
+    if not isinstance(area, dict):
+        return ""
+    name = str(area.get("name") or "").strip()
+    if not name:
+        return ""
+    area_type = str(area.get("type") or "").strip().casefold()
+    if area_type and area_type != "country":
+        return ""
+    return name
+
+
+def _artist_country_name(data: Any) -> str:
+    """Extract a country name from a MusicBrainz artist document."""
+    if not isinstance(data, dict):
+        return ""
+    for key in ("area", "begin-area", "beginArea"):
+        name = _country_area_name(data.get(key))
+        if name:
+            return name
+    return ""
+
+
 def _artist_lookup_candidates(artist: str) -> list[str]:
     result: list[str] = []
     seen: set[str] = set()
@@ -462,12 +506,7 @@ def _release_track_count(release: Any) -> int:
 
 
 def _client_available(client: Any) -> bool:
-    """Return False when the HTTP client reports MusicBrainz as unavailable.
-
-    The HTTP client is expected to expose ``is_available()`` once its circuit
-    breaker lands. Until then this degrades to "always available", so nothing
-    changes behaviourally.
-    """
+    """Return False when the HTTP client reports MusicBrainz as unavailable."""
     checker = getattr(client, "is_available", None)
     if not callable(checker):
         return True
@@ -656,11 +695,7 @@ class MusicBrainzService:
             self._cache_dirty = True
 
     def _maybe_flush_cache(self, force: bool = False) -> None:
-        """Write the cache only when dirty and not written too recently.
-
-        The previous behaviour re-serialised and fsynced up to 5,000 entries on
-        every single matched track.
-        """
+        """Write the cache only when dirty and not written too recently."""
         with self._mem_lock:
             if not self._cache_dirty:
                 return
@@ -1561,6 +1596,12 @@ class MusicBrainzService:
     # -- simple lookups ----------------------------------------------------
 
     def get_artist_country(self, artist: str) -> str:
+        """Return the artist's country name, never a city or subdivision.
+
+        An artist's ``begin-area`` is usually the town they formed in, so
+        reading it without checking the area type stored values like "Paris"
+        in the country field.
+        """
         if not self.enabled or not artist:
             return ""
         try:
@@ -1573,11 +1614,16 @@ class MusicBrainzService:
                 log_context={"artist": artist},
             ) or []
             data = result[0] if result and isinstance(result[0], dict) else {}
-            return str(
-                (data.get("area") or {}).get("name")
-                or (data.get("begin-area") or {}).get("name")
-                or ""
-            )
+            country = _artist_country_name(data)
+            if not country and data:
+                logger.debug(
+                    "[MB] artist country unresolved",
+                    reason="no area of type country on the matched artist",
+                    artist=artist,
+                    area=(data.get("area") or {}).get("name"),
+                    begin_area=(data.get("begin-area") or {}).get("name"),
+                )
+            return country
         except Exception as exc:
             logger.exception(
                 "[MB] artist country lookup failed",
@@ -1855,6 +1901,13 @@ class MusicBrainzService:
             return []
 
     def get_recording_relationships(self, recording_mbid: str) -> list[dict[str, Any]]:
+        """Fetch a recording's relationships, including work-level ones.
+
+        ``recording-level-rels`` is deliberately NOT requested here: it is a
+        release-level subquery, and asking for it on the recording resource
+        made MusicBrainz answer 400 for every call, so composer and writer
+        data was always empty.
+        """
         if not self.enabled or not recording_mbid:
             return []
         try:
@@ -1862,7 +1915,7 @@ class MusicBrainzService:
                 "recording.relationships_get",
                 self.http.get_recording,
                 recording_mbid,
-                inc="artist-rels+work-rels+work-level-rels+recording-level-rels",
+                inc=_RECORDING_RELATIONSHIP_INC,
                 log_context={"recording_mbid": recording_mbid},
             ) or {}
             return data.get("relations", []) or []
