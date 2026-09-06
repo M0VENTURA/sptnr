@@ -3,7 +3,6 @@
 Utility functions for queue item matching:
     - filename_matches_queue_item(): Check if a downloaded filename
       corresponds to a queue item via fuzzy matching.
-    - _strip_track_prefix(): Remove track number prefixes from filenames.
 
 Architecture:
     Uses ``helpers.normalization_service`` exclusively for all text
@@ -14,31 +13,16 @@ Architecture:
 from __future__ import annotations
 
 import os
-import re
 
 from helpers.normalization_service import (
     normalize_string,
-    normalize_artist,
     normalize_core_title,
     strip_brackets,
     edition_annotations_compatible,
 )
 
 from helpers.types_queue import QueueItem
-
-# =============================================================================
-# ✅ FILE HELPERS (stay local)
-# =============================================================================
-
-def _strip_track_prefix(filename: str) -> str:
-    """
-    Removes prefixes like:
-    01 -
-    1-03 -
-    07.
-    """
-    return re.sub(r"^(?:\d+-\d+|\d+)[\s\.\-_]+", "", filename)
-
+from services.queue.queue_matching_config import TRACK_NUMBER_PREFIX_RE
 
 # =============================================================================
 # ✅ FILENAME MATCHER
@@ -56,8 +40,7 @@ def filename_matches_queue_item(filename: str, queue_item: QueueItem) -> bool:
 
     # An edition-annotated track ("Valhalla (Epic Edition)") must never match
     # the plain "Valhalla" queue item — strip_brackets below would otherwise
-    # make the two indistinguishable.  Compare against the extension-stripped
-    # basename so the trailing "(Epic Edition)" annotation is extractable.
+    # make the two indistinguishable.
     queue_title = queue_item.get("title") or ""
     if not edition_annotations_compatible(
         queue_title, os.path.splitext(os.path.basename(filename))[0]
@@ -66,23 +49,20 @@ def filename_matches_queue_item(filename: str, queue_item: QueueItem) -> bool:
 
     basename = os.path.basename(filename)
 
-    # ✅ Clean filename structure
-    basename = _strip_track_prefix(basename)
+    # ✅ Clean filename structure using consolidated regex
+    basename = TRACK_NUMBER_PREFIX_RE.sub("", basename)
     basename = strip_brackets(basename)
 
     # ✅ Normalize filename (core-safe)
     filename_norm = normalize_string(basename)
 
-    # ✅ Normalize queue fields (correctly!)
-    artist_norm = normalize_artist(queue_item.get("artist") or "")
+    # ✅ Normalize queue fields
     title_norm  = normalize_core_title(queue_item.get("title") or "")
 
-
-    if not artist_norm or not title_norm:
+    if not title_norm:
         return False
 
-    # ✅ Conservative matching rule
-    return (
-        artist_norm in filename_norm and
-        title_norm in filename_norm
-    )
+    # ✅ Lenient fallback
+    # Artist name is frequently omitted from album track filenames, so we 
+    # strictly verify the title is present within the normalized string
+    return title_norm in filename_norm
