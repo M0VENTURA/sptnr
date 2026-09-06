@@ -16,11 +16,10 @@ from sqlalchemy import text
 from db.engine import db_session
 from db.repositories.queue import update_queue_item
 
-logger = structlog.get_logger(__name__)
+# Import unified lossless extensions
+from services.downloads.download_quality_config import LOSSLESS_EXTENSIONS
 
-# Lossless container extensions get a huge base score so a 128kbps FLAC
-# always beats a 320kbps MP3.
-LOSSLESS_EXTS = {".flac", ".wav", ".alac", ".aiff", ".ape", ".wv"}
+logger = structlog.get_logger(__name__)
 
 # Queue statuses that count as "active" for duplicate comparison.
 ACTIVE_STATUSES = (
@@ -35,7 +34,7 @@ def calculate_audio_quality_score(file_path: str) -> int:
         return 0
 
     ext = os.path.splitext(file_path)[1].lower()
-    score = 100000 if ext in LOSSLESS_EXTS else 0
+    score = 100000 if ext in LOSSLESS_EXTENSIONS else 0
     
     try:
         from mutagen import File as MutagenFile
