@@ -83,23 +83,37 @@ def run(interval: int | None = None, batch_size: int | None = None) -> None:
         logger.error("Database engine not available. Cannot run queue worker.")
         return
 
-    try:
-        # Check out a dedicated connection and set AUTOCOMMIT 
-        conn = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
-        
-        # pg_try_advisory_lock is non-blocking
-        result = conn.execute(
-            text("SELECT pg_try_advisory_lock(:k)"), 
-            {"k": _QUEUE_WORKER_LOCK_KEY}
-        ).scalar()
+    conn = None
 
-        if not result:
-            logger.info("Another queue worker process is already running. Exiting.")
-            conn.close()
-            return
+    # Wait for PostgreSQL to become available before electing leader
+    while not _SHOULD_STOP:
+        try:
+            conn = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
             
-    except Exception as exc:
-        logger.warning("Queue worker leader election failed. Exiting to prevent duplicates.", error=str(exc))
+            result = conn.execute(
+                text("SELECT pg_try_advisory_lock(:k)"), 
+                {"k": _QUEUE_WORKER_LOCK_KEY}
+            ).scalar()
+
+            if not result:
+                logger.info("Another queue worker process is already running. Exiting.")
+                conn.close()
+                return
+            
+            # Lock acquired successfully
+            break 
+            
+        except Exception as exc:
+            logger.warning("Database connection failed during leader election. Retrying in 5 seconds...", error=str(exc))
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            time.sleep(5)
+            continue
+
+    if _SHOULD_STOP:
         return
 
     logger.info("Acquired queue worker leader lock.")
@@ -175,8 +189,8 @@ def run(interval: int | None = None, batch_size: int | None = None) -> None:
                 logger.debug("Queue worker woke up early — new item signalled")
 
     finally:
-        # Ensure the connection (and the lock) is released when the loop exits
-        conn.close()
+        if conn is not None:
+            conn.close()
 
     logger.info("Queue worker stopped cleanly", total_cycles=loop_count)
 
