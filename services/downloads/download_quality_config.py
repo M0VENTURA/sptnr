@@ -11,7 +11,7 @@ Key Functions:
 
 Quality Thresholds:
     - Minimum bitrate: 192 kbps (MP3) / 128 kbps (other formats)
-    - Lossless formats (FLAC, WAV, ALAC) are always accepted.
+    - Lossless formats (FLAC, WAV, ALAC, APE, etc) are always accepted.
     - Sample rate must be >= 44100 Hz.
 
 Downloaded low-quality tracks are re-queued for upgrade retry.
@@ -35,8 +35,8 @@ MIN_BITRATE_MP3: int = 192
 MIN_BITRATE_AAC: int = 128
 MIN_BITRATE_OGG: int = 128
 
-# Lossless format extensions
-LOSSLESS_EXTENSIONS: set[str] = {".flac", ".wav", ".alac", ".aiff", ".dsf", ".dff"}
+# Consolidated Lossless format extensions
+LOSSLESS_EXTENSIONS: set[str] = {".flac", ".wav", ".alac", ".aiff", ".dsf", ".dff", ".ape", ".wv"}
 
 # Always-acceptable sample rates
 MIN_SAMPLE_RATE: int = 44100
