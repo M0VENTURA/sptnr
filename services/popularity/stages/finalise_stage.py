@@ -9,19 +9,35 @@ Handles:
 NOTE: All playlist creation/maintenance (Essential Collections, genre
 playlists, New Music) is done entirely through the Subsonic/Navidrome API.
 No .m3u or .nsp files are written to disk anywhere in this module.
+
+Write-amplification controls added in this revision:
+- Playlist pushes are skipped when the resolved track list is byte-identical
+  to the list already pushed for that playlist, so a repeated finalise pass
+  no longer rewrites every playlist.
+- Genre playlist and New Music rebuilds are global operations. They are now
+  coalesced so a scan that finalises per artist/album runs them once rather
+  than once per batch.
+- The genre-playlist track fetch (a full-library query) is cached for a short
+  TTL and shared between the full rebuild and the per-album refresh.
+- Navidrome clients and the featured-track sweep are resolved once instead of
+  once per artist.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
+import threading
+import time
+from collections import OrderedDict
 from datetime import datetime
 from statistics import mean, median, stdev
 from typing import Any
 
 import structlog
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 from db.engine import db_session
 from db.utils import row_get
@@ -223,7 +239,7 @@ def _album_z_band_star(
             _requires_single = True
         if _requires_single and str(single_confidence or "low").strip().casefold() not in ("high", "medium", "user"):
             album_z = float("-inf")
-            
+
     if album_z >= th["star4_album_z"] - epsilon and artist_eligible_4star:
         return 4
     if album_z >= th["star3_album_z"] - epsilon:
@@ -277,14 +293,14 @@ def _assign_stars(
         _org_score, _org_listeners = get_single_organic_floor()
     except Exception:
         _org_score, _org_listeners = 45.0, 1000.0
-        
+
     organic = score >= _org_score or int(track.get("lastfm_listeners") or 0) >= _org_listeners
     ref_scores = artist_scores if is_compilation else album_scores
 
     album_z, album_spread = _compute_album_z(score, ref_scores)
     artist_z, artist_spread = _compute_artist_z(score, artist_scores)
     popularity_marked = bool(track.get("popularity_marked"))
-    
+
     if is_instrumental_track_title(str(track.get("title") or "")):
         popularity_marked = False
 
@@ -307,7 +323,7 @@ def _assign_stars(
             )
         if _verify_z and _verify_z < th["listener_5star_z"]:
             z_standout_source = False
-            
+
     is_standout = (
         album_z >= th["star5_album_z"] - _star_epsilon_z(album_spread, th["epsilon"])
         and artist_z >= th["star5_artist_z"] - _star_epsilon_z(artist_spread, th["epsilon"])
@@ -338,12 +354,12 @@ def _assign_stars(
                         _force_stars = 4
         except Exception:
             _force_stars = None
-            
+
     if _force_stars is not None:
         track["_force_floor"] = _force_stars
         return _force_stars
 
-# ── Compilation Album Scoring ──────────────────────────────────────────
+    # ── Compilation Album Scoring ──────────────────────────────────────────
     if is_compilation:
         raw_lf = float(track.get("lastfm_listeners") or 0)
         is_verified_single = single_confidence in ("high", "medium")
@@ -364,13 +380,13 @@ def _assign_stars(
                 not generic_compilation_artist
                 and len([s for s in artist_scores if s > 0]) >= max(len(album_scores) + 15, 30)
             )
-            
+
             if has_deep_catalog:
                 if artist_z >= th["star5_artist_z"]:
                     comp_stars = 5
                 elif artist_z >= th["star4_artist_z"]:
                     comp_stars = 4
-                elif artist_z >= 0.0:  
+                elif artist_z >= 0.0:
                     comp_stars = 3
                 elif artist_z >= th["star2_album_z"]:
                     comp_stars = 2
@@ -494,7 +510,7 @@ def _build_album_model(
         by_album: dict[str, list[float]] = {}
         album_years: dict[str, int] = {}
         prominence_by_album: dict[str, list[float]] = {}
-        
+
         for row in rows:
             _t_title = str(row_get(row, "title") or "").strip()
             _t_album = str(row_get(row, "album") or "")
@@ -536,7 +552,7 @@ def _build_album_model(
 
         use_prominence = len(prominence_medians) >= 2
         prominence_power = 2.0
-        
+
         if use_prominence:
             m_peak = max(prominence_medians.values())
             current_median = prominence_medians.get(current_album) or m_peak
@@ -567,7 +583,7 @@ def _build_album_model(
             reff = min(1.0, max(0.0, raw_ratio ** float(prominence_power)))
         else:
             reff = effective_album_ratio(current_median * a_skew, m_peak)
-            
+
         era = _album_era_for_ratio(reff)
         _rules, _, _ = _live_album_scaling()
         rules = _rules.get(era, _rules["peak"])
@@ -634,6 +650,16 @@ _ESSENTIAL_FEAT_RE = re.compile(r"\s+(?:feat\.?|featuring|ft\.?)\s+", re.IGNOREC
 _ESSENTIAL_FEAT_SPLIT_RE = re.compile(r"\s*(?:&|,|/|\+|\bx\b|\bvs\.?\b)\s*", re.IGNORECASE)
 
 
+def _escape_like(value: str) -> str:
+    """Escape LIKE wildcards so artist names containing % or _ match literally."""
+    return (
+        str(value or "")
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+
+
 def _essential_playlist_name(artist: str) -> str:
     try:
         from helpers.config_helpers import get_config
@@ -689,12 +715,18 @@ def _refresh_all_essential_collections() -> int:
         seen.add(key)
         unique_artists.append(primary)
 
+    # Fetch the featured-track sweep once. Previously every artist triggered
+    # its own full-table ILIKE scan from inside _sync_essential_playlist.
+    featured_rows: list[dict[str, Any]] = []
+    if _essential_include_featured_enabled():
+        featured_rows = _fetch_essential_featured_rows()
+
     refreshed = 0
     for artist in unique_artists:
         if _is_excluded_essential_artist(artist):
             continue
         try:
-            if _sync_essential_playlist(artist):
+            if _sync_essential_playlist(artist, featured_rows=featured_rows):
                 refreshed += 1
         except Exception as exc:
             logger.debug("Essential collection refresh failed", artist=artist, error=str(exc))
@@ -733,6 +765,7 @@ def _playlist_sync_succeeded(result: dict[str, Any] | None) -> bool:
         result.get("created")
         or result.get("updated")
         or result.get("unchanged")
+        or result.get("skipped")
     )
 
 
@@ -787,7 +820,8 @@ def _create_new_music_playlist() -> int:
             logger.warning("New Music playlist was not synced to Navidrome", tracks=len(_song_ids), sync_result=sync_res)
             return 0
 
-        log_unified(f"📄 Playlist: Synced 'New Music' to Navidrome ({len(_song_ids)} tracks)")
+        if not sync_res.get("skipped"):
+            log_unified(f"📄 Playlist: Synced 'New Music' to Navidrome ({len(_song_ids)} tracks)")
         return len(_song_ids)
     except Exception as exc:
         logger.warning("New Music playlist sync failed", error=str(exc))
@@ -845,7 +879,7 @@ def _fetch_essential_featured_rows() -> list[dict[str, Any]]:
 
 
 def _sync_essential_playlist(
-    artist: str, 
+    artist: str,
     artist_scores: list[float] | None = None,
     featured_rows: list[dict[str, Any]] | None = None
 ) -> bool:
@@ -858,7 +892,7 @@ def _sync_essential_playlist(
         return False
 
     playlist_name = _essential_playlist_name(artist)
-    
+
     try:
         from helpers.config_helpers import get_config
         cfg = (get_config() or {}).get("playlists") or {}
@@ -892,10 +926,13 @@ def _sync_essential_playlist(
                     WHERE COALESCE(stars, star_rating) >= 4
                       AND (
                           LOWER(TRIM(COALESCE(NULLIF(album_artist, ''), artist))) = LOWER(TRIM(:artist))
-                          OR LOWER(TRIM(COALESCE(NULLIF(album_artist, ''), artist))) LIKE LOWER(TRIM(:artist)) || ' %'
+                          OR LOWER(TRIM(COALESCE(NULLIF(album_artist, ''), artist))) LIKE :artist_prefix ESCAPE '\\'
                       )
                 """),
-                {"artist": artist},
+                {
+                    "artist": artist,
+                    "artist_prefix": _escape_like(str(artist).strip().lower()) + " %",
+                },
             )
             rows = [dict(r._mapping) for r in result.fetchall() or []]
     except Exception as exc:
@@ -926,7 +963,7 @@ def _sync_essential_playlist(
                 if _track_has_featured_artist(row.get("artist") or "", artist):
                     rows.append(row)
         except Exception as exc:
-            logger.debug("Featured-track fetch failed", artist=artist, error=str(exc))
+            logger.debug("Featured-track merge failed", artist=artist, error=str(exc))
 
     def _track_year(row: dict[str, Any]) -> int:
         raw = row.get("release_year") or row.get("year") or 0
@@ -959,7 +996,7 @@ def _sync_essential_playlist(
     if len(winners) < _ESSENTIAL_MIN_TRACKS:
         _delete_playlist_from_navidrome(playlist_name)
         return False
-        
+
     for w in winners:
         _, pct = calculate_percentile_star_rating(float(w.get("popularity_score") or 0), artist_scores)
         w["percentile"] = pct
@@ -971,7 +1008,7 @@ def _sync_essential_playlist(
             str(r.get("title") or "").casefold(),
         ),
     )
-    
+
     winners = winners[:max_tracks]
 
     _song_ids = [str(r.get("id") or "").strip() for r in winners if str(r.get("id") or "").strip()]
@@ -984,6 +1021,9 @@ def _sync_essential_playlist(
         if not _playlist_sync_succeeded(sync_res):
             logger.warning("Essential collection was not synced", artist=artist, playlist=playlist_name, tracks=len(_song_ids))
             return False
+
+        if sync_res.get("skipped"):
+            return True
 
         log_unified(f"📄 Playlist: Synced '{playlist_name}' to Navidrome ({len(_song_ids)} tracks)")
 
@@ -1043,7 +1083,28 @@ def _display_genre(genre: str) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# Navidrome client + playlist push caches
+# ---------------------------------------------------------------------------
+
+_CLIENTS_LOCK = threading.Lock()
+_CLIENTS_CACHE: list[Any] | None = None
+_CLIENTS_CACHED_AT = 0.0
+_CLIENTS_TTL_SECONDS = 300.0
+
+_PLAYLIST_SIG_LOCK = threading.Lock()
+_PLAYLIST_SIGNATURES: "OrderedDict[str, str]" = OrderedDict()
+_PLAYLIST_SIG_MAX = 2000
+
+
 def _navidrome_clients() -> list[Any]:
+    """Return Navidrome clients, cached so each playlist push does not rebuild them."""
+    global _CLIENTS_CACHE, _CLIENTS_CACHED_AT
+    now = time.monotonic()
+    with _CLIENTS_LOCK:
+        if _CLIENTS_CACHE is not None and (now - _CLIENTS_CACHED_AT) < _CLIENTS_TTL_SECONDS:
+            return list(_CLIENTS_CACHE)
+
     clients: list[Any] = []
     try:
         from helpers.config_helpers import get_navidrome_users_normalized
@@ -1056,7 +1117,51 @@ def _navidrome_clients() -> list[Any]:
                 clients.append(NavidromeClient(base_url, username, password))
     except Exception as exc:
         logger.debug("Navidrome client resolution failed", error=str(exc))
+
+    with _CLIENTS_LOCK:
+        _CLIENTS_CACHE = list(clients)
+        _CLIENTS_CACHED_AT = now
     return clients
+
+
+def _playlist_signature(song_ids: list[str]) -> str:
+    """Stable signature of a playlist's ordered track list."""
+    joined = "\n".join(str(s) for s in song_ids)
+    return hashlib.sha1(joined.encode("utf-8", "replace")).hexdigest()
+
+
+def _playlist_already_pushed(playlist_name: str, signature: str) -> bool:
+    key = str(playlist_name or "").strip().casefold()
+    with _PLAYLIST_SIG_LOCK:
+        existing = _PLAYLIST_SIGNATURES.get(key)
+        if existing == signature:
+            _PLAYLIST_SIGNATURES.move_to_end(key)
+            return True
+    return False
+
+
+def _record_playlist_push(playlist_name: str, signature: str) -> None:
+    key = str(playlist_name or "").strip().casefold()
+    with _PLAYLIST_SIG_LOCK:
+        _PLAYLIST_SIGNATURES[key] = signature
+        _PLAYLIST_SIGNATURES.move_to_end(key)
+        while len(_PLAYLIST_SIGNATURES) > _PLAYLIST_SIG_MAX:
+            _PLAYLIST_SIGNATURES.popitem(last=False)
+
+
+def _forget_playlist_push(playlist_name: str) -> None:
+    key = str(playlist_name or "").strip().casefold()
+    with _PLAYLIST_SIG_LOCK:
+        _PLAYLIST_SIGNATURES.pop(key, None)
+
+
+def reset_playlist_push_cache() -> None:
+    """Clear the playlist push signature cache (call between full scans)."""
+    with _PLAYLIST_SIG_LOCK:
+        _PLAYLIST_SIGNATURES.clear()
+    global _CLIENTS_CACHE
+    with _CLIENTS_LOCK:
+        _CLIENTS_CACHE = None
 
 
 def _delete_playlist_from_navidrome(playlist_name: str) -> bool:
@@ -1071,6 +1176,8 @@ def _delete_playlist_from_navidrome(playlist_name: str) -> bool:
                 deleted = True
     except Exception as exc:
         logger.warning("Navidrome playlist delete failed", name=playlist_name, error=str(exc))
+    if deleted:
+        _forget_playlist_push(playlist_name)
     return deleted
 
 
@@ -1092,10 +1199,12 @@ def _sweep_orphaned_genre_playlists_from_navidrome(keep_playlist_names: set[str]
                 playlist_id = str(playlist.get("id") or "").strip()
                 if playlist_id and client.delete_playlist(playlist_id):
                     logger.info("Swept orphaned Navidrome playlist", name=name)
+                    _forget_playlist_push(name)
                 else:
                     logger.warning("Could not delete orphaned Navidrome playlist", name=name)
     except Exception as exc:
         logger.warning("Genre playlist Navidrome sweep failed", error=str(exc))
+
 
 def _create_essential_m3u(*args, **kwargs):
     return _sync_essential_playlist(*args, **kwargs)
@@ -1112,7 +1221,24 @@ def _sync_playlist_to_navidrome(
         "deduped": 0,
         "failed": 0,
         "clients": 0,
+        "skipped": 0,
     }
+
+    song_ids = list(song_ids or [])
+    signature = _playlist_signature(song_ids)
+
+    # Skip the push entirely when this exact ordered track list was already
+    # sent for this playlist. Repeated finalise passes previously rewrote
+    # every playlist on every pass regardless of whether anything changed.
+    if _playlist_already_pushed(playlist_name, signature):
+        synced["skipped"] = 1
+        logger.info(
+            "Navidrome playlist push skipped",
+            name=playlist_name,
+            reason="track list identical to the last push",
+            tracks=len(song_ids),
+        )
+        return synced
 
     try:
         from services.playlists.playlist_navidrome_service import (
@@ -1180,15 +1306,21 @@ def _sync_playlist_to_navidrome(
             )
 
     if _playlist_sync_succeeded(synced):
+        # Only remember the signature when nothing failed, so a partial
+        # failure is retried on the next pass.
+        if not synced["failed"]:
+            _record_playlist_push(playlist_name, signature)
         logger.info(
             "Navidrome playlist sync complete",
             name=playlist_name,
+            tracks=len(song_ids),
             stats=synced,
         )
     else:
         logger.warning(
             "Navidrome playlist was not synced",
             name=playlist_name,
+            tracks=len(song_ids),
             stats=synced,
         )
 
@@ -1234,6 +1366,71 @@ def _genre_playlist_track_genres(
     if not source_map:
         return []
     return aggregate_genres(source_map, max_genres=max_genres)
+
+
+# ---------------------------------------------------------------------------
+# Genre-playlist source rows (full-library query, cached briefly)
+# ---------------------------------------------------------------------------
+
+_GENRE_ROWS_LOCK = threading.Lock()
+_GENRE_ROWS_CACHE: list[dict[str, Any]] | None = None
+_GENRE_ROWS_MIN_STARS: int | None = None
+_GENRE_ROWS_AT = 0.0
+_GENRE_ROWS_TTL_SECONDS = 120.0
+
+_GENRE_ROWS_SQL = """
+    SELECT id, title, file_path, duration, artist, album_artist,
+           COALESCE(stars, star_rating) AS stars,
+           COALESCE(popularity, final_score, 0) AS popularity_score,
+           COALESCE(is_live, 0) AS is_live,
+           COALESCE(is_compilation, 0) AS is_compilation,
+           lastfm_tags, listenbrainz_genres, discogs_genres,
+           musicbrainz_genres, spotify_genres,
+           essentia_genres, manual_genres, navidrome_genres
+    FROM tracks
+    WHERE COALESCE(stars, star_rating) >= :min_stars
+"""
+
+
+def _fetch_genre_playlist_rows(min_stars: int) -> list[dict[str, Any]]:
+    """Fetch every rating-qualifying track, cached for a short TTL.
+
+    This is a full-library read. The per-album refresh path calls the same
+    rebuild, so without a cache a multi-album scan re-read the whole library
+    once per album.
+    """
+    global _GENRE_ROWS_CACHE, _GENRE_ROWS_MIN_STARS, _GENRE_ROWS_AT
+    now = time.monotonic()
+    with _GENRE_ROWS_LOCK:
+        if (
+            _GENRE_ROWS_CACHE is not None
+            and _GENRE_ROWS_MIN_STARS == min_stars
+            and (now - _GENRE_ROWS_AT) < _GENRE_ROWS_TTL_SECONDS
+        ):
+            return _GENRE_ROWS_CACHE
+
+    rows: list[dict[str, Any]] = []
+    try:
+        with db_session() as session:
+            result = session.execute(text(_GENRE_ROWS_SQL), {"min_stars": min_stars})
+            rows = [dict(r._mapping) for r in result.fetchall() or []]
+    except Exception as exc:
+        logger.debug("Genre playlist fetch failed", error=str(exc))
+        return []
+
+    with _GENRE_ROWS_LOCK:
+        _GENRE_ROWS_CACHE = rows
+        _GENRE_ROWS_MIN_STARS = min_stars
+        _GENRE_ROWS_AT = now
+    return rows
+
+
+def invalidate_genre_playlist_rows() -> None:
+    """Drop the cached genre-playlist source rows after ratings change."""
+    global _GENRE_ROWS_CACHE, _GENRE_ROWS_MIN_STARS
+    with _GENRE_ROWS_LOCK:
+        _GENRE_ROWS_CACHE = None
+        _GENRE_ROWS_MIN_STARS = None
 
 
 def refresh_genre_playlists_for_album(artist: str, album: str) -> int:
@@ -1294,7 +1491,7 @@ def _create_genre_top_track_playlists(
         cfg = (get_config() or {}).get("playlists") or {}
     except Exception:
         cfg = {}
-        
+
     min_stars = max(1, int(cfg.get("genre_playlists_min_stars", 4) or 4))
     max_genres = max(1, int(cfg.get("genre_playlists_max_genres", 3) or 3))
     create_threshold = max(1, int(cfg.get("genre_playlists_create_threshold", 100) or 100))
@@ -1303,28 +1500,7 @@ def _create_genre_top_track_playlists(
     create_enabled = _genre_playlists_enabled()
     delete_enabled = _genre_playlists_delete_enabled()
 
-    rows: list[dict[str, Any]] = []
-    try:
-        with db_session() as session:
-            result = session.execute(
-                text("""
-                    SELECT id, title, file_path, duration, artist, album_artist,
-                           COALESCE(stars, star_rating) AS stars,
-                           COALESCE(popularity, final_score, 0) AS popularity_score,
-                           COALESCE(is_live, 0) AS is_live,
-                           COALESCE(is_compilation, 0) AS is_compilation,
-                           lastfm_tags, listenbrainz_genres, discogs_genres,
-                           musicbrainz_genres, spotify_genres,
-                           essentia_genres, manual_genres, navidrome_genres
-                    FROM tracks
-                    WHERE COALESCE(stars, star_rating) >= :min_stars
-                """),
-                {"min_stars": min_stars},
-            )
-            rows = [dict(r._mapping) for r in result.fetchall() or []]
-    except Exception as exc:
-        logger.debug("Genre playlist fetch failed", error=str(exc))
-        return 0
+    rows = _fetch_genre_playlist_rows(min_stars)
 
     if not rows:
         return 0
@@ -1359,7 +1535,7 @@ def _create_genre_top_track_playlists(
             norm_key = re.sub(r"[^\w\s-]", "", genre.lower()).strip()
             if not norm_key:
                 continue
-                
+
             pools[norm_key].append({
                 "id": str(row.get("id") or ""),
                 "title": str(row.get("title") or "Unknown"),
@@ -1371,7 +1547,7 @@ def _create_genre_top_track_playlists(
                 "is_live": int(row.get("is_live") or 0),
                 "is_compilation": int(row.get("is_compilation") or 0),
             })
-            
+
             genre_freq[genre] += 1
             current_top = genre_display.get(norm_key)
             if not current_top or genre_freq[genre] > genre_freq[current_top]:
@@ -1394,18 +1570,19 @@ def _create_genre_top_track_playlists(
         )
 
     written = 0
+    skipped_unchanged = 0
     keep_playlist_names: set[str] = set()
-    
+
     norm_only_genres = None
     if only_genres is not None:
         norm_only_genres = {re.sub(r"[^\w\s-]", "", g.lower()).strip() for g in only_genres}
-    
+
     for norm_key, tracks in pools.items():
         if norm_only_genres is not None and norm_key not in norm_only_genres:
             continue
 
         genre = genre_display[norm_key]
-        
+
         grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
         for t in tracks:
             key = (
@@ -1413,7 +1590,7 @@ def _create_genre_top_track_playlists(
                 _normalise_essential_title(t["title"]),
             )
             grouped[key].append(t)
-            
+
         winners = [min(group, key=_tiebreak) for group in grouped.values()]
         qualifying_count = len(winners)
 
@@ -1440,13 +1617,24 @@ def _create_genre_top_track_playlists(
             if not _playlist_sync_succeeded(sync_res):
                 continue
 
-            log_unified(f"📄 Playlist: Synced '{playlist_name}' to Navidrome ({len(_song_ids)} tracks)")
-
             keep_playlist_names.add(playlist_name)
+
+            if sync_res.get("skipped"):
+                skipped_unchanged += 1
+                continue
+
+            log_unified(f"📄 Playlist: Synced '{playlist_name}' to Navidrome ({len(_song_ids)} tracks)")
             written += 1
-            
+
         except Exception as exc:
             logger.warning("Genre playlist API sync failed", genre=genre, error=str(exc))
+
+    if skipped_unchanged:
+        logger.info(
+            "Genre playlists unchanged since last push",
+            skipped=skipped_unchanged,
+            synced=written,
+        )
 
     if delete_enabled and only_genres is None:
         if not pools:
@@ -1484,7 +1672,7 @@ def compute_artist_scores(
     from services.catalog.album_classification_service import is_bonus_track_title
     artist_scores = [float(s) for s in scan_scores if float(s or 0) > 0]
     db_rows: list[tuple[str, float]] = []
-    
+
     try:
         with db_session() as session:
             result = session.execute(
@@ -1508,14 +1696,14 @@ def compute_artist_scores(
                 db_rows.append((t_album, score_val))
     except Exception as exc:
         logger.debug("Artist DB score fetch failed", artist=artist, error=str(exc))
-        
+
     try:
         from services.popularity.popularity_math import reanchor_scores_to_album_relative
         db_scores = list(reanchor_scores_to_album_relative(db_rows))
     except Exception as exc:
         logger.debug("Artist DB score re-anchor failed", artist=artist, error=str(exc))
         db_scores = [float(s) for _alb, s in db_rows]
-        
+
     return list(artist_scores) + db_scores
 
 
@@ -1598,7 +1786,7 @@ def post_album_star_ratings(
             for r in album_results
             if float(r.get("popularity_score") or r.get("final_score") or 0) > 0
         ]
-        
+
         if len(album_scores) >= 3:
             _eligible = [
                 float(r.get("popularity_score") or r.get("final_score") or 0)
@@ -1608,10 +1796,10 @@ def post_album_star_ratings(
             ]
             if len(_eligible) >= 3:
                 album_scores = _eligible
-                
+
         album_lf_listeners = [float(r.get("lastfm_listeners") or 0) for r in album_results]
         album_lb_listens = [float(r.get("listenbrainz_listens") or 0) for r in album_results]
-        
+
         if len(album_lf_listeners) >= 3 and len(album_lb_listens) >= 3:
             _elf = [float(r.get("lastfm_listeners") or 0) for r in album_results if not bool(r.get("exclude_from_stats"))]
             _elb = [float(r.get("listenbrainz_listens") or 0) for r in album_results if not bool(r.get("exclude_from_stats"))]
@@ -1625,10 +1813,10 @@ def post_album_star_ratings(
             with db_session() as session:
                 rows = session.execute(
                     text("SELECT title, final_score FROM tracks "
-                          "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album AND final_score > 0"),
+                         "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND album = :album AND final_score > 0"),
                     {"artist": artist, "album": album},
                 ).fetchall() or []
-                
+
             db_album_scores = [
                 float(row_get(row, "final_score") or 0)
                 for row in rows
@@ -1665,14 +1853,13 @@ def post_album_star_ratings(
                 if str(t.get("track_id") or "").strip()
             ]
             if _album_ids:
-                _ph = ", ".join(f":id{i}" for i in range(len(_album_ids)))
                 with db_session() as _sess:
                     _rows = _sess.execute(
                         text(
                             "SELECT id, COALESCE(stars, star_rating, 0) AS stars, file_path FROM tracks "
-                            f"WHERE CAST(id AS TEXT) IN ({_ph})"
-                        ),
-                        {f"id{i}": _tid for i, _tid in enumerate(_album_ids)},
+                            "WHERE CAST(id AS TEXT) IN :ids"
+                        ).bindparams(bindparam("ids", expanding=True)),
+                        {"ids": _album_ids},
                     ).fetchall() or []
                 for _r in _rows:
                     _m = _r._mapping
@@ -1751,7 +1938,7 @@ def post_album_star_ratings(
                     artist=artist, album=album, track=track.get("title"),
                     track_id=track_id, fallback_stars=fallback_stars, error=str(exc)
                 )
-                
+
             track["stars"] = stars
             total_star_ratings += 1
 
@@ -1762,7 +1949,7 @@ def post_album_star_ratings(
             if configured_slots is None:
                 configured_slots = _rules["peak"]["max_5star_slots"]
             max_slots = max(0, int(configured_slots))
-            
+
             protected_five_star_tracks = [
                 track for track in album_results
                 if (
@@ -1774,9 +1961,9 @@ def post_album_star_ratings(
                     )
                 )
             ]
-            
+
             protected_track_ids = {id(track) for track in protected_five_star_tracks}
-            
+
             automatic_five_star_tracks = [
                 track for track in album_results
                 if (
@@ -1785,7 +1972,7 @@ def post_album_star_ratings(
                     and id(track) not in protected_track_ids
                 )
             ]
-            
+
             automatic_five_star_tracks.sort(
                 key=lambda track: (
                     _compute_album_z(
@@ -1796,9 +1983,9 @@ def post_album_star_ratings(
                 ),
                 reverse=True,
             )
-            
+
             automatic_slots = max(0, max_slots - len(protected_five_star_tracks))
-            
+
             for track in automatic_five_star_tracks[automatic_slots:]:
                 track["stars"] = 4
                 track["_era_5star"] = False
@@ -1810,22 +1997,47 @@ def post_album_star_ratings(
                 )
 
         # 3. Persist calculated and capped ratings first
+        _ratings_changed = False
         with db_session() as session:
             for track in album_results:
                 track_id = str(track.get("track_id") or "").strip()
                 stars = int(track.get("stars") or 0)
                 if not track_id or stars < 1:
                     continue
-                session.execute(
-                    text("UPDATE tracks SET stars = :stars WHERE id = :tid"),
-                    {"stars": stars, "tid": track_id},
-                )
+                if stars != _stored_stars.get(track_id, 0):
+                    _ratings_changed = True
+                # SAVEPOINT per row: on PostgreSQL one failed UPDATE would
+                # otherwise abort the transaction and silently drop every
+                # remaining rating in this album.
+                nested = session.begin_nested()
+                try:
+                    session.execute(
+                        text("UPDATE tracks SET stars = :stars WHERE id = :tid"),
+                        {"stars": stars, "tid": track_id},
+                    )
+                    if nested.is_active:
+                        nested.commit()
+                except Exception as exc:
+                    try:
+                        nested.rollback()
+                    except Exception:
+                        pass
+                    logger.warning(
+                        "Star rating persistence failed",
+                        artist=artist, album=album, track_id=track_id,
+                        stars=stars, error=str(exc),
+                    )
+
+        # Ratings feed the genre playlist pools, so drop the cached rows.
+        if _ratings_changed:
+            invalidate_genre_playlist_rows()
 
         # 4. Apply the favourite floor to the newly persisted ratings
         try:
             from services.favourites_service import apply_favourite_rating_floor
             _floored = apply_favourite_rating_floor(artist, album)
             if _floored:
+                invalidate_genre_playlist_rows()
                 log_unified(f"♥ {_floored} hearted track(s) raised to the favourite rating floor")
         except Exception as _floor_err:
             logger.debug("Favourite rating floor skipped", artist=artist, album=album, error=str(_floor_err))
@@ -1838,12 +2050,13 @@ def post_album_star_ratings(
         }
         if _track_by_id:
             try:
-                _reload_placeholders = ", ".join(f":rid{index}" for index in range(len(_track_by_id)))
-                _reload_parameters = {f"rid{index}": tid for index, tid in enumerate(_track_by_id)}
                 with db_session() as session:
                     _final_rows = session.execute(
-                        text(f"SELECT id, COALESCE(stars, star_rating, 0) AS stars FROM tracks WHERE CAST(id AS TEXT) IN ({_reload_placeholders})"),
-                        _reload_parameters,
+                        text(
+                            "SELECT id, COALESCE(stars, star_rating, 0) AS stars FROM tracks "
+                            "WHERE CAST(id AS TEXT) IN :ids"
+                        ).bindparams(bindparam("ids", expanding=True)),
+                        {"ids": list(_track_by_id)},
                     ).fetchall() or []
                 for row in _final_rows:
                     mapping = row._mapping
@@ -1860,12 +2073,12 @@ def post_album_star_ratings(
             if stars < 1:
                 continue
             track_id = str(track.get("track_id") or "").strip()
-            
+
             _track_score = float(track.get("popularity_score") or track.get("final_score") or 0)
             _final_score = float(track.get("final_score") or _track_score or 0)
             _album_z = _compute_album_z(_track_score, album_scores)[0]
             _artist_z = _compute_artist_z(_track_score, artist_scores)[0]
-            
+
             _src_names: list[str] = []
             try:
                 _src_raw = track.get("single_sources") or ""
@@ -1880,9 +2093,9 @@ def post_album_star_ratings(
                 ]
             except Exception as source_exc:
                 logger.debug("Single source parsing failed", track_id=track_id, error=str(source_exc))
-                
+
             _src_part = f", matched=[{', '.join(_src_names)}]" if _src_names else ""
-            
+
             log_unified(
                 f"[TRACK_RESULT] {artist} - {track.get('title')} → {stars}★ "
                 f"(final_score={_final_score:.1f}, album_z={_album_z:.2f}, artist_z={_artist_z:.2f}, "
@@ -1982,11 +2195,11 @@ def post_album_star_ratings(
             _skipped = 0
             _sync_clients: list[Any] | None = None
             _consecutive_failures = 0
-            
+
             for track in album_results:
                 stars = track.get("stars", 0)
                 if stars < 1:
-                    continue 
+                    continue
                 track_id = str(track.get("track_id") or "")
                 if track_id:
                     if _skip_unchanged and stars == _stored_stars.get(track_id, 0):
@@ -1997,7 +2210,7 @@ def post_album_star_ratings(
                         if not _sync_clients:
                             logger.warning("Navidrome rating sync skipped because no clients were available", artist=str(artist or "").strip(), album=album)
                             break
-                    
+
                     _attempted += 1
                     if _sync_rating_to_navidrome(track_id, stars, clients=_sync_clients):
                         navidrome_synced += 1
@@ -2011,7 +2224,7 @@ def post_album_star_ratings(
                                 artist=str(artist or "").strip(), failures=_consecutive_failures,
                             )
                             break
-                            
+
             _failed = _attempted - _synced
             if _skipped > 0:
                 log_unified(f"🔗 Navidrome: skipped {_skipped} unchanged rating(s) for '{artist}'")
@@ -2027,6 +2240,51 @@ def post_album_star_ratings(
         logger.error("Album finalisation failed", artist=artist, album=album, error=str(exc))
 
     return {"star_ratings": total_star_ratings, "navidrome_synced": navidrome_synced}
+
+
+# ---------------------------------------------------------------------------
+# Global playlist rebuild coalescing
+# ---------------------------------------------------------------------------
+
+_GLOBAL_PLAYLIST_LOCK = threading.Lock()
+
+
+def _run_global_playlist_rebuild(options: dict[str, Any]) -> None:
+    """Run the library-wide playlist rebuilds at most once per finalise pass.
+
+    Genre playlists and the New Music playlist are global. When a scan
+    finalises per artist or per album, running them from every batch rewrote
+    the entire playlist set repeatedly.
+    """
+    marker = "_global_playlists_done"
+    if options.get(marker):
+        logger.info(
+            "Global playlist rebuild skipped",
+            reason="already completed for this scan",
+        )
+        return
+
+    with _GLOBAL_PLAYLIST_LOCK:
+        if options.get(marker):
+            return
+        try:
+            if _genre_playlists_active():
+                written = _create_genre_top_track_playlists()
+                if written:
+                    log_unified(f"[FINALISE_STAGE] Genre playlists: {written} playlist(s) synced")
+        except Exception as exc:
+            logger.debug("Genre playlist generation failed", error=str(exc))
+
+        try:
+            if _new_music_playlist_enabled():
+                _create_new_music_playlist()
+        except Exception as exc:
+            logger.debug("New Music playlist generation failed", error=str(exc))
+
+        try:
+            options[marker] = True
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -2072,7 +2330,7 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
     """Finalise the scan: assign star ratings, sync to Navidrome, create playlists, log summary."""
     track_count = len(results) if results else 0
     log_unified(f"[FINALISE_STAGE] Finalising scan — {track_count} tracks processed")
-    
+
     try:
         from services.popularity.popularity_config import get_single_organic_floor
         from helpers.config_helpers import get_config
@@ -2088,7 +2346,7 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
         )
     except Exception:
         pass
-        
+
     if not results:
         try:
             if _essential_playlists_enabled(options):
@@ -2101,12 +2359,7 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
                     _essential_refreshed = _refresh_all_essential_collections()
                     if _essential_refreshed:
                         log_unified(f"[FINALISE_STAGE] Essential collections refreshed: {_essential_refreshed} artist(s)")
-            if _genre_playlists_active():
-                _genre_playlists_written = _create_genre_top_track_playlists()
-                if _genre_playlists_written:
-                    log_unified(f"[FINALISE_STAGE] Genre playlists: {_genre_playlists_written} playlist(s) synced")
-            if _new_music_playlist_enabled():
-                _create_new_music_playlist()
+            _run_global_playlist_rebuild(options)
         except Exception as exc:
             logger.error("Finalisation failed on empty results", error=str(exc))
         return
@@ -2121,7 +2374,7 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
     navidrome_synced = 0
 
     per_album_posted = bool(options.get("_per_album_posted"))
-    
+
     raw_posted_keys = options.get("_per_album_posted_keys") or set()
     posted_keys = {
         (
@@ -2131,6 +2384,11 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
         for key in raw_posted_keys
         if isinstance(key, (tuple, list)) and len(key) >= 2
     }
+
+    # Resolve the featured-track sweep once for every artist in this pass.
+    _featured_rows = options.get("_essential_featured_rows")
+    if _featured_rows is None and _essential_playlists_enabled(options) and _essential_include_featured_enabled():
+        _featured_rows = _fetch_essential_featured_rows()
 
     try:
         for artist, artist_results in by_artist.items():
@@ -2160,7 +2418,7 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
                     _mad = median(_mads) if _mads else 0.0
                     _album_count = len({str(r.get("album") or "") for r in artist_results if r.get("album")})
                     _artist_id = _resolve_navidrome_artist_id(artist) or artist
-                    
+
                     with db_session() as session:
                         session.execute(
                             text("""
@@ -2218,11 +2476,11 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
                     for value in (options.get("_essential_playlists_done") or set())
                 }
                 if artist.strip().casefold() not in _done_artists:
-                    _featured_rows = options.get("_essential_featured_rows")
-                    if _featured_rows is not None:
-                        _sync_essential_playlist(artist, artist_scores=artist_scores, featured_rows=_featured_rows)
-                    else:
-                        _sync_essential_playlist(artist, artist_scores=artist_scores)
+                    _sync_essential_playlist(
+                        artist,
+                        artist_scores=artist_scores,
+                        featured_rows=_featured_rows,
+                    )
 
         try:
             _isrc_updated = _sync_isrc_popularity()
@@ -2234,26 +2492,14 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
         except Exception as exc:
             logger.debug("ISRC sync commit failed", error=str(exc))
 
-        try:
-            if _genre_playlists_active():
-                _genre_playlists_written = _create_genre_top_track_playlists()
-                if _genre_playlists_written:
-                    log_unified(f"[FINALISE_STAGE] Genre playlists: {_genre_playlists_written} playlist(s) synced")
-        except Exception as exc:
-            logger.debug("Genre playlist generation failed", error=str(exc))
-
-        try:
-            if _new_music_playlist_enabled():
-                _create_new_music_playlist()
-        except Exception as exc:
-            logger.debug("New Music playlist generation failed", error=str(exc))
+        _run_global_playlist_rebuild(options)
 
     except Exception as exc:
         logger.error("Finalisation loop failed", error=str(exc))
 
     if per_album_posted:
         total_star_ratings = sum(1 for r in results if (r.get("stars") or 0) > 0)
-        
+
     log_unified(f"[FINALISE_STAGE] Star ratings assigned: {total_star_ratings}")
     log_unified(f"[FINALISE_STAGE] Navidrome syncs: {navidrome_synced}")
 
@@ -2262,7 +2508,7 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
         s = r.get("stars", 0) or 0
         if 1 <= s <= 5:
             star_counts[s] += 1
-            
+
     log_unified(
         f"[FINALISE_STAGE] Star distribution — 5★: {star_counts[5]}, 4★: {star_counts[4]}, 3★: {star_counts[3]}, 2★: {star_counts[2]}, 1★: {star_counts[1]}",
     )
