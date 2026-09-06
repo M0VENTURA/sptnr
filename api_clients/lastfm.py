@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from api_clients.lastfm_http import LastFmHttpClient, retry_with_backoff
+from api_clients.lastfm_http import LastFmHttpClient
 
 
 class LastFmClient:
@@ -70,5 +70,4 @@ class LastFmClient:
 __all__ = [
     "LastFmClient",
     "LastFmHttpClient",
-    "retry_with_backoff",
 ]
