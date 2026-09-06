@@ -1,5 +1,4 @@
-"""
-Centralized logging configuration for Popularr.
+"""Centralized logging configuration for Popularr.
 Config-driven, thread-safe logging configuration.
 """
 
@@ -24,14 +23,10 @@ _VALID_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 # so a runtime set_log_level() toggle can raise/lower its level.
 _UNIFIED_FILE_HANDLER = None
 
-# Size-capped log rotation.  The old ``TimedRotatingFileHandler`` (midnight
-# only, no size cap) let a DEBUG run grow debug.log to 64 MB+ in a single day
-# (the httpcore/httpx request trace is emitted at DEBUG for EVERY request).
-# Each file handler now rotates at ``_LOG_MAX_BYTES`` with ``_LOG_BACKUP_COUNT``
-# backups — a 20 MB × 5 cap keeps ~120 MB per file at most and never grows
-# without bound.
-_LOG_MAX_BYTES = 20 * 1024 * 1024  # 20 MB
-_LOG_BACKUP_COUNT = 5
+# Time-based log retention. Rotates daily at midnight and keeps only 1 backup
+# file (retaining the current day and the previous 24 hours of logs).
+_LOG_WHEN = "midnight"
+_LOG_BACKUP_COUNT = 1
 
 
 def _resolve_log_level() -> str:
@@ -58,10 +53,6 @@ def set_log_level(level: str) -> str:
         level = "INFO"
     logging.getLogger().setLevel(level)
 
-    # The unified_file handler follows the configured root level so DEBUG
-    # records (per-step enrichment detail) reach unified_scan.log when debug
-    # is enabled in config.html.  Updating it here makes a runtime toggle take
-    # effect immediately instead of on the next restart.
     global _UNIFIED_FILE_HANDLER
     if _UNIFIED_FILE_HANDLER is not None:
         _UNIFIED_FILE_HANDLER.setLevel(level)
@@ -95,19 +86,7 @@ def resolve_log_dir() -> str:
 
 
 class UnifiedLogFilter(logging.Filter):
-    """Filters out noisy API requests and sub-INFO noise from unified logs.
-
-    In normal (INFO) mode, sub-INFO records never reach unified_scan.log so
-    the scan log stays readable.  When the configured root level is DEBUG
-    (``logging.level: debug`` in config.html), DEBUG records ARE allowed
-    through — that is what surfaces the per-step enrichment detail
-    (album-type lookup, album art chain, artist metadata, similar artists,
-    etc.) in unified_scan.log for troubleshooting a slow scan.
-
-    The debug check is evaluated on EVERY ``filter()`` call (a cheap config
-    dict read) rather than cached at construction, so toggling debug in
-    config.html at runtime takes effect immediately without a restart.
-    """
+    """Filters out noisy API requests and sub-INFO noise from unified logs."""
 
     def _debug_enabled(self) -> bool:
         try:
@@ -117,7 +96,6 @@ class UnifiedLogFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         if self._debug_enabled():
-            # In debug mode only skip the known noisy access/scheduler names.
             if record.name.startswith("uvicorn.access") or record.name.startswith("werkzeug"):
                 return False
             if record.name.startswith("apscheduler"):
@@ -137,20 +115,7 @@ class UnifiedLogFilter(logging.Filter):
 
 
 def log_unified(message: str, **kwargs: Any) -> None:
-    """Write a progress message to the unified scan log.
-
-    Uses the stdlib logger directly so the message ALWAYS lands in
-    ``unified_scan.log`` — structlog's stdlib bridge is only configured when
-    ``STRUCTLOG=1``, and relying on it unconditionally silently dropped every
-    unified line to stdout when the env var was unset (the default).  In
-    structlog mode the ``ProcessorFormatter`` on the ``unified_file`` handler
-    re-renders the record via ``foreign_pre_chain``, so output stays JSON; in
-    plain mode the stdlib formatter prints ``message`` verbatim.
-
-    ``kwargs`` are appended as ``key=value`` pairs so callers that pass extra
-    context keep it visible in both modes (a stdlib ``extra=`` cannot be used
-    safely here — arbitrary keys collide with reserved LogRecord attributes).
-    """
+    """Write a progress message to the unified scan log."""
     if kwargs:
         rendered = message + " " + " ".join(f"{k}={v!r}" for k, v in kwargs.items())
     else:
@@ -190,17 +155,7 @@ class SafePrefixFormatter(logging.Formatter):
 
 
 def setup_logging(service_name: str = "popularr") -> None:
-    """Configures centralized logging system.
-
-    The structlog → stdlib bridge is ALWAYS configured (both modes), so
-    ``structlog.get_logger(__name__)`` calls from service modules flow into
-    the log files (info.log / debug.log / error.log / unified_scan.log) no
-    matter what ``STRUCTLOG`` is set to.  ``STRUCTLOG`` only selects the
-    on-disk rendering:
-
-    - ``STRUCTLOG=1`` → JSON (or ConsoleRenderer with ``STRUCTLOG_CONSOLE``)
-    - unset/``0``     → plain ``2026-08-23 09:00:00 [INFO] message`` lines
-    """
+    """Configures centralized logging system."""
     log_dir = resolve_log_dir()
     use_structlog = os.environ.get("STRUCTLOG", "").strip() in ("1", "true", "yes")
 
@@ -209,14 +164,7 @@ def setup_logging(service_name: str = "popularr") -> None:
 
 
 def _plain_renderer(_logger: Any, _method: str, event_dict: dict[str, Any]) -> str:
-    """Render a structlog event dict as a plain log line.
-
-    Produces ``2026-08-23 09:00:00 [INFO] [module] message key=value`` — the
-    same shape the old stdlib formatter emitted, so the /logs page's
-    timestamp/level parsing keeps working.  Called by the plain (non-JSON)
-    ``ProcessorFormatter``; ``foreign_pre_chain`` has already populated
-    ``level`` / ``logger`` / ``timestamp`` before this runs.
-    """
+    """Render a structlog event dict as a plain log line."""
     ts = event_dict.get("timestamp", "")
     level = str(event_dict.get("level", "info")).upper()
     name = event_dict.get("logger", "")
@@ -234,19 +182,11 @@ def _plain_renderer(_logger: Any, _method: str, event_dict: dict[str, Any]) -> s
 
 
 def _configure_structlog_bridge() -> None:
-    """Wire structlog so its loggers flow into stdlib handlers.
-
-    Without this, ``structlog.get_logger(__name__).info(...)`` from the
-    structlog-converted service modules prints to stdout ONLY — nothing
-    reaches info.log / debug.log / error.log / unified_scan.log.  With the
-    bridge (``wrap_for_formatter``) every structlog call becomes a stdlib
-    record handled by the dictConfig handlers below.
-    """
+    """Wire structlog so its loggers flow into stdlib handlers."""
     shared_processors = [
         structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,
         structlog.stdlib.PositionalArgumentsFormatter(),
-        # Force utc=False here to respect local system time
         structlog.processors.TimeStamper(fmt="iso", utc=False),
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
@@ -265,13 +205,11 @@ def _configure_structlog_bridge() -> None:
 
 
 def _setup_standard_logging(service_name: str, log_dir: str, use_structlog: bool = False) -> None:
-    """Configure standard dictConfig-based logging."""
+    """Configure standard dictConfig-based logging using time-based rotation."""
     fmt = "%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s"
     date_fmt = "%Y-%m-%d %H:%M:%S"
     root_level = _resolve_log_level()
 
-    # If structlog is enabled, we map the formatters to use the structlog processor
-    # to render the key-value pairs cleanly into the files without double-timestamps.
     if use_structlog:
         is_console = bool(os.environ.get("STRUCTLOG_CONSOLE"))
         processor = structlog.dev.ConsoleRenderer(colors=False) if is_console else structlog.processors.JSONRenderer()
@@ -287,10 +225,6 @@ def _setup_standard_logging(service_name: str, log_dir: str, use_structlog: bool
         }
         verbose_formatter = unified_formatter
     else:
-        # Plain mode: still use ProcessorFormatter so the structlog bridge
-        # records render cleanly (message + key=value) instead of dumping the
-        # event dict.  The processor adds its own "event" text; the stdlib
-        # formatter adds timestamp + level + logger name.
         _pf_foreign_chain = [
             structlog.stdlib.add_log_level,
             structlog.stdlib.add_logger_name,
@@ -327,59 +261,61 @@ def _setup_standard_logging(service_name: str, log_dir: str, use_structlog: bool
         },
         "handlers": {
             "unified_file": {
-                "class": "logging.handlers.RotatingFileHandler",
+                "class": "logging.handlers.TimedRotatingFileHandler",
                 "filename": os.path.join(log_dir, "unified_scan.log"),
-                "maxBytes": _LOG_MAX_BYTES,
+                "when": _LOG_WHEN,
+                "interval": 1,
                 "backupCount": _LOG_BACKUP_COUNT,
                 "encoding": "utf-8",
                 "formatter": "unified",
                 "filters": ["unified_filter"],
-                # Follow the configured root level so DEBUG records (per-step
-                # enrichment detail) reach unified_scan.log when the user
-                # enables debug in config.html.  In INFO mode the filter
-                # already drops sub-INFO records, so this stays clean.
                 "level": root_level,
             },
             "info_file": {
-                "class": "logging.handlers.RotatingFileHandler",
+                "class": "logging.handlers.TimedRotatingFileHandler",
                 "filename": os.path.join(log_dir, "info.log"),
-                "maxBytes": _LOG_MAX_BYTES,
+                "when": _LOG_WHEN,
+                "interval": 1,
                 "backupCount": _LOG_BACKUP_COUNT,
                 "encoding": "utf-8",
                 "formatter": "verbose",
                 "level": "INFO",
             },
             "debug_file": {
-                "class": "logging.handlers.RotatingFileHandler",
+                "class": "logging.handlers.TimedRotatingFileHandler",
                 "filename": os.path.join(log_dir, "debug.log"),
-                "maxBytes": _LOG_MAX_BYTES,
+                "when": _LOG_WHEN,
+                "interval": 1,
                 "backupCount": _LOG_BACKUP_COUNT,
                 "encoding": "utf-8",
                 "formatter": "verbose",
                 "level": "DEBUG",
             },
             "error_file": {
-                "class": "logging.handlers.RotatingFileHandler",
+                "class": "logging.handlers.TimedRotatingFileHandler",
                 "filename": os.path.join(log_dir, "error.log"),
-                "maxBytes": _LOG_MAX_BYTES,
+                "when": _LOG_WHEN,
+                "interval": 1,
                 "backupCount": _LOG_BACKUP_COUNT,
                 "encoding": "utf-8",
                 "formatter": "verbose",
                 "level": "ERROR",
             },
             "queue_file": {
-                "class": "logging.handlers.RotatingFileHandler",
+                "class": "logging.handlers.TimedRotatingFileHandler",
                 "filename": os.path.join(log_dir, "queue.log"),
-                "maxBytes": _LOG_MAX_BYTES,
+                "when": _LOG_WHEN,
+                "interval": 1,
                 "backupCount": _LOG_BACKUP_COUNT,
                 "encoding": "utf-8",
                 "formatter": "unified",
                 "level": "INFO",
             },
             "search_file": {
-                "class": "logging.handlers.RotatingFileHandler",
+                "class": "logging.handlers.TimedRotatingFileHandler",
                 "filename": os.path.join(log_dir, "search.log"),
-                "maxBytes": _LOG_MAX_BYTES,
+                "when": _LOG_WHEN,
+                "interval": 1,
                 "backupCount": _LOG_BACKUP_COUNT,
                 "encoding": "utf-8",
                 "formatter": "unified",
@@ -406,13 +342,6 @@ def _setup_standard_logging(service_name: str, log_dir: str, use_structlog: bool
                 "level": "INFO",
                 "propagate": False,
             },
-            
-            # ── MusicBrainz Enrichment ─────────────────────────────────────
-            # Forces detailed logging for MusicBrainz lookups, matching scores, 
-            # and API responses to always appear in debug.log, regardless of 
-            # the global application log level.
-            # * NOTE: If your MusicBrainz file path differs from `services.musicbrainz`,
-            #   update the dictionary key below to match its import path.
             "services.musicbrainz": {
                 "level": "DEBUG",
                 "propagate": True,
@@ -425,8 +354,6 @@ def _setup_standard_logging(service_name: str, log_dir: str, use_structlog: bool
                 "level": "DEBUG",
                 "propagate": True,
             },
-            
-            # ── Download-queue related loggers ─────────────────────────────
             "services.queue": {
                 "handlers": ["queue_file", "error_file"],
                 "level": "INFO",
@@ -456,10 +383,6 @@ def _setup_standard_logging(service_name: str, log_dir: str, use_structlog: bool
 
     logging.config.dictConfig(config)
 
-    # Keep a direct handle to the unified_file handler so a runtime
-    # ``set_log_level()`` toggle can adjust its level (dictConfig handlers
-    # don't carry the config key as a ``name``, so we can't look it up by
-    # name on the root logger).
     global _UNIFIED_FILE_HANDLER
     _UNIFIED_FILE_HANDLER = None
     root_logger = logging.getLogger()
