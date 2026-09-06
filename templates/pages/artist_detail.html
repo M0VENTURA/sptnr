@@ -281,6 +281,11 @@
         <i class="bi bi-info-circle me-1"></i> About
       </button>
     </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link fw-bold" id="tab-genres-btn" data-bs-toggle="tab" data-bs-target="#tab-genres" type="button" role="tab" aria-selected="false">
+        <i class="bi bi-tags me-1"></i> Genres &amp; Moods
+      </button>
+    </li>
   </ul>
 
   <div class="tab-content mb-5">
@@ -458,6 +463,78 @@
               <div class="text-muted small">
                 <span>No similar artists available yet.</span>
                 <br><small>Similar artists are collected during popularity scans from Last.fm and ListenBrainz.</small>
+              </div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 4: GENRES & MOODS -->
+    <div class="tab-pane fade" id="tab-genres" role="tabpanel" aria-labelledby="tab-genres-btn">
+      <div class="card mb-4 shadow-sm bg-dark text-light border-secondary">
+        <div class="card-header border-secondary">
+          <h5 class="card-title mb-0 fw-bold"><i class="bi bi-tags-fill text-warning me-2"></i>Genres and Moods</h5>
+        </div>
+        <div class="card-body">
+          <p class="text-muted small mb-3">All genres and moods detected from external providers across all tracks by this artist.</p>
+          <div id="artistGenreSourcesContainer">
+            {% set sources = [
+              ('mood', 'Essentia Moods', 'F59C00', 'black', 'bi-emoji-smile-fill'),
+              ('lastfm_tags', 'Last.fm', 'D51007', 'white', 'bi-music-note-beamed'),
+              ('listenbrainz_genres', 'ListenBrainz', '0066FF', 'white', 'bi-headphones'),
+              ('discogs_genres', 'Discogs', '6c757d', 'white', 'bi-vinyl-fill'),
+              ('essentia_genres', 'Essentia Genres', '6f42c1', 'white', 'bi-cpu-fill'),
+              ('navidrome_genres', 'Navidrome', '17A589', 'white', 'bi-music-note-list'),
+              ('musicbrainz_genres', 'MusicBrainz', 'EB743B', 'white', 'bi-hexagon-fill'),
+              ('spotify_genres', 'Spotify', '1DB954', 'white', 'bi-spotify'),
+              ('manual_genres', 'Manual Tags', '0dcaf0', 'black', 'bi-person-fill-gear')
+            ] %}
+            
+            {% set ns = namespace(has_any=False) %}
+            {% for key, label, bgcolor, textcolor, icon in sources %}
+              {% if genre_sources and genre_sources.get(key) %}{% set ns.has_any = True %}{% endif %}
+            {% endfor %}
+
+            {% if ns.has_any %}
+              {% set ns2 = namespace(first=True) %}
+              <ul class="nav nav-tabs border-secondary mb-3" role="tablist">
+                {% for key, label, bgcolor, textcolor, icon in sources %}
+                  {% if genre_sources and genre_sources.get(key) %}
+                    <li class="nav-item" role="presentation">
+                      <button class="nav-link {{ 'active text-white' if ns2.first else 'text-muted' }}"
+                              id="artistGenreTab{{ key }}-tab" data-bs-toggle="tab"
+                              data-bs-target="#artistGenreTab{{ key }}-content"
+                              type="button" role="tab" style="color: #{{ bgcolor }};">
+                        <i class="bi {{ icon }}"></i> {{ label }}
+                        <span class="badge ms-1" style="background-color: #{{ bgcolor }}; color: {{ textcolor }};">{{ genre_sources[key]|length }}</span>
+                      </button>
+                    </li>
+                    {% set ns2.first = False %}
+                  {% endif %}
+                {% endfor %}
+              </ul>
+
+              {% set ns3 = namespace(first=True) %}
+              <div class="tab-content">
+                {% for key, label, bgcolor, textcolor, icon in sources %}
+                  {% if genre_sources and genre_sources.get(key) %}
+                    <div class="tab-pane fade {{ 'active show' if ns3.first else '' }}" id="artistGenreTab{{ key }}-content" role="tabpanel">
+                      <div class="d-flex flex-wrap gap-2 mb-3">
+                        {% for genre in genre_sources[key]|sort(reverse=True, attribute='count') %}
+                          <span class="badge" style="background-color: #{{ bgcolor }}; color: {{ textcolor }}; font-size:0.85rem;">
+                            {{ genre.name }}{% if genre.count %} <small class="opacity-75">({{ genre.count }})</small>{% endif %}
+                          </span>
+                        {% endfor %}
+                      </div>
+                    </div>
+                    {% set ns3.first = False %}
+                  {% endif %}
+                {% endfor %}
+              </div>
+            {% else %}
+              <div class="alert alert-secondary bg-dark border-secondary text-muted mb-0 small">
+                <i class="bi bi-info-circle me-1"></i> No genre or mood metadata has been collected for this artist yet.
               </div>
             {% endif %}
           </div>
