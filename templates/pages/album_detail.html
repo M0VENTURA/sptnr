@@ -492,7 +492,7 @@
   </div>
 </div>
 
-{# Modals #}
+{# Modals - Replaced direct component include with the proper modal wrapper component #}
 {% include 'components/_track_edit.html' ignore missing %}
 {% include 'components/_organize_group.html' ignore missing %}
 {% include 'components/_slskd_results.html' ignore missing %}
@@ -500,7 +500,7 @@
 {% include 'components/_soulseek_manual_search.html' ignore missing %}
 {% include 'components/_release_picker.html' ignore missing %}
 {% include 'components/_album_lookup.html' ignore missing %}
-{% include 'components/_musicbrainz_search_modal.html' ignore missing %}
+{% include 'components/search/_musicbrainz_search_modal.html' ignore missing %}
 {% include 'components/_musicbrainz_release_match.html' ignore missing %}
 {% endblock %}
 
