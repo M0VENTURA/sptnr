@@ -16,13 +16,19 @@ Responsibilities moved out:
 - Concurrent multi-page fetching -> services.scanning.navidrome_service
 - Track metadata normalization -> services.scanning.metadata_extractor
 - DB writes -> db.repositories.tracks / db.repositories.scan_repository
+
+Non-JSON response handling:
+    Navidrome falls back to XML when it cannot honour ``f=json`` — which
+    happens on some error paths. An XML body therefore may carry
+    ``status="failed"``. Treating any non-JSON 2xx body as success reported
+    rejected mutations as successful writes, so the status attribute is now
+    parsed out of non-JSON bodies before deciding.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-import os
 import random
 import re
 import time
@@ -30,7 +36,6 @@ from typing import Any
 
 import structlog
 
-from api_clients import session
 from api_clients.http_utils import create_retry_client
 
 logger = structlog.get_logger(__name__)
@@ -77,10 +82,51 @@ _SUBSONIC_NON_ERROR_CODES = frozenset({70})
 # Auth-related codes where retrying the exact same request is pointless.
 _SUBSONIC_AUTH_ERROR_CODES = frozenset({40, 41, 42, 43, 44, 50})
 
+# Navidrome answers with an XML envelope when it cannot serve JSON. The
+# status/error attributes still need to be honoured.
+_XML_STATUS_RE = re.compile(r'\bstatus\s*=\s*"([^"]+)"', re.IGNORECASE)
+_XML_ERROR_CODE_RE = re.compile(r'\bcode\s*=\s*"(\d+)"', re.IGNORECASE)
+_XML_ERROR_MESSAGE_RE = re.compile(r'\bmessage\s*=\s*"([^"]*)"', re.IGNORECASE)
+
 
 def _md5_hex(value: str) -> str:
     """Return the hex MD5 digest of a string."""
     return hashlib.md5(value.encode("utf-8")).hexdigest()
+
+
+def _parse_non_json_envelope(body: str) -> dict[str, Any] | None:
+    """Extract a Subsonic envelope from a non-JSON (XML) response body.
+
+    Returns a dict shaped like the JSON envelope, or ``None`` when the body
+    carries no recognisable ``subsonic-response``.
+
+    This exists because Navidrome returns XML on some error paths even when
+    ``f=json`` was requested. Assuming any non-JSON 2xx body meant success
+    caused rejected ``updatePlaylist`` calls to be logged as successful
+    in-place updates.
+    """
+    text = (body or "").strip()
+    if not text or "subsonic-response" not in text:
+        return None
+
+    status_match = _XML_STATUS_RE.search(text)
+    if not status_match:
+        return None
+
+    envelope: dict[str, Any] = {"status": status_match.group(1).strip().lower()}
+    if envelope["status"] == "failed":
+        error: dict[str, Any] = {}
+        code_match = _XML_ERROR_CODE_RE.search(text)
+        if code_match:
+            try:
+                error["code"] = int(code_match.group(1))
+            except (TypeError, ValueError):
+                pass
+        message_match = _XML_ERROR_MESSAGE_RE.search(text)
+        if message_match:
+            error["message"] = message_match.group(1)
+        envelope["error"] = error
+    return envelope
 
 
 def _coerce_modified_ts(value: Any) -> int | None:
@@ -263,14 +309,23 @@ class NavidromeClient:
                 try:
                     result = response.json().get("subsonic-response", {}) or {}
                 except (json.JSONDecodeError, ValueError):
-                    # A 2xx with a non-JSON body (HTML error page, bare text)
-                    # is treated as an empty response, not a hard failure.
+                    # A 2xx with a non-JSON body is usually an XML envelope.
+                    # It can still carry status="failed", so parse it rather
+                    # than assuming the call succeeded.
+                    parsed = _parse_non_json_envelope(response.text or "")
+                    if parsed is None:
+                        logger.debug(
+                            "Navidrome endpoint returned unrecognised non-JSON 2xx body — treating as empty",
+                            endpoint=endpoint,
+                            body=(response.text or "")[:120],
+                        )
+                        return {}
                     logger.debug(
-                        "Navidrome endpoint returned non-JSON 2xx body — treating as empty",
+                        "Navidrome endpoint returned an XML envelope",
                         endpoint=endpoint,
-                        body=(response.text or "")[:120],
+                        status=parsed.get("status"),
                     )
-                    return {}
+                    result = parsed
 
                 if not result:
                     logger.warning("Navidrome returned empty subsonic-response", endpoint=endpoint)
@@ -283,8 +338,6 @@ class NavidromeClient:
                         auth_fallback_attempted = True
                         continue  # retry immediately with password auth
                     _log_subsonic_status(result, endpoint)
-                else:
-                    _log_subsonic_status(result, endpoint)  # no-op for "ok", kept for symmetry/consistency
 
                 return result
 
@@ -297,8 +350,8 @@ class NavidromeClient:
                     continue
 
         if last_error:
-            # getSongs is known to 404 on newer Navidrome versions. Since the orchestrator 
-            # safely falls back to get_indexes/get_albums, we demote this to a debug log to 
+            # getSongs is known to 404 on newer Navidrome versions. Since the orchestrator
+            # safely falls back to get_indexes/get_albums, we demote this to a debug log to
             # stop it from throwing massive ERROR tracebacks into the logs.
             is_404 = getattr(last_error, "response", None) is not None and getattr(last_error.response, "status_code", None) == 404
             if endpoint == "getSongs" and is_404:
@@ -322,17 +375,28 @@ class NavidromeClient:
             try:
                 result = response.json().get("subsonic-response", {}) or {}
             except (json.JSONDecodeError, ValueError):
-                # Navidrome sometimes returns a 2xx with a NON-JSON body (an
-                # HTML error page, a bare "ok" string, or a whitespace-padded
-                # response) for mutation endpoints.  The mutation itself
-                # succeeded (HTTP 2xx) — surface it as success instead of a
-                # noisy JSONDecodeError every few minutes.
-                logger.debug(
-                    "Navidrome mutation endpoint returned non-JSON 2xx body — treating as success",
-                    endpoint=endpoint,
-                    body=(response.text or "")[:120],
-                )
-                return {"status": "ok"}
+                # Navidrome returns an XML envelope on some error paths even
+                # when f=json was requested, and that envelope can say
+                # status="failed". Blanket-treating a non-JSON 2xx body as
+                # success reported rejected mutations as successful writes,
+                # so the status is parsed out before deciding.
+                parsed = _parse_non_json_envelope(response.text or "")
+                if parsed is None:
+                    logger.debug(
+                        "Navidrome mutation endpoint returned unrecognised non-JSON 2xx body — treating as success",
+                        endpoint=endpoint,
+                        body=(response.text or "")[:120],
+                    )
+                    return {"status": "ok"}
+                if parsed.get("status") == "failed":
+                    logger.warning(
+                        "Navidrome mutation rejected in a non-JSON envelope",
+                        endpoint=endpoint,
+                        code=(parsed.get("error") or {}).get("code"),
+                        message=(parsed.get("error") or {}).get("message"),
+                        body=(response.text or "")[:200],
+                    )
+                result = parsed
 
             if result.get("status") == "failed":
                 if self._maybe_fallback_to_password_auth(result, endpoint):
@@ -342,7 +406,7 @@ class NavidromeClient:
                     try:
                         result = response.json().get("subsonic-response", {}) or {}
                     except (json.JSONDecodeError, ValueError):
-                        result = {"status": "ok"}
+                        result = _parse_non_json_envelope(response.text or "") or {"status": "ok"}
                     if result.get("status") == "failed":
                         _log_subsonic_status(result, endpoint)
                 else:
@@ -504,16 +568,54 @@ class NavidromeClient:
             logger.error("Failed to fetch playlists", error=str(exc))
             return []
 
-    def fetch_playlist(self, playlist_id: str) -> dict[str, Any]:
+    def fetch_playlist(self, playlist_id: str, timeout: int = 60) -> dict[str, Any]:
+        """Fetch one playlist.
+
+        NOTE FOR CALLERS: the Subsonic ``entry`` list is re-exposed as
+        ``tracks``. Reading ``entry`` from this return value always misses.
+
+        The default timeout is 60s rather than 30s: fetching a 100-track
+        playlist was timing out during change detection, and a timeout here
+        is indistinguishable from an empty playlist to naive callers.
+        """
         try:
-            data = self._get_subsonic_response("getPlaylist", timeout=30, id=playlist_id)
+            data = self._get_subsonic_response("getPlaylist", timeout=timeout, id=playlist_id)
+            if not data or data.get("status") == "failed":
+                return {}
             playlist = data.get("playlist", {}) or {}
+            if not playlist:
+                return {}
             playlist["type"] = "smart" if self._is_smart_playlist(playlist) else "regular"
             playlist["tracks"] = playlist.pop("entry", []) or []
             return playlist
         except Exception as exc:
             logger.error("Failed to fetch playlist", playlist_id=playlist_id, error=str(exc))
             return {}
+
+    def get_playlist_song_ids(self, playlist_id: str) -> list[str] | None:
+        """Return a playlist's current ordered song IDs, or None if unknown.
+
+        ``None`` means the contents could not be read (timeout, error, or an
+        unexpected payload) and must NOT be confused with an empty playlist.
+        """
+        playlist = self.fetch_playlist(playlist_id)
+        if not playlist:
+            return None
+        entries = playlist.get("tracks")
+        if entries is None:
+            song_count = playlist.get("songCount")
+            try:
+                if song_count is not None and int(song_count) == 0:
+                    return []
+            except (TypeError, ValueError):
+                pass
+            return None
+        if isinstance(entries, dict):
+            entries = [entries]
+        if not isinstance(entries, (list, tuple)):
+            return None
+        ids = [str((e or {}).get("id") or "").strip() if isinstance(e, dict) else str(e or "").strip() for e in entries]
+        return [value for value in ids if value]
 
     def find_playlist_by_name(self, name: str) -> dict[str, Any] | None:
         wanted = str(name or "").strip().lower()
@@ -532,6 +634,8 @@ class NavidromeClient:
             # think every delete failed (so it logged "Could not delete
             # orphaned playlist" and the duplicate stayed in the UI on the
             # next fetch, even though the HTTP delete was accepted).
+            if data.get("status") == "failed":
+                return False
             return not data or data.get("status") == "ok"
         except Exception as exc:
             logger.error("Failed to delete playlist", playlist_id=playlist_id, error=str(exc))
@@ -546,6 +650,8 @@ class NavidromeClient:
                 public="true" if public else "false",
             )
             # Empty-body-success contract (mutation endpoints).
+            if data.get("status") == "failed":
+                return False
             return not data or data.get("status") == "ok"
         except Exception as exc:
             logger.error("Failed to update playlist public status", playlist_id=playlist_id, public=public, error=str(exc))
@@ -564,12 +670,17 @@ class NavidromeClient:
             )
             response.raise_for_status()
             # Navidrome can return a 2xx with an empty / non-JSON body for
-            # mutation endpoints — treat that as success.
+            # mutation endpoints — treat that as success unless the body
+            # explicitly reports a failed status.
             if not response.content or not response.text.strip():
                 return True
             try:
                 data = response.json()
             except (json.JSONDecodeError, ValueError):
+                parsed = _parse_non_json_envelope(response.text or "")
+                if parsed and parsed.get("status") == "failed":
+                    _log_subsonic_status(parsed, "updatePlaylist(cover)")
+                    return False
                 return True
             envelope = data.get("subsonic-response", {}) or {}
             if envelope.get("status") == "failed":
@@ -591,25 +702,64 @@ class NavidromeClient:
                 name=name,
             )
             # Same empty-body-success contract as delete_playlist.
+            if data.get("status") == "failed":
+                return False
             return not data or data.get("status") == "ok"
         except Exception as exc:
             logger.error("Failed to rename playlist", playlist_id=playlist_id, error=str(exc))
             return False
 
-    def update_playlist_songs(self, playlist_id: str, song_ids: list[str]) -> bool:
+    def update_playlist_songs(
+        self,
+        playlist_id: str,
+        song_ids: list[str],
+        current_count: int | None = None,
+    ) -> bool:
+        """Replace a playlist's songs in place.
+
+        The replace is expressed as "remove every current index, then add the
+        new IDs". Knowing the CURRENT track count is therefore mandatory: if
+        the count is wrong or unknown, the removal is skipped and the new IDs
+        are APPENDED, silently doubling the playlist.
+
+        ``current_count`` lets a caller that already fetched the playlist pass
+        the count in, avoiding a second ``getPlaylist`` round trip. When it is
+        not supplied the count is fetched here, and the write is ABORTED if it
+        cannot be determined.
+        """
         try:
-            _current = self.fetch_playlist(playlist_id) or {}
-            _count = len(_current.get("tracks") or []) or 0
+            if current_count is None:
+                existing = self.get_playlist_song_ids(playlist_id)
+                if existing is None:
+                    logger.warning(
+                        "Refusing to update playlist songs",
+                        playlist_id=playlist_id,
+                        reason=(
+                            "current track count is unknown; the update would "
+                            "append instead of replace and duplicate the playlist"
+                        ),
+                    )
+                    return False
+                current_count = len(existing)
+
+            current_count = max(0, int(current_count))
             params: dict[str, Any] = {"playlistId": playlist_id}
 
-            if _count > 0:
-                params["songIndexToRemove"] = list(range(0, _count))
+            if current_count > 0:
+                params["songIndexToRemove"] = list(range(0, current_count))
             if song_ids:
-                params["songIdToAdd"] = list(song_ids)
+                params["songIdToAdd"] = [str(s) for s in song_ids if str(s or "").strip()]
+
             data = self._post_subsonic_response("updatePlaylist", timeout=120, **params)
             ok = data.get("status") == "ok"
             if not ok:
-                logger.warning("updatePlaylist songs rejected", playlist_id=playlist_id, response=data)
+                logger.warning(
+                    "updatePlaylist songs rejected",
+                    playlist_id=playlist_id,
+                    removed=current_count,
+                    added=len(song_ids or []),
+                    response=data,
+                )
             return ok
         except Exception as exc:
             logger.error("Failed to update playlist songs", playlist_id=playlist_id, error=str(exc))
