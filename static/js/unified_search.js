@@ -1,23 +1,6 @@
 /**
  * Unified hybrid search — All / In Library / MusicBrainz.
- *
- * Backs the global modal in components/_unified_search_modal.html
- * (included from base.html) and the tap-to-open navbar / dashboard search
- * inputs. Local scopes hit POST /api/search; the MusicBrainz scope reuses
- * the shared component's searchMusicBrainzReleases() (single free-text
- * query path) so the two MB search UIs stay consistent.
- *
- * Results render in the artist-page discography structure: ARTISTS, ALBUMS,
- * COMPILATIONS, LIVE ALBUMS, EPS, SINGLES, TRACKS.  Local and MusicBrainz
- * releases merge into the same buckets (year DESC → local 🟢 before
- * external 🟡 → title ASC), with quick-queue buttons on external releases.
- *
- * Optional advanced filters (Artist / Album / Track / Year) and the release
- * type dropdown map to the structured fields the backend already supports
- * (artist / releasegroup / recording / date / primarytype+secondarytype), so
- * precision queries avoid the 1 req/sec Lucene free-text path.
- *
- * Debounce: 50ms local scopes / 400ms MusicBrainz.
+ * (Modified: Typing triggers input sync only; searches execute on Enter or filter change).
  */
 (function () {
   'use strict';
@@ -25,25 +8,19 @@
   var SCOPE_ALL = 'all';
   var SCOPE_LIBRARY = 'library';
   var SCOPE_MB = 'mb';
-  var LOCAL_DEBOUNCE_MS = 50;
-  var MB_DEBOUNCE_MS = 400;
-  var MB_LIMIT_ALL_TAB = 12;   // compact MB section inside the "All" tab
-  var MB_LIMIT_MB_TAB = 25;    // full MusicBrainz tab
+  var MB_LIMIT_ALL_TAB = 12;
+  var MB_LIMIT_MB_TAB = 25;
   var MIN_QUERY_LENGTH = 2;
 
   var _scope = SCOPE_ALL;
-  var _debounceTimer = null;
-  var _runSeq = 0;          // guards against out-of-order responses
-  var _queuedIds = {};      // release-group id -> true once queued
-  var _mbIndex = {};        // release id -> release (for queue buttons)
-  var _counts = { all: 0, library: 0, mb: 0 };  // live scope-pill counts
-  var _lastQuery = null;    // query + scope of the last completed render
-  var _lastScope = null;    // (used to restore state instantly on reopen)
-  // Local / MusicBrainz split rendering: the local result renders first
-  // (fast), MB results merge in when the slow call lands.  These hold the
-  // last completed values so the second render doesn't refetch.
-  var _mbDone = false;      // has the MusicBrainz call completed?
-  var _mbResults = [];      // last MusicBrainz releases
+  var _runSeq = 0;
+  var _queuedIds = {};
+  var _mbIndex = {};
+  var _counts = { all: 0, library: 0, mb: 0 };
+  var _lastQuery = null;
+  var _lastScope = null;
+  var _mbDone = false;
+  var _mbResults = [];
   var localResult = { artists: [], albums: [], compilations: [], live_albums: [], eps: [], singles: [], tracks: [] };
 
   function getModalEl() { return document.getElementById('unifiedSearchModal'); }
@@ -59,15 +36,12 @@
       .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
-  // ===== Scope counts / state memory =====
-
   function countLibrary(local) {
     var albumBuckets = (local.albums || []).length + (local.compilations || []).length +
       (local.live_albums || []).length + (local.eps || []).length + (local.singles || []).length;
     return (local.artists || []).length + albumBuckets + (local.tracks || []).length;
   }
 
-  // Live counts inside the scope selector pills (All / In Library / MusicBrainz).
   function updateScopeCounts() {
     var labels = { all: _counts.all, library: _counts.library, mb: _counts.mb };
     var tabs = document.querySelectorAll('#unifiedScopeTabs .nav-link');
@@ -89,8 +63,6 @@
     _lastScope = _scope;
   }
 
-  // ===== Scope tabs =====
-
   function selectScope(scope) {
     _scope = (scope === SCOPE_MB || scope === SCOPE_LIBRARY) ? scope : SCOPE_ALL;
     var tabs = document.querySelectorAll('#unifiedScopeTabs .nav-link');
@@ -100,8 +72,6 @@
       tabs[i].setAttribute('aria-selected', active ? 'true' : 'false');
     }
   }
-
-  // ===== Data fetching =====
 
   function fetchLibrary(query) {
     return fetch('/api/search', {
@@ -139,8 +109,6 @@
     opts = opts || {};
     var hasAdvanced = opts.artist || opts.album || opts.track || opts.year || opts.year_to || opts.genre;
 
-    // Plain free-text query with no structured filters — reuse the shared MB
-    // component internals so the two search UIs stay consistent.
     if (!hasAdvanced && !opts.type && typeof window.searchMusicBrainzReleases === 'function') {
       return window.searchMusicBrainzReleases(query, '', limit)
         .then(function (data) { return data.releases || []; })
@@ -155,8 +123,6 @@
       payload.year = opts.year || '';
       payload.year_to = opts.year_to || '';
       payload.genre = opts.genre || '';
-      // Artist-only search means "release groups BY the artist", not groups
-      // whose title happens to match the artist name (matches the MB modal).
       if (opts.artist && !opts.album && !opts.track && !opts.year && !opts.year_to && !opts.genre) payload.artist_only = true;
     } else {
       payload.query = query;
@@ -175,7 +141,6 @@
 
   var _IMG_PLACEHOLDER = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2244%22 height=%2244%22%3E%3Crect fill=%22%232a2a2a%22 width=%2244%22 height=%2244%22/%3E%3C/svg%3E';
 
-  // 44px row thumbnail with a dark placeholder fallback on load errors.
   function thumbHtml(src, cls, alt) {
     if (!src) src = _IMG_PLACEHOLDER;
     return '<img src="' + esc(src) + '" alt="' + esc(alt || '') + '" loading="lazy" ' +
@@ -196,8 +161,6 @@
     if (m >= 60) return Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
     return m + 'm';
   }
-
-  // ===== Result rendering =====
 
   var SECTION_INLINE_LIMIT = 5;
 
@@ -321,28 +284,12 @@
       if (it.track_count) {
         trackLine = '<span class="us-row-sub d-block">' + it.track_count + ' track' + (it.track_count === 1 ? '' : 's') + (it.duration_total ? ' - ' + fmtDuration(it.duration_total) : '') + '</span>';
       }
-      if (it.local) {
+      if (it.local || it.owned) {
         var yearPath = it.year ? '/' + it.year : '';
         var href = '/album/' + encodeURIComponent(it.artist) + '/' + encodeURIComponent(it.title) + yearPath;
         var localArt = '/api/album/' + encodeURIComponent(it.artist) + '/' + encodeURIComponent(it.title) + '/art';
         html += '<a class="us-row" href="' + href + '">' +
           thumbWithBadge(thumbHtml(localArt, 'rounded border border-secondary', it.title),
-            '<i class="bi bi-music-note-fill"></i>', 'accent-library-bg') +
-          '<span class="us-row-main">' +
-            '<span class="us-row-title d-block">' + esc(it.title) + yearSuffix + '</span>' +
-            '<span class="us-row-sub d-block"><span class="us-artist">By ' + esc(it.artist) + '</span> · <span class="us-type">' + esc(it.typeLabel || 'Album') + '</span></span>' +
-            trackLine +
-          '</span>' +
-          '<span class="us-row-action btn btn-sm btn-outline-secondary" title="View in library">' +
-            '<i class="bi bi-box-arrow-up-right"></i>' +
-          '</span>' +
-        '</a>';
-      } else if (it.owned) {
-        var yearPath = it.year ? '/' + it.year : '';
-        var ownedHref = '/album/' + encodeURIComponent(it.artist) + '/' + encodeURIComponent(it.title) + yearPath;
-        var ownedArt = '/api/album/' + encodeURIComponent(it.artist) + '/' + encodeURIComponent(it.title) + '/art';
-        html += '<a class="us-row" href="' + ownedHref + '">' +
-          thumbWithBadge(thumbHtml(ownedArt, 'rounded border border-secondary', it.title),
             '<i class="bi bi-music-note-fill"></i>', 'accent-library-bg') +
           '<span class="us-row-main">' +
             '<span class="us-row-title d-block">' + esc(it.title) + yearSuffix + '</span>' +
@@ -468,8 +415,6 @@
     return renderReleaseSections(buildBuckets(local || {}, releases), true);
   }
 
-  // ===== Search execution =====
-
   function runSearch() {
     var input = getInputEl();
     var resultsEl = getResultsEl();
@@ -483,7 +428,7 @@
     if (query.length < MIN_QUERY_LENGTH && !hasAdvanced) {
       resultsEl.innerHTML = '<div class="text-center text-muted py-5">' +
         '<i class="bi bi-search" style="font-size: 2rem;"></i>' +
-        '<p class="mt-2 mb-0 small">Type at least ' + MIN_QUERY_LENGTH + ' characters</p></div>';
+        '<p class="mt-2 mb-0 small">Type at least ' + MIN_QUERY_LENGTH + ' characters and press Enter</p></div>';
       if (getMetaEl()) getMetaEl().textContent = '';
       markRendered(query);
       return;
@@ -584,14 +529,6 @@
     });
   }
 
-  function scheduleSearch() {
-    clearTimeout(_debounceTimer);
-    var delay = _scope === SCOPE_MB ? MB_DEBOUNCE_MS : LOCAL_DEBOUNCE_MS;
-    _debounceTimer = setTimeout(runSearch, delay);
-  }
-
-  // ===== Quick queue (MusicBrainz release -> Soulseek) =====
-
   function notifyError(message) {
     var errEl = getErrorEl();
     if (!errEl) return;
@@ -637,10 +574,7 @@
         var total = out.data.total_tracks || out.data.queued_tracks || 0;
         btn.classList.replace('btn-outline-primary', 'btn-success');
         btn.innerHTML = '<i class="bi bi-check2"></i> Queued';
-        btn.title = total ? ('Queued ' + total + ' track' + (total === 1 ? '' : 's') + ': ' + (rel.title || '')) : ('Queued: ' + (rel.title || ''));
         if (typeof window.showQueueToast === 'function') window.showQueueToast(rel.title || 'Release');
-        var msg = String(out.data.message || '');
-        if (!total && msg.indexOf('simple search') !== -1) notifyError(msg);
       })
       .catch(function (e) {
         _queuedIds[id] = false;
@@ -649,8 +583,6 @@
         notifyError('Queue failed: ' + e.message);
       });
   }
-
-  // ===== Modal lifecycle / public API =====
 
   function setAdvancedFiltersVisible(visible) {
     var panel = document.getElementById('unifiedAdvancedFilters');
@@ -688,7 +620,6 @@
     if (navInput && navInput !== document.activeElement) navInput.focus();
 
     if (prefill === _lastQuery && _scope === _lastScope) return;
-    clearTimeout(_debounceTimer);
     runSearch();
   };
 
@@ -708,16 +639,12 @@
     var value = (navEl && navEl.value) || (dashEl && dashEl.value) || '';
     if (input.value !== value) input.value = value;
     if (getErrorEl()) getErrorEl().classList.add('d-none');
-    clearTimeout(_debounceTimer);
-    scheduleSearch();
   };
 
-  // Re-define _renderMbReleaseTrackTable here so it fixes the nested table header
   window._renderMbReleaseTrackTable = function(tracks) {
     if (!tracks || !tracks.length) {
       return '<div class="text-muted small px-3 py-2">No tracklist available.</div>';
     }
-    // FIXED: Added data-mobile-cards and class d-none d-md-table-row
     var html = '<table class="table table-sm table-hover mb-0 small" data-mobile-cards>' +
       '<thead><tr class="d-none d-md-table-row">' +
       '<th style="width:44px;" class="text-center">#</th>' +
@@ -737,7 +664,6 @@
         var secs = durRaw >= 10000 ? Math.round(durRaw / 1000) : Math.round(durRaw);
         dur = Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0');
       }
-      // FIXED: Added data-label so mobile cards render nicely
       html += '<tr>' +
         '<td class="text-center text-muted" data-label="#">' + esc(String(numLabel)) + '</td>' +
         '<td data-label="Title">' + esc(t.title || '?') + '</td>' +
@@ -747,8 +673,6 @@
     html += '</tbody></table>';
     return html;
   };
-
-  // ===== Wiring =====
 
   document.addEventListener('DOMContentLoaded', function () {
     var modalEl = getModalEl();
@@ -763,17 +687,18 @@
       }
     });
 
+    // Input syncs text ONLY — no live searching on typing
     input.addEventListener('input', function () {
       var navEl = document.getElementById('navSearchInput');
       if (navEl && navEl.value !== input.value) navEl.value = input.value;
       var dashEl = document.getElementById('dashboardTopSearchInput');
       if (dashEl && dashEl.value !== input.value) dashEl.value = input.value;
-      scheduleSearch();
     });
+
+    // Search runs explicitly on Enter
     input.addEventListener('keydown', function (e) {
       if (e.key === 'Enter') {
         e.preventDefault();
-        clearTimeout(_debounceTimer);
         runSearch();
         setAdvancedFiltersVisible(false);
       }
@@ -786,18 +711,12 @@
       filterInputs[i].addEventListener('focus', function () {
         if (typeof this.select === 'function') this.select();
       });
-      filterInputs[i].addEventListener('input', function () {
-        clearTimeout(_debounceTimer);
-        _debounceTimer = setTimeout(runSearch, _scope === SCOPE_MB ? MB_DEBOUNCE_MS : LOCAL_DEBOUNCE_MS);
-      });
       filterInputs[i].addEventListener('change', function () {
-        clearTimeout(_debounceTimer);
-        runSearch();
+        runSearch(); // Change triggers search (e.g. drop-down selection)
       });
       filterInputs[i].addEventListener('keydown', function (e) {
         if (e.key === 'Enter') {
           e.preventDefault();
-          clearTimeout(_debounceTimer);
           runSearch();
           setAdvancedFiltersVisible(false);
         }
@@ -808,7 +727,7 @@
     if (filtersToggle) {
       filtersToggle.addEventListener('click', function () {
         var panel = document.getElementById('unifiedAdvancedFilters');
-        setAdvancedFiltersVisible(!panel || panel.classList.contains('d-none'));
+        setAdvancedFiltersVisible(!panel || panel.classList.get ? !panel.classList.contains('d-none') : false);
       });
     }
 
@@ -872,7 +791,6 @@
           select.value = btn.getAttribute('data-type') || '';
           updateFilterButtonState();
           closeUnifiedFilterSheet();
-          clearTimeout(_debounceTimer);
           runSearch();
         });
       });
@@ -886,7 +804,6 @@
     for (var i = 0; i < tabs.length; i++) {
       tabs[i].addEventListener('click', function () {
         selectScope(this.getAttribute('data-scope'));
-        clearTimeout(_debounceTimer);
         runSearch();
       });
     }
