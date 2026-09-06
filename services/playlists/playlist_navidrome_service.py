@@ -23,9 +23,12 @@ Architecture:
 Change-detection contract:
     ``sync_playlist_by_name`` compares the playlist's CURRENT ordered song
     list against the requested list and returns ``unchanged=True`` without
-    issuing a write when they already match. Previously the function called
-    ``updatePlaylist`` unconditionally, so ``unchanged`` was never returned
-    and every scan rewrote every playlist.
+    issuing a write when they already match.
+
+    NOTE ON SHAPE: ``NavidromeClient.fetch_playlist`` pops the Subsonic
+    ``entry`` key and re-exposes it as ``tracks``. Reading ``entry`` from
+    that return value always misses, which made change detection report
+    "current song list could not be read" for every playlist.
 """
 
 from __future__ import annotations
@@ -36,9 +39,6 @@ import structlog
 
 from api_clients.navidrome import NavidromeClient
 
-# structlog, so these records land in the same stream as the rest of the
-# pipeline. With the stdlib logger these messages were not appearing in the
-# application log at all, which made playlist writes invisible.
 logger = structlog.get_logger(__name__)
 
 
@@ -85,36 +85,36 @@ def _entry_song_id(entry: Any) -> str:
     return str(entry or "").strip()
 
 
-def _current_song_ids(client: NavidromeClient, playlist_id: str) -> list[str] | None:
-    """Return the playlist's current ordered song IDs, or None if unknown.
+def _extract_song_ids(payload: Any) -> list[str] | None:
+    """Pull ordered song IDs out of a playlist payload.
 
-    Returning ``None`` (rather than an empty list) when the contents cannot be
-    determined is deliberate: an unknown list must never be mistaken for an
-    empty playlist, which would make a populated playlist look "changed" or,
-    worse, make an empty one look up to date.
+    Returns ``None`` when the contents genuinely cannot be determined.
+    Distinguishing "unknown" from "empty" matters: an unknown list must never
+    be treated as an empty playlist, or a populated playlist would be wrongly
+    reported as changed (or worse, an empty one as up to date).
+
+    Handles the shape returned by ``NavidromeClient.fetch_playlist`` (which
+    exposes entries under ``tracks``) as well as the raw Subsonic shapes.
     """
-    if not playlist_id:
-        return None
-    try:
-        data = client.fetch_playlist(playlist_id)
-    except Exception as exc:
-        logger.debug(
-            "[PLAYLISTS] playlist fetch failed during change detection",
-            playlist_id=playlist_id,
-            error=str(exc),
-        )
+    if not isinstance(payload, dict):
         return None
 
-    if not isinstance(data, dict):
-        return None
+    # Unwrap the envelope if a raw Subsonic response is handed in.
+    container = payload
+    if isinstance(container.get("subsonic-response"), dict):
+        container = container["subsonic-response"]
+    if isinstance(container.get("playlist"), dict):
+        container = container["playlist"]
 
-    # Subsonic nests entries under "playlist"; some clients return them flat.
-    container = data.get("playlist") if isinstance(data.get("playlist"), dict) else data
-    entries = container.get("entry")
+    entries = None
+    for key in ("tracks", "entry", "entries", "song"):
+        value = container.get(key)
+        if value is not None:
+            entries = value
+            break
+
     if entries is None:
-        entries = container.get("entries")
-    if entries is None:
-        # A playlist with songCount 0 legitimately has no entry key.
+        # A playlist with songCount 0 legitimately carries no entries key.
         song_count = container.get("songCount")
         if song_count is not None:
             try:
@@ -131,6 +131,31 @@ def _current_song_ids(client: NavidromeClient, playlist_id: str) -> list[str] | 
 
     ids = [_entry_song_id(entry) for entry in entries]
     return [value for value in ids if value]
+
+
+def _current_song_ids(client: NavidromeClient, playlist_id: str) -> list[str] | None:
+    """Return the playlist's current ordered song IDs, or None if unknown."""
+    if not playlist_id:
+        return None
+    try:
+        data = client.fetch_playlist(playlist_id)
+    except Exception as exc:
+        logger.debug(
+            "[PLAYLISTS] playlist fetch failed during change detection",
+            playlist_id=playlist_id,
+            error=str(exc),
+        )
+        return None
+
+    ids = _extract_song_ids(data)
+    if ids is None:
+        logger.warning(
+            "[PLAYLISTS] could not read current playlist contents",
+            playlist_id=playlist_id,
+            payload_type=type(data).__name__,
+            keys=sorted(data.keys())[:15] if isinstance(data, dict) else None,
+        )
+    return ids
 
 
 def sync_playlist_by_name(
@@ -150,9 +175,7 @@ def sync_playlist_by_name(
     2. If more than one exists → delete the extras (dedupe).
     3. If one exists → compare its current ordered song list with the
        requested one. If they match, do nothing and report ``unchanged``.
-       Otherwise ``updatePlaylist`` replaces the song list in place (old
-       tracks that dropped below the threshold are removed, new tracks are
-       added, order follows the provided ``song_ids``).
+       Otherwise ``updatePlaylist`` replaces the song list in place.
     4. If none exists → create it with the song list.
 
     Set ``force=True`` to write even when the contents already match.
@@ -230,40 +253,42 @@ def sync_playlist_by_name(
     if primary:
         result["playlist_id"] = primary_id
 
+        existing = _current_song_ids(client, primary_id)
+
         # ── Change detection ────────────────────────────────────────────
-        # Skip the write when the stored list already matches. Without this
-        # every scan rewrote every playlist and "unchanged" was never
-        # reported by any caller.
-        if not force:
-            existing = _current_song_ids(client, primary_id)
-            if existing is None:
-                logger.debug(
-                    "[PLAYLISTS] change detection unavailable; writing playlist",
-                    name=name,
-                    playlist_id=primary_id,
-                    reason="current song list could not be read",
-                )
-            elif existing == song_ids:
-                result["unchanged"] = True
-                result["success"] = True
-                logger.info(
-                    "[PLAYLISTS] Navidrome playlist already up to date",
-                    name=name,
-                    playlist_id=primary_id,
-                    songs=len(song_ids),
-                )
-                return result
-            else:
-                logger.debug(
-                    "[PLAYLISTS] playlist contents differ; updating",
-                    name=name,
-                    playlist_id=primary_id,
-                    existing_count=len(existing),
-                    requested_count=len(song_ids),
-                )
+        if not force and existing is not None and existing == song_ids:
+            result["unchanged"] = True
+            result["success"] = True
+            logger.info(
+                "[PLAYLISTS] Navidrome playlist already up to date",
+                name=name,
+                playlist_id=primary_id,
+                songs=len(song_ids),
+            )
+            return result
+
+        if existing is None:
+            # The replace is implemented as "remove every current index, then
+            # add the new ids". Without a reliable current count the removal
+            # is skipped and the additions are APPENDED, silently doubling the
+            # playlist. Refuse the write rather than corrupt it.
+            logger.warning(
+                "[PLAYLISTS] skipping playlist write",
+                name=name,
+                playlist_id=primary_id,
+                reason=(
+                    "current contents unreadable; writing would append instead "
+                    "of replace and duplicate the playlist"
+                ),
+            )
+            return result
 
         try:
-            ok = client.update_playlist_songs(primary_id, song_ids)
+            ok = client.update_playlist_songs(
+                primary_id,
+                song_ids,
+                current_count=len(existing),
+            )
             result["updated"] = bool(ok)
             result["success"] = bool(ok)
             if ok:
@@ -272,6 +297,7 @@ def sync_playlist_by_name(
                     name=name,
                     playlist_id=primary_id,
                     songs=len(song_ids),
+                    replaced=len(existing),
                 )
             else:
                 logger.warning(
