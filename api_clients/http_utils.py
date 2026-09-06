@@ -32,52 +32,17 @@ _MIN_DELAY_SECONDS = 1.05  # Ensures strictly < 1 req/sec per domain
 # ---------------------------------------------------------------------------
 # Connection-pool limits (shared session)
 # ---------------------------------------------------------------------------
-
-# Pool size / timeout for the shared HTTP session, which serves EVERY provider
-# (MusicBrainz, Last.fm, ListenBrainz, Discogs, Navidrome, Wikipedia, search)
-# concurrently from the scan's thread pool plus background workers.  The httpx
-# defaults (pool_timeout=5s) made bursts fail with ``httpx.PoolTimeout``
-# whenever the pool was momentarily saturated — the logs showed "(PoolTimeout)"
-# on Navidrome getScanStatus/setRating/search3 and on the Wikipedia scraper
-# during scans.
 _POOL_MAX_CONNECTIONS = 200
 _POOL_MAX_KEEPALIVE = 50
 _POOL_TIMEOUT = 30.0
 
-# Short cap for the TCP/TLS CONNECT phase of the shared session.  A provider
-# that is unreachable/slow to handshake (observed: api.listenbrainz.org TLS
-# connect never completing, stalling an album's ListenBrainz tasks past their
-# 120s budgets) must raise after a few seconds instead of consuming the full
-# read timeout on EVERY retry attempt (3 × 20s+ = the whole per-task budget).
 _CONNECT_TIMEOUT_SECONDS = 10.0
-
-# Cap on a single Retry-After wait (seconds).  Matches the exponential-backoff
-# ceiling below so a provider sending a long header (e.g. "Retry-After: 300")
-# cannot stall a worker past the per-album track deadline — every per-track
-# future would otherwise time out ("N (of N) futures unfinished").  A repeated
-# 429/503 re-arms the wait, so capping only bounds the worst single pause.
 _MAX_RETRY_AFTER = 60.0
-
-# Total wall-clock budget for ONE request's retry waits (seconds).  Even with
-# every wait capped at ``_MAX_RETRY_AFTER``, a provider that keeps answering
-# 429 can re-arm the backoff for each retry — 3 retries × 60s = 180s of pure
-# sleeping in a single worker, which eats the entire per-album budget when
-# the scan runs 17+ tracks concurrently.  Tenacity's ``stop_after_attempt``
-# only counts attempts, not elapsed time, so a hard cumulative cap is needed:
-# once the sum of waits exceeds this, the request gives up and returns the
-# last retryable response instead of sleeping through the scan.
 _TOTAL_RETRY_WAIT_BUDGET = 40.0
 
 
 def _build_pool_limits() -> httpx.Limits:
-    """Build ``httpx.Limits`` for the shared session, httpx-version-safe.
-
-    The ``pool_timeout`` keyword only exists on ``httpx.Limits`` since
-    httpx 0.25.0 — older httpx raises ``TypeError`` at import time (which
-    crashed the whole app on startup).  Fall back to the two always-supported
-    keywords there; the larger connection counts are what resolve the pool
-    exhaustion, the longer pool wait is a bonus on newer httpx.
-    """
+    """Build ``httpx.Limits`` for the shared session, httpx-version-safe."""
     try:
         return httpx.Limits(
             max_connections=_POOL_MAX_CONNECTIONS,
@@ -90,25 +55,16 @@ def _build_pool_limits() -> httpx.Limits:
             max_keepalive_connections=_POOL_MAX_KEEPALIVE,
         )
 
+
 logger = logging.getLogger(__name__)
+
+# Explicitly suppress noisy internal logging from httpcore and httpx transport checks
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 def is_ssl_cert_error(exc: BaseException) -> bool:
-    """True when the exception chain contains an SSL certificate failure.
-
-    A certificate-verification failure is a DETERMINISTIC configuration
-    error (missing CA bundle, expired cert, wrong host) — retrying it never
-    helps, it only burns the retry budget (observed: ~40s per failed
-    MusicBrainz call = 4 retries × exponential backoff + 10s timeout each).
-    The scan then looks "stalled" with zero log output while every MB call
-    silently retries to exhaustion.
-
-    httpx/httpcore wrap the ``ssl.SSLCertVerificationError`` inside
-    ``ConnectError`` chains WITHOUT preserving it as ``__cause__`` — the SSL
-    detail survives only in the message text ("[SSL: CERTIFICATE_VERIFY_FAILED]
-    ... unable to get local issuer certificate").  So both the exception-type
-    check AND a message scan are used.
-    """
+    """True when the exception chain contains an SSL certificate failure."""
     if isinstance(exc, ssl.SSLCertVerificationError):
         return True
     cause = getattr(exc, "__cause__", None)
@@ -132,13 +88,7 @@ def is_ssl_cert_error(exc: BaseException) -> bool:
 
 
 class _RetryTransport(httpx.BaseTransport):
-    """Transport wrapper that adds retry logic on top of httpx's HTTPTransport.
-
-    Retries on transient errors (connection drops, DNS failures, timeouts)
-    and configurable HTTP status codes using exponential backoff.  The retry
-    loop is driven by ``tenacity`` (``stop_after_attempt`` +
-    ``wait_exponential``) instead of a hand-rolled counter.
-    """
+    """Transport wrapper that adds retry logic on top of httpx's HTTPTransport."""
 
     def __init__(
         self,
@@ -150,7 +100,6 @@ class _RetryTransport(httpx.BaseTransport):
         self._retries = retries
         self._backoff = backoff
         self._status_forcelist = status_forcelist
-        # Explicit pool limits — see ``_build_pool_limits`` (httpx-version-safe).
         self._transport = httpx.HTTPTransport(
             verify=verify,
             retries=0,
@@ -175,14 +124,7 @@ class _RetryTransport(httpx.BaseTransport):
                 self.response = response
 
         class _RetryBudgetExceeded(Exception):
-            """Marker raised when the cumulative retry-wait budget is exhausted.
-
-            Raising a NON-retryable exception inside ``_wait`` makes tenacity
-            stop immediately (its ``retry`` predicate returns False for this
-            type), instead of falling back to a zero-delay retry.  The outer
-            ``except _RetryableStatus`` then surfaces the last retryable
-            response (or the raw exception if there was none).
-            """
+            """Marker raised when the cumulative retry-wait budget is exhausted."""
 
         def _is_retryable(exc: BaseException) -> bool:
             if isinstance(exc, _RetryableStatus):
@@ -190,17 +132,12 @@ class _RetryTransport(httpx.BaseTransport):
             if isinstance(exc, _RetryBudgetExceeded):
                 return False
             if is_ssl_cert_error(exc):
-                # Certificate problems are config errors — retrying only
-                # wastes the wait budget (each attempt sleeps then times out).
                 return False
             return isinstance(
                 exc,
                 (httpx.ConnectError, httpx.RemoteProtocolError, httpx.TimeoutException),
             )
 
-        # The last retryable status is returned as-is (legacy behaviour) — a
-        # peer that keeps answering 503/429 should surface the final response
-        # instead of a synthetic exception.
         last_status_response: httpx.Response | None = None
 
         def _attempt() -> httpx.Response:
@@ -209,8 +146,6 @@ class _RetryTransport(httpx.BaseTransport):
             host = request.url.host
             is_internal = host in ("127.0.0.1", "localhost") or host.startswith("192.168.") or host.startswith("10.") or host.startswith("172.")
             thread_name = threading.current_thread().name
-            
-            logger.debug(f"[HTTP-TRACE] [{thread_name}] Preparing request to {request.url}")
 
             if not is_internal:
                 with _GLOBAL_LOCK:
@@ -219,18 +154,13 @@ class _RetryTransport(httpx.BaseTransport):
                         _DOMAIN_LAST_CALL[host] = 0.0
                 domain_lock = _DOMAIN_LOCKS[host]
 
-                logger.debug(f"[HTTP-TRACE] [{thread_name}] Waiting for rate-limit lock for {host}")
                 with domain_lock:
                     elapsed = time.monotonic() - _DOMAIN_LAST_CALL[host]
                     if elapsed < _MIN_DELAY_SECONDS:
                         time.sleep(_MIN_DELAY_SECONDS - elapsed)
                     
-                    logger.debug(f"[HTTP-TRACE] [{thread_name}] Lock acquired, starting network I/O to {request.url}")
                     try:
-                        # Holding the lock DURING the request prevents concurrent overlapping connections 
-                        # to the same host, which is the primary cause of MusicBrainz dropping connections.
                         response = self._transport.handle_request(request)
-                        logger.debug(f"[HTTP-TRACE] [{thread_name}] Network I/O complete for {request.url} ({response.status_code})")
                     except Exception as e:
                         logger.error(f"[HTTP-TRACE] [{thread_name}] Network I/O FAILED for {request.url} - {repr(e)}")
                         raise
@@ -244,8 +174,6 @@ class _RetryTransport(httpx.BaseTransport):
                     raise
 
             if response.status_code in self._status_forcelist:
-                # CONNECTION LEAK FIX: Explicitly close the un-read raw stream of 
-                # the previous failed retry before overwriting the reference.
                 if last_status_response is not None and last_status_response is not response:
                     try:
                         last_status_response.close()
@@ -254,7 +182,6 @@ class _RetryTransport(httpx.BaseTransport):
                 last_status_response = response
                 raise _RetryableStatus(response)
                 
-            # If the response is successful, we no longer need the stored status response
             if last_status_response is not None and last_status_response is not response:
                 try:
                     last_status_response.close()
@@ -264,27 +191,9 @@ class _RetryTransport(httpx.BaseTransport):
 
             return response
 
-        # Cumulative retry-wait budget: once the sum of all waits exceeds
-        # ``_TOTAL_RETRY_WAIT_BUDGET`` the request stops retrying and returns
-        # the last retryable response.  This caps the 429/503 storm — a peer
-        # that keeps answering 429 could otherwise re-arm the backoff on every
-        # retry (3 × capped 60s = 180s of pure sleeping in ONE worker), which
-        # eats the whole per-album budget when a scan runs 17+ tracks
-        # concurrently.  ``stop_after_attempt`` only counts attempts, not
-        # elapsed wait time, so the budget is enforced here.
         _retry_waits: dict[str, float] = {"total": 0.0}
 
         def _wait(retry_state):
-            """Wait before the next retry.
-
-            Honors a ``Retry-After`` header on the last retryable response
-            (429/503) when present — some APIs (MusicBrainz, Last.fm,
-            Discogs) send an explicit seconds value or an HTTP-date.  Falls
-            back to exponential backoff otherwise.  Each wait is capped at
-            ``_MAX_RETRY_AFTER`` AND the cumulative sum is capped at
-            ``_TOTAL_RETRY_WAIT_BUDGET`` so a sustained 429 storm can never
-            stall a worker past the per-album track deadline.
-            """
             exc = retry_state.outcome.exception()
             retry_after = None
             if isinstance(exc, _RetryableStatus):
@@ -295,7 +204,6 @@ class _RetryTransport(httpx.BaseTransport):
                 try:
                     wait = min(float(retry_after), _MAX_RETRY_AFTER)
                 except ValueError:
-                    # HTTP-date form (e.g. "Wed, 21 Oct 2015 07:28:00 GMT").
                     from email.utils import parsedate_to_datetime
                     try:
                         when = parsedate_to_datetime(retry_after)
@@ -308,31 +216,12 @@ class _RetryTransport(httpx.BaseTransport):
                     except Exception:
                         wait = min(self._backoff * (2 ** (retry_state.attempt_number - 1)), 60.0)
             else:
-                # Exponential backoff (legacy default).
-                n = retry_state.attempt_number  # 1-based (1 = first failed attempt)
+                n = retry_state.attempt_number
                 wait = min(self._backoff * (2 ** (n - 1)), 60.0)
-            # Enforce the cumulative budget: once the sum of all waits exceeds
-            # the cap, STOP retrying entirely — raising a non-retryable
-            # sentinel makes tenacity give up immediately.  Returning 0.0
-            # here (the previous behaviour) retried with ZERO delay, which
-            # against an overloaded peer (429/503 storm) turned "back off
-            # politely" into "hammer it as fast as possible" for the
-            # remaining attempts — the opposite of the intent.
+
             if _retry_waits["total"] + wait > _TOTAL_RETRY_WAIT_BUDGET:
-                logger.debug(
-                    "[HTTP] retry wait budget exceeded for %s — giving up (cumulative %.1fs)",
-                    request.url,
-                    _retry_waits["total"],
-                )
                 raise _RetryBudgetExceeded()
             _retry_waits["total"] += wait
-            logger.debug(
-                "[HTTP] retrying %s — attempt %d, wait %.1fs (cumulative %.1fs)",
-                request.url,
-                retry_state.attempt_number,
-                wait,
-                _retry_waits["total"],
-            )
             return wait
 
         retrying = Retrying(
@@ -347,14 +236,10 @@ class _RetryTransport(httpx.BaseTransport):
                 with attempt:
                     return _attempt()
         except _RetryBudgetExceeded:
-            # Budget exhausted: surface the last retryable response (or re-raise
-            # the network error if the budget ran out before any status retry).
             if last_status_response is not None:
                 return last_status_response
             raise
         except Exception:
-            # This catches RetryError from tenacity when attempts are exhausted, 
-            # allowing us to gracefully surface the final 429/503 response.
             if last_status_response is not None:
                 return last_status_response
             raise
@@ -378,24 +263,7 @@ def create_retry_client(
     verify: bool = True,
     timeout: float = 30.0,
 ) -> httpx.Client:
-    """Create an ``httpx.Client`` preconfigured with retry/backoff.
-
-    Replaces the old ``create_retry_session()`` which relied on
-    ``urllib3.Retry`` + custom SSL adapter.  This version uses httpx's
-    transport layer with a custom retry wrapper for fine-grained control
-    over which status codes to retry.
-
-    Args:
-        user_agent: Optional User-Agent string.
-        retries: Number of retries for failed connections / retryable statuses.
-        backoff: Exponential backoff factor between retries.
-        status_forcelist: HTTP status codes to retry on.
-        verify: Whether to verify SSL certificates (default True).
-        timeout: Default request timeout in seconds.
-
-    Returns:
-        A configured ``httpx.Client``.
-    """
+    """Create an ``httpx.Client`` preconfigured with retry/backoff."""
     transport = _RetryTransport(
         retries=retries,
         backoff=backoff,
@@ -407,37 +275,8 @@ def create_retry_client(
     if user_agent:
         headers["User-Agent"] = user_agent
 
-    # Request identity -> monotonic start time, used by the response hook.
-    _request_start_times: dict[int, float] = {}
-
-    def _log_request_start(request: httpx.Request) -> None:
-        logger.debug("[HTTP] >>> %s %s", request.method, request.url)
-        _request_start_times[id(request)] = time.monotonic()
-
-    def _log_response(response: httpx.Response) -> None:
-        # ``response.elapsed`` raises RuntimeError until the body has been
-        # read/closed — the "response" event hook fires on headers, so
-        # reading it there made every request fail with "'.elapsed' may only
-        # be accessed after the response has been read or closed" and get
-        # retried 3 times. Track the duration from the request hook instead.
-        start = _request_start_times.pop(id(response.request), None)
-        duration = (time.monotonic() - start) if start is not None else None
-        duration_suffix = f" ({duration:.1f}s)" if duration is not None else ""
-        logger.debug(
-            "[HTTP] <<< %s %s → %s%s",
-            response.request.method,
-            response.request.url,
-            response.status_code,
-            duration_suffix,
-        )
-
     client = httpx.Client(
         transport=transport,
-        # Component timeout: the TCP/TLS CONNECT phase gets a short cap so a
-        # hung provider (the observed api.listenbrainz.org TLS connect that
-        # never completed, stalling the album's LB tasks past their 120s
-        # budgets) raises after ~10s instead of consuming the full read
-        # timeout on every retry.  Read/write keep the caller's default.
         timeout=httpx.Timeout(
             connect=_CONNECT_TIMEOUT_SECONDS,
             read=timeout,
@@ -447,10 +286,6 @@ def create_retry_client(
         headers=headers,
         verify=verify,
         limits=_build_pool_limits(),
-        event_hooks={
-            "request": [_log_request_start],
-            "response": [_log_response],
-        },
     )
 
     return client
