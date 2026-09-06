@@ -16,15 +16,14 @@ Architecture:
     to ``helpers.normalization_service``.
 """
 
-
-
 from __future__ import annotations
 import logging
+from typing import Any, List, Dict
 
 logger = logging.getLogger(__name__)
-from typing import Any, List, Dict
-from helpers.types_queue import QueueItem
 
+from helpers.types_queue import QueueItem
+from helpers.metadata_reader import read_mp3_metadata
 from services.queue.queue_scoring import _score_soulseek_candidate
 from services.queue.queue_metadata_matcher import _metadata_matches_queue_item
 from services.queue.queue_matching_helpers import filename_matches_queue_item
@@ -70,6 +69,16 @@ def file_matches_queue_item(file_path: str, queue_item: QueueItem) -> tuple[bool
         (True/False, reason)
     """
 
+    # Extract duration for the scoring fallback to prevent logic dropouts
+    candidate_duration = None
+    try:
+        metadata = read_mp3_metadata(file_path) or {}
+        duration_ms = metadata.get("duration_ms")
+        if duration_ms:
+            candidate_duration = duration_ms / 1000.0
+    except Exception:
+        pass
+
     # 1. Metadata check (highest confidence)
     metadata_result = _metadata_matches_queue_item(file_path, queue_item)
 
@@ -83,10 +92,11 @@ def file_matches_queue_item(file_path: str, queue_item: QueueItem) -> tuple[bool
     if filename_matches_queue_item(file_path, queue_item):
         return True, "filename"
 
-    # 3. Scoring fallback
-    score = _score_soulseek_candidate(file_path, queue_item)
+    # 3. Scoring fallback (now properly passing candidate duration)
+    score = _score_soulseek_candidate(file_path, queue_item, candidate_duration)
 
     return (score >= SCORE_THRESHOLD, "score")
+
 
 def _fetch_discogs_tracks(release_id: str) -> List[Dict[str, Any]]:
 
@@ -123,5 +133,3 @@ def _fetch_discogs_tracks(release_id: str) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error("[DISCOGS] %s", e, exc_info=True)
         return []
-
-
