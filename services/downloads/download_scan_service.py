@@ -1,9 +1,4 @@
-"""Download filesystem scanning services.
-
-Provides filesystem-level audio file discovery and path resolution
-for the download pipeline. Responsible for locating downloaded audio
-files on disk and making them available for queue ingestion.
-"""
+"""Download filesystem scanning services."""
 
 from __future__ import annotations
 
@@ -50,7 +45,6 @@ def resolve_torrents_dir() -> str:
 
 
 def resolve_downloads_monitor_dir(_config: object | None = None) -> str:
-    """Compatibility shim for older callers expecting a monitor-folder resolver."""
     return resolve_downloads_dir()
 
 
@@ -95,7 +89,6 @@ def discover_audio_files() -> list[DiscoveredFile]:
 
 
 def scan_downloads(_metadata_reader: Any = None) -> dict[str, object]:
-    """Compatibility wrapper for the downloads package API."""
     return {"success": True, "files": [file.full_path for file in discover_audio_files()]}
 
 
@@ -108,13 +101,11 @@ def verify_moved_files(_minutes_old: int = 30) -> dict[str, object]:
 
 
 def check_completed_downloads() -> dict[str, object]:
-    """Check for newly completed downloads and match them to queue items."""
     from services.downloads.download_completion_service import check_completed_downloads as _check
     return _check()
 
 
 def _extract_discovered_metadata(file_path: str, filename: str) -> dict[str, str | None]:
-    """Best-effort metadata for a discovered file."""
     meta: dict = {}
     try:
         meta = read_mp3_metadata(file_path) or {}
@@ -283,6 +274,7 @@ def enqueue_discovered_files(files: list[DiscoveredFile]) -> dict[str, int]:
                     logger.debug("Duplicate prune skipped", error=str(_exc))
             continue
 
+        # ✅ FIX: import_group set to None so files don't all bundle together
         insert_discovered_file(
             artist=str(meta["artist"] or "Unidentified Artist"),
             title=str(meta["title"] or f.filename),
@@ -294,7 +286,7 @@ def enqueue_discovered_files(files: list[DiscoveredFile]) -> dict[str, int]:
             duration=None,
             file_path=f.full_path,
             filename=f.filename,
-            import_group="default",
+            import_group=None,  
         )
         queued += 1
 
@@ -302,7 +294,6 @@ def enqueue_discovered_files(files: list[DiscoveredFile]) -> dict[str, int]:
 
 
 def discover_files() -> dict[str, Any]:
-    """Scan for audio files, add new ones to the download queue, return stats."""
     files = discover_audio_files()
     file_paths = [f.full_path for f in files]
     total = len(file_paths)
