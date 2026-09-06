@@ -656,63 +656,200 @@ def is_interlude_lb_outlier(
     ratio_factor: float = INTERLUDE_LB_RATIO_FACTOR,
     min_lb: int = INTERLUDE_LB_MIN_COUNT,
 ) -> bool:
-    """True when a SHORT interlude carries an anomalously inflated LB count."""
+    """True when a SHORT interlude carries an anomalously inflated LB count.
+
+    FIXED: a percentile-star-rating function had previously been pasted in
+    the middle of this function's body, between the setup checks above and
+    the final ratio comparison below — orphaning the ``track_ratio``/
+    ``return`` lines after that function's own ``return`` statements so this
+    function fell off the end returning ``None`` (always falsy) whenever
+    ``album_median_ratio > 0``, silently disabling interlude-outlier
+    detection. The misplaced function now lives on its own below, and the
+    logic here is back to a single, complete function body.
+    """
     try:
         duration = float(duration_seconds or 0)
     except (TypeError, ValueError):
         return False
-        
+
     if duration <= 0 or duration > float(max_duration_s):
         return False
-        
+
     lb = int(listenbrainz_listens or 0)
     lf = int(lastfm_listeners or 0)
     if lb < int(min_lb) or lf <= 0:
         return False
-        
+
     ratios: list[float] = []
     for a, b in (album_lf_lb_pairs or []):
         a_i = int(a or 0)
         b_i = int(b or 0)
         if a_i > 0 and b_i > 0:
             ratios.append(b_i / a_i)
-            
+
     if len(ratios) < LOG_RATIO_MIN_ALBUM_TRACKS:
         return False
-        
+
     album_median_ratio = median(ratios)
     if album_median_ratio <= 0:
         return False
 
-def calculate_artist_percentile_star_rating(track_score: float, artist_scores: list[float]) -> int:
-    """Calculate a 1-5 star rating based on artist catalog percentiles for compilation albums.
+    track_ratio = lb / lf
+    return track_ratio > album_median_ratio * float(ratio_factor)
+
+
+# ── Percentile-based star ratings (artist / genre "top songs") ─────────────
+#
+# One generic function buckets a score into 1-5 stars AND returns the raw
+# percentile against whatever reference cohort you pass in. The percentile
+# is what "top songs" lists should actually sort/limit on — star is a coarse
+# display bucket, and many tracks tie within the same star tier.
+
+def calculate_percentile_star_rating(
+    track_score: float, reference_scores: list[float]
+) -> tuple[int, float]:
+    """1-5 star rating + raw percentile against any reference cohort.
 
     Brackets:
-      - Top 10% (percentile >= 0.90): 5★
-      - Top 20% (percentile >= 0.80): 4★
-      - Top 30% (percentile >= 0.70): 3★
-      - Top 50% (percentile >= 0.50): 2★
-      - Rest (< 0.50): 1★
+      - Top 10% (percentile >= 0.90): 5*
+      - Top 20% (percentile >= 0.80): 4*
+      - Top 30% (percentile >= 0.70): 3*
+      - Top 50% (percentile >= 0.50): 2*
+      - Rest (< 0.50): 1*
     """
-    valid = [float(s) for s in (artist_scores or []) if float(s or 0) > 0]
+    valid = [float(s) for s in (reference_scores or []) if float(s or 0) > 0]
     if not valid or track_score is None or float(track_score) <= 0:
-        return 1
+        return 1, 0.0
 
     val = float(track_score)
-    # Calculate what fraction of the artist's catalog scores are at or below this track's score
     below_or_equal = sum(1 for s in valid if s <= val)
     percentile = below_or_equal / len(valid)
 
     if percentile >= 0.90:
-        return 5
+        stars = 5
     elif percentile >= 0.80:
-        return 4
+        stars = 4
     elif percentile >= 0.70:
-        return 3
+        stars = 3
     elif percentile >= 0.50:
-        return 2
+        stars = 2
     else:
-        return 1
-        
-    track_ratio = lb / lf
-    return track_ratio > album_median_ratio * float(ratio_factor)
+        stars = 1
+    return stars, percentile
+
+
+def calculate_artist_percentile_star_rating(track_score: float, artist_scores: list[float]) -> int:
+    """1-5 star rating for a track against its OWN artist's catalog.
+
+    Thin, backward-compatible wrapper around ``calculate_percentile_star_rating``
+    for callers that only need the star bucket, not the raw percentile.
+    """
+    stars, _percentile = calculate_percentile_star_rating(track_score, artist_scores)
+    return stars
+
+
+def calculate_genre_percentile_star_rating(track_score: float, genre_scores: list[float]) -> int:
+    """1-5 star rating for a track against a GENRE-wide cohort (all artists)."""
+    stars, _percentile = calculate_percentile_star_rating(track_score, genre_scores)
+    return stars
+
+
+def _rank_5star_then_4star(rated: list[dict[str, Any]], limit: int | None) -> list[dict[str, Any]]:
+    """Shared ordering: 5-star tier first, backfilled with 4-star, each tier
+    sorted by percentile (raw score breaks ties within a percentile bucket)."""
+    def _sorted(tier: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return sorted(tier, key=lambda t: (t["percentile"], t["combined_score"]), reverse=True)
+
+    five_star = _sorted([t for t in rated if t["stars"] == 5])
+    four_star = _sorted([t for t in rated if t["stars"] == 4])
+
+    ordered = five_star + four_star
+    return ordered[:limit] if limit else ordered
+
+
+MIN_ESSENTIAL_ARTIST_TRACKS = 8
+
+
+def top_songs_by_artist(
+    tracks: list[dict[str, Any]],
+    artist_reference_scores: list[float],
+    limit: int | None = None,
+    min_qualifying_tracks: int = MIN_ESSENTIAL_ARTIST_TRACKS,
+) -> list[dict[str, Any]]:
+    """5-star tracks first, backfilled with 4-star, ranked within each tier.
+
+    Scored against the artist's OWN distribution, so a decent track on a
+    weak album can still rank above a merely-good track on a stronger one.
+
+    Returns [] if the artist doesn't clear ``min_qualifying_tracks`` (>= —
+    at least that many 4-star-or-better tracks, not strictly more). This is
+    a pass/fail gate for "Essential Artist" eligibility, not a cutoff on how
+    many songs make the final list — use ``limit`` for that.
+
+    ``tracks`` items need at least {"combined_score": float, ...}.
+    """
+    rated = []
+    for track in tracks:
+        score = float(track.get("combined_score") or 0)
+        stars, percentile = calculate_percentile_star_rating(score, artist_reference_scores)
+        if stars >= 4:
+            rated.append({**track, "stars": stars, "percentile": percentile})
+
+    if len(rated) < min_qualifying_tracks:
+        return []
+
+    return _rank_5star_then_4star(rated, limit)
+
+
+def top_songs_by_genre(
+    tracks: list[dict[str, Any]],
+    genre_reference_scores: list[float],
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """5-star tracks first, backfilled with 4-star, ranked within each tier.
+
+    Scored against a GENRE-wide cohort (all artists tagged with that genre),
+    so this is naturally comparable across different artists — unlike an
+    already album-relative-remapped score, which is only meaningful within
+    one album's own distribution.
+
+    ``tracks`` items need at least {"combined_score": float, ...}.
+    """
+    rated = []
+    for track in tracks:
+        score = float(track.get("combined_score") or 0)
+        stars, percentile = calculate_percentile_star_rating(score, genre_reference_scores)
+        if stars >= 4:
+            rated.append({**track, "stars": stars, "percentile": percentile})
+
+    return _rank_5star_then_4star(rated, limit)
+
+
+def build_essential_artist_playlists(
+    all_tracks: list[dict[str, Any]],
+    min_qualifying_tracks: int = MIN_ESSENTIAL_ARTIST_TRACKS,
+    limit_per_artist: int | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Group by artist, gate, and order — one call for the whole library.
+
+    ``all_tracks`` items need at least {"artist": str, "combined_score": float}.
+    Artists that don't meet the gate are simply absent from the result.
+    """
+    from collections import defaultdict
+
+    by_artist: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for track in all_tracks:
+        by_artist[str(track.get("artist") or "")].append(track)
+
+    playlists: dict[str, list[dict[str, Any]]] = {}
+    for artist, artist_tracks in by_artist.items():
+        if not artist:
+            continue
+        reference_scores = [float(t.get("combined_score") or 0) for t in artist_tracks]
+        songs = top_songs_by_artist(
+            artist_tracks, reference_scores,
+            limit=limit_per_artist, min_qualifying_tracks=min_qualifying_tracks,
+        )
+        if songs:
+            playlists[artist] = songs
+    return playlists
