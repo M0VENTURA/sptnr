@@ -11,7 +11,7 @@ import os
 import threading
 import time
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any
 
 import structlog
 
@@ -19,7 +19,7 @@ logger = structlog.get_logger(__name__)
 
 SPOTIFY_RATE_LIMIT_PER_30S = 250
 SPOTIFY_DAILY_LIMIT = 500000
-LASTFM_RATE_LIMIT_PER_SECOND = 1
+LASTFM_RATE_LIMIT_PER_SECOND = 1.0
 LASTFM_DAILY_LIMIT = 50000
 MUSICBRAINZ_MIN_INTERVAL = 1.0
 LISTENBRAINZ_MIN_INTERVAL = 1.0
@@ -82,61 +82,75 @@ class APIRateLimiter:
             logger.debug("Could not save API rate limiter state", error=str(exc))
 
     def throttle_musicbrainz(self) -> None:
-        # Compute the wait UNDER the lock (atomic claim of the next slot),
-        # then sleep OUTSIDE it: concurrent scan workers (4 per album) must
-        # sleep in parallel instead of serialising on the lock — a worker
-        # holding the lock while sleeping turns a 1 req/s budget into "each
-        # worker waits for every other worker's sleep", which is exactly the
-        # "N of N futures unfinished" album stall.
         with self._mb_lock:
             now = time.time()
             last_request = self.state.get("musicbrainz_last_request", 0.0)
-            wait_time = MUSICBRAINZ_MIN_INTERVAL - (now - last_request)
-            self.state["musicbrainz_last_request"] = time.time()
+            
+            # Project the next available time slot
+            allowed_time = max(now, last_request + MUSICBRAINZ_MIN_INTERVAL)
+            wait_time = allowed_time - now
+            
+            # Reserve this future time slot for the current thread
+            self.state["musicbrainz_last_request"] = allowed_time
             self.state["musicbrainz_daily_count"] = self.state.get("musicbrainz_daily_count", 0) + 1
             self._save_state()
+            
         if wait_time > 0:
             time.sleep(wait_time)
 
     def throttle_lastfm(self) -> None:
-        """Enforce a maximum of 1 Last.fm request per second across threads."""
         with self._lastfm_lock:
             now = time.time()
             last_request = self.state.get("lastfm_last_request", 0.0)
-            wait_time = LASTFM_RATE_LIMIT_PER_SECOND - (now - last_request)
-            self.state["lastfm_last_request"] = time.time()
+            
+            allowed_time = max(now, last_request + LASTFM_RATE_LIMIT_PER_SECOND)
+            wait_time = allowed_time - now
+            
+            self.state["lastfm_last_request"] = allowed_time
             self.state["lastfm_daily_count"] = self.state.get("lastfm_daily_count", 0) + 1
             self._save_state()
+            
         if wait_time > 0:
             time.sleep(wait_time)
 
     def throttle_listenbrainz(self) -> None:
-        """Enforce ListenBrainz pacing on its own rate budget."""
         with self._listenbrainz_lock:
             now = time.time()
             last_request = self.state.get("listenbrainz_last_request", 0.0)
-            wait_time = LISTENBRAINZ_MIN_INTERVAL - (now - last_request)
-            self.state["listenbrainz_last_request"] = time.time()
+            
+            allowed_time = max(now, last_request + LISTENBRAINZ_MIN_INTERVAL)
+            wait_time = allowed_time - now
+            
+            self.state["listenbrainz_last_request"] = allowed_time
             self.state["listenbrainz_daily_count"] = self.state.get("listenbrainz_daily_count", 0) + 1
             self._save_state()
+            
         if wait_time > 0:
             time.sleep(wait_time)
 
     def wait_if_needed_lastfm(self, max_wait_seconds: float = 2.0) -> bool:
-        now = time.time()
-        wait_time = LASTFM_RATE_LIMIT_PER_SECOND - (now - self.state.get("lastfm_last_request", 0.0))
-        if wait_time <= 0:
-            self.state["lastfm_last_request"] = now
-            self.state["lastfm_daily_count"] = self.state.get("lastfm_daily_count", 0) + 1
-            self._save_state()
+        # Added missing lock to prevent state corruption across threads
+        with self._lastfm_lock:
+            now = time.time()
+            last_request = self.state.get("lastfm_last_request", 0.0)
+            
+            allowed_time = max(now, last_request + LASTFM_RATE_LIMIT_PER_SECOND)
+            wait_time = allowed_time - now
+            
+            if wait_time <= max_wait_seconds:
+                self.state["lastfm_last_request"] = allowed_time
+                self.state["lastfm_daily_count"] = self.state.get("lastfm_daily_count", 0) + 1
+                self._save_state()
+                should_wait = True
+            else:
+                should_wait = False
+                wait_time = 0.0
+                
+        if should_wait and wait_time > 0:
+            time.sleep(wait_time)
             return True
-        if wait_time <= max_wait_seconds:
-            time.sleep(wait_time + 0.1)
-            self.state["lastfm_last_request"] = time.time()
-            self.state["lastfm_daily_count"] = self.state.get("lastfm_daily_count", 0) + 1
-            self._save_state()
-            return True
-        return False
+            
+        return should_wait
 
     def get_stats(self) -> dict[str, Any]:
         now = time.time()
