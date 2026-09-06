@@ -27,6 +27,7 @@ from helpers.config_helpers import _GENERIC_COMPILATION_ARTISTS
 
 # Import centralized configuration
 from helpers.config_helpers import get_queue_matching_config_v2
+from services.queue.queue_matching_config import SOFT_VARIANT_TOKENS
 
 # Load configuration at module initialization
 _config = get_queue_matching_config_v2()
@@ -34,8 +35,6 @@ THRESHOLD = _config["threshold"]
 PARTIAL_MATCH = _config["partial_match"]
 STRICT_DURATION_SEC = _config["strict_duration_sec"]
 TOLERANCE_DURATION_SEC = _config["tolerance_duration_sec"]
-SOFT_VARIANTS = _config["soft_variants"]
-HARD_VARIANTS = _config["hard_variants"]
 
 
 # =============================================================================
@@ -64,10 +63,10 @@ def _variant_conflict(queue_v: set[str], file_v: set[str]) -> bool:
         return queue_v.isdisjoint(file_v)
 
     if file_v and not queue_v:
-        return not file_v.issubset(SOFT_VARIANTS)
+        return not file_v.issubset(SOFT_VARIANT_TOKENS)
 
     if queue_v and not file_v:
-        return not queue_v.issubset(SOFT_VARIANTS)
+        return not queue_v.issubset(SOFT_VARIANT_TOKENS)
 
     return False
 
@@ -90,7 +89,9 @@ def _metadata_matches_queue_item(file_path: str, queue_item: QueueItem, threshol
     file_artist = (metadata.get("artist") or "").strip()
     file_album_artist = (metadata.get("album_artist") or "").strip()
     file_title = (metadata.get("title") or "").strip()
-    file_duration = metadata.get("duration_ms")
+    
+    file_duration_ms = metadata.get("duration_ms")
+    file_duration = (file_duration_ms / 1000.0) if file_duration_ms else None
 
     queue_artist = (queue_item.get("artist") or "").strip()
     queue_album_artist = (queue_item.get("album_artist") or "").strip()
@@ -137,8 +138,9 @@ def _metadata_matches_queue_item(file_path: str, queue_item: QueueItem, threshol
     _, queue_variants = extract_version_info(queue_title)
     _, file_variants = extract_version_info(file_title)
 
+    variant_penalty = 0.0
     if _variant_conflict(queue_variants, file_variants):
-        return False
+        variant_penalty = 0.2
 
     # ------------------------------------------------------------------
     # Artist match (multi-source)
@@ -180,7 +182,7 @@ def _metadata_matches_queue_item(file_path: str, queue_item: QueueItem, threshol
     )
 
     # ------------------------------------------------------------------
-    # Early hard rejection (restored from original logic)
+    # Early hard rejection
     # ------------------------------------------------------------------
 
     if title_score == 0.0:
@@ -196,8 +198,7 @@ def _metadata_matches_queue_item(file_path: str, queue_item: QueueItem, threshol
     # ------------------------------------------------------------------
 
     if queue_duration and file_duration:
-        file_sec = file_duration / 1000 if file_duration > 1000 else file_duration
-        diff = abs(file_sec - queue_duration)
+        diff = abs(file_duration - queue_duration)
 
         if diff > 30:
             return False  # strong reject
@@ -206,9 +207,7 @@ def _metadata_matches_queue_item(file_path: str, queue_item: QueueItem, threshol
             # Exact title + duration is only "very strong evidence" when the
             # artist ALSO agrees — a same-length track by a DIFFERENT artist
             # (e.g. an unmatched download that shares the title) must never be
-            # claimed on duration alone.  Without this gate the duration
-            # shortcut returned True before any artist comparison, letting the
-            # completion service auto-move files for unmatched artists.
+            # claimed on duration alone.
             if artist_score > 0.0:
                 return True
             if file_artist_generic or queue_is_compilation:
@@ -217,10 +216,10 @@ def _metadata_matches_queue_item(file_path: str, queue_item: QueueItem, threshol
             return False  # concrete artist mismatch → reject
 
     # ------------------------------------------------------------------
-    # Combined score (original behaviour preserved)
+    # Combined score
     # ------------------------------------------------------------------
 
-    combined = (artist_score + title_score) / 2
+    combined = ((artist_score + title_score) / 2) - variant_penalty
 
     if combined >= threshold:
         return True
