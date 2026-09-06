@@ -85,7 +85,7 @@
           });
           var data = await res.json();
           if (data && (data.added !== undefined || data.failed !== undefined)) {
-            batchAdded   = data.added   || 0;
+            batchAdded   = data.added  || 0;
             batchSkipped = data.skipped || 0;
             batchFailed  = data.failed  || 0;
           } else if (!res.ok) {
@@ -706,12 +706,11 @@ function renderMonitorQueueItemRow(item) {
   var st = item.status || 'queued';
 
   // Action buttons grouped flush-right; role depends on the status.
-  // Borderless icons (row-icon-btn) keep the right side uncluttered.
   var actions = '';
   if (st === 'failed' && typeof window.retryQueueItem === 'function') {
-    actions += '<button class="row-icon-btn text-warning" title="Retry now" onclick="retryQueueItem(' + item.id + ')"><i class="bi bi-arrow-clockwise"></i></button>';
+    actions += '<button class="btn btn-sm btn-outline-warning py-0 px-2 ms-1" title="Retry now" onclick="retryQueueItem(' + item.id + ')"><i class="bi bi-arrow-clockwise"></i></button>';
   } else if (st === 'downloading' && typeof window.cancelQueueItem === 'function') {
-    actions += '<button class="row-icon-btn text-secondary" title="Cancel download" onclick="cancelQueueItem(' + item.id + ')"><i class="bi bi-stop-circle"></i></button>';
+    actions += '<button class="btn btn-sm btn-outline-secondary py-0 px-2 ms-1" title="Cancel download" onclick="cancelQueueItem(' + item.id + ')"><i class="bi bi-stop-circle"></i></button>';
   }
   // Manual Soulseek search (legacy parity): opens the manual search modal
   // pre-filled with this item's artist + title so the user can pick a
@@ -720,10 +719,10 @@ function renderMonitorQueueItemRow(item) {
     var _artistEnc = encodeInlineArg(item.artist || '');
     var _titleEnc = encodeInlineArg(item.title || '');
     var _id = parseInt(item.id, 10) || 0;
-    actions += '<button class="row-icon-btn text-info" title="Search Soulseek for this track" onclick="searchOtherSourcesFromEncoded(\'' + _artistEnc + '\',\'' + _titleEnc + '\', true, ' + _id + ')"><i class="bi bi-search"></i></button>';
+    actions += '<button class="btn btn-sm btn-outline-info py-0 px-2 ms-1" title="Search Soulseek for this track" onclick="searchOtherSourcesFromEncoded(\'' + _artistEnc + '\',\'' + _titleEnc + '\', true, ' + _id + ')"><i class="bi bi-search"></i></button>';
   }
   if (typeof window.deleteQueueItem === 'function') {
-    actions += '<button class="row-icon-btn text-danger" title="Remove from queue" onclick="deleteQueueItem(' + item.id + ', false)"><i class="bi bi-trash"></i></button>';
+    actions += '<button class="btn btn-sm btn-outline-danger py-0 px-2 ms-1" title="Remove from queue" onclick="deleteQueueItem(' + item.id + ', false)"><i class="bi bi-trash"></i></button>';
   }
   var actionsHtml = actions
     ? '<div class="d-flex align-items-center gap-1 flex-shrink-0">' + actions + '</div>'
@@ -806,7 +805,7 @@ function renderMonitorQueueGroupRow(group, index) {
 
   var groupDelete = '';
   if (typeof window.deleteQueueItem === 'function') {
-    groupDelete = '<button class="row-icon-btn text-danger flex-shrink-0" title="Remove all tracks in this folder" onclick="deleteQueueGroup(' + index + ')"><i class="bi bi-trash"></i></button>';
+    groupDelete = '<button class="btn btn-sm btn-outline-danger py-0 px-2 flex-shrink-0 ms-1" title="Remove all tracks in this folder" onclick="deleteQueueGroup(' + index + ')"><i class="bi bi-trash"></i></button>';
   }
 
   return '<div class="list-group-item">' +
@@ -1315,4 +1314,4 @@ document.addEventListener('DOMContentLoaded', function() {
     refreshUpcomingReleasesMonitor();
   }
 });
-});
+})();
