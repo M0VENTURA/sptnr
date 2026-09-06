@@ -23,13 +23,18 @@ from __future__ import annotations
 
 from .api_rate_limiter import APIRateLimiter, get_rate_limiter
 from .base import Infrastructure, get_infra
+
+# NOTE: Make sure the filename below matches your actual file (e.g., if you 
+# renamed it to fs_cache.py, change this to `from .fs_cache import ...`)
 from .filesystem_cache_service import get_download_files
+
 from .filesystem_service import cleanup_empty_parents, is_path_under_directory, resolve_downloads_dir
 from .fs_manager import FileSystemManager
-from .timeout_executor import api_timeout, cleanup_timeout_executor, ensure_timeout_executor, run_with_timeout, TimeoutError
+
+# FIX: Removed the deleted 'api_timeout' function from the import
+from .timeout_executor import cleanup_timeout_executor, ensure_timeout_executor, run_with_timeout, TimeoutError
 
 __all__ = [
-    "api_timeout",
     "APIRateLimiter",
     "cleanup_empty_parents",
     "cleanup_timeout_executor",
