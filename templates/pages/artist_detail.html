@@ -15,12 +15,13 @@
     <div class="card mb-3 category-section shadow-sm" id="{{ cat_id }}-section" data-category-key="{{ cat_id }}">
       <div class="card-header p-0" style="background-color: var(--tertiary-bg, #282828);">
         <div class="d-flex align-items-center justify-content-between p-3 text-white">
-          <button class="btn btn-link text-start d-flex align-items-center gap-2 p-0 text-decoration-none text-white flex-grow-1 shadow-none"
-                  type="button"
-                  data-bs-toggle="collapse"
-                  data-bs-target="#collapse-{{ cat_id }}"
-                  aria-expanded="true"
-                  aria-controls="collapse-{{ cat_id }}">
+          
+          <!-- Accordion Toggle Area (Div instead of Button to allow nested buttons) -->
+          <div class="d-flex align-items-center gap-2 flex-grow-1 cursor-pointer"
+               data-bs-toggle="collapse"
+               data-bs-target="#collapse-{{ cat_id }}"
+               aria-expanded="true"
+               aria-controls="collapse-{{ cat_id }}">
             <i class="bi {{ cat_icon }} text-success fs-5"></i>
             <h5 class="h6 fw-bold mb-0 me-2">{{ cat_title }}</h5>
 
@@ -33,14 +34,15 @@
                 🟡 {{ missing_count }} Missing
               </span>
             {% endif %}
-          </button>
+          </div>
 
-          <div class="d-flex align-items-center gap-3 flex-shrink-0">
+          <!-- Actions Area -->
+          <div class="d-flex align-items-center gap-3 flex-shrink-0 ms-2">
             {% if missing_count > 0 %}
               <button type="button" 
                       class="btn btn-xs btn-outline-secondary py-0 px-2 toggle-missing-btn extra-small" 
                       data-target-category="{{ cat_id }}" 
-                      onclick="toggleMissingReleasesForCategory(this, '{{ cat_id }}')" 
+                      onclick="event.stopPropagation(); toggleMissingReleasesForCategory(this, '{{ cat_id }}')" 
                       title="Toggle visibility of missing items in this section"
                       data-hidden="false">
                 <i class="bi bi-eye-slash me-1"></i><span>Hide Missing</span>
@@ -315,17 +317,16 @@
 
       <div class="card mb-3 category-section shadow-sm" id="covers-section">
         <div class="card-header p-0" style="background-color: var(--tertiary-bg, #282828);">
-          <button class="btn btn-link w-100 text-start d-flex align-items-center justify-content-between p-3 text-decoration-none text-white accordion-header-btn"
-                  type="button"
-                  data-bs-toggle="collapse"
-                  data-bs-target="#collapse-covers">
+          <div class="d-flex align-items-center justify-content-between p-3 text-white cursor-pointer"
+               data-bs-toggle="collapse"
+               data-bs-target="#collapse-covers">
             <div class="d-flex align-items-center gap-2 flex-wrap">
               <i class="bi bi-music-note-list text-info fs-5"></i>
               <h5 class="h6 fw-bold mb-0 me-2">Covers of {{ artist_name }}'s Songs</h5>
               <span class="badge bg-secondary" id="artistCoveredByCount">Checking...</span>
             </div>
             <i class="bi bi-chevron-down text-muted accordion-chevron"></i>
-          </button>
+          </div>
         </div>
         <div id="collapse-covers" class="collapse show card-body p-2">
           <div id="artistCoveredByContainer">
@@ -548,16 +549,20 @@
 <style>
   #artistMainPageContainer.filter-hide-missing .missing-album-item { display: none !important; }
   #artistMainPageContainer.filter-hide-library .library-album-item { display: none !important; }
+  
+  /* Added scoping so the individual toggles work via class swapping */
+  .category-section.category-hide-missing .missing-album-item { display: none !important; }
+  .cursor-pointer { cursor: pointer; }
 </style>
 
-{% include 'components/_track_edit.html' ignore missing %}
-{% include 'components/_organize_group.html' ignore missing %}
-{% include 'components/_slskd_results.html' ignore missing %}
-{% include 'components/_manual_match.html' ignore missing %}
-{% include 'components/_soulseek_manual_search.html' ignore missing %}
-{% include 'components/_release_picker.html' ignore missing %}
-{% include 'components/_musicbrainz_search_modal.html' ignore missing %}
-{% include 'components/_musicbrainz_release_match.html' ignore missing %}
+{% include 'components/modals/_track_edit.html' ignore missing %}
+{% include 'components/modals/_organize_group.html' ignore missing %}
+{% include 'components/modals/_slskd_results.html' ignore missing %}
+{% include 'components/modals/_manual_match.html' ignore missing %}
+{% include 'components/modals/_soulseek_manual_search.html' ignore missing %}
+{% include 'components/modals/_release_picker.html' ignore missing %}
+{% include 'components/modals/_musicbrainz_search_modal.html' ignore missing %}
+{% include 'components/modals/_musicbrainz_release_match.html' ignore missing %}
 
 {% endblock %}
 
