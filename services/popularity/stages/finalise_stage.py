@@ -30,6 +30,7 @@ from services.popularity.popularity_math import (
     apply_album_relative_popularity,
     calculate_robust_zscore,
     effective_album_ratio,
+    calculate_percentile_star_rating,
     fmt_count as _fmt_count,
 )
 from services.popularity.popularity_zscore import composite_listener_z
@@ -313,10 +314,6 @@ def _assign_stars(
         and (popularity_marked or z_standout_source)
     )
 
-    # Artist-wide listener-percentile force floor. This is deliberately
-    # skipped for compilation albums: compilation tracks must go through the
-    # verified-single gate in the compilation-scoring block below rather than
-    # being force-floored purely off artist-wide listener rank.
     _force_stars: int | None = None
     if (
         not is_live
@@ -351,7 +348,6 @@ def _assign_stars(
         raw_lf = float(track.get("lastfm_listeners") or 0)
         is_verified_single = single_confidence in ("high", "medium")
 
-        # 1. Verified Single Scoring
         if is_verified_single and not popularity_only:
             if score >= 55.0 or raw_lf >= 1_000_000:
                 comp_stars = 5
@@ -363,14 +359,7 @@ def _assign_stars(
                 comp_stars = 2
             else:
                 comp_stars = 1
-
-        # 2. Non-Singles Bypass: Driven exclusively by Popularity
         else:
-            # For generic compilation artists (Various Artists, Soundtrack,
-            # etc.) ``artist_scores`` is not a real performer catalogue — it
-            # mixes unrelated tracks pulled from many different compilations
-            # — so artist-z would be meaningless here. Force the absolute
-            # score/listener-threshold fallback instead.
             has_deep_catalog = (
                 not generic_compilation_artist
                 and len([s for s in artist_scores if s > 0]) >= max(len(album_scores) + 15, 30)
@@ -399,9 +388,6 @@ def _assign_stars(
                 else:
                     comp_stars = 1
 
-        # Apply the live downgrade BEFORE flagging as an era-5★ pick, so a
-        # track downgraded from 5★ to 4★ for being live never keeps a
-        # dangling ``_era_5star`` flag that no longer matches its rating.
         if is_live:
             comp_stars = max(1, comp_stars - 1)
 
@@ -858,7 +844,11 @@ def _fetch_essential_featured_rows() -> list[dict[str, Any]]:
         return []
 
 
-def _sync_essential_playlist(artist: str, featured_rows: list[dict[str, Any]] | None = None) -> bool:
+def _sync_essential_playlist(
+    artist: str, 
+    artist_scores: list[float] | None = None,
+    featured_rows: list[dict[str, Any]] | None = None
+) -> bool:
     """Build ONE artist's Essential Collection and sync it to Navidrome via the API."""
     if _is_excluded_essential_artist(artist):
         return False
@@ -868,6 +858,24 @@ def _sync_essential_playlist(artist: str, featured_rows: list[dict[str, Any]] | 
         return False
 
     playlist_name = _essential_playlist_name(artist)
+    
+    try:
+        from helpers.config_helpers import get_config
+        cfg = (get_config() or {}).get("playlists") or {}
+        max_tracks = max(1, int(cfg.get("essential_max_tracks", 50) or 50))
+    except Exception:
+        max_tracks = 50
+
+    if artist_scores is None:
+        try:
+            with db_session() as session:
+                res = session.execute(
+                    text("SELECT final_score FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist AND final_score > 0"),
+                    {"artist": artist},
+                )
+                artist_scores = [float(r[0]) for r in res.fetchall() or [] if r and r[0]]
+        except Exception:
+            artist_scores = []
 
     rows: list[dict[str, Any]] = []
     try:
@@ -951,14 +959,20 @@ def _sync_essential_playlist(artist: str, featured_rows: list[dict[str, Any]] | 
     if len(winners) < _ESSENTIAL_MIN_TRACKS:
         _delete_playlist_from_navidrome(playlist_name)
         return False
+        
+    for w in winners:
+        _, pct = calculate_percentile_star_rating(float(w.get("popularity_score") or 0), artist_scores)
+        w["percentile"] = pct
 
     winners.sort(
         key=lambda r: (
             -int(r.get("stars") or 0),
-            -float(r.get("popularity_score") or 0),
+            -float(r.get("percentile") or 0),
             str(r.get("title") or "").casefold(),
         ),
     )
+    
+    winners = winners[:max_tracks]
 
     _song_ids = [str(r.get("id") or "").strip() for r in winners if str(r.get("id") or "").strip()]
     if not _song_ids:
@@ -1285,6 +1299,7 @@ def _create_genre_top_track_playlists(
     max_genres = max(1, int(cfg.get("genre_playlists_max_genres", 3) or 3))
     create_threshold = max(1, int(cfg.get("genre_playlists_create_threshold", 100) or 100))
     delete_threshold = max(1, int(cfg.get("genre_playlists_delete_threshold", 80) or 80))
+    max_tracks = max(1, int(cfg.get("genre_playlists_max_tracks", 100) or 100))
     create_enabled = _genre_playlists_enabled()
     delete_enabled = _genre_playlists_delete_enabled()
 
@@ -1414,6 +1429,7 @@ def _create_genre_top_track_playlists(
             continue
 
         winners.sort(key=_popularity_order)
+        winners = winners[:max_tracks]
 
         _song_ids = [str(t.get("id") or "").strip() for t in winners if str(t.get("id") or "").strip()]
         if not _song_ids:
@@ -2204,9 +2220,9 @@ def finalise_scan(*, results: list[dict[str, Any]], options: dict[str, Any]) -> 
                 if artist.strip().casefold() not in _done_artists:
                     _featured_rows = options.get("_essential_featured_rows")
                     if _featured_rows is not None:
-                        _sync_essential_playlist(artist, featured_rows=_featured_rows)
+                        _sync_essential_playlist(artist, artist_scores=artist_scores, featured_rows=_featured_rows)
                     else:
-                        _sync_essential_playlist(artist)
+                        _sync_essential_playlist(artist, artist_scores=artist_scores)
 
         try:
             _isrc_updated = _sync_isrc_popularity()
