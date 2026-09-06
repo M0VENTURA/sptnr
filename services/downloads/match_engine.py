@@ -30,19 +30,24 @@ Architecture:
     
     Called by: services/downloads/download_matching_service.py
     Calls: helpers.normalization_service (for text normalization)
+           services.queue.queue_scoring (for unified tokenization)
 """
 
 from __future__ import annotations
 
 import os
-import re
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Tuple
 
 import structlog
 
-from helpers.normalization_service import edition_annotations_compatible, normalize_match_text
+from helpers.normalization_service import (
+    edition_annotations_compatible, 
+    normalize_match_text,
+    normalize_core_filename
+)
 from services.downloads.download_matching_service import get_release_tracks
+from services.queue.queue_scoring import _tokenize_meaningful
 
 logger = structlog.get_logger(__name__)
 
@@ -53,24 +58,8 @@ def _seq_ratio(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
 
-def _tokenize_meaningful(text_val: str) -> List[str]:
-    """Tokenize normalized text into useful comparison tokens."""
-    if not text_val:
-        return []
-
-    tokens = re.findall(r"[a-z0-9]+", text_val.lower())
-
-    ignored = {
-        "the", "a", "an", "and", "or", "of", "to", "in", "on", "for",
-        "with", "feat", "ft", "featuring", "remaster", "remastered",
-        "explicit", "clean", "version", "edit", "mix",
-    }
-
-    return [token for token in tokens if token not in ignored]
-
-
 def _token_overlap_score(a: str, b: str) -> float:
-    """Return token overlap score between two normalized strings."""
+    """Return token overlap score using the unified CJK-aware tokenizer."""
     a_tokens = set(_tokenize_meaningful(a))
     b_tokens = set(_tokenize_meaningful(b))
 
@@ -246,7 +235,7 @@ def filename_matches_queue_item(
     artist_norm = normalize_match_text(artist)
     album_artist_norm = normalize_match_text(album_artist)
     title_norm = normalize_match_text(title)
-    path_norm = normalize_match_text(file_path)
+    path_norm = normalize_core_filename(os.path.basename(file_path))
 
     if not title_norm or not path_norm:
         return False
@@ -265,7 +254,6 @@ def filename_matches_queue_item(
     )
 
     artist_score = 0.0
-
     for candidate in artist_candidates:
         candidate_score = max(
             _seq_ratio(candidate, path_norm),
@@ -280,11 +268,12 @@ def filename_matches_queue_item(
     if title_score >= 0.80 and artist_score >= 0.35:
         return True
 
+    # LENIENCY: If title matches exceptionally well, accept it even if artist is missing 
+    # from the filename (e.g. "01 - Breathe.mp3" in an album folder)
+    if title_in_path or title_score >= 0.85:
+        return True
+
     combined = (title_score * 0.70) + (artist_score * 0.30)
-
-    if artist_score <= 0.0:
-        return False
-
     return combined >= threshold
 
 
