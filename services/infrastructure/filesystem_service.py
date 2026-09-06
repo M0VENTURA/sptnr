@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Any
 
 import structlog
-import yaml
 
 from helpers.config_helpers import get_config, get_supported_audio_formats
 
@@ -40,14 +39,10 @@ def get_import_destination_path(
     """Return final import path after applying conversion rules."""
     if settings is None:
         cfg = get_config() or {}
-        settings = cfg.get("download_conversion", {}) if isinstance(cfg, dict) else {}
+        settings = cfg.get("download_conversion", {})
 
     source_ext = os.path.splitext(source_path or "")[1].lower()
-
-    should_convert = (
-        settings.get("mode") == "flac_to_mp3"
-        and source_ext == ".flac"
-    )
+    should_convert = (settings.get("mode") == "flac_to_mp3" and source_ext == ".flac")
 
     if should_convert:
         dest_root, _ = os.path.splitext(dest_path)
@@ -61,14 +56,11 @@ def get_import_destination_path(
 # ==============================================================================
 
 def is_path_under_directory(path: str, root: str) -> bool:
-    """Check if path is inside root directory."""
+    """Check if path is inside root directory using Pathlib safety."""
     if not path or not root:
         return False
-
     try:
-        abs_path = os.path.realpath(os.path.abspath(path))
-        abs_root = os.path.realpath(os.path.abspath(root))
-        return os.path.commonpath([abs_path, abs_root]) == abs_root
+        return Path(path).resolve().is_relative_to(Path(root).resolve())
     except Exception:
         return False
 
@@ -79,40 +71,35 @@ def is_path_under_directory(path: str, root: str) -> bool:
 
 def cleanup_empty_parents(start_path: str, root: str) -> None:
     """Remove empty parent directories up to root."""
-    parent = os.path.dirname(start_path)
+    parent = Path(start_path).parent
+    root_path = Path(root).resolve()
 
-    while parent and os.path.isdir(parent):
-        if os.path.abspath(parent) == os.path.abspath(root):
+    while parent and parent.is_dir():
+        if parent.resolve() == root_path:
             break
 
         try:
-            if os.listdir(parent):
+            if any(parent.iterdir()):
                 break
 
-            os.rmdir(parent)
-            parent = os.path.dirname(parent)
+            parent.rmdir()
+            logger.debug("Cleaned up empty directory", path=str(parent))
+            parent = parent.parent
         except OSError:
             break
 
 
-def apply_release_year_mtime(
-    file_path: str,
-    year: Any,
-    queue_id: int | None = None,
-) -> None:
+def apply_release_year_mtime(file_path: str, year: Any, queue_id: int | None = None) -> None:
     """Set file modification time to Jan 1 of release year."""
     if not file_path or not year:
         return
 
     try:
         year_int = int(str(year).strip()[:4])
-        if year_int < 1900 or year_int > 2100:
-            return
-
-        ts = datetime(year_int, 1, 1).timestamp()
-        os.utime(file_path, (ts, ts))
-
-        logger.debug("Set mtime for file", queue_id=queue_id, year=year_int, path=file_path)
+        if 1900 <= year_int <= 2100:
+            ts = datetime(year_int, 1, 1).timestamp()
+            os.utime(file_path, (ts, ts))
+            logger.debug("Set mtime for file", queue_id=queue_id, year=year_int, path=file_path)
     except Exception as e:
         logger.debug("Failed to set mtime", queue_id=queue_id, year=year, error=str(e))
 
@@ -175,6 +162,67 @@ def _unique_path(root: str, filename: str) -> str:
     return path
 
 
+def resolve_original_archive_dir() -> str:
+    """Absolute path of the FLAC conversion archive folder."""
+    try:
+        config = get_config() or {}
+        conversion_cfg = (config.get("downloads") or {}).get("conversion") or {}
+        subfolder = str(conversion_cfg.get("original_subfolder", "Original") or "Original").strip()
+    except Exception:
+        subfolder = "Original"
+    root = resolve_downloads_dir(prefer_music_subfolder=False)
+    return os.path.normpath(os.path.join(root, subfolder or "Original"))
+
+
+def archive_dir_path() -> str:
+    return resolve_original_archive_dir()
+
+
+def _original_archive_subfolder_name() -> str:
+    return os.path.basename(resolve_original_archive_dir())
+
+
+def resolve_music_dir(config: dict[str, Any] | None = None) -> str:
+    """Resolve music library root directory utilizing the central config."""
+    cfg = config or get_config() or {}
+    
+    return (
+        cfg.get("music", {}).get("root")
+        or cfg.get("music_root")
+        or cfg.get("navidrome", {}).get("music_folder")
+        or "/music"
+    )
+
+
+def resolve_downloads_dir(prefer_music_subfolder: bool = True) -> str:
+    """Single source of truth for download folder resolution."""
+    def _resolve(value: str) -> str:
+        normalized = os.path.normpath(value.strip())
+        if not prefer_music_subfolder:
+            return normalized
+        return _prefer_music_subfolder(normalized)
+
+    env_dir = os.environ.get("DOWNLOADS_DIR")
+    if env_dir:
+        return _resolve(env_dir)
+
+    try:
+        config = get_config() or {}
+        downloads_cfg = config.get("downloads") or {}
+        
+        monitor_folder = downloads_cfg.get("monitor_folder")
+        if monitor_folder:
+            return _resolve(monitor_folder)
+
+        folder = downloads_cfg.get("folder")
+        if folder:
+            return _resolve(folder)
+    except Exception:
+        pass
+
+    return "/downloads/Music"
+
+
 def _get_files_in_folder(folder_path: str, max_depth: int = 3, max_files: int = 500) -> list[dict[str, Any]]:
     """List files in *folder_path*, recursing into subfolders."""
     files = []
@@ -222,45 +270,6 @@ def _get_files_in_folder(folder_path: str, max_depth: int = 3, max_files: int = 
         return []
 
 
-def _original_archive_subfolder_name() -> str:
-    try:
-        config = get_config() or {}
-        conversion_cfg = (config.get("downloads") or {}).get("conversion") or {}
-        name = str(conversion_cfg.get("original_subfolder", "Original") or "Original").strip()
-        return name or "Original"
-    except Exception:
-        return "Original"
-
-
-def archive_dir_path() -> str:
-    try:
-        return resolve_original_archive_dir()
-    except Exception:
-        root = resolve_downloads_dir(prefer_music_subfolder=False)
-        return os.path.normpath(os.path.join(root, "Original"))
-
-
-def resolve_music_dir(config: dict[str, Any] | None = None) -> str:
-    """Resolve music library root directory."""
-    if config:
-        return (
-            config.get("music", {}).get("root")
-            or config.get("music_root")
-            or "/music"
-        )
-
-    config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
-    try:
-        if os.path.exists(config_path):
-            with open(config_path, "r", encoding="utf-8") as f:
-                cfg = yaml.safe_load(f) or {}
-                return (cfg.get("navidrome") or {}).get("music_folder") or "/music"
-    except Exception:
-        pass
-
-    return "/music"
-
-
 def get_folder_group_details(folder_path: str) -> dict[str, Any]:
     """Detailed folder inspection."""
     try:
@@ -283,12 +292,7 @@ def get_folder_group_details(folder_path: str) -> dict[str, Any]:
 
 
 def is_under_music_root(path_value: str, music_root: str) -> bool:
-    if not path_value:
-        return False
-
-    norm = os.path.normpath(str(path_value)).replace("\\", "/").rstrip("/").lower()
-    music_root_norm = music_root.replace("\\", "/").rstrip("/").lower()
-    return norm == music_root_norm or norm.startswith(music_root_norm + "/")
+    return is_path_under_directory(path_value, music_root)
 
 
 def sanitize_collection_segment(value: str) -> str:
@@ -339,43 +343,3 @@ def is_valid_source_music_path(path_value: Any, music_root: str) -> bool:
         return False
 
     return is_under_music_root(norm, music_root)
-
-
-def resolve_original_archive_dir() -> str:
-    """Absolute path of the FLAC conversion archive folder."""
-    try:
-        config = get_config() or {}
-        conversion_cfg = (config.get("downloads") or {}).get("conversion") or {}
-        subfolder = str(conversion_cfg.get("original_subfolder", "Original") or "Original").strip()
-    except Exception:
-        subfolder = "Original"
-    root = resolve_downloads_dir(prefer_music_subfolder=False)
-    return os.path.normpath(os.path.join(root, subfolder or "Original"))
-
-
-def resolve_downloads_dir(prefer_music_subfolder: bool = True) -> str:
-    """Single source of truth for download folder resolution."""
-    def _resolve(value: str) -> str:
-        normalized = os.path.normpath(value.strip())
-        if not prefer_music_subfolder:
-            return normalized
-        return _prefer_music_subfolder(normalized)
-
-    env_dir = os.environ.get("DOWNLOADS_DIR")
-    if env_dir:
-        return _resolve(env_dir)
-
-    try:
-        config = get_config() or {}
-        downloads_cfg = config.get("downloads") or {}
-        monitor_folder = downloads_cfg.get("monitor_folder")
-        if monitor_folder:
-            return _resolve(monitor_folder)
-
-        folder = downloads_cfg.get("folder")
-        if folder:
-            return _resolve(folder)
-    except Exception:
-        pass
-
-    return "/downloads/Music"
