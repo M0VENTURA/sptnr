@@ -17,7 +17,6 @@ Architecture:
 from __future__ import annotations
 
 import os
-import re
 import logging
 
 from helpers.normalization_service import (
@@ -29,6 +28,8 @@ from helpers.normalization_service import (
     edition_annotations_compatible,
     queue_duration_seconds,
 )
+
+from services.queue.queue_matching_config import TRACK_NUMBER_PREFIX_RE, SOULSEEK_UID_SUFFIX_RE
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +46,6 @@ def _tokenize_meaningful(value: str):
     - punctuation (via normalize_string)
     - short tokens
     - common stopwords
-
-    Hangul / CJK-aware: Latin tokens shorter than 3 chars are treated as
-    noise (``it``, ``a``, ``no`` …), but SINGLE and DOUBLE Hangul/CJK
-    characters are meaningful words/particles and must be kept.  A Korean
-    title like ``일상`` (2 chars) or ``타`` (1 char) previously produced an
-    EMPTY token list → every Soulseek candidate scored 0.0 → the track
-    always ended ``no_qualifying_result`` despite 39-101 real candidates.
     """
     stop_words = {"the", "and", "of", "a", "an", "to", "in", "on", "for", "with"}
 
@@ -198,13 +192,9 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
     # ------------------------------------------------------------------
     # Duration scoring (legacy parity: graduated boosts/penalties).
     # ------------------------------------------------------------------
-    # ``candidate_duration`` (seconds) is supplied by callers that can read a
-    # real duration off the file (e.g. the download-completion fuzzy match).
-    # Duration is strong independent evidence of track identity — an exact
-    # match confirms the right version, while a large mismatch rules out a
-    # differently-long track that happens to share a name.
     expected_duration = queue_duration_seconds(queue_item.get("duration"))
     candidate_duration = queue_duration_seconds(candidate_duration)
+    
     if expected_duration and candidate_duration:
         duration_diff = abs(expected_duration - candidate_duration)
         if duration_diff <= 2:
@@ -242,14 +232,6 @@ def _score_soulseek_candidate(filename, queue_item, candidate_duration=None):
 # =============================================================================
 
 def _strip_prefix_and_uid(basename: str):
-    return _strip_soulseek_uid_suffix(
-        _strip_track_number_prefix(basename)
+    return SOULSEEK_UID_SUFFIX_RE.sub(
+        "", TRACK_NUMBER_PREFIX_RE.sub("", basename)
     )
-
-
-def _strip_track_number_prefix(name: str):
-    return re.sub(r"^(?:\d+-\d+|\d+)[\s.\-_]+", "", name)
-
-
-def _strip_soulseek_uid_suffix(name: str):
-    return re.sub(r"_\d{12,}$", "", name)
