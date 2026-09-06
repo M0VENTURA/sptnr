@@ -5,11 +5,7 @@ Provides:
 - Request timing (duration logged as ``X-Request-Duration`` header).
 - Basic security headers on every response.
 - Authentication gate: every route requires a logged-in session EXCEPT a
-  small public allow-list (static assets, the login page and the first-run
-  setup wizard + its APIs).  While Navidrome is unconfigured (first run),
-  all other routes redirect to the setup wizard so a brand-new user can
-  reach it; once configured, unauthenticated page requests redirect to the
-  login page and unauthenticated API calls return 401 JSON.
+  small public allow-list.
 - First-run interceptor: redirects to setup if Navidrome is unconfigured.
 
 Called once during app factory setup.
@@ -25,19 +21,17 @@ import structlog
 from quart import Response, g, jsonify, redirect, request, session, url_for
 from werkzeug.exceptions import HTTPException
 
+# FIX: Moved to top level to avoid import overhead on every single HTTP request
+from helpers.config_helpers import needs_setup
+
 logger = structlog.get_logger(__name__)
 
-# Endpoints reachable WITHOUT a session at all times (static assets + the
-# login/logout pages).  Everything else is gated by ``before_request``.
 _ALWAYS_PUBLIC_ENDPOINTS = frozenset({
     "static",
     "ui.login",
     "ui.logout",
 })
 
-# Endpoints the first-run setup wizard needs.  These are public ONLY while
-# ``needs_setup()`` is true (Navidrome not configured yet) so a brand-new
-# user can complete the wizard; once configured they require a session.
 _SETUP_PUBLIC_ENDPOINTS = frozenset({
     "ui.setup",
     "ui.api_test_navidrome_connection",
@@ -56,14 +50,8 @@ def _is_api_request() -> bool:
 
 def register_app_hooks(app: Any) -> None:
     @app.errorhandler(Exception)
-    def handle_unhandled_exception(exc: Exception) -> Any:
-        """Return JSON for escaped exceptions instead of Quart's default HTML 500 page.
-
-        Without this, API clients receive an HTML error page and report
-        'Server returned HTML instead of JSON (HTTP 500)'. Mirrors the legacy
-        system's handler: HTTP exceptions (404/405/...) keep their default
-        behaviour; anything else becomes a JSON 500 with a logged traceback.
-        """
+    async def handle_unhandled_exception(exc: Exception) -> Any:  # FIX: Made async
+        """Return JSON for escaped exceptions instead of Quart's default HTML 500 page."""
         if isinstance(exc, HTTPException):
             return exc
             
@@ -89,16 +77,15 @@ def register_app_hooks(app: Any) -> None:
         return jsonify({"success": False, "error": "An internal server error occurred. Please try again."}), 500
 
     @app.before_request
-    def before_request() -> Any:
-        g.start_time = time.time()
+    async def before_request() -> Any:  # FIX: Made async
+        # FIX: Use monotonic time for accurate duration tracking
+        g.start_time = time.monotonic()
 
         endpoint = request.endpoint or ""
 
         # ── Always-public endpoints (static, login, logout) ──────────────
         if endpoint in _ALWAYS_PUBLIC_ENDPOINTS or endpoint.endswith(".static"):
             return
-
-        from helpers.config_helpers import needs_setup
 
         # ── First run: setup wizard + its APIs are public ────────────────
         if needs_setup():
@@ -117,17 +104,14 @@ def register_app_hooks(app: Any) -> None:
         return redirect(url_for("ui.login"))
 
     @app.after_request
-    def after_request(response: Response) -> Response:
+    async def after_request(response: Response) -> Response:  # FIX: Made async
         # Request timing
         if hasattr(g, "start_time"):
-            duration_ms = int((time.time() - g.start_time) * 1000)
+            # FIX: Use monotonic time 
+            duration_ms = int((time.monotonic() - g.start_time) * 1000)
             response.headers["X-Request-Duration-Ms"] = str(duration_ms)
+            
             if duration_ms > 1000:
-                # DEBUG, not INFO — "Slow request" lines for the UI's own
-                # polling endpoints (log-file, upcoming-releases) flooded
-                # info.log during scans.  The duration is still exposed via
-                # the X-Request-Duration-Ms header; this line is purely
-                # diagnostic and belongs in debug.log.
                 logger.debug(
                     "Slow request",
                     method=request.method,
