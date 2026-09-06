@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -116,7 +117,7 @@ def _read_file_values(file_path: str) -> dict[str, str]:
                 "musicbrainz_albumid": "musicbrainz_albumid",
                 "musicbrainz_artistid": "musicbrainz_artistid",
                 "musicbrainz_albumartistid": "musicbrainz_albumartistid",
-                "musicbrainz_releasegroupid": "musicbrainz_releasegroupid",
+                "musicbrainz_releasegroupid": "musicbrainzreleasegroupid",
                 "musicbrainz_releasetrackid": "musicbrainz_releasetrackid",
                 "musicbrainz_workid": "musicbrainz_workid",
             }
@@ -134,7 +135,6 @@ def _read_file_values(file_path: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 def _fetch_artist_genres(artist: str) -> dict[str, int]:
-    """Fetch artist-level tags to enrich track genres."""
     scores: dict[str, int] = {}
     if not artist:
         return scores
@@ -216,7 +216,6 @@ def _fetch_artist_genres(artist: str) -> dict[str, int]:
 
 
 def _consolidate_top_3_genres(track: dict[str, Any], artist_genres: dict[str, int]) -> str:
-    """Consolidate genres from all track/artist sources and return the top 3."""
     genre_scores: dict[str, int] = dict(artist_genres)
     
     def _add_single(g: str, score: int) -> None:
@@ -273,7 +272,30 @@ def _consolidate_top_3_genres(track: dict[str, Any], artist_genres: dict[str, in
 # DB → file-tag mapping
 # ---------------------------------------------------------------------------
 
-def _db_tag_candidates(track: dict[str, Any], perfect: bool, include_lyrics: bool, artist_genres: dict[str, int]) -> dict[str, str]:
+def _resolve_album_year(tracks: list[dict[str, Any]]) -> str:
+    """Determine a single unified release year for the entire album group.
+    
+    Pulls the 4-digit year strings from all tracks, filters out blanks/zeros,
+    and returns the most frequent year. If tied, prefers the oldest year.
+    """
+    years = []
+    for t in tracks:
+        y = str(t.get("year") or "").strip()
+        # Extract 4-digit year if present
+        match = re.search(r"(19|20)\d{2}", y)
+        if match:
+            years.append(match.group(0))
+            
+    if not years:
+        return ""
+        
+    # Count frequency, then sort by frequency descending, then year ascending (oldest first)
+    counts = Counter(years)
+    best_year = sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
+    return best_year
+
+
+def _db_tag_candidates(track: dict[str, Any], album_year: str, perfect: bool, include_lyrics: bool, artist_genres: dict[str, int]) -> dict[str, str]:
     """Map a track's fresh DB values to file-tag keys (empty values omitted)."""
     out: dict[str, str] = {}
 
@@ -287,7 +309,10 @@ def _db_tag_candidates(track: dict[str, Any], perfect: bool, include_lyrics: boo
     _put("album", track.get("album"))
     album_artist = str(track.get("album_artist") or "").strip() or str(track.get("artist") or "").strip()
     _put("album_artist", album_artist)
-    _put("year", track.get("year"))
+    
+    # Use the unified album-level year across all tracks to prevent player splitting
+    _put("year", album_year)
+    
     _put("track_number", track.get("track_number"))
     _put("disc_number", track.get("disc_number"))
     _put("isrc", track.get("isrc"))
@@ -329,7 +354,6 @@ def _db_tag_candidates(track: dict[str, Any], perfect: bool, include_lyrics: boo
 # ---------------------------------------------------------------------------
 
 def _resolve_mb_release(tracks: list[dict[str, Any]]) -> tuple[str, dict[tuple[int, int], dict[str, Any]], int]:
-    """Resolve the album's MB release and index its (disc, position) slots."""
     release_mbid = ""
     for t in tracks:
         release_mbid = str(
@@ -341,7 +365,6 @@ def _resolve_mb_release(tracks: list[dict[str, Any]]) -> tuple[str, dict[tuple[i
         return "", {}, 0
 
     try:
-        # ✅ Use shared MusicBrainz client singleton
         data = get_shared_mb_client().get_release(release_mbid, inc="recordings") or {}
     except Exception as exc:
         logger.debug("MB release fetch failed", release_mbid=release_mbid, error=str(exc))
@@ -441,6 +464,10 @@ def sync_album_file_tags(artist: str, album: str) -> dict[str, Any]:
         return {"skipped": "no_tracks", "files_updated": 0, "corrections_recorded": 0}
 
     artist_genres = _fetch_artist_genres(artist)
+    
+    # Calculate a single unified year for the whole album group
+    album_year = _resolve_album_year(tracks)
+    
     release_mbid, mb_index, mb_count = _resolve_mb_release(tracks)
     perfect = bool(release_mbid) and _is_perfect_match(tracks, mb_index, mb_count)
 
@@ -451,7 +478,7 @@ def sync_album_file_tags(artist: str, album: str) -> dict[str, Any]:
         if not file_path or not os.path.exists(file_path):
             continue
         file_values = _read_file_values(file_path)
-        db_candidates = _db_tag_candidates(track, perfect, include_lyrics, artist_genres)
+        db_candidates = _db_tag_candidates(track, album_year, perfect, include_lyrics, artist_genres)
 
         fill = {
             k: v for k, v in db_candidates.items()
@@ -470,7 +497,7 @@ def sync_album_file_tags(artist: str, album: str) -> dict[str, Any]:
     if files_updated or corrections_recorded:
         logger.info(
             "Album file tags synced",
-            artist=artist, album=album, files_updated=files_updated, corrections_recorded=corrections_recorded, perfect_match=perfect,
+            artist=artist, album=album, files_updated=files_updated, corrections_recorded=corrections_recorded, perfect_match=perfect, album_year=album_year,
         )
     return {
         "artist": artist,
