@@ -15,9 +15,19 @@ Operational behaviour:
 - Re-entrant singleton lock so shared-service creation can request the shared
   HTTP client without deadlocking.
 - Structured start, completion, skip, and failure logs for every operation.
-- Heartbeat warnings around external calls that have not returned.
-- Atomic, bounded, timestamped MBID cache writes.
+- A single shared heartbeat monitor thread warns about in-flight calls that
+  have not returned, instead of one thread per call.
+- Atomic, bounded, timestamped MBID cache writes, flushed on a dirty flag
+  rather than on every match.
 - Plain Cover Art Archive URLs.
+
+Request-volume controls (added):
+- Per-artist release-group results are memoised, so the artist-wide single
+  detection fallback fires once per artist instead of once per track.
+- Best-release browses are memoised per release group, so release-group
+  scoring does not re-browse the same group for each candidate.
+- Availability of the HTTP client is checked before firing broad fallback
+  queries, so a MusicBrainz outage does not amplify into heavier requests.
 
 Public exports required by other modules:
     get_shared_mb_client, get_shared_mb_service, lookup_recording_metadata,
@@ -27,13 +37,15 @@ Public exports required by other modules:
 """
 from __future__ import annotations
 
+import atexit
 import difflib
+import itertools
 import json
-import logging
 import os
 import re
 import threading
 import time
+from collections import OrderedDict
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator, TypeVar
 
@@ -63,8 +75,6 @@ from helpers.normalization_service import (
 )
 
 logger = structlog.get_logger(__name__)
-# Force this specific module to emit DEBUG logs regardless of global config
-logging.getLogger(__name__).setLevel(logging.DEBUG)
 
 T = TypeVar("T")
 
@@ -86,11 +96,32 @@ __all__ = [
     "resolve_release_id",
 ]
 
-CACHE_FILE = os.getenv(
-    "MUSICBRAINZ_CACHE_FILE",
-    "/tmp/mbid_cache.json" if os.path.exists("/tmp") else "mbid_cache.json",
-)
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+def _default_cache_file() -> str:
+    """Choose a cache path that survives a container restart where possible.
+
+    ``/tmp`` is deliberately the last resort: a worker restart wipes it and
+    every MBID has to be looked up again, which is exactly the request storm
+    this cache exists to prevent.
+    """
+    for candidate in ("/data", "/config", "/var/lib/popularr"):
+        if os.path.isdir(candidate) and os.access(candidate, os.W_OK):
+            return os.path.join(candidate, "mbid_cache.json")
+    return "mbid_cache.json"
+
+
+CACHE_FILE = os.getenv("MUSICBRAINZ_CACHE_FILE", "") or _default_cache_file()
+
 _HEARTBEAT_SECONDS = max(5.0, float(os.getenv("MUSICBRAINZ_HEARTBEAT_SECONDS", "30")))
+_MONITOR_TICK_SECONDS = 2.0
+
+# Flush the MBID cache to disk at most this often instead of on every write.
+_CACHE_FLUSH_SECONDS = max(
+    5.0, float(os.getenv("MUSICBRAINZ_CACHE_FLUSH_SECONDS", "30"))
+)
 
 _CACHE_IO_LOCK = threading.Lock()
 # Must be re-entrant. get_shared_mb_service() holds this lock and then calls
@@ -103,6 +134,9 @@ _MBID_CACHE_SIMILARITY_FLOOR = 0.6
 _MBID_CACHE_TTL_SECONDS = 30 * 24 * 3600
 _MBID_CACHE_MAX_SIZE = 5000
 _RELEASE_GROUP_MATCH_FLOOR = 0.6
+
+# How many release-group candidates get the (expensive) track-count refinement.
+_TRACK_COUNT_REFINE_LIMIT = 3
 
 _COMPARE_LIBRARY_TRACKS_SQL = """
     SELECT id, title, track_number, disc_number, artist, year,
@@ -126,6 +160,14 @@ def _year_of(value: Any) -> int | None:
     """Return the four-digit year from a MusicBrainz date value."""
     text = str(value or "").strip()
     return int(text[:4]) if len(text) >= 4 and text[:4].isdigit() else None
+
+
+def _as_int(value: Any, default: int = 0) -> int:
+    """Coerce a MusicBrainz numeric field that may arrive as a string."""
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
 
 
 @contextmanager
@@ -152,6 +194,59 @@ def _logged_section(section: str, **context: Any) -> Iterator[None]:
         )
 
 
+# ---------------------------------------------------------------------------
+# Shared heartbeat monitor
+#
+# One background thread watches every in-flight call, rather than spawning a
+# thread per call. At a few hundred MusicBrainz calls per scan the old
+# per-call threads were pure overhead.
+# ---------------------------------------------------------------------------
+
+_INFLIGHT_LOCK = threading.Lock()
+_INFLIGHT: "OrderedDict[int, dict[str, Any]]" = OrderedDict()
+_INFLIGHT_IDS = itertools.count()
+_MONITOR_THREAD: threading.Thread | None = None
+
+
+def _monitor_loop() -> None:
+    while True:
+        time.sleep(_MONITOR_TICK_SECONDS)
+        now = time.monotonic()
+        due: list[dict[str, Any]] = []
+        with _INFLIGHT_LOCK:
+            for entry in _INFLIGHT.values():
+                if now >= entry["next_warn"]:
+                    entry["next_warn"] = now + _HEARTBEAT_SECONDS
+                    due.append(
+                        {
+                            "section": entry["section"],
+                            "elapsed_s": round(now - entry["started"], 1),
+                            "context": entry["context"],
+                        }
+                    )
+        for item in due:
+            logger.warning(
+                "[MB] call still running",
+                section=item["section"],
+                elapsed_s=item["elapsed_s"],
+                **item["context"],
+            )
+
+
+def _ensure_monitor() -> None:
+    global _MONITOR_THREAD
+    if _MONITOR_THREAD is not None and _MONITOR_THREAD.is_alive():
+        return
+    with _INIT_LOCK:
+        if _MONITOR_THREAD is None or not _MONITOR_THREAD.is_alive():
+            _MONITOR_THREAD = threading.Thread(
+                target=_monitor_loop,
+                name="mb-heartbeat-monitor",
+                daemon=True,
+            )
+            _MONITOR_THREAD.start()
+
+
 def _call_with_heartbeat(
     section: str,
     func: Callable[..., T],
@@ -163,27 +258,24 @@ def _call_with_heartbeat(
 
     This does not cancel a blocked request. Connection and read timeouts belong
     in MusicBrainzHttpClient. This makes a stalled call visible in the logs.
+
+    Note that the "started" log is emitted before the call enters the HTTP
+    client's rate-limit turnstile, so overlapping start/complete pairs in the
+    log indicate queued callers, not concurrent HTTP requests.
     """
     context = dict(log_context or {})
     started = time.monotonic()
-    stopped = threading.Event()
-
-    def heartbeat() -> None:
-        while not stopped.wait(_HEARTBEAT_SECONDS):
-            logger.warning(
-                "[MB] call still running",
-                section=section,
-                elapsed_s=round(time.monotonic() - started, 1),
-                **context,
-            )
+    _ensure_monitor()
+    call_id = next(_INFLIGHT_IDS)
+    with _INFLIGHT_LOCK:
+        _INFLIGHT[call_id] = {
+            "section": section,
+            "started": started,
+            "context": context,
+            "next_warn": started + _HEARTBEAT_SECONDS,
+        }
 
     logger.info("[MB] call started", section=section, **context)
-    monitor = threading.Thread(
-        target=heartbeat,
-        name=f"mb-heartbeat-{section}",
-        daemon=True,
-    )
-    monitor.start()
     try:
         result = func(*args, **kwargs)
     except Exception as exc:
@@ -204,8 +296,8 @@ def _call_with_heartbeat(
         )
         return result
     finally:
-        stopped.set()
-        monitor.join(timeout=0.2)
+        with _INFLIGHT_LOCK:
+            _INFLIGHT.pop(call_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +382,18 @@ def _compose_album_type(primary_type: str, secondary_types: list[str]) -> str:
     return f"{primary}+{secondary}" if secondary else primary
 
 
+def _release_group_primary_type(group: Any) -> str:
+    """Read a release group's primary type across MB response shapes."""
+    if not isinstance(group, dict):
+        return ""
+    return str(
+        group.get("primary-type")
+        or group.get("primary_type")
+        or group.get("type")
+        or ""
+    ).casefold()
+
+
 def _artist_lookup_candidates(artist: str) -> list[str]:
     result: list[str] = []
     seen: set[str] = set()
@@ -343,6 +447,36 @@ def _recording_matches_album(recording: dict[str, Any], album: str) -> bool:
     return False
 
 
+def _release_track_count(release: Any) -> int:
+    """Total track count for a release, tolerating string counts."""
+    if not isinstance(release, dict):
+        return 0
+    direct = _as_int(release.get("track-count"), 0)
+    if direct > 0:
+        return direct
+    return sum(
+        _as_int(medium.get("track-count"), 0)
+        for medium in release.get("media") or []
+        if isinstance(medium, dict)
+    )
+
+
+def _client_available(client: Any) -> bool:
+    """Return False when the HTTP client reports MusicBrainz as unavailable.
+
+    The HTTP client is expected to expose ``is_available()`` once its circuit
+    breaker lands. Until then this degrades to "always available", so nothing
+    changes behaviourally.
+    """
+    checker = getattr(client, "is_available", None)
+    if not callable(checker):
+        return True
+    try:
+        return bool(checker())
+    except Exception:
+        return True
+
+
 # ---------------------------------------------------------------------------
 # Module-level singletons
 # ---------------------------------------------------------------------------
@@ -357,23 +491,14 @@ def get_shared_mb_client() -> MusicBrainzHttpClient:
     global _SHARED_MB_CLIENT
 
     if _SHARED_MB_CLIENT is not None:
-        logger.debug(
-            "[MB] shared HTTP client cache hit",
-            client_type=type(_SHARED_MB_CLIENT).__name__,
-        )
         return _SHARED_MB_CLIENT
 
     started = time.monotonic()
     logger.info("[MB] shared HTTP client initialization requested")
 
     with _INIT_LOCK:
-        logger.info(
-            "[MB] shared HTTP client initialization lock acquired",
-            elapsed_s=round(time.monotonic() - started, 3),
-        )
         if _SHARED_MB_CLIENT is None:
             creation_started = time.monotonic()
-            logger.info("[MB] shared HTTP client creation started")
             try:
                 _SHARED_MB_CLIENT = MusicBrainzHttpClient(enabled=True)
             except Exception as exc:
@@ -389,16 +514,48 @@ def get_shared_mb_client() -> MusicBrainzHttpClient:
                 elapsed_s=round(time.monotonic() - creation_started, 3),
             )
         else:
-            logger.info(
-                "[MB] shared HTTP client was initialized by another caller",
-                client_type=type(_SHARED_MB_CLIENT).__name__,
-            )
+            logger.debug("[MB] shared HTTP client was initialized by another caller")
 
     logger.info(
         "[MB] shared HTTP client ready",
         total_s=round(time.monotonic() - started, 3),
     )
     return _SHARED_MB_CLIENT
+
+
+# ---------------------------------------------------------------------------
+# Best-release memoisation
+#
+# Release-group scoring refines its top candidates by track count, and the
+# comparison path resolves the same group again. Without memoisation a single
+# album could trigger six or more identical browse requests.
+# ---------------------------------------------------------------------------
+
+_BEST_RELEASE_LOCK = threading.Lock()
+_BEST_RELEASE_CACHE: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
+_BEST_RELEASE_CACHE_MAX = 500
+
+
+def _best_release_cache_get(key: str) -> dict[str, Any] | None:
+    with _BEST_RELEASE_LOCK:
+        if key not in _BEST_RELEASE_CACHE:
+            return None
+        _BEST_RELEASE_CACHE.move_to_end(key)
+        return _BEST_RELEASE_CACHE[key]
+
+
+def _best_release_cache_set(key: str, value: dict[str, Any]) -> None:
+    with _BEST_RELEASE_LOCK:
+        _BEST_RELEASE_CACHE[key] = value
+        _BEST_RELEASE_CACHE.move_to_end(key)
+        while len(_BEST_RELEASE_CACHE) > _BEST_RELEASE_CACHE_MAX:
+            _BEST_RELEASE_CACHE.popitem(last=False)
+
+
+def clear_release_caches() -> None:
+    """Drop memoised best-release results between major pipeline runs."""
+    with _BEST_RELEASE_LOCK:
+        _BEST_RELEASE_CACHE.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -421,20 +578,27 @@ class MusicBrainzService:
         )
         self.enabled = enabled
         self.http = http_client or MusicBrainzHttpClient(enabled=enabled)
+        # Memoised artist-wide release-group results, keyed by casefolded artist.
         self._artist_singles_cache: dict[str, list[dict[str, Any]]] = {}
         self._album_year_cache: dict[str, int | None] = {}
+        self._single_result_cache: dict[str, bool] = {}
         self._mem_lock = threading.Lock()
-        self._mbid_cache = self._load_cache()
+        self._cache_dirty = False
+        self._cache_last_save = time.monotonic()
+        self._mbid_cache: "OrderedDict[str, Any]" = self._load_cache()
+        self._missing_release_group_warned = False
+        atexit.register(self.flush_cache)
         logger.info(
             "[MB] service construction completed",
             enabled=enabled,
+            cache_file=CACHE_FILE,
             cache_entries=len(self._mbid_cache),
             elapsed_s=round(time.monotonic() - started, 3),
         )
 
     # -- cache ------------------------------------------------------------
 
-    def _load_cache(self) -> dict[str, Any]:
+    def _load_cache(self) -> "OrderedDict[str, Any]":
         started = time.monotonic()
         logger.info("[MB] cache load started", cache_file=CACHE_FILE)
         with _CACHE_IO_LOCK:
@@ -445,7 +609,7 @@ class MusicBrainzService:
                         reason="cache file not found",
                         cache_file=CACHE_FILE,
                     )
-                    return {}
+                    return OrderedDict()
                 with open(CACHE_FILE, "r", encoding="utf-8") as handle:
                     raw = json.load(handle)
                 if not isinstance(raw, dict):
@@ -454,14 +618,14 @@ class MusicBrainzService:
                         reason="cache root was not an object",
                         cache_file=CACHE_FILE,
                     )
-                    return {}
-                output = {
-                    key: value
+                    return OrderedDict()
+                output: "OrderedDict[str, Any]" = OrderedDict(
+                    (key, value)
                     for key, value in raw.items()
                     if isinstance(value, (list, tuple))
                     and len(value) >= 2
                     and str(value[0] or "").strip()
-                }
+                )
                 logger.info(
                     "[MB] cache load completed",
                     cache_file=CACHE_FILE,
@@ -476,14 +640,43 @@ class MusicBrainzService:
                     cache_file=CACHE_FILE,
                     error=_error(exc),
                 )
-                return {}
+                return OrderedDict()
 
-    def _save_cache(self) -> None:
-        started = time.monotonic()
+    def _record_mbid(self, key: str, mbid: str, confidence: float) -> None:
+        """Insert an MBID result and mark the cache for a later flush."""
         with self._mem_lock:
+            self._mbid_cache[key] = (mbid, confidence, time.time())
+            self._mbid_cache.move_to_end(key)
+            # True LRU eviction: the least recently *used* entry goes first.
+            while len(self._mbid_cache) > _MBID_CACHE_MAX_SIZE:
+                try:
+                    self._mbid_cache.popitem(last=False)
+                except KeyError:
+                    break
+            self._cache_dirty = True
+
+    def _maybe_flush_cache(self, force: bool = False) -> None:
+        """Write the cache only when dirty and not written too recently.
+
+        The previous behaviour re-serialised and fsynced up to 5,000 entries on
+        every single matched track.
+        """
+        with self._mem_lock:
+            if not self._cache_dirty:
+                return
+            now = time.monotonic()
+            if not force and (now - self._cache_last_save) < _CACHE_FLUSH_SECONDS:
+                return
             data = dict(self._mbid_cache)
+            self._cache_dirty = False
+            self._cache_last_save = now
+
+        started = time.monotonic()
         with _CACHE_IO_LOCK:
             try:
+                directory = os.path.dirname(CACHE_FILE)
+                if directory:
+                    os.makedirs(directory, exist_ok=True)
                 tmp_path = f"{CACHE_FILE}.tmp"
                 with open(tmp_path, "w", encoding="utf-8") as handle:
                     json.dump(data, handle, separators=(",", ":"))
@@ -497,11 +690,28 @@ class MusicBrainzService:
                     elapsed_s=round(time.monotonic() - started, 3),
                 )
             except Exception as exc:
+                with self._mem_lock:
+                    self._cache_dirty = True
                 logger.exception(
                     "[MB] cache save failed",
                     cache_file=CACHE_FILE,
                     error=_error(exc),
                 )
+
+    def flush_cache(self) -> None:
+        """Force any pending MBID cache changes to disk."""
+        self._maybe_flush_cache(force=True)
+
+    def clear_transient_caches(self) -> None:
+        """Drop per-run memoisation between major multi-artist pipeline runs."""
+        with self._mem_lock:
+            self._artist_singles_cache.clear()
+            self._album_year_cache.clear()
+            self._single_result_cache.clear()
+        clear_release_caches()
+        clearer = getattr(self.http, "clear_caches", None)
+        if callable(clearer):
+            clearer()
 
     @staticmethod
     def _cache_key(title: str, artist: str) -> str:
@@ -535,6 +745,7 @@ class MusicBrainzService:
                 if mbid and (
                     cached_at is None or now - cached_at < _MBID_CACHE_TTL_SECONDS
                 ):
+                    self._mbid_cache.move_to_end(cache_key)
                     logger.info(
                         "[MB] recording suggestion cache hit",
                         mbid=mbid,
@@ -573,14 +784,8 @@ class MusicBrainzService:
                     best_score = score
 
             if best_mbid and best_score >= _MBID_CACHE_SIMILARITY_FLOOR:
-                with self._mem_lock:
-                    self._mbid_cache[cache_key] = (best_mbid, round(best_score, 3), now)
-                    while len(self._mbid_cache) > _MBID_CACHE_MAX_SIZE:
-                        try:
-                            self._mbid_cache.pop(next(iter(self._mbid_cache)))
-                        except (StopIteration, RuntimeError):
-                            break
-                self._save_cache()
+                self._record_mbid(cache_key, best_mbid, round(best_score, 3))
+                self._maybe_flush_cache()
 
             logger.info(
                 "[MB] recording suggestion completed",
@@ -679,6 +884,7 @@ class MusicBrainzService:
             logger.info(
                 "[MB] bulk recording lookup completed",
                 returned=len(results),
+                requested=len(mbids),
                 **context,
             )
             return results
@@ -869,7 +1075,9 @@ class MusicBrainzService:
                 log_context={**context, "query": query},
             ) or []
 
-            if not groups and clean_album:
+            # Only widen the search when the client is healthy. An empty result
+            # caused by a 503 must not escalate into a second query.
+            if not groups and clean_album and _client_available(self.http):
                 terms = normalize_title_for_lucene_query(clean_album)
                 if terms:
                     fallback_query = (
@@ -1053,7 +1261,7 @@ class MusicBrainzService:
             batch: list[tuple[str, str, float]] = []
             for title, artist in chunk:
                 normalized = normalize_title_for_mbid_match(title)
-                
+
                 candidates_ranked = []
                 for recording in recordings:
                     if not isinstance(recording, dict):
@@ -1061,36 +1269,36 @@ class MusicBrainzService:
                     candidate_title = str(recording.get("title") or "")
                     if not edition_annotations_compatible(title, candidate_title):
                         continue
-                    
+
                     # 1. Base Text Similarity
                     base_score = _mbid_similarity(
                         normalized,
                         normalize_title_for_mbid_match(candidate_title),
                     )
-                    
+
                     if base_score < _MB_BATCH_SIMILARITY_FLOOR:
                         continue
-                        
+
                     anchor = _recording_matches_album(recording, album)
-                    
+
                     # 2. Track Count Penalty (Defends against 88-track Box Sets)
                     penalty = 0.0
                     if local_track_count > 0:
                         best_diff = 999
                         for rel in recording.get("releases") or []:
-                            if not isinstance(rel, dict):
-                                continue
-                            rel_track_count = int(rel.get("track-count") or sum(int(m.get("track-count") or 0) for m in rel.get("media") or []))
+                            # Track counts can arrive as strings; coerce safely
+                            # so one odd release cannot abort the whole chunk.
+                            rel_track_count = _release_track_count(rel)
                             if rel_track_count > 0:
                                 diff = abs(local_track_count - rel_track_count)
                                 if diff < best_diff:
                                     best_diff = diff
-                                    
+
                         if best_diff != 999:
                             # 5% penalty per missing/extra track on the release
                             # E.g. An 8-track album matching an 88-track Box Set = 4.0 penalty (instantly rejected)
                             penalty = best_diff * 0.05
-                            
+
                     final_score = base_score - penalty
                     candidates_ranked.append((final_score, base_score, anchor, recording))
 
@@ -1102,10 +1310,10 @@ class MusicBrainzService:
                         **chunk_context,
                     )
                     continue
-                    
+
                 # Rank: Highest penalized score -> Is Album Anchor -> Highest raw text similarity
                 candidates_ranked.sort(key=lambda x: (x[0], x[2], x[1]), reverse=True)
-                
+
                 best_final_score, best_base_score, best_anchor, best_recording = candidates_ranked[0]
                 mbid = str(best_recording.get("id") or "").strip()
 
@@ -1115,8 +1323,7 @@ class MusicBrainzService:
                 key = self._cache_key(title, artist)
                 confidence = round(best_base_score, 3)
                 batch.append((key, mbid, confidence))
-                with self._mem_lock:
-                    self._mbid_cache[key] = (mbid, confidence, time.time())
+                self._record_mbid(key, mbid, confidence)
 
             if batch:
                 metadata = self.lookup_recordings_by_mbid_bulk(
@@ -1135,7 +1342,7 @@ class MusicBrainzService:
                         track_metadata["year"] = effective_year
                         track_metadata["original_release_year"] = effective_year
                     results[key] = track_metadata
-                self._save_cache()
+                self._maybe_flush_cache()
 
             logger.info(
                 "[MB] album recording chunk completed",
@@ -1164,16 +1371,28 @@ class MusicBrainzService:
         del album_track_count
         if not self.enabled or not title or not artist:
             return False
+
+        result_key = self._cache_key(title, artist)
+        with self._mem_lock:
+            if result_key in self._single_result_cache:
+                return self._single_result_cache[result_key]
+
         try:
+            outcome = False
             for candidate in _artist_lookup_candidates(artist):
                 if self._recording_search_has_single_release(title, candidate):
-                    return True
+                    outcome = True
+                    break
                 mbid, _ = self.get_suggested_mbid(title, candidate)
                 if mbid and self._recording_has_single_release(mbid, title):
-                    return True
+                    outcome = True
+                    break
                 if self._release_group_has_single_release(title, candidate):
-                    return True
-            return False
+                    outcome = True
+                    break
+            with self._mem_lock:
+                self._single_result_cache[result_key] = outcome
+            return outcome
         except Exception as exc:
             logger.exception(
                 "[MB] single detection failed",
@@ -1182,6 +1401,51 @@ class MusicBrainzService:
                 error=_error(exc),
             )
             return False
+
+    def _artist_release_groups(self, artist: str) -> list[dict[str, Any]]:
+        """Return every release group credited to *artist*, memoised.
+
+        This query carries no track-specific terms, so it is identical for
+        every track by the same artist. Without memoisation a 15-track album
+        fired it 15 times; it now costs one request per artist per run.
+        """
+        key = str(artist or "").casefold().strip()
+        if not key:
+            return []
+        with self._mem_lock:
+            cached = self._artist_singles_cache.get(key)
+        if cached is not None:
+            logger.debug(
+                "[MB] artist release-group cache hit",
+                artist=artist,
+                group_count=len(cached),
+            )
+            return cached
+
+        if not _client_available(self.http):
+            logger.info(
+                "[MB] artist release-group fallback skipped",
+                reason="MusicBrainz reported unavailable",
+                artist=artist,
+            )
+            return []
+
+        groups = _call_with_heartbeat(
+            "single.release_group_artist_fallback",
+            self.http.search_release_groups,
+            f'artist:"{escape_lucene_special_chars(artist)}"',
+            limit=100,
+            log_context={"artist": artist},
+        ) or []
+        groups = [group for group in groups if isinstance(group, dict)]
+        with self._mem_lock:
+            self._artist_singles_cache[key] = groups
+        logger.info(
+            "[MB] artist release-group fallback cached",
+            artist=artist,
+            group_count=len(groups),
+        )
+        return groups
 
     def _release_group_has_single_release(self, title: str, artist: str) -> bool:
         query_title = normalize_title_for_lucene_query(strip_search_keywords(title))
@@ -1198,24 +1462,12 @@ class MusicBrainzService:
             log_context=context,
         ) or []
         if not groups:
-            groups = _call_with_heartbeat(
-                "single.release_group_artist_fallback",
-                self.http.search_release_groups,
-                f'artist:"{escape_lucene_special_chars(artist)}"',
-                limit=50,
-                log_context=context,
-            ) or []
+            groups = self._artist_release_groups(artist)
         normalized = normalize_title_for_lookup(title)
         for group in groups:
             if not isinstance(group, dict):
                 continue
-            primary = str(
-                group.get("primary-type")
-                or group.get("primary_type")
-                or group.get("type")
-                or ""
-            ).casefold()
-            if primary not in {"single", "ep"}:
+            if _release_group_primary_type(group) not in {"single", "ep"}:
                 continue
             group_title = str(group.get("title") or "")
             if not edition_annotations_compatible(title, group_title):
@@ -1244,15 +1496,10 @@ class MusicBrainzService:
                 if not isinstance(release, dict):
                     continue
                 group = release.get("release-group") or {}
-                primary = str(
-                    group.get("primary-type")
-                    or group.get("primary_type")
-                    or group.get("type")
-                    or ""
-                ).casefold()
-                if primary in {"single", "ep"} and self._rg_title_matches(
-                    title, str(group.get("title") or "")
-                ):
+                if _release_group_primary_type(group) in {
+                    "single",
+                    "ep",
+                } and self._rg_title_matches(title, str(group.get("title") or "")):
                     return True
         return False
 
@@ -1276,15 +1523,34 @@ class MusicBrainzService:
             inc="releases+release-groups",
             log_context={"mbid": mbid, "title": title},
         )
-        for release in (recording or {}).get("releases") or []:
+        releases = (recording or {}).get("releases") or []
+
+        # This check is only meaningful when the response actually carries
+        # release-group sub-documents. If the HTTP client drops the requested
+        # `inc`, every release looks typeless and the answer is a false
+        # negative, so say so loudly once rather than silently returning False.
+        if releases and not any(
+            isinstance(release, dict) and release.get("release-group")
+            for release in releases
+        ):
+            if not self._missing_release_group_warned:
+                self._missing_release_group_warned = True
+                logger.warning(
+                    "[MB] recording lookup returned no release-group data",
+                    reason=(
+                        "the requested inc=release-groups was not honoured; "
+                        "single detection via recording lookup cannot succeed"
+                    ),
+                    mbid=mbid,
+                    title=title,
+                )
+            return False
+
+        for release in releases:
             if not isinstance(release, dict):
                 continue
             group = release.get("release-group") or {}
-            primary = str(
-                group.get("primary-type") or group.get("primary_type") or ""
-            ).casefold()
-            release_type = str(group.get("type") or "").casefold()
-            if primary not in {"single", "ep"} and release_type not in {"single", "ep"}:
+            if _release_group_primary_type(group) not in {"single", "ep"}:
                 continue
             if not title or self._rg_title_matches(
                 title, str(group.get("title") or "")
@@ -1389,7 +1655,9 @@ class MusicBrainzService:
         except Exception:
             groups = []
 
-        if not groups and clean_album:
+        # Do not widen the query while MusicBrainz is failing: an empty result
+        # from a 503 is indistinguishable from a genuine miss.
+        if not groups and clean_album and _client_available(self.http):
             terms = normalize_title_for_lucene_query(clean_album)
             if terms:
                 fallback_query = f'artist:"{escaped_artist}" AND releasegroup:{terms}'
@@ -1411,7 +1679,7 @@ class MusicBrainzService:
                 )
 
         matches: list[dict[str, Any]] = []
-        
+
         # Pass 1: Base Text and Type Scoring
         with _logged_section(
             "release_group.scoring", candidate_count=len(groups), **context
@@ -1465,25 +1733,37 @@ class MusicBrainzService:
         # Sort to surface the best text/type matches before hitting the API for track counts
         matches.sort(key=lambda item: item.get("match_score", 0.0), reverse=True)
 
-        # Pass 2: Track Count Penalty for the top 3 candidates
+        # Pass 2: Track Count Penalty for the top candidates. Each browse is
+        # memoised per release group, so repeated scoring of the same album no
+        # longer re-issues the same request.
         if expected_count and matches:
-            for match in matches[:3]:
+            refined = 0
+            for match in matches[:_TRACK_COUNT_REFINE_LIMIT]:
+                group_id = str(match.get("id") or "")
+                if not group_id:
+                    continue
                 best_release_data = get_musicbrainz_best_release(
-                    artist_name, 
-                    album_name, 
-                    match["id"]
+                    artist_name,
+                    album_name,
+                    group_id,
                 )
-                
-                best_rel = best_release_data.get("best_release")
+
+                best_rel = (best_release_data or {}).get("best_release")
                 if best_rel and best_rel.get("track_count"):
-                    diff = abs(expected_count - int(best_rel["track_count"]))
-                    penalty = diff * 0.05
-                    match["match_score"] -= penalty
+                    diff = abs(expected_count - _as_int(best_rel["track_count"], 0))
+                    match["match_score"] -= diff * 0.05
+                    refined += 1
+            logger.debug(
+                "[MB] release-group track-count refinement completed",
+                refined_candidates=refined,
+                expected_track_count=expected_count,
+                **context,
+            )
 
         # Round and final sort
         for match in matches:
             match["match_score"] = round(match["match_score"], 3)
-            
+
         matches.sort(key=lambda item: item.get("match_score", 0.0), reverse=True)
 
         best = matches[0] if matches else {}
@@ -1663,16 +1943,11 @@ def _get_service() -> MusicBrainzService:
     """Return the default process-wide MusicBrainz service."""
     global _service
     if _service is not None:
-        logger.debug("[MB] default service cache hit")
         return _service
 
     started = time.monotonic()
     logger.info("[MB] default service initialization requested")
     with _INIT_LOCK:
-        logger.info(
-            "[MB] default service initialization lock acquired",
-            elapsed_s=round(time.monotonic() - started, 3),
-        )
         if _service is None:
             client = get_shared_mb_client()
             with _logged_section("singleton.default_service.create"):
@@ -1688,23 +1963,13 @@ def get_shared_mb_service() -> MusicBrainzService:
     """Return the shared MusicBrainz enrichment service."""
     global _shared_mb_service
     if _shared_mb_service is not None:
-        logger.debug("[MB] shared service cache hit")
         return _shared_mb_service
 
     started = time.monotonic()
     logger.info("[MB] shared service initialization requested")
     with _INIT_LOCK:
-        logger.info(
-            "[MB] shared service initialization lock acquired",
-            elapsed_s=round(time.monotonic() - started, 3),
-        )
         if _shared_mb_service is None:
-            logger.info("[MB] requesting HTTP client for shared service")
             client = get_shared_mb_client()
-            logger.info(
-                "[MB] HTTP client acquired for shared service",
-                client_type=type(client).__name__,
-            )
             with _logged_section("singleton.shared_service.create"):
                 _shared_mb_service = MusicBrainzService(http_client=client, enabled=True)
     logger.info(
@@ -1950,13 +2215,6 @@ def resolve_release_id(release_id: str) -> str:
             log_context=context,
         ) or []
 
-        def track_count(release: dict[str, Any]) -> int:
-            return sum(
-                int(medium.get("track-count") or 0)
-                for medium in release.get("media") or []
-                if isinstance(medium, dict)
-            )
-
         official = [
             release
             for release in releases
@@ -1964,27 +2222,27 @@ def resolve_release_id(release_id: str) -> str:
             and str(release.get("status") or "").casefold() == "official"
         ]
         candidates = [
-            release for release in (official or releases) if track_count(release) > 0
+            release
+            for release in (official or releases)
+            if _release_track_count(release) > 0
         ] or official or releases
-        
+
         if candidates:
             def _sort_by_date(rel: dict[str, Any]) -> tuple[int, str]:
-                date_str = str(rel.get("date") or "9999")
-                if not date_str:
-                    date_str = "9999"
+                date_str = str(rel.get("date") or "").strip() or "9999"
                 return (1 if date_str == "9999" else 0, date_str)
-            
+
             best = sorted(candidates, key=_sort_by_date)[0]
             resolved = str(best.get("id") or release_id)
             logger.info(
                 "[MB] release group resolved to release",
                 resolved_id=resolved,
-                tracks=track_count(best),
+                tracks=_release_track_count(best),
                 status=best.get("status"),
                 **context,
             )
             return resolved
-            
+
         logger.info("[MB] release-group resolution found no candidates", **context)
     except Exception as exc:
         logger.exception(
@@ -2140,52 +2398,74 @@ def lookup_musicbrainz_album(
     return {"results": (stored_results + other_results)[:11]}
 
 
+def _release_summary(release: dict[str, Any]) -> dict[str, Any]:
+    """Normalise a MusicBrainz release into the shape callers expect."""
+    media = release.get("media") or []
+    release_id = str(release.get("id") or "")
+    return {
+        "id": release_id,
+        "title": release.get("title", ""),
+        "date": release.get("date", ""),
+        "country": release.get("country", ""),
+        "status": release.get("status", ""),
+        "disambiguation": release.get("disambiguation", ""),
+        "track_count": _release_track_count(release),
+        "disc_count": len(media),
+        "formats": sorted(
+            {
+                str(medium.get("format") or "").strip()
+                for medium in media
+                if isinstance(medium, dict) and medium.get("format")
+            }
+        ),
+        "cover_art_url": _cover_art_url(release_id=release_id),
+    }
+
+
+def _browse_group_releases(release_group_mbid: str, section: str) -> list[dict[str, Any]]:
+    """Browse a release group's releases with media included, memoised.
+
+    Browsing with ``inc=media`` returns track counts directly, which removes
+    the second "enrichment" browse the old code issued for the same group.
+    """
+    cache_key = f"browse::{release_group_mbid}"
+    cached = _best_release_cache_get(cache_key)
+    if cached is not None:
+        return list(cached.get("releases") or [])
+
+    raw = _call_with_heartbeat(
+        section,
+        get_shared_mb_client().browse_releases_for_group,
+        release_group_mbid,
+        inc="media+labels",
+        limit=100,
+        log_context={"release_group_mbid": release_group_mbid},
+    ) or []
+    releases = [
+        _release_summary(release) for release in raw if isinstance(release, dict)
+    ]
+    _best_release_cache_set(cache_key, {"releases": releases})
+    return releases
+
+
 def get_release_group_releases(
     release_group_mbid: str,
     include_track_counts: bool = False,
 ) -> dict[str, Any]:
+    """List a release group's releases.
+
+    ``include_track_counts`` is retained for API compatibility; track counts
+    now always come back from the single browse, so no second request is made.
+    """
+    del include_track_counts
+    if not release_group_mbid:
+        return {"success": False, "error": "No release-group MBID supplied"}
     try:
-        data = _call_with_heartbeat(
-            "release_group.get_releases",
-            get_shared_mb_client().get_release_group,
-            release_group_mbid,
-            inc="releases",
-            log_context={"release_group_mbid": release_group_mbid},
+        releases = _browse_group_releases(
+            release_group_mbid, "release_group.get_releases"
         )
-        if not data:
+        if not releases:
             return {"success": False, "error": "No release-group data returned"}
-        releases: list[dict[str, Any]] = []
-        for release in data.get("releases") or []:
-            if not isinstance(release, dict):
-                continue
-            media = release.get("media") or []
-            release_id = str(release.get("id") or "")
-            releases.append(
-                {
-                    "id": release_id,
-                    "title": release.get("title", ""),
-                    "date": release.get("date", ""),
-                    "country": release.get("country", ""),
-                    "status": release.get("status", ""),
-                    "disambiguation": release.get("disambiguation", ""),
-                    "track_count": sum(
-                        int(medium.get("track-count") or 0)
-                        for medium in media
-                        if isinstance(medium, dict)
-                    ),
-                    "disc_count": len(media),
-                    "formats": sorted(
-                        {
-                            str(medium.get("format") or "").strip()
-                            for medium in media
-                            if isinstance(medium, dict) and medium.get("format")
-                        }
-                    ),
-                    "cover_art_url": _cover_art_url(release_id=release_id),
-                }
-            )
-        if include_track_counts and releases:
-            _enrich_releases_with_track_counts(releases, release_group_mbid)
         return {"success": True, "releases": releases}
     except Exception as exc:
         logger.exception(
@@ -2194,42 +2474,6 @@ def get_release_group_releases(
             error=_error(exc),
         )
         return {"success": False, "error": str(exc)}
-
-
-def _enrich_releases_with_track_counts(
-    releases: list[dict[str, Any]],
-    release_group_mbid: str | None = None,
-) -> None:
-    if not releases or not release_group_mbid:
-        return
-    try:
-        browsed = _call_with_heartbeat(
-            "release_group.track_counts",
-            get_shared_mb_client().browse_releases_for_group,
-            release_group_mbid,
-            inc="media",
-            limit=100,
-            log_context={"release_group_mbid": release_group_mbid},
-        ) or []
-        counts = {
-            str(release.get("id")): sum(
-                int(medium.get("track-count") or 0)
-                for medium in release.get("media") or []
-                if isinstance(medium, dict)
-            )
-            for release in browsed
-            if isinstance(release, dict) and release.get("id")
-        }
-        for release in releases:
-            release_id = str(release.get("id") or "")
-            if counts.get(release_id, 0) > 0:
-                release["track_count"] = counts[release_id]
-    except Exception as exc:
-        logger.exception(
-            "[MB] release track-count enrichment failed",
-            release_group_mbid=release_group_mbid,
-            error=_error(exc),
-        )
 
 
 def _get_local_track_stats(artist: str, album: str) -> tuple[int, int]:
@@ -2246,14 +2490,14 @@ def _get_local_track_stats(artist: str, album: str) -> tuple[int, int]:
                 ),
                 {"artist": artist, "album": album},
             ).fetchall()
-            
+
             count = len(rows)
             max_track = 0
             for row in rows:
                 tn_raw = str(row[0] or "").split('/')[0].strip()
                 if tn_raw.isdigit():
                     max_track = max(max_track, int(tn_raw))
-                    
+
             return count, max_track
     except Exception as exc:
         logger.exception(
@@ -2275,60 +2519,35 @@ def get_musicbrainz_best_release(
         "album": album,
         "release_group_mbid": release_group_mbid,
     }
-    try:
-        raw = _call_with_heartbeat(
-            "release_group.best_release_browse",
-            get_shared_mb_client().browse_releases_for_group,
-            release_group_mbid,
-            inc="media+labels",
-            limit=50,
-            log_context=context,
-        ) or []
-        releases: list[dict[str, Any]] = []
-        for release in raw:
-            if not isinstance(release, dict):
-                continue
-            media = release.get("media") or []
-            release_id = str(release.get("id") or "")
-            releases.append(
-                {
-                    "id": release_id,
-                    "title": release.get("title", ""),
-                    "date": release.get("date", ""),
-                    "country": release.get("country", ""),
-                    "status": release.get("status", ""),
-                    "disambiguation": release.get("disambiguation", ""),
-                    "track_count": sum(
-                        int(medium.get("track-count") or 0)
-                        for medium in media
-                        if isinstance(medium, dict)
-                    ),
-                    "disc_count": len(media),
-                    "formats": sorted(
-                        {
-                            str(medium.get("format") or "").strip()
-                            for medium in media
-                            if isinstance(medium, dict) and medium.get("format")
-                        }
-                    ),
-                    "cover_art_url": _cover_art_url(release_id=release_id),
-                }
-            )
-            
-        if releases and any(r["track_count"] == 0 for r in releases):
-            _enrich_releases_with_track_counts(releases, release_group_mbid)
+    if not release_group_mbid:
+        return {"success": False, "error": "No release-group MBID supplied"}
 
+    result_key = (
+        f"best::{release_group_mbid}::{str(artist).casefold().strip()}"
+        f"::{str(album).casefold().strip()}"
+    )
+    cached_result = _best_release_cache_get(result_key)
+    if cached_result is not None:
+        logger.debug("[MB] best release cache hit", **context)
+        return cached_result
+
+    try:
+        releases = _browse_group_releases(
+            release_group_mbid, "release_group.best_release_browse"
+        )
         releases.sort(key=lambda item: (not bool(item.get("date")), item.get("date") or ""))
 
         if not releases:
             logger.info("[MB] best release resolution found no releases", **context)
-            return {
+            empty = {
                 "success": True,
                 "releases": [],
                 "best_release": None,
                 "confidence": 0,
                 "local_track_count": None,
             }
+            _best_release_cache_set(result_key, empty)
+            return empty
 
         local_count, max_track = _get_local_track_stats(artist, album)
         expected_count = max(local_count, max_track) if local_count > 0 else None
@@ -2336,7 +2555,7 @@ def get_musicbrainz_best_release(
         def score(item: dict[str, Any]) -> float:
             value = 0.0
             if expected_count is not None:
-                value -= abs(expected_count - int(item.get("track_count") or 0)) * 100.0
+                value -= abs(expected_count - _as_int(item.get("track_count"), 0)) * 100.0
             if str(item.get("status") or "").casefold() == "official":
                 value += 50.0
             date = str(item.get("date") or "")
@@ -2350,7 +2569,7 @@ def get_musicbrainz_best_release(
         if expected_count is None:
             confidence = 0.5
         else:
-            difference = abs(expected_count - int(best.get("track_count") or 0))
+            difference = abs(expected_count - _as_int(best.get("track_count"), 0))
             confidence = 1.0 if difference == 0 else max(0.0, 1.0 - difference * 0.2)
 
         logger.info(
@@ -2363,13 +2582,15 @@ def get_musicbrainz_best_release(
             confidence=round(confidence, 2),
             **context,
         )
-        return {
+        result = {
             "success": True,
             "releases": releases,
             "best_release": best,
             "confidence": round(confidence, 2),
             "local_track_count": expected_count,
         }
+        _best_release_cache_set(result_key, result)
+        return result
     except Exception as exc:
         logger.exception(
             "[MB] best release resolution failed",
