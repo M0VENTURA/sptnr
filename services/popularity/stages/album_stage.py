@@ -6,26 +6,39 @@ to existing services.enrichment.* and services.metadata.* modules.
 This rebuild adds:
 - start, completion, failure, skip and heartbeat logs for every scan section
 - provider-level album-art logging
-- slow-call heartbeat logging around external services
+- a single shared heartbeat monitor rather than a thread per call
 - defensive result parsing
 - UTC-aware cache timestamps
 - same-session genre updates to avoid nested write transactions/SQLite locks
 - consistent exception logging with elapsed time
+
+Correctness controls added in this revision:
+- MusicBrainz secondary types (live/acoustic/remix/compilation) must be
+  corroborated by the local album or track titles before they are adopted.
+  An uncorroborated "+live" classification previously renamed every studio
+  track on the album to "... (Live)" and wrote that to the audio files.
+- Per-album re-entrancy guard so two pipelines cannot enrich the same album
+  concurrently.
+- Per-row SAVEPOINTs in write loops, so one failed row cannot abort the whole
+  PostgreSQL transaction and silently drop every remaining update.
+- Release MBID resolution is skipped when no track actually needs one.
 """
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import re
 import threading
 import time
+from collections import OrderedDict
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterator, TypeVar
 
 import httpx
 import structlog
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 from db.engine import db_session
 from db.utils import row_get
@@ -53,12 +66,16 @@ _SLOW_CALL_HEARTBEAT_SECONDS = max(
     5.0,
     float(os.getenv("ENRICHMENT_HEARTBEAT_SECONDS", "30")),
 )
+_MONITOR_TICK_SECONDS = 2.0
 _HTTP_TIMEOUT = httpx.Timeout(
     connect=float(os.getenv("ENRICHMENT_HTTP_CONNECT_TIMEOUT", "5")),
     read=float(os.getenv("ENRICHMENT_HTTP_READ_TIMEOUT", "15")),
     write=float(os.getenv("ENRICHMENT_HTTP_WRITE_TIMEOUT", "15")),
     pool=float(os.getenv("ENRICHMENT_HTTP_POOL_TIMEOUT", "5")),
 )
+
+# Artwork downloads that exceed this are rejected rather than stored.
+_MAX_ARTWORK_BYTES = int(os.getenv("ENRICHMENT_MAX_ARTWORK_BYTES", str(20 * 1024 * 1024)))
 
 
 def _safe_error(exc: BaseException) -> str:
@@ -89,6 +106,59 @@ def _log_section(section: str, **context: Any) -> Iterator[None]:
         )
 
 
+# ---------------------------------------------------------------------------
+# Shared heartbeat monitor
+#
+# One background thread watches every in-flight call. The previous
+# implementation started (and joined) a thread for each individual call.
+# ---------------------------------------------------------------------------
+
+_INFLIGHT_LOCK = threading.Lock()
+_INFLIGHT: "OrderedDict[int, dict[str, Any]]" = OrderedDict()
+_INFLIGHT_IDS = itertools.count()
+_MONITOR_THREAD: threading.Thread | None = None
+_MONITOR_INIT_LOCK = threading.Lock()
+
+
+def _monitor_loop() -> None:
+    while True:
+        time.sleep(_MONITOR_TICK_SECONDS)
+        now = time.monotonic()
+        due: list[dict[str, Any]] = []
+        with _INFLIGHT_LOCK:
+            for entry in _INFLIGHT.values():
+                if now >= entry["next_warn"]:
+                    entry["next_warn"] = now + _SLOW_CALL_HEARTBEAT_SECONDS
+                    due.append(
+                        {
+                            "section": entry["section"],
+                            "elapsed_s": round(now - entry["started"], 1),
+                            "context": entry["context"],
+                        }
+                    )
+        for item in due:
+            logger.warning(
+                "[ENRICH] section still running",
+                section=item["section"],
+                elapsed_s=item["elapsed_s"],
+                **item["context"],
+            )
+
+
+def _ensure_monitor() -> None:
+    global _MONITOR_THREAD
+    if _MONITOR_THREAD is not None and _MONITOR_THREAD.is_alive():
+        return
+    with _MONITOR_INIT_LOCK:
+        if _MONITOR_THREAD is None or not _MONITOR_THREAD.is_alive():
+            _MONITOR_THREAD = threading.Thread(
+                target=_monitor_loop,
+                name="enrichment-heartbeat-monitor",
+                daemon=True,
+            )
+            _MONITOR_THREAD.start()
+
+
 def _call_with_heartbeat(
     section: str,
     func: Callable[..., T],
@@ -99,24 +169,17 @@ def _call_with_heartbeat(
     """Run a call synchronously while emitting periodic slow-call logs."""
     context = dict(log_context or {})
     start = time.monotonic()
-    stop_event = threading.Event()
-
-    def heartbeat() -> None:
-        while not stop_event.wait(_SLOW_CALL_HEARTBEAT_SECONDS):
-            logger.warning(
-                "[ENRICH] section still running",
-                section=section,
-                elapsed_s=round(time.monotonic() - start, 1),
-                **context,
-            )
+    _ensure_monitor()
+    call_id = next(_INFLIGHT_IDS)
+    with _INFLIGHT_LOCK:
+        _INFLIGHT[call_id] = {
+            "section": section,
+            "started": start,
+            "context": context,
+            "next_warn": start + _SLOW_CALL_HEARTBEAT_SECONDS,
+        }
 
     logger.info("[ENRICH] call started", section=section, **context)
-    monitor = threading.Thread(
-        target=heartbeat,
-        name=f"enrichment-heartbeat-{section}",
-        daemon=True,
-    )
-    monitor.start()
     try:
         result = func(*args, **kwargs)
     except Exception as exc:
@@ -137,8 +200,69 @@ def _call_with_heartbeat(
         )
         return result
     finally:
-        stop_event.set()
-        monitor.join(timeout=0.2)
+        with _INFLIGHT_LOCK:
+            _INFLIGHT.pop(call_id, None)
+
+
+@contextmanager
+def _row_savepoint(session: Any) -> Iterator[None]:
+    """Isolate a single row write inside a SAVEPOINT.
+
+    On PostgreSQL any failed statement aborts the enclosing transaction, so a
+    loop that catches the exception and continues would have every subsequent
+    statement fail with "current transaction is aborted". Nesting each row in a
+    SAVEPOINT means one bad row is rolled back on its own.
+    """
+    nested = session.begin_nested()
+    try:
+        yield
+    except Exception:
+        try:
+            nested.rollback()
+        except Exception:
+            pass
+        raise
+    else:
+        if nested.is_active:
+            nested.commit()
+
+
+# ---------------------------------------------------------------------------
+# Per-album re-entrancy guard
+# ---------------------------------------------------------------------------
+
+_ACTIVE_ALBUMS_LOCK = threading.Lock()
+_ACTIVE_ALBUMS: dict[tuple[str, str], float] = {}
+
+
+@contextmanager
+def _album_scan_guard(artist: str, album: str) -> Iterator[bool]:
+    """Yield False when this album is already being enriched elsewhere.
+
+    Two pipelines (for example a Navidrome import and a popularity scan) could
+    previously enrich the same album at the same time, duplicating every
+    external lookup and racing on the same rows.
+    """
+    key = (str(artist or "").casefold().strip(), str(album or "").casefold().strip())
+    with _ACTIVE_ALBUMS_LOCK:
+        started = _ACTIVE_ALBUMS.get(key)
+        if started is not None:
+            logger.warning(
+                "[ENRICH] album scan already in progress",
+                artist=artist,
+                album=album,
+                running_for_s=round(time.monotonic() - started, 1),
+            )
+            acquired = False
+        else:
+            _ACTIVE_ALBUMS[key] = time.monotonic()
+            acquired = True
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            with _ACTIVE_ALBUMS_LOCK:
+                _ACTIVE_ALBUMS.pop(key, None)
 
 
 def _sanitize_release_name(album_name: str) -> str:
@@ -169,6 +293,14 @@ _LIVE_ALBUM_PATTERNS = (
     r"\bunplugged\b", r"\bacoustic\b",
 )
 
+# Secondary types that rewrite track titles or flags, and therefore must be
+# corroborated by local evidence before being trusted.
+_DESTRUCTIVE_SECONDARY_TYPES = ("+live", "+acoustic", "+remix")
+
+# Fraction of an album's tracks that must look live before an uncorroborated
+# MusicBrainz "+live" classification is accepted.
+_LIVE_TRACK_CORROBORATION_RATIO = 0.5
+
 
 def _detect_album_type(
     artist: str,
@@ -193,6 +325,87 @@ def _detect_album_type(
     if "+remix" in album_lower or "(remix)" in album_lower:
         return "album+remix"
     return "album"
+
+
+def _album_title_suggests_live(album: str) -> bool:
+    album_lower = (album or "").casefold().strip()
+    return any(re.search(pattern, album_lower) for pattern in _LIVE_ALBUM_PATTERNS)
+
+
+def _live_track_ratio(tracks: list[dict[str, Any]]) -> tuple[int, int]:
+    """Return (live-looking track count, total titled track count)."""
+    titled = [str(track.get("title") or "") for track in tracks or []]
+    titled = [title for title in titled if title.strip()]
+    if not titled:
+        return 0, 0
+    live = 0
+    for title in titled:
+        try:
+            if is_live_or_unplugged_track_title(title):
+                live += 1
+        except Exception:
+            continue
+    return live, len(titled)
+
+
+def _mb_type_is_corroborated(
+    mb_type: str,
+    album: str,
+    tracks: list[dict[str, Any]],
+    context: dict[str, Any],
+) -> bool:
+    """Decide whether a destructive MusicBrainz secondary type can be trusted.
+
+    MusicBrainz frequently returns a live release group as the best match for a
+    self-titled studio album, because the titles are identical. Adopting that
+    classification rewrites every track title to "... (Live)" and writes the
+    change to the audio files, so it requires local corroboration.
+    """
+    lower = (mb_type or "").casefold()
+    marker = next(
+        (value for value in _DESTRUCTIVE_SECONDARY_TYPES if value in lower),
+        "",
+    )
+    if not marker:
+        return True
+
+    if marker == "+remix":
+        if "remix" in (album or "").casefold():
+            return True
+        logger.warning(
+            "[ENRICH] MusicBrainz secondary type rejected",
+            reason="album title carries no remix marker",
+            musicbrainz_type=mb_type,
+            **context,
+        )
+        return False
+
+    if _album_title_suggests_live(album):
+        return True
+
+    live_tracks, total_tracks = _live_track_ratio(tracks)
+    if total_tracks and (live_tracks / total_tracks) >= _LIVE_TRACK_CORROBORATION_RATIO:
+        logger.info(
+            "[ENRICH] MusicBrainz secondary type corroborated by track titles",
+            musicbrainz_type=mb_type,
+            live_track_count=live_tracks,
+            track_count=total_tracks,
+            **context,
+        )
+        return True
+
+    logger.warning(
+        "[ENRICH] MusicBrainz secondary type rejected",
+        reason=(
+            "neither the album title nor the track titles corroborate a live "
+            "or acoustic release; refusing to retitle tracks"
+        ),
+        musicbrainz_type=mb_type,
+        live_track_count=live_tracks,
+        track_count=total_tracks,
+        **context,
+    )
+    return False
 
 
 def _persist_artist_external_ids(artist: str, mbid: str | None = None, discogs_id: str | None = None) -> None:
@@ -232,7 +445,17 @@ def _http_get_bytes(url: str, *, section: str, context: dict[str, Any]) -> bytes
             **context,
         )
         return None
-    return response.content or None
+    content = response.content or None
+    if content and len(content) > _MAX_ARTWORK_BYTES:
+        logger.warning(
+            "[ENRICH] artwork rejected",
+            reason="response exceeded maximum artwork size",
+            section=section,
+            byte_count=len(content),
+            **context,
+        )
+        return None
+    return content
 
 
 def _fetch_album_art_with_fallback(
@@ -247,13 +470,15 @@ def _fetch_album_art_with_fallback(
 
     try:
         from db.repositories.metadata import fetch_album_art_blob
-        blob, _ = _call_with_heartbeat(
+        cached = _call_with_heartbeat(
             "album_art.cache",
             fetch_album_art_blob,
             artist=artist,
             album=album,
             log_context=context,
         )
+        # Defensive: the repository may return None rather than a pair.
+        blob = cached[0] if isinstance(cached, (tuple, list)) and cached else None
         if blob:
             logger.info("[ENRICH] album art cache hit", source="cached", **context)
             return "cached"
@@ -375,8 +600,7 @@ def _fetch_album_art_with_fallback(
     return None
 
 
-def _fetch_artist_metadata(artist: str, conn: Any = None) -> dict[str, Any]:
-    del conn
+def _fetch_artist_metadata(artist: str) -> dict[str, Any]:
     result: dict[str, Any] = {"country": None, "bio": None, "image_url": None}
     context = {"artist": artist}
 
@@ -438,22 +662,27 @@ def _fetch_artist_metadata(artist: str, conn: Any = None) -> dict[str, Any]:
         except Exception as exc:
             logger.warning("[ENRICH] artist image lookup failed", error=_safe_error(exc), **context)
 
-    try:
-        with _log_section("artist_metadata.database_write", **context):
-            with db_session() as session:
-                session.execute(
-                    text("""
-                        INSERT INTO artists (id, name, country, bio, image_url)
-                        VALUES (:artist, :artist, :country, :bio, :image_url)
-                        ON CONFLICT (name) DO UPDATE SET
-                            country = COALESCE(excluded.country, artists.country),
-                            bio = COALESCE(excluded.bio, artists.bio),
-                            image_url = COALESCE(excluded.image_url, artists.image_url)
-                    """),
-                    {"artist": artist, **result},
-                )
-    except Exception as exc:
-        logger.warning("[ENRICH] artist metadata persistence failed", error=_safe_error(exc), **context)
+    # Nothing new was discovered and nothing was cached, so there is no reason
+    # to create or touch the artists row.
+    if not any(result.values()):
+        logger.info("[ENRICH] artist metadata persistence skipped", reason="no values resolved", **context)
+    else:
+        try:
+            with _log_section("artist_metadata.database_write", **context):
+                with db_session() as session:
+                    session.execute(
+                        text("""
+                            INSERT INTO artists (id, name, country, bio, image_url)
+                            VALUES (:artist, :artist, :country, :bio, :image_url)
+                            ON CONFLICT (name) DO UPDATE SET
+                                country = COALESCE(excluded.country, artists.country),
+                                bio = COALESCE(excluded.bio, artists.bio),
+                                image_url = COALESCE(excluded.image_url, artists.image_url)
+                        """),
+                        {"artist": artist, **result},
+                    )
+        except Exception as exc:
+            logger.warning("[ENRICH] artist metadata persistence failed", error=_safe_error(exc), **context)
 
     logger.info(
         "[ENRICH] artist metadata result",
@@ -475,12 +704,7 @@ def _json_list(raw: Any) -> list[Any]:
         return []
 
 
-def _fetch_similar_artists(
-    artist: str,
-    conn: Any,
-    options: dict[str, Any],
-) -> dict[str, list[Any]]:
-    del conn
+def _fetch_similar_artists(artist: str, options: dict[str, Any]) -> dict[str, list[Any]]:
     result: dict[str, list[Any]] = {"lastfm": [], "listenbrainz": []}
     context = {"artist": artist}
 
@@ -652,12 +876,18 @@ def _fetch_similar_artists(
     return result
 
 
-_discogs_artist_id_cache: dict[str, str] = {}
+_DISCOGS_ID_CACHE_MAX = 2000
+_discogs_artist_id_cache: "OrderedDict[str, str]" = OrderedDict()
 _discogs_artist_id_lock = threading.Lock()
 
 
-def _fetch_discogs_artist_id(artist: str, conn: Any, options: dict[str, Any]) -> None:
-    del conn
+def clear_stage_caches() -> None:
+    """Drop per-run memoisation held by this stage."""
+    with _discogs_artist_id_lock:
+        _discogs_artist_id_cache.clear()
+
+
+def _fetch_discogs_artist_id(artist: str, options: dict[str, Any]) -> None:
     context = {"artist": artist}
     if options.get("singles_only") or options.get("singles_with_missing_popularity"):
         logger.info("[ENRICH] Discogs artist ID skipped", reason="singles pass", **context)
@@ -679,6 +909,8 @@ def _fetch_discogs_artist_id(artist: str, conn: Any, options: dict[str, Any]) ->
         cache_key = artist.casefold().strip()
         with _discogs_artist_id_lock:
             discogs_artist_id = _discogs_artist_id_cache.get(cache_key, "")
+            if cache_key in _discogs_artist_id_cache:
+                _discogs_artist_id_cache.move_to_end(cache_key)
 
         if discogs_artist_id:
             logger.info("[ENRICH] Discogs artist ID memory-cache hit", discogs_id=discogs_artist_id, **context)
@@ -693,6 +925,9 @@ def _fetch_discogs_artist_id(artist: str, conn: Any, options: dict[str, Any]) ->
             discogs_artist_id = str(value or "").strip()
             with _discogs_artist_id_lock:
                 _discogs_artist_id_cache[cache_key] = discogs_artist_id
+                _discogs_artist_id_cache.move_to_end(cache_key)
+                while len(_discogs_artist_id_cache) > _DISCOGS_ID_CACHE_MAX:
+                    _discogs_artist_id_cache.popitem(last=False)
 
         if not discogs_artist_id:
             logger.info("[ENRICH] Discogs artist ID not found", **context)
@@ -716,8 +951,7 @@ def _fetch_discogs_artist_id(artist: str, conn: Any, options: dict[str, Any]) ->
         logger.exception("[ENRICH] Discogs artist ID lookup failed", error=_safe_error(exc), **context)
 
 
-def _fetch_musicbrainz_artist_id(artist: str, conn: Any, options: dict[str, Any]) -> None:
-    del conn, options
+def _fetch_musicbrainz_artist_id(artist: str) -> None:
     context = {"artist": artist}
     if artist.casefold().strip() in _COMPILATION_ARTISTS:
         logger.info("[ENRICH] MusicBrainz artist ID skipped", reason="compilation artist", **context)
@@ -815,6 +1049,7 @@ def _lookup_musicbrainz_album_type(artist: str, album: str) -> tuple[str | None,
             resolved_type=resolved,
             match_score=score,
             release_group_mbid=release_group_mbid,
+            matched_title=best.get("title"),
             **context,
         )
         return resolved, release_group_mbid
@@ -823,52 +1058,143 @@ def _lookup_musicbrainz_album_type(artist: str, album: str) -> tuple[str | None,
         return None, None
 
 
+def _resolve_album_type(
+    artist: str,
+    album: str,
+    album_artist: str | None,
+    spotify_type: str | None,
+    tracks: list[dict[str, Any]],
+) -> tuple[str, str | None, str | None]:
+    """Resolve the album type from local signals plus MusicBrainz.
+
+    Returns ``(detected_type, musicbrainz_type, release_group_mbid)``. Shared by
+    ``ensure_album_type`` and ``enrich_album`` so a single scan cannot issue the
+    release-group search twice with different adjudication rules.
+    """
+    context = {"artist": artist, "album": album}
+    detected = _detect_album_type(artist, album, album_artist, spotify_type)
+    logger.info("[ENRICH] local album type detected", detected_type=detected, **context)
+
+    mb_type, release_group_mbid = _lookup_musicbrainz_album_type(artist, album)
+    original_mb_type = mb_type
+
+    if mb_type:
+        track_count = len(tracks or [])
+        if mb_type in {"single", "ep"} and track_count > 6:
+            mb_type = "album"
+        elif mb_type == "single" and track_count > 3:
+            mb_type = "ep"
+        if original_mb_type != mb_type:
+            logger.info(
+                "[ENRICH] MusicBrainz album type adjusted by track count",
+                original_type=original_mb_type,
+                adjusted_type=mb_type,
+                track_count=track_count,
+                **context,
+            )
+
+        # A destructive secondary type is only adopted with local corroboration.
+        if not _mb_type_is_corroborated(mb_type, album, tracks or [], context):
+            mb_type = "album" if mb_type.startswith("album") else mb_type
+
+        if detected == "album" or mb_type in {"single", "ep"}:
+            detected = mb_type
+
+    logger.info(
+        "[ENRICH] album type resolved",
+        detected_type=detected,
+        musicbrainz_type=mb_type,
+        musicbrainz_type_raw=original_mb_type,
+        release_group_mbid=release_group_mbid,
+        **context,
+    )
+    return detected, mb_type, release_group_mbid
+
+
+def _needs_release_mbid(artist: str, album: str) -> bool:
+    """Return True when at least one track still lacks a release MBID.
+
+    Resolving a release group to a release costs two MusicBrainz requests and
+    was observed taking over 80 seconds. There is no point paying that when the
+    subsequent UPDATE would match zero rows.
+    """
+    try:
+        with db_session() as session:
+            row = session.execute(
+                text(
+                    "SELECT 1 FROM tracks "
+                    "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
+                    "AND album = :album "
+                    "AND (musicbrainz_album_mbid IS NULL OR TRIM(musicbrainz_album_mbid) = '') "
+                    "LIMIT 1"
+                ),
+                {"artist": artist, "album": album},
+            ).first()
+        return bool(row)
+    except Exception as exc:
+        logger.warning(
+            "[ENRICH] release MBID requirement check failed",
+            error=_safe_error(exc),
+            artist=artist,
+            album=album,
+        )
+        return True
+
+
 def _persist_album_type_to_tracks(
-    conn: Any,
-    cursor: Any,
     artist: str,
     album: str,
     tracks: list[dict[str, Any]],
     album_type: str,
     release_group_mbid: str | None,
 ) -> None:
-    del conn, cursor
     context = {"artist": artist, "album": album, "album_type": album_type}
     if not album_type:
         logger.info("[ENRICH] album type persistence skipped", reason="empty album type", **context)
         return
 
     primary = normalize_primary_release_type(album_type)
-    attempted = 0
+    pending = [
+        str(track.get("id"))
+        for track in tracks or []
+        if track.get("id") and str(track.get("musicbrainz_albumtype") or "") != album_type
+    ]
     updated = 0
-    with _log_section("album_type.track_persist", track_count=len(tracks or []), **context):
-        with db_session() as session:
-            for track in tracks or []:
-                track_id = track.get("id")
-                if not track_id or str(track.get("musicbrainz_albumtype") or "") == album_type:
-                    continue
-                attempted += 1
-                try:
+    if not pending:
+        logger.info(
+            "[ENRICH] album type track persistence skipped",
+            reason="every track already carries this album type",
+            track_count=len(tracks or []),
+            **context,
+        )
+    else:
+        # One statement rather than one per track.
+        with _log_section("album_type.track_persist", track_count=len(pending), **context):
+            try:
+                with db_session() as session:
                     result = session.execute(
                         text("""
                             UPDATE tracks
                             SET spotify_album_type = :album_type,
                                 releasetype = :primary,
                                 musicbrainz_albumtype = :album_type
-                            WHERE id = :track_id
-                        """),
-                        {"album_type": album_type, "primary": primary, "track_id": str(track_id)},
+                            WHERE CAST(id AS TEXT) IN :track_ids
+                        """).bindparams(bindparam("track_ids", expanding=True)),
+                        {
+                            "album_type": album_type,
+                            "primary": primary,
+                            "track_ids": pending,
+                        },
                     )
-                    if result.rowcount and result.rowcount > 0:
-                        updated += result.rowcount
-                except Exception as exc:
-                    logger.warning(
-                        "[ENRICH] album type track update failed",
-                        track_id=track_id,
-                        error=_safe_error(exc),
-                        **context,
-                    )
-    logger.info("[ENRICH] album type track persistence result", attempted=attempted, rows_updated=updated, **context)
+                    updated = result.rowcount or 0
+            except Exception as exc:
+                logger.exception("[ENRICH] album type track update failed", error=_safe_error(exc), **context)
+        logger.info(
+            "[ENRICH] album type track persistence result",
+            attempted=len(pending),
+            rows_updated=updated,
+            **context,
+        )
 
     if not release_group_mbid:
         logger.info("[ENRICH] release-group persistence skipped", reason="release-group MBID unavailable", **context)
@@ -891,6 +1217,15 @@ def _persist_album_type_to_tracks(
         logger.info("[ENRICH] release-group MBID persisted", rows_updated=release_group_rows, release_group_mbid=release_group_mbid, **context)
     except Exception as exc:
         logger.exception("[ENRICH] release-group MBID propagation failed", error=_safe_error(exc), **context)
+
+    if not _needs_release_mbid(artist, album):
+        logger.info(
+            "[ENRICH] release MBID resolution skipped",
+            reason="every track already has a release MBID",
+            release_group_mbid=release_group_mbid,
+            **context,
+        )
+        return
 
     release_mbid = ""
     try:
@@ -955,25 +1290,21 @@ def _inject_album_genre(
     """Insert a genre label, reusing an outer write session when supplied."""
     mb_json, genres_csv = _genre_values(label, mb_genres_raw, genres_raw)
     params = {"mb": mb_json, "genres": genres_csv, "track_id": str(track_id)}
+    statement = text(
+        "UPDATE tracks SET musicbrainz_genres = :mb, genres = :genres WHERE id = :track_id"
+    )
     try:
         if session is not None:
-            session.execute(
-                text("UPDATE tracks SET musicbrainz_genres = :mb, genres = :genres WHERE id = :track_id"),
-                params,
-            )
+            session.execute(statement, params)
         else:
             with db_session() as owned_session:
-                owned_session.execute(
-                    text("UPDATE tracks SET musicbrainz_genres = :mb, genres = :genres WHERE id = :track_id"),
-                    params,
-                )
+                owned_session.execute(statement, params)
     except Exception as exc:
         logger.warning("[ENRICH] genre label injection failed", track_id=track_id, label=label, error=_safe_error(exc))
         raise
 
 
-def _fetch_artist_lastfm_tags(artist: str, conn: Any) -> None:
-    del conn
+def _fetch_artist_lastfm_tags(artist: str) -> None:
     context = {"artist": artist}
     try:
         with _log_section("artist_tags.lastfm.cache_read", **context):
@@ -1045,27 +1376,19 @@ def ensure_album_type(album_row: dict[str, Any], options: dict[str, Any] | None 
 
     detected: str | None = None
     try:
-        detected = _detect_album_type(
+        detected, _, release_group_mbid = _resolve_album_type(
             artist,
             album,
             str(album_row.get("album_artist") or "") or None,
             str(album_row.get("spotify_album_type") or "") or None,
+            tracks,
         )
-        mb_type, release_group_mbid = _lookup_musicbrainz_album_type(artist, album)
-        if mb_type:
-            track_count = len(tracks)
-            if mb_type in {"single", "ep"} and track_count > 6:
-                mb_type = "album"
-            elif mb_type == "single" and track_count > 3:
-                mb_type = "ep"
-            if detected == "album" or mb_type in {"single", "ep"}:
-                detected = mb_type
 
         if not detected:
             logger.warning("[ENRICH] ensure album type produced no type", **context)
             return None
 
-        _persist_album_type_to_tracks(None, None, artist, album, tracks, detected, release_group_mbid)
+        _persist_album_type_to_tracks(artist, album, tracks, detected, release_group_mbid)
         logger.info("[ENRICH] ensure album type completed", detected_type=detected, **context)
         return detected
     except Exception as exc:
@@ -1097,6 +1420,7 @@ def _apply_live_remix_album_tagging(
         label = "Acoustic" if live_type == "acoustic" else "Live"
         attempted = 0
         updated = 0
+        failed = 0
         with _log_section("album_tagging.live_acoustic", label=label, **context):
             with db_session() as session:
                 for track in tracks or []:
@@ -1116,38 +1440,43 @@ def _apply_live_remix_album_tagging(
                     if not is_live_or_unplugged_track_title(title) and not has_suffix:
                         new_title = f"{title} ({label})"
                     try:
-                        result = session.execute(
-                            text("""
-                                UPDATE tracks
-                                SET is_live = :is_live,
-                                    is_acoustic = :is_acoustic,
-                                    album_context_live = 1,
-                                    title = :title
-                                WHERE id = :track_id
-                            """),
-                            {
-                                "is_live": 1 if label == "Live" else 0,
-                                "is_acoustic": 1 if label == "Acoustic" else 0,
-                                "title": new_title,
-                                "track_id": str(track_id),
-                            },
-                        )
-                        _inject_album_genre(
-                            str(track_id),
-                            label,
-                            track.get("musicbrainz_genres"),
-                            track.get("genres"),
-                            session=session,
-                        )
+                        # SAVEPOINT per row so one failure cannot abort the
+                        # transaction and silently drop every later track.
+                        with _row_savepoint(session):
+                            result = session.execute(
+                                text("""
+                                    UPDATE tracks
+                                    SET is_live = :is_live,
+                                        is_acoustic = :is_acoustic,
+                                        album_context_live = 1,
+                                        title = :title
+                                    WHERE id = :track_id
+                                """),
+                                {
+                                    "is_live": 1 if label == "Live" else 0,
+                                    "is_acoustic": 1 if label == "Acoustic" else 0,
+                                    "title": new_title,
+                                    "track_id": str(track_id),
+                                },
+                            )
+                            _inject_album_genre(
+                                str(track_id),
+                                label,
+                                track.get("musicbrainz_genres"),
+                                track.get("genres"),
+                                session=session,
+                            )
                         if result.rowcount and result.rowcount > 0:
                             updated += result.rowcount
                     except Exception as exc:
+                        failed += 1
                         logger.warning("[ENRICH] live/acoustic track tagging failed", track_id=track_id, error=_safe_error(exc), **context)
-        logger.info("[ENRICH] live/acoustic tagging result", label=label, attempted=attempted, rows_updated=updated, **context)
+        logger.info("[ENRICH] live/acoustic tagging result", label=label, attempted=attempted, rows_updated=updated, failed=failed, **context)
 
     if is_remix_album:
         attempted = 0
         updated = 0
+        failed = 0
         with _log_section("album_tagging.remix", **context):
             with db_session() as session:
                 for track in tracks or []:
@@ -1156,22 +1485,24 @@ def _apply_live_remix_album_tagging(
                         continue
                     attempted += 1
                     try:
-                        result = session.execute(
-                            text("UPDATE tracks SET is_remix = 1 WHERE id = :track_id AND COALESCE(is_remix, 0) = 0"),
-                            {"track_id": str(track_id)},
-                        )
-                        _inject_album_genre(
-                            str(track_id),
-                            "Remix",
-                            track.get("musicbrainz_genres"),
-                            track.get("genres"),
-                            session=session,
-                        )
+                        with _row_savepoint(session):
+                            result = session.execute(
+                                text("UPDATE tracks SET is_remix = 1 WHERE id = :track_id AND COALESCE(is_remix, 0) = 0"),
+                                {"track_id": str(track_id)},
+                            )
+                            _inject_album_genre(
+                                str(track_id),
+                                "Remix",
+                                track.get("musicbrainz_genres"),
+                                track.get("genres"),
+                                session=session,
+                            )
                         if result.rowcount and result.rowcount > 0:
                             updated += result.rowcount
                     except Exception as exc:
+                        failed += 1
                         logger.warning("[ENRICH] remix track tagging failed", track_id=track_id, error=_safe_error(exc), **context)
-        logger.info("[ENRICH] remix tagging result", attempted=attempted, rows_updated=updated, **context)
+        logger.info("[ENRICH] remix tagging result", attempted=attempted, rows_updated=updated, failed=failed, **context)
 
 
 _LIVE_SUFFIX_RE = re.compile(r"\s*\((?:Live|Acoustic)[^)]*\)\s*$", re.IGNORECASE)
@@ -1204,7 +1535,10 @@ def revert_track_live_state(track_id: str) -> bool:
         with db_session() as session:
             row = session.execute(
                 text(
-                    "SELECT title, file_path, genres, musicbrainz_genres "
+                    "SELECT title, file_path, genres, musicbrainz_genres, "
+                    "COALESCE(is_live, 0) AS is_live, "
+                    "COALESCE(is_acoustic, 0) AS is_acoustic, "
+                    "COALESCE(album_context_live, 0) AS album_context_live "
                     "FROM tracks WHERE CAST(id AS TEXT) = :track_id"
                 ),
                 {"track_id": str(track_id)},
@@ -1217,6 +1551,29 @@ def revert_track_live_state(track_id: str) -> bool:
             new_title = strip_live_acoustic_suffix(old_title)
             new_mb = _drop_live_genres_from_json(row_get(row, "musicbrainz_genres"))
             new_genres = _drop_live_genres_from_csv(row_get(row, "genres"))
+            flags_set = bool(
+                row_get(row, "is_live")
+                or row_get(row, "is_acoustic")
+                or row_get(row, "album_context_live")
+            )
+
+            # Nothing to undo: no suffix, no live genres, no flags set. The
+            # previous implementation still issued the UPDATE and the file tag
+            # write, which produced a large number of no-op writes.
+            if (
+                new_title == old_title
+                and new_mb is None
+                and new_genres is None
+                and not flags_set
+            ):
+                logger.info(
+                    "[ENRICH] live-state revert skipped",
+                    reason="track carries no live state to revert",
+                    title=old_title,
+                    **context,
+                )
+                return False
+
             session.execute(
                 text("""
                     UPDATE tracks
@@ -1276,6 +1633,7 @@ def _persist_alternate_takes(album_context: dict[str, Any]) -> None:
     groups_seen = 0
     attempted = 0
     updated = 0
+    failed = 0
     with _log_section("alternate_takes.persist", group_count=len(alternate_takes)):
         with db_session() as session:
             for _, variants in alternate_takes.items():
@@ -1292,18 +1650,26 @@ def _persist_alternate_takes(album_context: dict[str, Any]) -> None:
                         continue
                     attempted += 1
                     try:
-                        result = session.execute(
-                            text(
-                                "UPDATE tracks SET alternate_take = 1, base_track_id = :base_id "
-                                "WHERE id = :alternate_id AND COALESCE(alternate_take, 0) = 0"
-                            ),
-                            {"base_id": str(base_id), "alternate_id": str(alternate_id)},
-                        )
+                        with _row_savepoint(session):
+                            result = session.execute(
+                                text(
+                                    "UPDATE tracks SET alternate_take = 1, base_track_id = :base_id "
+                                    "WHERE id = :alternate_id AND COALESCE(alternate_take, 0) = 0"
+                                ),
+                                {"base_id": str(base_id), "alternate_id": str(alternate_id)},
+                            )
                         if result.rowcount and result.rowcount > 0:
                             updated += result.rowcount
                     except Exception as exc:
+                        failed += 1
                         logger.warning("[ENRICH] alternate-take persistence failed", alternate_id=alternate_id, error=_safe_error(exc))
-    logger.info("[ENRICH] alternate-take persistence result", groups_seen=groups_seen, attempted=attempted, rows_updated=updated)
+    logger.info(
+        "[ENRICH] alternate-take persistence result",
+        groups_seen=groups_seen,
+        attempted=attempted,
+        rows_updated=updated,
+        failed=failed,
+    )
 
 
 def _get_discogs_token() -> str | None:
@@ -1341,7 +1707,7 @@ def _run_full_enrichment(
         metadata = _fetch_artist_metadata(artist)
 
     with _log_section("full.lastfm_tags", **context):
-        _fetch_artist_lastfm_tags(artist, None)
+        _fetch_artist_lastfm_tags(artist)
 
     if metadata.get("country"):
         try:
@@ -1363,13 +1729,13 @@ def _run_full_enrichment(
         logger.info("[ENRICH] release-country backfill skipped", reason="country unavailable", **context)
 
     with _log_section("full.musicbrainz_artist_id", **context):
-        _fetch_musicbrainz_artist_id(artist, None, options)
+        _fetch_musicbrainz_artist_id(artist)
 
     with _log_section("full.similar_artists", **context):
-        similar = _fetch_similar_artists(artist, None, options)
+        similar = _fetch_similar_artists(artist, options)
 
     with _log_section("full.discogs_artist_id", **context):
-        _fetch_discogs_artist_id(artist, None, options)
+        _fetch_discogs_artist_id(artist, options)
 
     with _log_section("full.live_remix_tagging", **context):
         _apply_live_remix_album_tagging(artist, album, detected_type, album_tracks)
@@ -1398,6 +1764,19 @@ def enrich_album_extras(
     options: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, list[Any]], dict[str, Any]]:
     logger.info("[ENRICH] enrich_album_extras started", artist=artist, album=album)
+
+    # The caller may hand back a type resolved in an earlier pass. Re-check any
+    # destructive classification before it is allowed to retitle tracks.
+    context = {"artist": artist, "album": album}
+    if not _mb_type_is_corroborated(detected_type, album, album_tracks, context):
+        logger.warning(
+            "[ENRICH] detected album type downgraded before tagging",
+            original_type=detected_type,
+            downgraded_type="album",
+            **context,
+        )
+        detected_type = "album"
+
     metadata, similar = _run_full_enrichment(
         artist,
         album,
@@ -1463,153 +1842,148 @@ def enrich_album(
     if not artist or not album:
         logger.warning("[ENRICH] album scan has incomplete identity", artist_present=bool(artist), album_present=bool(album), **context)
 
-    try:
-        with _log_section("scan.album_type.local_detection", **context):
-            detected_type = _detect_album_type(
-                artist,
-                album,
-                album_artist or None,
-                spotify_type or None,
-            )
-        logger.info("[ENRICH] local album type detected", detected_type=detected_type, **context)
-
-        if popularity_pass:
-            is_heterogeneous = any(marker in detected_type.casefold() for marker in _HETEROGENEOUS_MARKERS)
-            logger.info(
-                "[ENRICH] MusicBrainz album-type lookup skipped",
-                reason="popularity-only pass",
-                detected_type=detected_type,
-                heterogeneous=is_heterogeneous,
-                **context,
-            )
-        else:
-            with _log_section("scan.album_type.musicbrainz_lookup", **context):
-                mb_type, release_group_mbid = _lookup_musicbrainz_album_type(artist, album)
-
-            original_mb_type = mb_type
-            if mb_type:
-                track_count = len(album_tracks)
-                if mb_type in {"single", "ep"} and track_count > 6:
-                    mb_type = "album"
-                elif mb_type == "single" and track_count > 3:
-                    mb_type = "ep"
-                if original_mb_type != mb_type:
-                    logger.info(
-                        "[ENRICH] MusicBrainz album type adjusted by track count",
-                        original_type=original_mb_type,
-                        adjusted_type=mb_type,
-                        track_count=track_count,
-                        **context,
-                    )
-                if detected_type == "album" or mb_type in {"single", "ep"}:
-                    detected_type = mb_type
-
-            is_heterogeneous = any(marker in detected_type.casefold() for marker in _HETEROGENEOUS_MARKERS)
-            logger.info(
-                "[ENRICH] album type resolved",
-                detected_type=detected_type,
-                musicbrainz_type=mb_type,
-                release_group_mbid=release_group_mbid,
-                heterogeneous=is_heterogeneous,
-                **context,
-            )
-
-            with _log_section("scan.album_type.persist", **context):
-                _persist_album_type_to_tracks(
-                    None,
-                    None,
-                    artist,
-                    album,
-                    album_tracks,
-                    detected_type,
-                    release_group_mbid,
-                )
-
-            if "+compilation" in detected_type.casefold() or "+soundtrack" in detected_type.casefold():
-                try:
-                    with _log_section("scan.compilation_flag.persist", **context):
-                        with db_session() as session:
-                            result = session.execute(
-                                text(
-                                    "UPDATE tracks SET is_compilation = 1 "
-                                    "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
-                                    "AND album = :album AND COALESCE(is_compilation, 0) = 0"
-                                ),
-                                {"artist": artist, "album": album},
-                            )
-                            rows_updated = result.rowcount
-                    logger.info("[ENRICH] compilation flag persistence result", rows_updated=rows_updated, **context)
-                except Exception as exc:
-                    logger.exception("[ENRICH] compilation flag persistence failed", error=_safe_error(exc), **context)
-            else:
-                logger.info("[ENRICH] compilation flag persistence skipped", reason="album is not compilation/soundtrack", **context)
-
-        discogs_token = _get_discogs_token()
-        if popularity_pass or singles_pass:
-            logger.info(
-                "[ENRICH] full enrichment skipped",
-                reason="popularity-only pass" if popularity_pass else "singles pass",
-                **context,
-            )
-            if singles_pass:
-                with _log_section("scan.singles.musicbrainz_artist_id", **context):
-                    _fetch_musicbrainz_artist_id(artist, None, options)
-        elif defer_full:
-            logger.info("[ENRICH] full enrichment deferred", **context)
-            with _log_section("scan.deferred.musicbrainz_artist_id", **context):
-                _fetch_musicbrainz_artist_id(artist, None, options)
-        else:
-            with _log_section("scan.full_enrichment", **context):
-                metadata, similar = _run_full_enrichment(
-                    artist,
-                    album,
-                    album_context,
-                    album_tracks,
-                    detected_type,
-                    options,
-                    discogs_token,
-                )
-
-    except Exception as exc:
-        logger.exception(
-            "[ENRICH] album scan failed",
+    def _result(detected: str, heterogeneous: bool) -> dict[str, Any]:
+        extras: dict[str, Any] = {}
+        if metadata.get("country"):
+            extras["artist_country"] = metadata["country"]
+        if similar.get("lastfm"):
+            extras["similar_artists_lastfm"] = similar["lastfm"]
+        if similar.get("listenbrainz"):
+            extras["similar_artists_listenbrainz"] = similar["listenbrainz"]
+        logger.info(
+            "[ENRICH] album scan completed",
             elapsed_s=round(time.monotonic() - scan_start, 3),
-            error=_safe_error(exc),
+            detected_type=detected,
+            heterogeneous=heterogeneous,
+            metadata_country=metadata.get("country"),
+            has_bio=bool(metadata.get("bio")),
+            has_image=bool(metadata.get("image_url")),
+            lastfm_similar_count=len(similar.get("lastfm") or []),
+            listenbrainz_similar_count=len(similar.get("listenbrainz") or []),
+            extra_context_keys=sorted(extras),
             **context,
         )
-        detected_type = detected_type or "album"
-        is_heterogeneous = False
-        metadata = {"country": None, "bio": None, "image_url": None}
-        similar = {"lastfm": [], "listenbrainz": []}
+        return {
+            "album_row": album_row,
+            "album_context": {**album_context, **extras},
+            "stat_eligible_tracks": stat_eligible_tracks,
+            "detected_album_type": detected,
+            "is_heterogeneous": heterogeneous,
+            "similar_artists": similar,
+            "artist_metadata": metadata,
+        }
 
-    extra_context: dict[str, Any] = {}
-    if metadata.get("country"):
-        extra_context["artist_country"] = metadata["country"]
-    if similar.get("lastfm"):
-        extra_context["similar_artists_lastfm"] = similar["lastfm"]
-    if similar.get("listenbrainz"):
-        extra_context["similar_artists_listenbrainz"] = similar["listenbrainz"]
+    with _album_scan_guard(artist, album) as acquired:
+        if not acquired:
+            logger.warning(
+                "[ENRICH] album scan skipped",
+                reason="another enrichment pass holds this album",
+                **context,
+            )
+            return _result(detected_type, is_heterogeneous)
 
-    logger.info(
-        "[ENRICH] album scan completed",
-        elapsed_s=round(time.monotonic() - scan_start, 3),
-        detected_type=detected_type,
-        heterogeneous=is_heterogeneous,
-        metadata_country=metadata.get("country"),
-        has_bio=bool(metadata.get("bio")),
-        has_image=bool(metadata.get("image_url")),
-        lastfm_similar_count=len(similar.get("lastfm") or []),
-        listenbrainz_similar_count=len(similar.get("listenbrainz") or []),
-        extra_context_keys=sorted(extra_context),
-        **context,
-    )
+        try:
+            if popularity_pass:
+                with _log_section("scan.album_type.local_detection", **context):
+                    detected_type = _detect_album_type(
+                        artist,
+                        album,
+                        album_artist or None,
+                        spotify_type or None,
+                    )
+                logger.info("[ENRICH] local album type detected", detected_type=detected_type, **context)
+                is_heterogeneous = any(marker in detected_type.casefold() for marker in _HETEROGENEOUS_MARKERS)
+                logger.info(
+                    "[ENRICH] MusicBrainz album-type lookup skipped",
+                    reason="popularity-only pass",
+                    detected_type=detected_type,
+                    heterogeneous=is_heterogeneous,
+                    **context,
+                )
+            else:
+                with _log_section("scan.album_type.resolve", **context):
+                    detected_type, mb_type, release_group_mbid = _resolve_album_type(
+                        artist,
+                        album,
+                        album_artist or None,
+                        spotify_type or None,
+                        album_tracks,
+                    )
 
-    return {
-        "album_row": album_row,
-        "album_context": {**album_context, **extra_context},
-        "stat_eligible_tracks": stat_eligible_tracks,
-        "detected_album_type": detected_type,
-        "is_heterogeneous": is_heterogeneous,
-        "similar_artists": similar,
-        "artist_metadata": metadata,
-    }
+                is_heterogeneous = any(marker in detected_type.casefold() for marker in _HETEROGENEOUS_MARKERS)
+                logger.info(
+                    "[ENRICH] album type finalised",
+                    detected_type=detected_type,
+                    musicbrainz_type=mb_type,
+                    release_group_mbid=release_group_mbid,
+                    heterogeneous=is_heterogeneous,
+                    **context,
+                )
+
+                with _log_section("scan.album_type.persist", **context):
+                    _persist_album_type_to_tracks(
+                        artist,
+                        album,
+                        album_tracks,
+                        detected_type,
+                        release_group_mbid,
+                    )
+
+                if "+compilation" in detected_type.casefold() or "+soundtrack" in detected_type.casefold():
+                    try:
+                        with _log_section("scan.compilation_flag.persist", **context):
+                            with db_session() as session:
+                                result = session.execute(
+                                    text(
+                                        "UPDATE tracks SET is_compilation = 1 "
+                                        "WHERE COALESCE(NULLIF(album_artist, ''), artist) = :artist "
+                                        "AND album = :album AND COALESCE(is_compilation, 0) = 0"
+                                    ),
+                                    {"artist": artist, "album": album},
+                                )
+                                rows_updated = result.rowcount
+                        logger.info("[ENRICH] compilation flag persistence result", rows_updated=rows_updated, **context)
+                    except Exception as exc:
+                        logger.exception("[ENRICH] compilation flag persistence failed", error=_safe_error(exc), **context)
+                else:
+                    logger.info("[ENRICH] compilation flag persistence skipped", reason="album is not compilation/soundtrack", **context)
+
+            discogs_token = _get_discogs_token()
+            if popularity_pass or singles_pass:
+                logger.info(
+                    "[ENRICH] full enrichment skipped",
+                    reason="popularity-only pass" if popularity_pass else "singles pass",
+                    **context,
+                )
+                if singles_pass:
+                    with _log_section("scan.singles.musicbrainz_artist_id", **context):
+                        _fetch_musicbrainz_artist_id(artist)
+            elif defer_full:
+                logger.info("[ENRICH] full enrichment deferred", **context)
+                with _log_section("scan.deferred.musicbrainz_artist_id", **context):
+                    _fetch_musicbrainz_artist_id(artist)
+            else:
+                with _log_section("scan.full_enrichment", **context):
+                    metadata, similar = _run_full_enrichment(
+                        artist,
+                        album,
+                        album_context,
+                        album_tracks,
+                        detected_type,
+                        options,
+                        discogs_token,
+                    )
+
+        except Exception as exc:
+            logger.exception(
+                "[ENRICH] album scan failed",
+                elapsed_s=round(time.monotonic() - scan_start, 3),
+                error=_safe_error(exc),
+                **context,
+            )
+            detected_type = detected_type or "album"
+            is_heterogeneous = False
+            metadata = {"country": None, "bio": None, "image_url": None}
+            similar = {"lastfm": [], "listenbrainz": []}
+
+        return _result(detected_type, is_heterogeneous)
