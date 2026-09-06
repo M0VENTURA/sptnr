@@ -415,7 +415,8 @@
               ('essentia_genres', 'Essentia Genres', '6f42c1', 'white', 'bi-cpu-fill'),
               ('navidrome_genres', 'Navidrome', '17A589', 'white', 'bi-music-note-list'),
               ('musicbrainz_genres', 'MusicBrainz', 'EB743B', 'white', 'bi-hexagon-fill'),
-              ('spotify_genres', 'Spotify', '1DB954', 'white', 'bi-spotify')
+              ('spotify_genres', 'Spotify', '1DB954', 'white', 'bi-spotify'),
+              ('manual_genres', 'Manual Tags', '0dcaf0', 'black', 'bi-person-fill-gear')
             ] %}
             {% set ns = namespace(has_any=False) %}
             {% for key, label, bgcolor, textcolor, icon in sources %}
@@ -492,10 +493,15 @@
 </div>
 
 {# Modals #}
-{% include 'components/modals/_track_edit.html' ignore missing %}
-{% include 'components/modals/_release_picker.html' ignore missing %}
-{% include 'components/modals/_album_lookup.html' ignore missing %}
-{% include 'components/modals/_musicbrainz_release_match.html' ignore missing %}
+{% include 'components/_track_edit.html' ignore missing %}
+{% include 'components/_organize_group.html' ignore missing %}
+{% include 'components/_slskd_results.html' ignore missing %}
+{% include 'components/_manual_match.html' ignore missing %}
+{% include 'components/_soulseek_manual_search.html' ignore missing %}
+{% include 'components/_release_picker.html' ignore missing %}
+{% include 'components/_album_lookup.html' ignore missing %}
+{% include 'components/_musicbrainz_search_modal.html' ignore missing %}
+{% include 'components/_musicbrainz_release_match.html' ignore missing %}
 {% endblock %}
 
 {% block scripts %}
@@ -511,4 +517,5 @@
 </script>
 <script src="{{ versioned_static('js/album_detail.js') }}"></script>
 <script src="{{ versioned_static('js/genre-utils.js') }}"></script>
+{% include 'components/_musicbrainz_search_functions.html' ignore missing %}
 {% endblock %}
