@@ -2166,21 +2166,21 @@ function renderQueueItemRow(item, kind) {
     const searchQuery = [item.artist, item.title, (item.album && item.album !== item.title) ? item.album : '']
       .filter(Boolean).join(' ');
     if (searchQuery) {
-      actions += '<button class="row-icon-btn text-info" title="Search Soulseek manually" onclick="manualQueueSlskdSearch(\'' + encodeURIComponent(searchQuery) + '\',' + (parseInt(item.id, 10) || 0) + ')"><i class="bi bi-search"></i></button>';
+      actions += '<button class="btn btn-sm btn-outline-info py-0 px-2 ms-1" title="Search Soulseek manually" onclick="manualQueueSlskdSearch(\'' + encodeURIComponent(searchQuery) + '\',' + (parseInt(item.id, 10) || 0) + ')"><i class="bi bi-search"></i></button>';
     }
   }
   if (kind === 'active') {
     if (st === 'downloading' || st === 'searching' || st === 'processing') {
-      actions += '<button class="row-icon-btn text-danger" title="Cancel download" onclick="cancelQueueItem(' + item.id + ')"><i class="bi bi-x-circle"></i></button>';
+      actions += '<button class="btn btn-sm btn-outline-danger py-0 px-2 ms-1" title="Cancel download" onclick="cancelQueueItem(' + item.id + ')"><i class="bi bi-x-circle"></i></button>';
     }
   }
   if (kind === 'failed' || st === 'failed') {
-    actions += '<button class="row-icon-btn text-warning" title="Retry" onclick="retryQueueItem(' + item.id + ')"><i class="bi bi-arrow-clockwise"></i></button>';
+    actions += '<button class="btn btn-sm btn-outline-warning py-0 px-2 ms-1" title="Retry" onclick="retryQueueItem(' + item.id + ')"><i class="bi bi-arrow-clockwise"></i></button>';
   }
   if (kind === 'completed') {
-    actions += '<button class="row-icon-btn text-success" title="Copy to library" onclick="organizeFile(' + item.id + ')"><i class="bi bi-folder-plus"></i></button>';
+    actions += '<button class="btn btn-sm btn-outline-success py-0 px-2 ms-1" title="Copy to library" onclick="organizeFile(' + item.id + ')"><i class="bi bi-folder-plus"></i></button>';
   }
-  actions += '<button class="row-icon-btn text-danger" title="Remove" onclick="deleteQueueItem(' + item.id + ', false)"><i class="bi bi-trash"></i></button>';
+  actions += '<button class="btn btn-sm btn-outline-danger py-0 px-2 ms-1" title="Remove" onclick="deleteQueueItem(' + item.id + ', false)"><i class="bi bi-trash"></i></button>';
 
   return '<div class="list-group-item"><div class="d-flex justify-content-between align-items-center gap-2">' +
     '<div style="min-width:0;">' +
@@ -2218,20 +2218,20 @@ function renderQueueGroupRow(group, kind, index) {
       return i.status === 'downloading' || i.status === 'searching' || i.status === 'processing';
     });
     if (hasActive) {
-      actions += '<button class="row-icon-btn text-danger" title="Cancel all active downloads" onclick="cancelGroup(' + index + ')"><i class="bi bi-x-circle"></i></button>';
+      actions += '<button class="btn btn-sm btn-outline-danger py-0 px-2 ms-1" title="Cancel all active downloads" onclick="cancelGroup(' + index + ')"><i class="bi bi-x-circle"></i></button>';
     }
   }
   if (kind === 'completed') {
-    actions += '<button class="row-icon-btn text-success" title="Copy all tracks to music library" onclick="organizeGroup(' + index + ')"><i class="bi bi-folder-check"></i></button>';
+    actions += '<button class="btn btn-sm btn-outline-success py-0 px-2 ms-1" title="Copy all tracks to music library" onclick="organizeGroup(' + index + ')"><i class="bi bi-folder-check"></i></button>';
   }
   if (kind === 'failed') {
-    actions += '<button class="row-icon-btn text-warning" title="Retry all failed tracks" onclick="retryGroup(' + index + ')"><i class="bi bi-arrow-clockwise"></i></button>';
+    actions += '<button class="btn btn-sm btn-outline-warning py-0 px-2 ms-1" title="Retry all failed tracks" onclick="retryGroup(' + index + ')"><i class="bi bi-arrow-clockwise"></i></button>';
   }
   // Add Organize Album action button for completed/active album groups
   if (group.key.startsWith('alb_') || group.key.startsWith('grp_')) {
-      actions += '<button class="row-icon-btn text-success" title="Organize and move album group" onclick="openOrganizeGroupModal(\'' + escapeHtml(group.key) + '\', \'' + escapeHtml(group.label) + '\', ' + total + ')"><i class="bi bi-folder-check"></i></button>';
+      actions += '<button class="btn btn-sm btn-outline-success py-0 px-2 ms-1" title="Organize and move album group" onclick="openOrganizeGroupModal(\'' + escapeHtml(group.key) + '\', \'' + escapeHtml(group.label) + '\', ' + total + ')"><i class="bi bi-folder-check"></i></button>';
   }
-  actions += '<button class="row-icon-btn text-danger" title="Remove all tracks in this album" onclick="deleteGroup(' + index + ')"><i class="bi bi-trash"></i></button>';
+  actions += '<button class="btn btn-sm btn-outline-danger py-0 px-2 ms-1" title="Remove all tracks in this album" onclick="deleteGroup(' + index + ')"><i class="bi bi-trash"></i></button>';
 
   const children = items.map(function(item) {
     return renderQueueItemRow(item, kind);
@@ -2239,14 +2239,14 @@ function renderQueueGroupRow(group, kind, index) {
 
   return '<div class="list-group-item">' +
     '<div class="d-flex justify-content-between align-items-center gap-2">' +
-    '<button type="button" class="btn btn-sm btn-outline-secondary queue-group-toggle" data-target="' + bodyId + '" title="Expand album">' +
+    '<button type="button" class="btn btn-sm btn-link p-0 text-decoration-none queue-group-toggle flex-shrink-0" data-target="' + bodyId + '" title="Expand album" style="color:var(--text-secondary);">' +
       '<i class="bi bi-chevron-down queue-group-chevron"></i>' +
     '</button>' +
-    '<div class="text-truncate flex-grow-1">' +
+    '<div class="text-truncate flex-grow-1" style="min-width:0;">' +
       '<strong><i class="bi bi-folder2-open me-1"></i>' + escapeHtml(group.label) + '</strong>' + subline +
       '<br><small class="text-muted">' + total + ' track' + (total !== 1 ? 's' : '') + ' · ' + escapeHtml(summary) + '</small>' +
     '</div>' +
-    '<div class="d-flex align-items-center gap-2 flex-shrink-0">' + actions + '</div>' +
+    '<div class="d-flex align-items-center gap-1 flex-shrink-0">' + actions + '</div>' +
     '</div>' +
     '<div id="' + bodyId + '" class="queue-group-body ps-3 border-start ms-2 mt-2" style="display:none;">' + children + '</div>' +
     '</div>';
