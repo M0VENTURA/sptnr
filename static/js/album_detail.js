@@ -1,4 +1,4 @@
-// ===== Artist Detail Page JS =====
+// ===== Artist and Album Detail Unified Page JS =====
 
 // Fallback utility initializations
 if (typeof toggleGenreCheckbox === 'undefined') {
@@ -426,10 +426,8 @@ window.fetchArtistCountry = function() {
 // ===== Missing Releases & MusicBrainz Import Integrations =====
 
 window.checkMissingReleases = function(artistName) {
-    // Basic interaction before executing full scan
     if (!confirm(`Check MusicBrainz for missing releases by ${artistName}? This may take a moment.`)) return;
     
-    // Call the backend route to scan missing releases
     fetch('/api/artist/check-missing', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -451,7 +449,6 @@ window.importReleaseFromEncoded = function(encodedArtist, encodedReleaseId, enco
     const releaseId = decodeURIComponent(encodedReleaseId);
     const albumTitle = decodeURIComponent(encodedAlbumTitle);
     
-    // Find the injected Release Match Modal from components/_musicbrainz_release_match.html
     const modalEl = document.getElementById('musicbrainzReleaseMatchModal');
     if (!modalEl) {
         alert('Release match modal not found. Please ensure components/_musicbrainz_release_match.html is included.');
@@ -461,7 +458,6 @@ window.importReleaseFromEncoded = function(encodedArtist, encodedReleaseId, enco
     const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
     modal.show();
     
-    // Set UI to loading state
     document.getElementById('mbReleaseMatchStatus').style.display = 'block';
     document.getElementById('mbReleaseMatchResults').innerHTML = '';
     document.getElementById('mbReleaseMatchError').style.display = 'none';
@@ -471,7 +467,6 @@ window.importReleaseFromEncoded = function(encodedArtist, encodedReleaseId, enco
         queryParams.append('mbid', releaseId);
     }
 
-    // Fetch the specific release data via your MusicBrainz API route
     fetch(`/api/musicbrainz/search?${queryParams.toString()}`)
         .then(res => res.json())
         .then(data => {
@@ -484,7 +479,6 @@ window.importReleaseFromEncoded = function(encodedArtist, encodedReleaseId, enco
                 return;
             }
             
-            // Build the selection list UI for the release options
             let html = '<div class="list-group">';
             data.releases.forEach(release => {
                 html += `
@@ -512,4 +506,56 @@ window.importReleaseFromEncoded = function(encodedArtist, encodedReleaseId, enco
             errEl.textContent = 'Network error: ' + err.message;
             errEl.style.display = 'block';
         });
+};
+
+// ===== MusicBrainz Album Lookup Integrations (Added for Album Detail) =====
+
+window.openAlbumLookupModal = function() {
+    const artistName = window._pageData ? window._pageData.artistName : '';
+    const albumName = window._pageData ? window._pageData.albumName : '';
+    
+    const modalEl = document.getElementById('musicBrainzModal');
+    if (!modalEl) {
+        alert('MusicBrainz search modal not found. Please ensure components/_musicbrainz_search_modal.html is included in your HTML.');
+        return;
+    }
+    
+    const searchArtist = document.getElementById('mbSearchArtist');
+    const searchAlbum = document.getElementById('mbSearchAlbum');
+    if (searchArtist) searchArtist.value = artistName;
+    if (searchAlbum) searchAlbum.value = albumName;
+    
+    const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+    modal.show();
+    
+    if (typeof performMbSearch === 'function') {
+        performMbSearch();
+    } else {
+        console.warn("performMbSearch is not defined. Ensure _musicbrainz_search_functions.html is included.");
+    }
+};
+
+window.confirmReleaseSelection = function() {
+    const selectedMbid = document.getElementById('mbSelectedReleaseId')?.value || window._selectedMbReleaseId;
+    
+    if (!selectedMbid) {
+        alert('No release selected or MBID not found.');
+        return;
+    }
+    
+    const formMbid = document.getElementById('album_mbid');
+    if (formMbid) {
+        formMbid.value = selectedMbid;
+        
+        formMbid.style.transition = 'background-color 0.3s';
+        formMbid.style.backgroundColor = '#198754';
+        setTimeout(() => formMbid.style.backgroundColor = '', 500);
+    }
+    
+    const modalEl = document.getElementById('musicBrainzModal');
+    if (modalEl) {
+        bootstrap.Modal.getInstance(modalEl).hide();
+    }
+    
+    alert('MusicBrainz ID applied! Click "Save Metadata" to persist changes.');
 };
