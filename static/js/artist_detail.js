@@ -199,31 +199,65 @@ function sanitizeBio(text) {
     .replace(/\n/g, '<br>');
 }
 
-// Toggle missing releases for an individual category section
-function toggleMissingReleasesForCategory(btn, catId) {
-  const section = document.getElementById(catId + '-section');
-  if (!section) return;
-  
-  const missingRows = section.querySelectorAll('.missing-album-item');
-  const isCurrentlyHidden = btn.getAttribute('data-hidden') === 'true';
 
-  missingRows.forEach(row => {
-    if (isCurrentlyHidden) {
-        row.style.display = '';
-    } else {
-        row.style.setProperty('display', 'none', 'important');
+// Fixed Filtering Logic
+
+window.setArtistFilter = function(filter) {
+    const activeBtn = document.querySelector('.artist-filter-btn.active');
+    const currentlyActive = activeBtn ? activeBtn.dataset.filter : 'all';
+    const effective = (filter === currentlyActive && filter !== 'all') ? 'all' : filter;
+
+    document.querySelectorAll('.artist-filter-btn').forEach(btn => {
+        if (btn.dataset.filter === effective) {
+            btn.classList.add('active');
+        } else {
+            btn.classList.remove('active');
+        }
+    });
+    
+    const mainContainer = document.getElementById('artistMainPageContainer');
+    if (!mainContainer) return;
+
+    mainContainer.classList.remove('filter-hide-missing', 'filter-hide-library');
+
+    if (effective === 'library') {
+        mainContainer.classList.add('filter-hide-missing');
+    } else if (effective === 'missing') {
+        mainContainer.classList.add('filter-hide-library');
     }
-  });
 
-  if (isCurrentlyHidden) {
-    btn.setAttribute('data-hidden', 'false');
-    btn.innerHTML = '<i class="bi bi-eye-slash me-1"></i><span>Hide Missing</span>';
-  } else {
-    btn.setAttribute('data-hidden', 'true');
-    btn.innerHTML = '<i class="bi bi-eye me-1"></i><span>Show Missing</span>';
-  }
-}
-window.toggleMissingReleasesForCategory = toggleMissingReleasesForCategory;
+    document.querySelectorAll('.category-section').forEach(section => {
+        const rows = Array.from(section.querySelectorAll('.album-row'));
+        if (!rows.length) return;
+
+        let hasVisible = false;
+        rows.forEach(row => {
+            const isMissing = row.classList.contains('missing-album-item');
+            if (effective === 'all') hasVisible = true;
+            if (effective === 'library' && !isMissing) hasVisible = true;
+            if (effective === 'missing' && isMissing) hasVisible = true;
+        });
+
+        section.style.display = hasVisible ? '' : 'none';
+    });
+};
+
+window.toggleMissingReleasesForCategory = function(btn, catId) {
+    const section = document.getElementById(catId + '-section');
+    if (!section) return;
+    
+    const isCurrentlyHidden = btn.getAttribute('data-hidden') === 'true';
+
+    if (isCurrentlyHidden) {
+        section.classList.remove('category-hide-missing');
+        btn.setAttribute('data-hidden', 'false');
+        btn.innerHTML = '<i class="bi bi-eye-slash me-1"></i><span>Hide Missing</span>';
+    } else {
+        section.classList.add('category-hide-missing');
+        btn.setAttribute('data-hidden', 'true');
+        btn.innerHTML = '<i class="bi bi-eye me-1"></i><span>Show Missing</span>';
+    }
+};
 
 function forceArtistMetadataRefresh() {
   const form = document.getElementById('artistScanForm');
@@ -242,45 +276,6 @@ function toggleArtistBio() {
     ? '<i class="bi bi-chevron-contract me-1"></i>Read Less'
     : '<i class="bi bi-chevron-expand me-1"></i>Read More';
 }
-
-// Fixed Artist Filtering using Container Class Switching
-function setArtistFilter(filter) {
-  const currentlyActive = document.querySelector('.artist-filter-btn.active')?.dataset?.filter;
-  const effective = (filter === currentlyActive && filter !== 'all') ? 'all' : filter;
-
-  document.querySelectorAll('.artist-filter-btn').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.filter === effective);
-  });
-  
-  const mainContainer = document.getElementById('artistMainPageContainer');
-  if (!mainContainer) return;
-
-  // Reset filtering classes
-  mainContainer.classList.remove('filter-hide-missing', 'filter-hide-library');
-
-  if (effective === 'library') {
-    mainContainer.classList.add('filter-hide-missing');
-  } else if (effective === 'missing') {
-    mainContainer.classList.add('filter-hide-library');
-  }
-
-  // Evaluate section visibility if all items inside are hidden
-  document.querySelectorAll('.category-section').forEach(section => {
-    const rows = Array.from(section.querySelectorAll('.album-row'));
-    if (!rows.length) return;
-
-    let hasVisible = false;
-    rows.forEach(row => {
-      const isMissing = row.classList.contains('missing-album-item');
-      if (effective === 'all') hasVisible = true;
-      if (effective === 'library' && !isMissing) hasVisible = true;
-      if (effective === 'missing' && isMissing) hasVisible = true;
-    });
-
-    section.style.display = hasVisible ? '' : 'none';
-  });
-}
-window.setArtistFilter = setArtistFilter;
 
 function playArtistTopTracks() {
   const tracks = window._artistPlaylist || [];
