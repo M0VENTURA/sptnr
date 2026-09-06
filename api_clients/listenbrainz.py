@@ -2,13 +2,6 @@
 
 Handles ListenBrainz HTTP operations including popularity, metadata, and user interactions.
 Modernized with strict thread-safe throttling and structured logging.
-
-Retry policy: the shared ``api_clients.session`` (``_RetryTransport``) is the
-SINGLE retry authority — it already retries 3× with a cumulative 40s wait
-budget for 429/502/503/504 and network errors.  Do NOT add a second tenacity
-``@retry`` layer here; stacking two retry loops (outer app-level + inner
-transport) multiplied worst-case latency per call (~350s vs ~80s) and was a
-major contributor to scan-stage "budget exceeded" stalls.
 """
 
 from __future__ import annotations
@@ -33,7 +26,6 @@ except Exception:
 
 
 def _get_version() -> str:
-    """Read app version for User-Agent."""
     try:
         version_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "VERSION")
         with open(version_file, "r", encoding="utf-8") as handle:
@@ -49,21 +41,12 @@ class ListenBrainzError(Exception):
     """Raised for ListenBrainz client errors."""
 
 
-# =============================================================================
-# STRICT RATE LIMITING
-# =============================================================================
-
 _THROTTLE_LOCK = threading.Lock()
 _LAST_LB_REQUEST_TIME = 0.0
 
 
 def _strict_throttle() -> None:
-    """Best-effort pacing on ListenBrainz's OWN rate budget.
-
-    ListenBrainz and MusicBrainz are separate services with independent
-    rate buckets, so LB requests must NOT consume the MusicBrainz 1 req/s
-    budget. A thread-locked turnstile prevents concurrent worker bursts.
-    """
+    """Best-effort pacing on ListenBrainz's OWN rate budget without lock-blocking."""
     global _LAST_LB_REQUEST_TIME
     
     if _rate_limiter:
@@ -73,22 +56,21 @@ def _strict_throttle() -> None:
         except Exception:
             pass
             
-    # Fallback thread-safe throttle (approx 1 req/sec)
+    sleep_time = 0.0
     with _THROTTLE_LOCK:
         now = time.monotonic()
         elapsed = now - _LAST_LB_REQUEST_TIME
         if elapsed < 1.0:
-            time.sleep(1.0 - elapsed)
-        _LAST_LB_REQUEST_TIME = time.monotonic()
+            sleep_time = 1.0 - elapsed
+            _LAST_LB_REQUEST_TIME = now + sleep_time
+        else:
+            _LAST_LB_REQUEST_TIME = now
+            
+    if sleep_time > 0:
+        time.sleep(sleep_time)
 
-
-# =============================================================================
-# HTTP CLIENT
-# =============================================================================
 
 class ListenBrainzClient:
-    """ListenBrainz public API wrapper."""
-
     DEFAULT_BASE_URL = "https://api.listenbrainz.org/1"
 
     def __init__(
@@ -137,12 +119,7 @@ class ListenBrainzClient:
         response.raise_for_status()
         return response.json()
 
-    # ------------------------------------------------------------------
-    # Batch & Popularity Lookups
-    # ------------------------------------------------------------------
-
     def get_recording_popularity_batch(self, recording_mbids: list[str]) -> dict[str, dict[str, int | None]]:
-        """Fetch global ListenBrainz popularity for up to 100 recording MBIDs."""
         mbids = [m for m in recording_mbids if m]
         result: dict[str, dict[str, int | None]] = {}
 
@@ -201,11 +178,6 @@ class ListenBrainzClient:
             return {}
         try:
             import httpx
-            # Component timeout: a hung TCP/TLS connect to api.listenbrainz.org
-            # (observed in the scan log — the TLS connect never completed,
-            # stalling the album's LB tasks past their 120s budgets) must raise
-            # after ~10s instead of consuming the full 20s read timeout on each
-            # of the 3 retries (which blew the per-task budget).
             data = self._get(
                 "/metadata/recording/",
                 params={"recording_mbids": ",".join(mbids), "inc": inc},
@@ -222,7 +194,6 @@ class ListenBrainzClient:
             return {}
         try:
             import httpx
-            # Component connect timeout (same rationale as recording batch).
             data = self._get(
                 "/metadata/release/",
                 params={"release_mbids": ",".join(mbids), "inc": inc},
@@ -248,7 +219,11 @@ class ListenBrainzClient:
         if not self.enabled or not artist_mbid:
             return []
         try:
-            data = self._get(f"/popularity/top-recordings-for-artist/{artist_mbid}", timeout=10.0)
+            data = self._get(
+                f"/popularity/top-recordings-for-artist/{artist_mbid}", 
+                authenticated=True, 
+                timeout=10.0
+            )
             return data if isinstance(data, list) else []
         except Exception as exc:
             logger.debug("Failed to fetch top recordings for artist", artist_mbid=artist_mbid, error=str(exc))
@@ -264,10 +239,6 @@ class ListenBrainzClient:
         except Exception as exc:
             logger.debug("Failed to fetch user listen count", username=username, error=str(exc))
             return 0
-
-    # ------------------------------------------------------------------
-    # Artist / Release / Release-Group popularity batch lookups
-    # ------------------------------------------------------------------
 
     def get_artist_popularity_batch(self, artist_mbids: list[str]) -> dict[str, dict[str, int | None]]:
         mbids = [m for m in artist_mbids if m]
@@ -378,8 +349,6 @@ class ListenBrainzClient:
 
 
 class ListenBrainzUserClient(ListenBrainzClient):
-    """Authenticated ListenBrainz operations."""
-
     def __init__(self, user_token: str, http_session: Any = None, enabled: bool = True, user_agent: str = ""):
         super().__init__(http_session=http_session, enabled=enabled, user_token=user_token, user_agent=user_agent)
 
@@ -431,10 +400,6 @@ class ListenBrainzUserClient(ListenBrainzClient):
             logger.debug("Failed to fetch user feedback", username=username, error=str(exc))
             return {"feedback": []}
 
-
-# =============================================================================
-# MODULE-LEVEL WRAPPERS
-# =============================================================================
 
 def score_by_age(playcount: int | float, release_str: str) -> tuple[float, int]:
     from services.popularity.popularity_math import score_by_age as _score_by_age
