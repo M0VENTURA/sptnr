@@ -46,14 +46,18 @@ def _started_minutes_ago(started_at: Any) -> Optional[float]:
 def _normalise_path(path: Any) -> str:
     return str(path or "").replace("\\", "/").lower()
 
-
 def _find_owning_item(transfer: dict, active_items: list) -> Optional[dict]:
     """Match a transfer to its queue item by path (slashes normalised)."""
     filename = _normalise_path(transfer.get("filename"))
     local_path = _normalise_path(transfer.get("localFilePath"))
+    
+    if not filename and not local_path:
+        return None
+
     for item in active_items:
         for column in ("found_filename", "file_path", "music_file_path"):
-            if _normalise_path(item.get(column)) in (filename, local_path):
+            val = _normalise_path(item.get(column))
+            if val and val in (filename, local_path):
                 return item
     return None
 
