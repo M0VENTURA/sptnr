@@ -245,7 +245,8 @@ function attachUnmatchedFolderActions(listEl) {
 
 function openFolderMbSearch(folderPath, isChange, detectedArtist, detectedAlbum) {
   window._folderMatchTarget = { folder_path: folderPath, is_change: !!isChange };
-  window._mbSearchCallback = function(selected) {
+  
+  const callback = function(selected) {
     fetch('/api/downloads/folder/associate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -254,9 +255,15 @@ function openFolderMbSearch(folderPath, isChange, detectedArtist, detectedAlbum)
       if (typeof window.renderUnmatchedFolders === 'function') window.renderUnmatchedFolders({ forceRender: true });
     });
   };
+
   window._mbSearchIncludeOwned = true;
-  if (typeof window.populateMusicBrainzSearch === 'function') window.populateMusicBrainzSearch(detectedArtist, detectedAlbum, '', '');
-  if (typeof window.showMusicBrainzModal === 'function') window.showMusicBrainzModal();
+  
+  // Use the global search function instead of the legacy standalone ones
+  if (typeof window.openGlobalMbSearch === 'function') {
+    window.openGlobalMbSearch(detectedArtist, detectedAlbum, callback);
+  } else {
+    alert("MusicBrainz search component is not loaded on this page.");
+  }
 }
 
 async function discoverFiles(clickEvent) {
