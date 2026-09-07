@@ -273,6 +273,11 @@ window.escapeHtml = function(text) {
   return div.innerHTML;
 };
 
+// Protects JS strings rendered inline via onclick=""
+window.escapeJsString = function(str) {
+    return (str || '').replace(/'/g, "\\'").replace(/"/g, '\\"');
+};
+
 // Fixed Filtering Logic
 window.setArtistFilter = function(filter) {
     document.querySelectorAll('.artist-filter-btn').forEach(btn => {
@@ -721,12 +726,6 @@ async function fetchJsonOrThrow(url, options = {}, timeoutMs = 30000) {
   }
 
   return data;
-}
-
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
 }
 
 window.mbDerivedCategory = function(release) {
@@ -3110,8 +3109,8 @@ document.addEventListener('input', function(e) {
 async function searchMBForOrganize() {
     const artist = document.getElementById('orgArtist')?.value.trim() || '';
     const album = document.getElementById('orgAlbum')?.value.trim() || '';
-    const resultsDiv = document.getElementById('mbSearchResults');
-    const loadingDiv = document.getElementById('mbSearchLoading');
+    const resultsDiv = document.getElementById('orgMbSearchResults');
+    const loadingDiv = document.getElementById('orgMbSearchLoading');
 
     if (!artist && !album) {
         alert('Please enter at least an artist or album name.');
@@ -3159,8 +3158,8 @@ async function searchMBForOrganize() {
 async function searchDiscogsForOrganize() {
     const artist = document.getElementById('orgArtist')?.value.trim() || '';
     const album = document.getElementById('orgAlbum')?.value.trim() || '';
-    const resultsDiv = document.getElementById('mbSearchResults');
-    const loadingDiv = document.getElementById('mbSearchLoading');
+    const resultsDiv = document.getElementById('orgMbSearchResults');
+    const loadingDiv = document.getElementById('orgMbSearchLoading');
 
     if (!artist && !album) {
         alert('Please enter at least an artist or album name.');
