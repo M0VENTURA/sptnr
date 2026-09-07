@@ -1553,8 +1553,10 @@ function renderSoulseekManualSearchResults(results) {
     const sizeMb = row.size_mb || '-';
     const bitrate = row.bitrate || '-';
     const duration = row.duration || row.length || '-';
-    const size = Number(row.size || 0);
-    const length = Number(row.length || 0);
+    
+    // ✅ Extract the raw byte size, falling back to math if missing
+    const size = Number(row.size || (row.size_mb ? row.size_mb * 1024 * 1024 : 0));
+    const length = Number(row.length_seconds || row.length || 0);
 
     return `
       <tr>
