@@ -1,31 +1,22 @@
-{# Album Lookup Modal — triggered by openAlbumLookupModal() in album_detail.js #}
+<!-- MusicBrainz Search Modal Wrapper -->
 <div class="modal fade" id="albumLookupModal" tabindex="-1" aria-labelledby="albumLookupModalLabel" aria-hidden="true">
-  <div class="modal-dialog modal-lg">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title" id="albumLookupModalLabel">
-          <i class="bi bi-search"></i> Album Lookup
-        </h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content bg-dark text-light border-secondary">
+      
+      <div class="modal-header border-secondary">
+        <h5 class="modal-title" id="albumLookupModalLabel"><i class="bi bi-search text-info me-2"></i>MusicBrainz Search</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
+      
       <div class="modal-body">
-        <p class="text-muted small">Search for album metadata corrections from MusicBrainz.</p>
-        <div class="mb-3">
-          <label class="form-label">Artist</label>
-          <input type="text" class="form-control" id="albumLookupArtist" value="{{ artist_name }}">
-        </div>
-        <div class="mb-3">
-          <label class="form-label">Album</label>
-          <input type="text" class="form-control" id="albumLookupAlbum" value="{{ album_name }}">
-        </div>
-        <div id="albumLookupResults"></div>
+        <!-- This dynamically pulls in your reusable search component right here -->
+        {% include 'components/_musicbrainz_search_component.html' ignore missing %}
       </div>
-      <div class="modal-footer">
+      
+      <div class="modal-footer border-secondary">
         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-        <button type="button" class="btn btn-primary" onclick="runAlbumLookup()">
-          <i class="bi bi-search"></i> Search
-        </button>
       </div>
+
     </div>
   </div>
 </div>
