@@ -23,10 +23,10 @@ _VALID_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"})
 # so a runtime set_log_level() toggle can raise/lower its level.
 _UNIFIED_FILE_HANDLER = None
 
-# Time-based log retention. Rotates daily at midnight and keeps only 1 backup
-# file (retaining the current day and the previous 24 hours of logs).
-_LOG_WHEN = "midnight"
-_LOG_BACKUP_COUNT = 1
+# Size-based log retention. Rotates when a file reaches 5MB and keeps up to 
+# 3 backup files (.1, .2, .3), meaning max 20MB per log type.
+_LOG_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
+_LOG_BACKUP_COUNT = 3
 
 
 def _resolve_log_level() -> str:
@@ -205,7 +205,7 @@ def _configure_structlog_bridge() -> None:
 
 
 def _setup_standard_logging(service_name: str, log_dir: str, use_structlog: bool = False) -> None:
-    """Configure standard dictConfig-based logging using time-based rotation."""
+    """Configure standard dictConfig-based logging using size-based rotation."""
     fmt = "%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s"
     date_fmt = "%Y-%m-%d %H:%M:%S"
     root_level = _resolve_log_level()
@@ -261,10 +261,9 @@ def _setup_standard_logging(service_name: str, log_dir: str, use_structlog: bool
         },
         "handlers": {
             "unified_file": {
-                "class": "logging.handlers.TimedRotatingFileHandler",
+                "class": "logging.handlers.RotatingFileHandler",
                 "filename": os.path.join(log_dir, "unified_scan.log"),
-                "when": _LOG_WHEN,
-                "interval": 1,
+                "maxBytes": _LOG_MAX_BYTES,
                 "backupCount": _LOG_BACKUP_COUNT,
                 "encoding": "utf-8",
                 "formatter": "unified",
@@ -272,50 +271,45 @@ def _setup_standard_logging(service_name: str, log_dir: str, use_structlog: bool
                 "level": root_level,
             },
             "info_file": {
-                "class": "logging.handlers.TimedRotatingFileHandler",
+                "class": "logging.handlers.RotatingFileHandler",
                 "filename": os.path.join(log_dir, "info.log"),
-                "when": _LOG_WHEN,
-                "interval": 1,
+                "maxBytes": _LOG_MAX_BYTES,
                 "backupCount": _LOG_BACKUP_COUNT,
                 "encoding": "utf-8",
                 "formatter": "verbose",
                 "level": "INFO",
             },
             "debug_file": {
-                "class": "logging.handlers.TimedRotatingFileHandler",
+                "class": "logging.handlers.RotatingFileHandler",
                 "filename": os.path.join(log_dir, "debug.log"),
-                "when": _LOG_WHEN,
-                "interval": 1,
+                "maxBytes": _LOG_MAX_BYTES,
                 "backupCount": _LOG_BACKUP_COUNT,
                 "encoding": "utf-8",
                 "formatter": "verbose",
                 "level": "DEBUG",
             },
             "error_file": {
-                "class": "logging.handlers.TimedRotatingFileHandler",
+                "class": "logging.handlers.RotatingFileHandler",
                 "filename": os.path.join(log_dir, "error.log"),
-                "when": _LOG_WHEN,
-                "interval": 1,
+                "maxBytes": _LOG_MAX_BYTES,
                 "backupCount": _LOG_BACKUP_COUNT,
                 "encoding": "utf-8",
                 "formatter": "verbose",
                 "level": "ERROR",
             },
             "queue_file": {
-                "class": "logging.handlers.TimedRotatingFileHandler",
+                "class": "logging.handlers.RotatingFileHandler",
                 "filename": os.path.join(log_dir, "queue.log"),
-                "when": _LOG_WHEN,
-                "interval": 1,
+                "maxBytes": _LOG_MAX_BYTES,
                 "backupCount": _LOG_BACKUP_COUNT,
                 "encoding": "utf-8",
                 "formatter": "unified",
                 "level": "INFO",
             },
             "search_file": {
-                "class": "logging.handlers.TimedRotatingFileHandler",
+                "class": "logging.handlers.RotatingFileHandler",
                 "filename": os.path.join(log_dir, "search.log"),
-                "when": _LOG_WHEN,
-                "interval": 1,
+                "maxBytes": _LOG_MAX_BYTES,
                 "backupCount": _LOG_BACKUP_COUNT,
                 "encoding": "utf-8",
                 "formatter": "unified",
