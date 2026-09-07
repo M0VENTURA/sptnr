@@ -266,30 +266,41 @@ async def slskd_download() -> Any:
     slskd_config = cfg.get("slskd", {})
     if not slskd_config.get("enabled"):
         return jsonify({"error": "slskd not enabled"}), 400
-
+        
     payload = (await request.get_json()) or {}
     username = payload.get("username", "")
     filename = payload.get("filename", "")
-
+    
+    # NEW: Extract size from payload
+    size = payload.get("size")
+    
     if not username or not filename:
         return jsonify({"error": "username and filename required"}), 400
-
+        
     try:
         client = SlskdHttpClient(slskd_config["web_url"], slskd_config.get("api_key", ""))
-        result = await asyncio.to_thread(client.enqueue_download, username, filename)
-
+        slskd = SlskdService(http_client=client)
+        
+        # NEW: Forward size to the service
+        result = await asyncio.to_thread(slskd.download_file, username, filename, size=size)
+        
+        if result is None:
+            try:
+                result = await asyncio.to_thread(client.enqueue_download, username, filename, size)
+            except TypeError:
+                result = await asyncio.to_thread(client.enqueue_download, username, filename)
+        
         _log_manual_search_event(
             search_type="manual",
             query=f"{username} - {filename}",
             result_count=1,
             notes="selected_for_download",
-            selected_result={"username": username, "filename": filename},
+            selected_result={"username": username, "filename": filename, "size": size},
         )
         return jsonify({"success": True, "result": result})
     except Exception as exc:
         logger.error("Failed to enqueue download", username=username, filename=filename, error=str(exc))
         return jsonify({"error": str(exc)}), 500
-
 
 @slskd_bp.route("/cancel", methods=["POST"])
 async def slskd_cancel() -> Any:
@@ -364,22 +375,30 @@ async def slskd_queue_download() -> Any:
     slskd_config = cfg.get("slskd", {})
     if not slskd_config.get("enabled"):
         return jsonify({"error": "slskd not enabled"}), 400
-
+        
     payload = (await request.get_json()) or {}
     queue_id = payload.get("queue_id")
     username = payload.get("username", "")
     filename = payload.get("filename", "")
-
+    
+    # NEW: Extract size from payload
+    size = payload.get("size")
+    
     if not queue_id or not username or not filename:
         return jsonify({"error": "queue_id, username, and filename required"}), 400
-
+        
     try:
         client = SlskdHttpClient(slskd_config["web_url"], slskd_config.get("api_key", ""))
         slskd = SlskdService(http_client=client)
-        result = await asyncio.to_thread(slskd.download_file, username, filename)
+        
+        # NEW: Forward size to the service
+        result = await asyncio.to_thread(slskd.download_file, username, filename, size=size)
 
         if not result:
-            await asyncio.to_thread(client.enqueue_download, username, filename)
+            try:
+                await asyncio.to_thread(client.enqueue_download, username, filename, size)
+            except TypeError:
+                await asyncio.to_thread(client.enqueue_download, username, filename)
 
         _stored_filename = str(filename).replace("\\", "/").strip()
         try:
@@ -402,7 +421,6 @@ async def slskd_queue_download() -> Any:
     except Exception as exc:
         logger.error("Failed to queue download", queue_id=queue_id, error=str(exc))
         return jsonify({"error": str(exc)}), 500
-
 
 @slskd_bp.route("/events", methods=["GET"])
 def slskd_events() -> Any:
