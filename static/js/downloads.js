@@ -1554,9 +1554,16 @@ function renderSoulseekManualSearchResults(results) {
     const bitrate = row.bitrate || '-';
     const duration = row.duration || row.length || '-';
     
-    // ✅ Extract the raw byte size, falling back to math if missing
-    const size = Number(row.size || (row.size_mb ? row.size_mb * 1024 * 1024 : 0));
-    const length = Number(row.length_seconds || row.length || 0);
+    // 🛡️ Ensure absolute safe integer parsing for bytes
+    const rawSize = row.size !== undefined ? row.size : (row.size_mb ? Number(row.size_mb) * 1024 * 1024 : 0);
+    const size = Number.isFinite(Number(rawSize)) ? Math.round(Number(rawSize)) : 0;
+    
+    const rawLength = row.length_seconds !== undefined ? row.length_seconds : (row.length !== undefined ? row.length : 0);
+    const length = Number.isFinite(Number(rawLength)) ? Math.round(Number(rawLength)) : 0;
+
+    // Encode parameters safely for inline JavaScript execution
+    const encUser = encodeInlineArg(username);
+    const encFile = encodeInlineArg(filename);
 
     return `
       <tr>
@@ -1566,7 +1573,7 @@ function renderSoulseekManualSearchResults(results) {
         <td>${escapeHtml(String(bitrate))}</td>
         <td>${escapeHtml(String(duration))}</td>
         <td class="text-center">
-          <button class="btn btn-sm btn-success fw-bold px-3" onclick="downloadSoulseekManualResult('${encodeInlineArg(username)}', '${encodeInlineArg(filename)}', ${size}, ${length}, this)">
+          <button class="btn btn-sm btn-success fw-bold px-3" onclick="downloadSoulseekManualResult('${encUser}', '${encFile}', ${size}, ${length}, this)">
             Select
           </button>
         </td>
@@ -1603,6 +1610,9 @@ async function downloadSoulseekManualResult(usernameEnc, filenameEnc, size, leng
     return;
   }
 
+  // 🔍 Debug log to confirm what byte size is being sent to the backend
+  console.log("[SLSKD_DEBUG] Manual download triggered -> Username:", username, "| File:", filename, "| Size (bytes):", size);
+
   const btn = buttonEl && buttonEl.tagName ? buttonEl : null;
   if (btn) {
     btn.disabled = true;
@@ -1611,9 +1621,21 @@ async function downloadSoulseekManualResult(usernameEnc, filenameEnc, size, leng
 
   const queueId = window.soulseekManualSearchState?.queueId || null;
   const endpoint = queueId ? '/api/slskd/queue-download' : '/api/slskd/download';
-  const body = queueId
-    ? { queue_id: queueId, username, filename, size: Number(size || 0), length: Number(length || 0) || null }
-    : { username, filename, size: Number(size || 0), length: Number(length || 0) || null };
+  
+  // Ensure size is a valid integer, fallback to 0 if missing
+  const parsedSize = Number.isFinite(Number(size)) ? Math.round(Number(size)) : 0;
+  const parsedLength = Number.isFinite(Number(length)) ? Math.round(Number(length)) : null;
+
+  const body = {
+    username,
+    filename,
+    size: parsedSize,
+    length: parsedLength
+  };
+
+  if (queueId) {
+    body.queue_id = queueId;
+  }
 
   try {
     const data = await fetchJsonOrThrow(endpoint, {
