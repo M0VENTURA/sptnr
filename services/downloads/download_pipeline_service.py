@@ -909,7 +909,7 @@ def process_queue_item(item: dict, slskd: SlskdService) -> dict:
             success = slskd.download_file(
                 candidate["username"],
                 candidate["filename"],
-                size=int(candidate.get("size_mb", 0) * 1024 * 1024),
+                size=int(candidate.get("size") or (candidate.get("size_mb", 0) * 1024 * 1024)),
             )
             if success:
                 chosen = candidate
