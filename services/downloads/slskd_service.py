@@ -393,7 +393,8 @@ class SlskdService:
                     qualified.append({
                         "username": response.username,
                         "filename": file.filename,
-                        "size_mb": file.size_mb,
+                        "size": file.size,               # <--- Restored raw byte size
+                        "size_mb": round(file.size_mb, 2),
                         "bitrate": file.bitrate,
                         "sample_rate": file.sample_rate,
                         "bit_depth": file.bit_depth,
