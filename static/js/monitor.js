@@ -218,12 +218,13 @@ function attachUnmatchedFolderActions(listEl) {
     btn.addEventListener('click', async () => {
       btn.disabled = true;
       try {
-        const data = await fetchJsonOrThrow('/api/downloads/confirm-match', {
+        await fetchJsonOrThrow('/api/downloads/confirm-match', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ folder_path: btn.getAttribute('data-path'), release_mbid: btn.getAttribute('data-mbid') }),
         });
-        if (typeof window.loadFolderGroups === 'function') window.loadFolderGroups({ forceRender: true });
+        if (typeof window.renderUnmatchedFolders === 'function') window.renderUnmatchedFolders({ forceRender: true });
+        if (typeof window.loadQueueStatus === 'function') window.loadQueueStatus();
       } catch (err) { alert(err.message); btn.disabled = false; }
     });
   });
@@ -236,7 +237,7 @@ function attachUnmatchedFolderActions(listEl) {
         await fetchJsonOrThrow('/api/downloads/folder/delete', {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder_path: btn.getAttribute('data-path') }),
         });
-        if (typeof window.loadFolderGroups === 'function') window.loadFolderGroups({ forceRender: true });
+        if (typeof window.renderUnmatchedFolders === 'function') window.renderUnmatchedFolders({ forceRender: true });
       } catch (err) { alert(err.message); btn.disabled = false; }
     });
   });
@@ -250,7 +251,7 @@ function openFolderMbSearch(folderPath, isChange, detectedArtist, detectedAlbum)
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ folder_path: window._folderMatchTarget.folder_path, mb_id: selected.id }),
     }).then(() => {
-      if (typeof window.loadFolderGroups === 'function') window.loadFolderGroups({ forceRender: true });
+      if (typeof window.renderUnmatchedFolders === 'function') window.renderUnmatchedFolders({ forceRender: true });
     });
   };
   window._mbSearchIncludeOwned = true;
@@ -264,6 +265,7 @@ async function discoverFiles(clickEvent) {
   try {
     await fetchJsonOrThrow('/api/downloads/discover', { method: 'POST' });
     if (typeof window.loadQueueStatus === 'function') await window.loadQueueStatus();
+    if (typeof window.renderUnmatchedFolders === 'function') window.renderUnmatchedFolders();
   } catch (err) { alert(err.message); }
   if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-search"></i> Scan Downloads'; }
 }
@@ -274,6 +276,63 @@ async function processAlbums(clickEvent) {
   try {
     await fetchJsonOrThrow('/api/downloads/process-albums', { method: 'POST' });
     if (typeof window.loadQueueStatus === 'function') await window.loadQueueStatus();
+    if (typeof window.renderUnmatchedFolders === 'function') window.renderUnmatchedFolders();
   } catch (err) { alert(err.message); }
   if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-collection"></i> Process Albums'; }
 }
+
+// ===== Upcoming Releases =====
+async function checkForUpdatesMonitor() {
+  localStorage.setItem('upcomingReleasesLastChecked', Date.now().toString());
+  await refreshUpcomingReleasesMonitor();
+}
+
+async function refreshUpcomingReleasesMonitor() {
+  const container = document.getElementById('upcomingReleasesMonitor');
+  if (!container) return;
+  const filterCollection = document.getElementById('upcomingFilterCollectionMonitor')?.checked || false;
+  container.innerHTML = '<div class="text-center py-4"><div class="spinner-border text-primary spinner-border-sm" role="status"></div><p class="mt-2 small mb-0">Loading upcoming releases...</p></div>';
+  try {
+    const data = await fetchJsonOrThrow(`/api/upcoming-releases?include_queue=true${filterCollection ? '&collection=true' : ''}`);
+    const releases = data.releases || [];
+    
+    if (releases.length === 0) {
+      container.innerHTML = '<div class="text-center py-4"><p class="text-muted mb-0">No upcoming releases found.</p></div>';
+      return;
+    }
+    
+    const html = `
+      <div class="table-responsive">
+        <table class="table table-sm table-dark table-hover mb-0">
+          <thead><tr><th>Artist</th><th>Album</th><th>Date</th><th style="width: 120px;">Action</th></tr></thead>
+          <tbody>
+            ${releases.map(r => `
+              <tr>
+                <td>${escapeHtml(r.artist_name)}</td>
+                <td>${escapeHtml(r.album_name)}</td>
+                <td><small>${r.release_date || 'TBA'}</small></td>
+                <td><button class="btn btn-sm btn-outline-primary" onclick="searchUpcomingReleaseFromEncoded('${encodeURIComponent(r.artist_name)}', '${encodeURIComponent(r.album_name)}')"><i class="bi bi-search"></i> Search</button></td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`;
+    container.innerHTML = html;
+  } catch (error) {
+    container.innerHTML = `<div class="text-center py-4"><p class="text-danger mb-2"><i class="bi bi-exclamation-triangle"></i> Error loading upcoming releases.</p></div>`;
+  }
+}
+
+function searchUpcomingReleaseFromEncoded(artist, album) {
+  if (typeof window.searchMusicBrainzRelease === 'function') {
+    window.searchMusicBrainzRelease(null, decodeURIComponent(artist), decodeURIComponent(album));
+  }
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  if (typeof window.renderUnmatchedFolders === 'function') {
+    window.renderUnmatchedFolders();
+  }
+  if (document.getElementById('upcomingReleasesMonitor')) {
+    refreshUpcomingReleasesMonitor();
+  }
+});
