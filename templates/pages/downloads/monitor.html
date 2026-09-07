@@ -86,6 +86,8 @@
 {% include 'components/modals/_manual_match.html' ignore missing %}
 {% include 'components/modals/_soulseek_manual_search.html' ignore missing %}
 {% include 'components/modals/_release_picker.html' ignore missing %}
+<!-- ADD THIS LINE: -->
+{% include 'components/modals/_musicbrainz_search_modal.html' ignore missing %}
 {% endblock %}
 
 {% block scripts %}
@@ -108,4 +110,6 @@
 <script src="{{ versioned_static('js/downloads.js') }}"></script>
 <script src="{{ versioned_static('js/monitor.js') }}"></script>
 <script src="{{ versioned_static('js/genre-utils.js') }}"></script>
+<!-- ADD THIS LINE: -->
+{% include 'components/_musicbrainz_search_functions.html' ignore missing %}
 {% endblock %}
