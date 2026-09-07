@@ -13,46 +13,34 @@
     {% set missing_count = items|selectattr('is_missing', 'equalto', True)|list|length %}
 
     <div class="card mb-3 category-section shadow-sm" id="{{ cat_id }}-section" data-category-key="{{ cat_id }}">
-      <div class="card-header p-0" style="background-color: var(--tertiary-bg, #282828);">
-        <div class="d-flex align-items-center justify-content-between p-3 text-white">
-          
-          <!-- Accordion Toggle Area (Div instead of Button to allow nested buttons) -->
-          <div class="d-flex align-items-center gap-2 flex-grow-1 cursor-pointer"
-               data-bs-toggle="collapse"
-               data-bs-target="#collapse-{{ cat_id }}"
-               aria-expanded="true"
-               aria-controls="collapse-{{ cat_id }}">
-            <i class="bi {{ cat_icon }} text-success fs-5"></i>
-            <h5 class="h6 fw-bold mb-0 me-2">{{ cat_title }}</h5>
-
-            <span class="badge bg-primary text-dark fw-bold">
-              {{ in_library_count }} / {{ total_catalogue }} in Library
-            </span>
-
-            {% if missing_count > 0 %}
-              <span class="badge bg-warning text-dark extra-small">
-                🟡 {{ missing_count }} Missing
-              </span>
-            {% endif %}
-          </div>
-
-          <!-- Actions Area -->
-          <div class="d-flex align-items-center gap-3 flex-shrink-0 ms-2">
-            {% if missing_count > 0 %}
-              <button type="button" 
-                      class="btn btn-xs btn-outline-secondary py-0 px-2 toggle-missing-btn extra-small" 
-                      data-target-category="{{ cat_id }}" 
-                      onclick="event.stopPropagation(); toggleMissingReleasesForCategory(this, '{{ cat_id }}')" 
-                      title="Toggle visibility of missing items in this section"
-                      data-hidden="false">
-                <i class="bi bi-eye-slash me-1"></i><span>Hide Missing</span>
-              </button>
-            {% endif %}
-            <i class="bi bi-chevron-down text-muted accordion-chevron cursor-pointer"
-               data-bs-toggle="collapse"
-               data-bs-target="#collapse-{{ cat_id }}"
-               aria-expanded="true"></i>
-          </div>
+      
+      <!-- FIXED HEADER: Separated toggle area from button area -->
+      <div class="card-header p-0 d-flex align-items-center justify-content-between" style="background-color: var(--tertiary-bg, #282828);">
+        
+        <!-- Clickable Area for Accordion Collapse -->
+        <a class="text-decoration-none text-white p-3 flex-grow-1 d-flex align-items-center gap-2 cursor-pointer"
+           data-bs-toggle="collapse" href="#collapse-{{ cat_id }}" role="button" aria-expanded="true" aria-controls="collapse-{{ cat_id }}">
+          <i class="bi {{ cat_icon }} text-success fs-5"></i>
+          <h5 class="h6 fw-bold mb-0 me-2">{{ cat_title }}</h5>
+          <span class="badge bg-primary text-dark fw-bold">{{ in_library_count }} / {{ total_catalogue }} in Library</span>
+          {% if missing_count > 0 %}
+            <span class="badge bg-warning text-dark extra-small">🟡 {{ missing_count }} Missing</span>
+          {% endif %}
+        </a>
+        
+        <!-- Isolated Action Buttons (No data-bs-toggle here) -->
+        <div class="p-3 ps-0 d-flex align-items-center gap-3 flex-shrink-0">
+          {% if missing_count > 0 %}
+            <button type="button" 
+                    class="btn btn-xs btn-outline-secondary py-0 px-2 toggle-missing-btn extra-small" 
+                    data-target-category="{{ cat_id }}" 
+                    onclick="toggleMissingReleasesForCategory(this, '{{ cat_id }}')" 
+                    title="Toggle visibility of missing items in this section"
+                    data-hidden="false">
+              <i class="bi bi-eye-slash me-1"></i><span>Hide Missing</span>
+            </button>
+          {% endif %}
+          <i class="bi bi-chevron-down text-muted accordion-chevron cursor-pointer" data-bs-toggle="collapse" data-bs-target="#collapse-{{ cat_id }}"></i>
         </div>
       </div>
 
@@ -316,16 +304,15 @@
       </div>
 
       <div class="card mb-3 category-section shadow-sm" id="covers-section">
-        <div class="card-header p-0" style="background-color: var(--tertiary-bg, #282828);">
-          <div class="d-flex align-items-center justify-content-between p-3 text-white cursor-pointer"
-               data-bs-toggle="collapse"
-               data-bs-target="#collapse-covers">
-            <div class="d-flex align-items-center gap-2 flex-wrap">
-              <i class="bi bi-music-note-list text-info fs-5"></i>
-              <h5 class="h6 fw-bold mb-0 me-2">Covers of {{ artist_name }}'s Songs</h5>
-              <span class="badge bg-secondary" id="artistCoveredByCount">Checking...</span>
-            </div>
-            <i class="bi bi-chevron-down text-muted accordion-chevron"></i>
+        <div class="card-header p-0 d-flex align-items-center justify-content-between" style="background-color: var(--tertiary-bg, #282828);">
+          <a class="text-decoration-none text-white p-3 flex-grow-1 d-flex align-items-center gap-2 cursor-pointer"
+             data-bs-toggle="collapse" href="#collapse-covers" role="button" aria-expanded="true">
+            <i class="bi bi-music-note-list text-info fs-5"></i>
+            <h5 class="h6 fw-bold mb-0 me-2">Covers of {{ artist_name }}'s Songs</h5>
+            <span class="badge bg-secondary" id="artistCoveredByCount">Checking...</span>
+          </a>
+          <div class="p-3 ps-0 d-flex align-items-center gap-3 flex-shrink-0">
+            <i class="bi bi-chevron-down text-muted accordion-chevron cursor-pointer" data-bs-toggle="collapse" data-bs-target="#collapse-covers"></i>
           </div>
         </div>
         <div id="collapse-covers" class="collapse show card-body p-2">
@@ -549,8 +536,6 @@
 <style>
   #artistMainPageContainer.filter-hide-missing .missing-album-item { display: none !important; }
   #artistMainPageContainer.filter-hide-library .library-album-item { display: none !important; }
-  
-  /* Added scoping so the individual toggles work via class swapping */
   .category-section.category-hide-missing .missing-album-item { display: none !important; }
   .cursor-pointer { cursor: pointer; }
 </style>
@@ -582,8 +567,8 @@
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
-  if (typeof loadArtistCoveredBy === 'function') {
-    loadArtistCoveredBy(window.artistName);
+  if (typeof window.loadArtistCoveredBy === 'function') {
+    window.loadArtistCoveredBy(window.artistName);
   }
 });
 </script>
