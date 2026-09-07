@@ -1,48 +1,575 @@
-// Replace the entire "Fixed Filtering Logic" section at the bottom of artist_detail.js with this:
+{% extends "base.html" %}
 
-window.setArtistFilter = function(filter) {
-    document.querySelectorAll('.artist-filter-btn').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.filter === filter);
-    });
-    
-    const mainContainer = document.getElementById('artistMainPageContainer');
-    if (!mainContainer) return;
+{% block title %}{{ artist_name }} · Popularr{% endblock %}
 
-    // Reset container classes
-    mainContainer.classList.remove('filter-hide-missing', 'filter-hide-library');
+{% block content %}
+{# ========================================================================= #}
+{# REUSABLE RELEASE CATEGORY ACCORDION MACRO                                 #}
+{# ========================================================================= #}
+{% macro render_release_category(cat_id, cat_title, cat_icon, items, artist_name) %}
+  {% set total_catalogue = items|length %}
+  {% if total_catalogue > 0 %}
+    {% set in_library_count = items|selectattr('is_missing', 'equalto', False)|list|length %}
+    {% set missing_count = items|selectattr('is_missing', 'equalto', True)|list|length %}
 
-    if (filter === 'library') {
-        mainContainer.classList.add('filter-hide-missing');
-    } else if (filter === 'missing') {
-        mainContainer.classList.add('filter-hide-library');
-    }
+    <div class="card mb-3 category-section shadow-sm" id="{{ cat_id }}-section" data-category-key="{{ cat_id }}">
+      
+      <!-- FIXED HEADER: Separated toggle area from button area -->
+      <div class="card-header p-0 d-flex align-items-center justify-content-between" style="background-color: var(--tertiary-bg, #282828);">
+        
+        <!-- Clickable Area for Accordion Collapse -->
+        <a class="text-decoration-none text-white p-3 flex-grow-1 d-flex align-items-center gap-2 cursor-pointer"
+           data-bs-toggle="collapse" href="#collapse-{{ cat_id }}" role="button" aria-expanded="true" aria-controls="collapse-{{ cat_id }}">
+          <i class="bi {{ cat_icon }} text-success fs-5"></i>
+          <h5 class="h6 fw-bold mb-0 me-2">{{ cat_title }}</h5>
+          <span class="badge bg-primary text-dark fw-bold">{{ in_library_count }} / {{ total_catalogue }} in Library</span>
+          {% if missing_count > 0 %}
+            <span class="badge bg-warning text-dark extra-small">🟡 {{ missing_count }} Missing</span>
+          {% endif %}
+        </a>
+        
+        <!-- Isolated Action Buttons (No data-bs-toggle here) -->
+        <div class="p-3 ps-0 d-flex align-items-center gap-3 flex-shrink-0">
+          {% if missing_count > 0 %}
+            <button type="button" 
+                    class="btn btn-xs btn-outline-secondary py-0 px-2 toggle-missing-btn extra-small" 
+                    data-target-category="{{ cat_id }}" 
+                    onclick="toggleMissingReleasesForCategory(this, '{{ cat_id }}')" 
+                    title="Toggle visibility of missing items in this section"
+                    data-hidden="false">
+              <i class="bi bi-eye-slash me-1"></i><span>Hide Missing</span>
+            </button>
+          {% endif %}
+          <i class="bi bi-chevron-down text-muted accordion-chevron cursor-pointer" data-bs-toggle="collapse" data-bs-target="#collapse-{{ cat_id }}"></i>
+        </div>
+      </div>
 
-    // Hide empty category sections based on active filter
-    document.querySelectorAll('.category-section').forEach(section => {
-        const hasMissing = section.querySelector('.missing-album-item') !== null;
-        const hasLibrary = section.querySelector('.library-album-item') !== null;
+      <div id="collapse-{{ cat_id }}" class="collapse show card-body p-2">
+        <div class="accordion accordion-flush" id="accordion-{{ cat_id }}">
+          {% for album in items %}
+            {% set is_missing = album.is_missing %}
+            {% set album_title = album.get('album') or album.get('title') or '' %}
+            {% set album_year = album.get('album_year') or (album.get('first_release_date') or '')[:4] %}
+            {% set release_id = album.get('release_id') or album.get('id') or '' %}
+            {% set cover_url = album.get('cover_art_url') or ('/api/album/' ~ (artist_name|path_segment) ~ '/' ~ (album_title|path_segment) ~ '/art?s=100') %}
 
-        let isVisible = true;
-        if (filter === 'library' && !hasLibrary) isVisible = false;
-        if (filter === 'missing' && !hasMissing) isVisible = false;
+            <div class="album-row mb-1 border-0 rounded p-2 d-flex align-items-center justify-content-between gap-2 {% if is_missing %}opacity-75 missing-album-item{% else %}library-album-item{% endif %}"
+                 style="background-color: var(--secondary-bg, #1e1e1e); border: 1px solid var(--border-color);"
+                 data-status="{{ 'missing' if is_missing else 'library' }}"
+                 data-album="{{ album_title|e }}"
+                 data-year="{{ album_year or '0' }}">
 
-        section.style.display = isVisible ? 'block' : 'none';
-    });
-};
+              <div class="d-flex align-items-center gap-3 min-w-0">
+                <img src="{{ cover_url }}"
+                     alt="{{ album_title|e }}"
+                     class="rounded flex-shrink-0"
+                     style="width: 48px; height: 48px; object-fit: cover; background-color: #2a2a2a;"
+                     loading="lazy"
+                     onerror="this.src='/api/album-art-placeholder';">
 
-window.toggleMissingReleasesForCategory = function(btn, catId) {
-    const section = document.getElementById(`${catId}-section`);
-    if (!section) return;
-    
-    const isHidden = btn.getAttribute('data-hidden') === 'true';
+                <div class="min-w-0">
+                  <div class="fw-bold text-truncate small">
+                    {% if not is_missing %}
+                      <a href="/album/{{ artist_name|path_segment }}/{{ album_title|path_segment }}" class="text-white text-decoration-none">
+                        {{ album_title }}
+                      </a>
+                    {% else %}
+                      <span class="text-secondary">{{ album_title }}</span>
+                    {% endif %}
+                  </div>
 
-    if (isHidden) {
-        section.classList.remove('category-hide-missing');
-        btn.setAttribute('data-hidden', 'false');
-        btn.innerHTML = '<i class="bi bi-eye-slash me-1"></i><span>Hide Missing</span>';
-    } else {
-        section.classList.add('category-hide-missing');
-        btn.setAttribute('data-hidden', 'true');
-        btn.innerHTML = '<i class="bi bi-eye me-1"></i><span>Show Missing</span>';
-    }
-};
+                  <div class="extra-small text-muted d-flex align-items-center gap-2">
+                    <span>{{ album_year or '????' }}</span>
+                    {% if is_missing %}
+                      <span class="badge bg-warning text-dark extra-small">Missing</span>
+                    {% else %}
+                      <span>· {{ album.get('track_count') or 0 }} tracks</span>
+                      {% if album.get('avg_stars') %}
+                        <span class="text-success">· {{ album.get('avg_stars')|round(1) }}★</span>
+                      {% endif %}
+                    {% endif %}
+                  </div>
+                </div>
+              </div>
+
+              <div class="btn-group btn-group-sm flex-shrink-0">
+                {% if is_missing %}
+                  <button class="btn btn-outline-success btn-sm fw-bold"
+                          onclick="importReleaseFromEncoded('{{ (artist_name|urlencode|replace('+', '%20')) }}', '{{ (release_id|urlencode|replace('+', '%20')) }}', '{{ (album_title|urlencode|replace('+', '%20')) }}')"
+                          title="Import Release">
+                    <i class="bi bi-download"></i> <span class="d-none d-sm-inline ms-1">Import</span>
+                  </button>
+                {% else %}
+                  <a href="/album/{{ artist_name|path_segment }}/{{ album_title|path_segment }}"
+                     class="btn btn-outline-secondary btn-sm"
+                     title="Open Album">
+                    <i class="bi bi-arrow-right"></i>
+                  </a>
+                {% endif %}
+              </div>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  {% endif %}
+{% endmacro %}
+
+<div class="container-fluid mt-3 artist-page" id="artistMainPageContainer">
+
+  <nav aria-label="breadcrumb">
+    <ol class="breadcrumb mb-3">
+      <li class="breadcrumb-item"><a href="{{ url_for('ui.dashboard') }}">Dashboard</a></li>
+      <li class="breadcrumb-item"><a href="{{ url_for('ui.artists') }}">Artists</a></li>
+      <li class="breadcrumb-item active" aria-current="page">{{ artist_name }}</li>
+    </ol>
+  </nav>
+
+  {% set _play_tracks = [] %}
+  {% for t in (top_tracks or [])[:20] %}
+    {% if t.id and t.title %}
+      {% set _ = _play_tracks.append({
+          "id": t.id, "title": t.title, "artist": artist_name,
+          "album": t.album or "",
+          "albumArtUrl": ("/api/album/" ~ (artist_name|path_segment) ~ "/" ~ (t.album|path_segment) ~ "/art?s=160") if t.album else ""
+      }) %}
+    {% endif %}
+  {% endfor %}
+  <script>window._artistPlaylist = {{ _play_tracks|tojson }};</script>
+
+  <!-- HERO HEADER CARD -->
+  <div class="card mb-4 position-relative hero-card shadow-sm">
+    <button data-artist-fav-btn
+            class="btn btn-link p-0 text-danger border-0 position-absolute top-0 end-0 m-3 shadow-none"
+            onclick='toggleArtistFavourite({{ artist_name|tojson }})'
+            title="Favourite Artist" aria-label="Favourite this artist">
+      <i class="bi bi-heart fs-4" data-artist-fav-icon></i>
+    </button>
+
+    <div class="card-body p-3 p-md-4">
+      <div class="d-flex align-items-start gap-3 mb-3">
+        <div class="hero-avatar-wrap position-relative flex-shrink-0 cursor-pointer"
+             onclick='openArtistImageModal({{ artist_name|tojson }})'
+             title="Change Artist Image">
+          <img id="artistImage"
+               src="{{ url_for('artist.api_artist_image', name=artist_name) }}"
+               alt="{{ artist_name }}"
+               class="rounded-circle border border-secondary shadow-sm"
+               style="width: 80px; height: 80px; object-fit: cover; background-color: #2a2a2a;"
+               onerror="this.src='/api/album-art-placeholder';">
+          <div class="hero-avatar-overlay rounded-circle d-flex align-items-center justify-content-center">
+            <i class="bi bi-pencil-fill text-white extra-small"></i>
+          </div>
+        </div>
+
+        <div class="overflow-hidden min-w-0 pe-4">
+          <h1 class="h3 fw-bold mb-1 text-truncate">
+            {{ artist_name }}
+            {% if artist_country %}
+              <span class="badge bg-info align-middle fs-6 ms-1">{{ artist_country }}</span>
+            {% endif %}
+          </h1>
+
+          <div class="d-flex gap-1 flex-wrap mb-2">
+            {% for genre in (genres or [])[:2] %}
+              <span class="badge bg-primary-subtle text-primary border border-primary-subtle extra-small">{{ genre }}</span>
+            {% endfor %}
+            {% if (genres or [])|length > 2 %}
+              <span class="text-muted extra-small ms-1">+{{ (genres|length - 2) }} more</span>
+            {% endif %}
+          </div>
+
+          {% if artist_bio %}
+            <p class="small text-muted bio-clamp-2 mb-0">{{ artist_bio|striptags }}</p>
+            <a href="javascript:void(0)" onclick="goToArtistAbout()" class="text-info text-decoration-none fw-bold extra-small">[more]</a>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="hero-metrics-box rounded p-3 mb-3" style="background-color: var(--tertiary-bg, #282828); border: 1px solid var(--border-color);">
+        <div class="row text-center g-2">
+          <div class="col-3 border-end border-secondary">
+            <div class="extra-small text-muted text-uppercase fw-semibold">Albums</div>
+            <div class="h5 fw-bold mb-0 text-white">{{ stats.album_count or 0 }}</div>
+          </div>
+          <div class="col-3 border-end border-secondary">
+            <div class="extra-small text-muted text-uppercase fw-semibold">Tracks</div>
+            <div class="h5 fw-bold mb-0 text-white">{{ stats.track_count or 0 }}</div>
+          </div>
+          <div class="col-3 border-end border-secondary">
+            <div class="extra-small text-muted text-uppercase fw-semibold">5★</div>
+            <div class="h5 fw-bold mb-0 text-warning">{{ stats.five_star_count or 0 }}</div>
+          </div>
+          <div class="col-3">
+            <div class="extra-small text-muted text-uppercase fw-semibold">Rating</div>
+            <div class="h5 fw-bold mb-0 text-success">{{ (stats.avg_stars|round(2) if stats.avg_stars else '—') }}★</div>
+          </div>
+        </div>
+      </div>
+
+      <form id="artistScanForm" action="{{ url_for('scans.scan_artist_custom') }}" method="post" class="d-flex align-items-center justify-content-between gap-2 mb-3 flex-wrap p-2 rounded border border-secondary" style="background: var(--tertiary-bg, #282828);">
+        <input type="hidden" name="artist" value="{{ artist_name }}">
+
+        <div class="d-flex align-items-center gap-2 flex-wrap">
+          <div style="width: 140px;">
+            {% include 'components/_scan_selector.html' ignore missing %}
+          </div>
+          <button type="submit" class="btn btn-warning fw-bold px-3 py-1 text-nowrap" title="Run Scan">
+            <i class="bi bi-lightning-fill"></i> Run
+          </button>
+          <div class="form-check m-0 text-nowrap px-2 py-1 bg-dark rounded border border-secondary" title="Force full rescan (ignore change detection)">
+            <input class="form-check-input" type="checkbox" id="artistForceScan" name="force" value="1">
+            <label class="form-check-label small text-muted ms-1" for="artistForceScan">Force</label>
+          </div>
+        </div>
+
+        <div>
+          <div class="dropdown">
+            <button class="btn btn-outline-secondary btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" title="More actions">
+              <i class="bi bi-three-dots-vertical"></i> Actions
+            </button>
+            <ul class="dropdown-menu dropdown-menu-end shadow">
+              <li><a class="dropdown-item" href="{{ url_for('ui.artist_corrections', name=artist_name) }}"><i class="bi bi-wrench me-2"></i> Corrections</a></li>
+              <li><a class="dropdown-item" href="{{ url_for('ui.artist_genre_management', name=artist_name) }}"><i class="bi bi-tags me-2"></i> Genre Management</a></li>
+              <li><a class="dropdown-item" href="javascript:void(0)" onclick="openEditArtistIdsModal()"><i class="bi bi-pencil me-2"></i> Edit External IDs</a></li>
+              <li><hr class="dropdown-divider"></li>
+              <li><button class="dropdown-item" type="button" onclick="forceArtistMetadataRefresh()"><i class="bi bi-arrow-repeat me-2"></i> Force Metadata Refresh</button></li>
+            </ul>
+          </div>
+        </div>
+      </form>
+
+      <button type="button"
+              class="btn btn-success btn-lg w-100 fw-bold d-flex align-items-center justify-content-center gap-2 shadow-sm"
+              onclick="playArtistTopTracks()">
+        <i class="bi bi-play-fill fs-4"></i> PLAY TOP TRACKS
+      </button>
+    </div>
+  </div>
+
+  {% set cat_keys = ['album', 'compilation', 'live_album', 'remix_album', 'ep', 'single'] %}
+  {% set ns_totals = namespace(all=0, library=0, missing=0) %}
+  {% for key in cat_keys %}
+    {% set ns_totals.all = ns_totals.all + (albums_by_category.get(key) or [])|length %}
+    {% set ns_totals.library = ns_totals.library + (albums_by_category.get(key) or [])|selectattr('is_missing', 'equalto', False)|list|length %}
+    {% set ns_totals.missing = ns_totals.missing + (albums_by_category.get(key) or [])|selectattr('is_missing', 'equalto', True)|list|length %}
+  {% endfor %}
+
+  <ul class="nav nav-pills nav-fill bg-secondary p-1 rounded mb-3 shadow-sm" role="tablist" id="artistPageTabs">
+    <li class="nav-item" role="presentation">
+      <button class="nav-link active fw-bold" id="tab-albums-btn" data-bs-toggle="tab" data-bs-target="#tab-albums" type="button" role="tab" aria-selected="true">
+        <i class="bi bi-vinyl me-1"></i> Albums ({{ ns_totals.all }})
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link fw-bold" id="tab-top-btn" data-bs-toggle="tab" data-bs-target="#tab-top" type="button" role="tab" aria-selected="false">
+        <i class="bi bi-star me-1"></i> Top Tracks
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link fw-bold" id="tab-about-btn" data-bs-toggle="tab" data-bs-target="#tab-about" type="button" role="tab" aria-selected="false">
+        <i class="bi bi-info-circle me-1"></i> About
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link fw-bold" id="tab-genres-btn" data-bs-toggle="tab" data-bs-target="#tab-genres" type="button" role="tab" aria-selected="false">
+        <i class="bi bi-tags me-1"></i> Genres &amp; Moods
+      </button>
+    </li>
+  </ul>
+
+  <div class="tab-content mb-5">
+
+    <!-- TAB 1: ALBUMS -->
+    <div class="tab-pane fade show active" id="tab-albums" role="tabpanel" aria-labelledby="tab-albums-btn">
+      <div class="d-flex align-items-center justify-content-between gap-2 mb-3 p-2 rounded border border-secondary shadow-sm" style="background-color: var(--tertiary-bg, #282828);">
+        <div class="btn-group btn-group-sm" role="group" aria-label="Album status filter">
+          <button type="button" class="btn btn-outline-secondary artist-filter-btn active" data-filter="all" onclick="setArtistFilter('all')">All ({{ ns_totals.all }})</button>
+          <button type="button" class="btn btn-outline-success artist-filter-btn" data-filter="library" onclick="setArtistFilter('library')">In Library ({{ ns_totals.library }})</button>
+          <button type="button" class="btn btn-outline-warning artist-filter-btn" data-filter="missing" onclick="setArtistFilter('missing')">🟡 Missing ({{ ns_totals.missing }})</button>
+        </div>
+
+        <button class="btn btn-sm btn-outline-info fw-bold" onclick='checkMissingReleases({{ artist_name|tojson }})'>
+          <i class="bi bi-flag me-1"></i> Check Missing
+        </button>
+      </div>
+
+      <div id="artistDiscographyWrapper">
+        {{ render_release_category('studio-albums', 'Studio Albums', 'bi-vinyl-fill', albums_by_category.album, artist_name) }}
+        {{ render_release_category('compilations', 'Compilations & Featured', 'bi-collection', albums_by_category.compilation, artist_name) }}
+        {{ render_release_category('live-albums', 'Live Albums', 'bi-broadcast', albums_by_category.live_album, artist_name) }}
+        {{ render_release_category('remix-albums', 'Remix Albums', 'bi-soundwave', albums_by_category.remix_album, artist_name) }}
+        {{ render_release_category('eps', 'EPs', 'bi-disc', albums_by_category.ep, artist_name) }}
+        {{ render_release_category('singles', 'Singles', 'bi-music-note-beamed', albums_by_category.single, artist_name) }}
+      </div>
+
+      <div class="card mb-3 category-section shadow-sm" id="covers-section">
+        <div class="card-header p-0 d-flex align-items-center justify-content-between" style="background-color: var(--tertiary-bg, #282828);">
+          <a class="text-decoration-none text-white p-3 flex-grow-1 d-flex align-items-center gap-2 cursor-pointer"
+             data-bs-toggle="collapse" href="#collapse-covers" role="button" aria-expanded="true">
+            <i class="bi bi-music-note-list text-info fs-5"></i>
+            <h5 class="h6 fw-bold mb-0 me-2">Covers of {{ artist_name }}'s Songs</h5>
+            <span class="badge bg-secondary" id="artistCoveredByCount">Checking...</span>
+          </a>
+          <div class="p-3 ps-0 d-flex align-items-center gap-3 flex-shrink-0">
+            <i class="bi bi-chevron-down text-muted accordion-chevron cursor-pointer" data-bs-toggle="collapse" data-bs-target="#collapse-covers"></i>
+          </div>
+        </div>
+        <div id="collapse-covers" class="collapse show card-body p-2">
+          <div id="artistCoveredByContainer">
+            <div class="text-center py-3 text-muted">
+              <span class="spinner-border spinner-border-sm me-2"></span>Loading covers in library...
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 2: TOP TRACKS -->
+    <div class="tab-pane fade" id="tab-top" role="tabpanel" aria-labelledby="tab-top-btn">
+      <div class="card overflow-hidden shadow-sm">
+        <div class="card-header fw-bold small text-uppercase bg-dark border-secondary">
+          <i class="bi bi-graph-up-arrow me-1"></i> Top 20 Tracks
+        </div>
+        <div class="table-responsive">
+          <table class="table table-hover align-middle mb-0" data-mobile-cards>
+            <thead>
+              <tr class="d-none d-md-table-row text-muted small text-uppercase">
+                <th style="width: 50px;" class="text-center">#</th>
+                <th>Track</th>
+                <th>Album</th>
+                <th class="text-center" style="width: 100px;">Score</th>
+                <th class="text-end" style="width: 100px;">Percentile</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for track in (top_tracks or [])[:20] %}
+                <tr>
+                  <td class="text-center text-muted" data-label="#">{{ loop.index }}</td>
+                  <td class="fw-semibold" data-label="Track">
+                    <a href="{{ url_for('ui.track_detail', track_id=track.id) }}" class="text-decoration-none text-light">
+                      {{ track.title }}
+                    </a>
+                  </td>
+                  <td class="text-muted small" data-label="Album">{{ track.album }}</td>
+                  <td class="text-center" data-label="Score">
+                    <span class="badge bg-info text-dark">{{ '%.1f'|format(track.combined_score or track.popularity_score or 0) }}</span>
+                  </td>
+                  <td class="text-end" data-label="Percentile">
+                    {% if track.percentile is defined %}
+                      <span class="text-muted small">{{ (track.percentile * 100)|round(1) }}%</span>
+                    {% else %}
+                      <span class="text-muted small">—</span>
+                    {% endif %}
+                  </td>
+                </tr>
+              {% else %}
+                <tr>
+                  <td colspan="5" class="text-center text-muted py-4">
+                    <i class="bi bi-info-circle me-1"></i> No tracks available for ranking
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 3: ABOUT -->
+    <div class="tab-pane fade" id="tab-about" role="tabpanel" aria-labelledby="tab-about-btn">
+      <div class="card mb-3 shadow-sm">
+        <div class="card-body">
+          <h5 class="card-title h6 fw-bold"><i class="bi bi-journal-text me-2 text-info"></i>Biography</h5>
+          <div id="artistBioClamp" class="bio-clamp">
+            <p class="text-secondary small mb-0">
+              {% if artist_bio %}
+                {{ artist_bio|e|replace('&lt;br /&gt;', '<br>')|replace('&lt;br/&gt;', '<br>')|replace('&lt;br&gt;', '<br>')|replace('\n', '<br>')|safe }}
+              {% else %}
+                No biography available.
+              {% endif %}
+            </p>
+          </div>
+          {% if artist_bio %}
+            <button id="artistBioToggle" class="btn btn-link btn-sm p-0 mt-2 text-decoration-none" onclick="toggleArtistBio()">
+              <i class="bi bi-chevron-down me-1"></i>Read More
+            </button>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="card mb-3 shadow-sm">
+        <div class="card-body p-3">
+          <h6 class="fw-bold mb-2"><i class="bi bi-globe me-2 text-success"></i>Country &amp; Band Members</h6>
+          <div class="mb-3 d-flex align-items-center gap-2">
+            <span class="badge bg-info text-dark" id="artistCountryBadgeDisplay">{{ artist_country or 'Unknown Origin' }}</span>
+            <button class="btn btn-xs btn-outline-secondary py-0" onclick="editArtistCountry()"><i class="bi bi-pencil"></i> Edit</button>
+            <button class="btn btn-xs btn-outline-primary py-0" onclick="fetchArtistCountry()" id="fetchArtistCountryBtn">
+              <i class="bi bi-cloud-download"></i> Get from MusicBrainz
+            </button>
+          </div>
+          <div id="artistMembersDisplay" class="d-flex flex-wrap gap-1">
+            {% for member in (artist_members or []) %}
+              <span class="badge {{ 'artist-member-former' if member.ended else 'bg-secondary' }}"
+                    title="{{ member.relation_type or 'member' }}{% if member.begin %} · since {{ member.begin }}{% endif %}{% if member.end %} · until {{ member.end }}{% endif %}">
+                {{ member.name }}{{ ' · former' if member.ended else '' }}
+              </span>
+            {% else %}
+              <span class="text-muted small">No member details available.</span>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+
+      <div class="card mb-3 shadow-sm">
+        <div class="card-body p-3">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+              <h6 class="fw-bold mb-0"><i class="bi bi-link-45deg me-2 text-warning"></i>External IDs</h6>
+              <button class="btn btn-xs btn-outline-primary py-0" onclick="openEditArtistIdsModal()"><i class="bi bi-pencil"></i> Edit IDs</button>
+          </div>
+          <div class="small text-muted">
+            <div><strong>MusicBrainz:</strong> <code id="musicbrainzArtistId">{{ stats.musicbrainz_artist_id or stats.lastfm_artist_mbid or 'Not linked' }}</code></div>
+            <div><strong>Discogs:</strong> <code id="discogsArtistId">{{ stats.discogs_artist_id or 'Not linked' }}</code></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card mb-3 shadow-sm" id="artist-similar-section">
+        <div class="card-body p-3">
+          <h6 class="fw-bold mb-2"><i class="bi bi-people me-2 text-danger"></i>Similar Artists</h6>
+          <div id="artistSimilarArtistsContainer">
+            {% set similar_list = (similar_artists.display if similar_artists else []) or [] %}
+            {% if similar_list %}
+              <div class="d-flex flex-wrap gap-2">
+                {% for sa in similar_list %}
+                  <a href="/artist/{{ sa.name|path_segment }}" class="badge artist-similar-card text-decoration-none" style="font-size: 0.95rem; padding: 0.45rem 0.6rem;">
+                    {{ sa.name }}
+                  </a>
+                {% endfor %}
+              </div>
+            {% else %}
+              <div class="text-muted small">
+                <span>No similar artists available yet.</span>
+                <br><small>Similar artists are collected during popularity scans from Last.fm and ListenBrainz.</small>
+              </div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 4: GENRES & MOODS -->
+    <div class="tab-pane fade" id="tab-genres" role="tabpanel" aria-labelledby="tab-genres-btn">
+      <div class="card mb-4 shadow-sm bg-dark text-light border-secondary">
+        <div class="card-header border-secondary">
+          <h5 class="card-title mb-0 fw-bold"><i class="bi bi-tags-fill text-warning me-2"></i>Genres and Moods</h5>
+        </div>
+        <div class="card-body">
+          <p class="text-muted small mb-3">All genres and moods detected from external providers across all tracks by this artist.</p>
+          <div id="artistGenreSourcesContainer">
+            {% set sources = [
+              ('mood', 'Essentia Moods', 'F59C00', 'black', 'bi-emoji-smile-fill'),
+              ('lastfm_tags', 'Last.fm', 'D51007', 'white', 'bi-music-note-beamed'),
+              ('listenbrainz_genres', 'ListenBrainz', '0066FF', 'white', 'bi-headphones'),
+              ('discogs_genres', 'Discogs', '6c757d', 'white', 'bi-vinyl-fill'),
+              ('essentia_genres', 'Essentia Genres', '6f42c1', 'white', 'bi-cpu-fill'),
+              ('navidrome_genres', 'Navidrome', '17A589', 'white', 'bi-music-note-list'),
+              ('musicbrainz_genres', 'MusicBrainz', 'EB743B', 'white', 'bi-hexagon-fill'),
+              ('spotify_genres', 'Spotify', '1DB954', 'white', 'bi-spotify'),
+              ('manual_genres', 'Manual Tags', '0dcaf0', 'black', 'bi-person-fill-gear')
+            ] %}
+            
+            {% set ns = namespace(has_any=False) %}
+            {% for key, label, bgcolor, textcolor, icon in sources %}
+              {% if genre_sources and genre_sources.get(key) %}{% set ns.has_any = True %}{% endif %}
+            {% endfor %}
+
+            {% if ns.has_any %}
+              {% set ns2 = namespace(first=True) %}
+              <ul class="nav nav-tabs border-secondary mb-3" role="tablist">
+                {% for key, label, bgcolor, textcolor, icon in sources %}
+                  {% if genre_sources and genre_sources.get(key) %}
+                    <li class="nav-item" role="presentation">
+                      <button class="nav-link {{ 'active text-white' if ns2.first else 'text-muted' }}"
+                              id="artistGenreTab{{ key }}-tab" data-bs-toggle="tab"
+                              data-bs-target="#artistGenreTab{{ key }}-content"
+                              type="button" role="tab" style="color: #{{ bgcolor }};">
+                        <i class="bi {{ icon }}"></i> {{ label }}
+                        <span class="badge ms-1" style="background-color: #{{ bgcolor }}; color: {{ textcolor }};">{{ genre_sources[key]|length }}</span>
+                      </button>
+                    </li>
+                    {% set ns2.first = False %}
+                  {% endif %}
+                {% endfor %}
+              </ul>
+
+              {% set ns3 = namespace(first=True) %}
+              <div class="tab-content">
+                {% for key, label, bgcolor, textcolor, icon in sources %}
+                  {% if genre_sources and genre_sources.get(key) %}
+                    <div class="tab-pane fade {{ 'active show' if ns3.first else '' }}" id="artistGenreTab{{ key }}-content" role="tabpanel">
+                      <div class="d-flex flex-wrap gap-2 mb-3">
+                        {% for genre in genre_sources[key]|sort(reverse=True, attribute='count') %}
+                          <span class="badge" style="background-color: #{{ bgcolor }}; color: {{ textcolor }}; font-size:0.85rem;">
+                            {{ genre.name }}{% if genre.count %} <small class="opacity-75">({{ genre.count }})</small>{% endif %}
+                          </span>
+                        {% endfor %}
+                      </div>
+                    </div>
+                    {% set ns3.first = False %}
+                  {% endif %}
+                {% endfor %}
+              </div>
+            {% else %}
+              <div class="alert alert-secondary bg-dark border-secondary text-muted mb-0 small">
+                <i class="bi bi-info-circle me-1"></i> No genre or mood metadata has been collected for this artist yet.
+              </div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<style>
+  #artistMainPageContainer.filter-hide-missing .missing-album-item { display: none !important; }
+  #artistMainPageContainer.filter-hide-library .library-album-item { display: none !important; }
+  .category-section.category-hide-missing .missing-album-item { display: none !important; }
+  .cursor-pointer { cursor: pointer; }
+</style>
+
+{% include 'components/modals/_track_edit.html' ignore missing %}
+{% include 'components/modals/_organize_group.html' ignore missing %}
+{% include 'components/modals/_slskd_results.html' ignore missing %}
+{% include 'components/modals/_manual_match.html' ignore missing %}
+{% include 'components/modals/_soulseek_manual_search.html' ignore missing %}
+{% include 'components/modals/_release_picker.html' ignore missing %}
+{% include 'components/modals/_musicbrainz_search_modal.html' ignore missing %}
+{% include 'components/modals/_musicbrainz_release_match.html' ignore missing %}
+
+{% endblock %}
+
+{% block scripts %}
+<script id="page-data" type="application/json">
+  {{ {"artistName": artist_name} | tojson | safe }}
+</script>
+<script>
+  const _pd = JSON.parse(document.getElementById('page-data').textContent);
+  window._pd = _pd;
+  window.artistName = _pd.artistName;
+</script>
+
+<script src="{{ versioned_static('js/genre-utils.js') }}"></script>
+<script src="{{ versioned_static('js/artist_detail.js') }}"></script>
+{% include 'components/_musicbrainz_search_functions.html' ignore missing %}
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  if (typeof window.loadArtistCoveredBy === 'function') {
+    window.loadArtistCoveredBy(window.artistName);
+  }
+});
+</script>
+{% endblock %}
