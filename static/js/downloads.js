@@ -2078,7 +2078,9 @@ function buildQueueGroups(items) {
     var title = (item.title || '').trim();
 
     var key, label, sublabel;
-    if (item.import_group) {
+    
+    // ✅ FIX: Explicitly ignore "default" so legacy rows don't merge
+    if (item.import_group && item.import_group !== 'default' && item.import_group !== 'manual') {
       key = 'grp_' + String(item.import_group);
       label = album || String(item.import_group);
       sublabel = artist;
